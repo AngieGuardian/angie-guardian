@@ -1,0 +1,65 @@
+# Angie Guardian example configuration.
+#
+# Per-domain settings are merged over `defaults` field-by-field: a domain only
+# needs to mention what it changes. Unknown hosts fall back to `defaults`.
+
+listen: 127.0.0.1:8071
+log_level: info
+
+# Persistent Ed25519 signing key for PoW JWTs (used from P1). Generated on
+# first run if missing; NEVER regenerated on restart, so restarts don't log
+# clients out and replicas can share it.
+signing_key_file: /etc/guardian/ed25519.key
+
+store:
+  backend: bbolt              # memory | bbolt
+  path: /var/lib/guardian/guardian.db
+
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      thresholds:
+        notfound_rate: 20/min # enforced from P2
+    keywords:                 # enforced from P2
+      enabled: false
+      rules_file: /etc/guardian/rules.d/common.yaml
+    anomaly:                  # enforced from P3
+      enabled: false
+      model: /etc/guardian/model.bin
+      challenge_at: 0.6
+      deny_at: 0.9
+    honeypot: { enabled: false } # enforced from P2
+    uuid_tamper: { enabled: false } # enforced from P2
+  pow:                        # enforced from P1
+    enabled: true
+    base_difficulty: 4
+    max_difficulty: 6
+    token_ttl: 4h
+    challenge_ttl: 30m
+    noscript_fallback: true
+  allowlist:
+    ips: [ "127.0.0.1", "::1" ]
+    uas: [ "Googlebot", "bingbot" ]
+    paths:
+      - /robots.txt
+      - /favicon.ico
+      - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
+  denylist:
+    ips: []
+
+domains:
+  # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
+  example.com:
+    pow: { enabled: true, base_difficulty: 5, max_difficulty: 6, token_ttl: 2h }
+    waf: { honeypot: { enabled: true } }
+
+  # API host: WAF only, no PoW interstitial a machine client can't solve.
+  api.example.com:
+    pow: { enabled: false }
+
+  # Static assets host: keep it light.
+  static.example.com:
+    pow: { enabled: false }
+    waf: { ip_behaviour: { enabled: false } }

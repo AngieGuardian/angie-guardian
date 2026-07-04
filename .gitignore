@@ -1,0 +1,18 @@
+# Binaries
+/guardiand
+/guardian-train
+/bin/
+/dist/
+
+# Test & coverage
+*.test
+coverage.out
+
+# Runtime data
+*.db
+*.key
+
+# Editor / OS
+.idea/
+.vscode/
+*~

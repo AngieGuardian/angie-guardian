@@ -1,0 +1,31 @@
+[Unit]
+Description=Angie Guardian sidecar (WAF + proof-of-work bot firewall)
+Documentation=https://github.com/melroy89/angie-guardian
+After=network.target
+Before=angie.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml
+Restart=on-failure
+RestartSec=2
+
+User=guardian
+Group=guardian
+StateDirectory=guardian
+ConfigurationDirectory=guardian
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

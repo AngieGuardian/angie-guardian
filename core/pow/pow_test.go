@@ -1,0 +1,208 @@
+// Angie Guardian — WAF + proof-of-work bot firewall for Angie.
+// Copyright (C) 2026 Melroy van den Berg
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package pow
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/melroy89/angie-guardian/core/store"
+)
+
+func testManager(t *testing.T) *Manager {
+	t.Helper()
+	key, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	m := NewManager(key, st)
+	m.NoJSMinDelay = 10 * time.Millisecond
+	return m
+}
+
+// solve brute-forces a nonce for the given challenge — the Go equivalent of
+// the browser solver. Tests use difficulty 1-2 so this is instant.
+func solve(t *testing.T, challenge string, difficulty int) string {
+	t.Helper()
+	for n := 0; n < 1_000_000; n++ {
+		nonce := strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(challenge + nonce))
+		if leadingZeroNibbles(sum[:]) >= difficulty {
+			return nonce
+		}
+	}
+	t.Fatal("no nonce found within bound")
+	return ""
+}
+
+func TestKeyPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "ed25519.key")
+	k1, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file mode = %v (%v), want 0600", fi.Mode().Perm(), err)
+	}
+	k2, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k1.Equal(k2) {
+		t.Fatal("key must never be regenerated on reload — restarts would log everyone out")
+	}
+}
+
+func TestIssueRedeemRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	ch, err := m.Issue(ctx, "Example.COM", "198.51.100.7", "/original?q=1", 2, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch.ID) != 32 || len(ch.Challenge) != 64 || ch.Difficulty != 2 {
+		t.Fatalf("unexpected challenge shape: %+v", ch)
+	}
+
+	req := &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 2),
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "Mozilla/5.0",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	}
+	res, err := m.Redeem(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RedirectURI != "/original?q=1" {
+		t.Errorf("redirect = %q, want original URI", res.RedirectURI)
+	}
+
+	// The minted token verifies for the same client+host, and only for them.
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "Mozilla/5.0"); err != nil {
+		t.Errorf("token should verify: %v", err)
+	}
+	if err := m.VerifyToken(res.Token, "other.com", "198.51.100.7", "Mozilla/5.0"); err == nil {
+		t.Error("token must not verify for another host")
+	}
+	if err := m.VerifyToken(res.Token, "example.com", "203.0.113.1", "Mozilla/5.0"); err == nil {
+		t.Error("token must not verify for another IP")
+	}
+	if err := m.VerifyToken(res.Token+"x", "example.com", "198.51.100.7", "Mozilla/5.0"); err == nil {
+		t.Error("tampered token must not verify")
+	}
+
+	// Double redemption must fail: the spent CAS is the anti-replay guarantee.
+	if _, err := m.Redeem(ctx, req); !errors.Is(err, ErrChallengeUnknown) {
+		t.Errorf("second redemption = %v, want ErrChallengeUnknown", err)
+	}
+}
+
+func TestRedeemRejections(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 1, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := solve(t, ch.Challenge, 1)
+	base := RedeemRequest{
+		ChallengeID: ch.ID, Nonce: nonce,
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	}
+
+	for name, tc := range map[string]struct {
+		mutate func(*RedeemRequest)
+		want   error
+	}{
+		"unknown id":  {func(r *RedeemRequest) { r.ChallengeID = "00000000000000000000000000000000" }, ErrChallengeUnknown},
+		"bad id len":  {func(r *RedeemRequest) { r.ChallengeID = "short" }, ErrChallengeUnknown},
+		"wrong host":  {func(r *RedeemRequest) { r.Host = "evil.com" }, ErrBindingMismatch},
+		"wrong ip":    {func(r *RedeemRequest) { r.IP = "203.0.113.1" }, ErrBindingMismatch},
+		"nojs denied": {func(r *RedeemRequest) { r.NoJS = true }, ErrNoJSDisabled},
+	} {
+		req := base
+		tc.mutate(&req)
+		if _, err := m.Redeem(ctx, &req); !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+
+	// A nonce that doesn't meet the difficulty. Find one deterministically.
+	req := base
+	for n := 0; ; n++ {
+		s := strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(ch.Challenge + s))
+		if leadingZeroNibbles(sum[:]) < 1 {
+			req.Nonce = s
+			break
+		}
+	}
+	if _, err := m.Redeem(ctx, &req); !errors.Is(err, ErrBadSolution) {
+		t.Errorf("weak nonce: err = %v, want ErrBadSolution", err)
+	}
+
+	// All those rejections must not have spent the challenge.
+	if _, err := m.Redeem(ctx, &base); err != nil {
+		t.Errorf("valid redemption after rejections should succeed, got %v", err)
+	}
+}
+
+func TestNoJSRedemption(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/page", 4, time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &RedeemRequest{
+		ChallengeID: ch.ID, NoJS: true,
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	}
+
+	if _, err := m.Redeem(ctx, req); !errors.Is(err, ErrTooFast) {
+		t.Fatalf("instant no-JS redemption = %v, want ErrTooFast", err)
+	}
+	time.Sleep(2 * m.NoJSMinDelay)
+	res, err := m.Redeem(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RedirectURI != "/page" {
+		t.Errorf("redirect = %q, want /page", res.RedirectURI)
+	}
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA"); err != nil {
+		t.Errorf("no-JS token should verify: %v", err)
+	}
+}
+
+func TestLeadingZeroNibbles(t *testing.T) {
+	for _, tc := range []struct {
+		sum  []byte
+		want int
+	}{
+		{[]byte{0xff, 0x00}, 0},
+		{[]byte{0x0f, 0x00}, 1},
+		{[]byte{0x00, 0xff}, 2},
+		{[]byte{0x00, 0x0f}, 3},
+		{[]byte{0x00, 0x00}, 4},
+	} {
+		if got := leadingZeroNibbles(tc.sum); got != tc.want {
+			t.Errorf("leadingZeroNibbles(%x) = %d, want %d", tc.sum, got, tc.want)
+		}
+	}
+}
