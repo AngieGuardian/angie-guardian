@@ -12,10 +12,15 @@ variables:
   GOPATH: $CI_PROJECT_DIR/.go
   # Build metadata stamped into the binaries.
   LDFLAGS: "-X main.version=$CI_COMMIT_SHORT_SHA"
+  # Package registry + release-asset endpoints for the release job.
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/angie-guardian/${CI_COMMIT_TAG}"
+  RELEASE_LINKS_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
 
 stages:
   - test
   - build
+  - upload
+  - release
 
 format:
   stage: test
@@ -39,3 +44,59 @@ build:
     paths:
       - dist/
     expire_in: 1 week
+
+# --- Release pipeline (tags only) ------------------------------------------
+# On a tag, cross-compile per platform, tar them up, and upload each archive
+# to the project's generic package registry. The tag is stamped in as the
+# binary version.
+
+.release-rules: &release-rules
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_TAG
+
+upload:
+  stage: upload
+  <<: *release-rules
+  parallel:
+    matrix:
+      - GOOS: linux
+        GOARCH: [amd64, arm64]
+  script:
+    - export CGO_ENABLED=0
+    - PKG="angie-guardian-${CI_COMMIT_TAG}-${GOOS}-${GOARCH}"
+    - mkdir -p "$PKG"
+    - go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardiand"         ./cmd/guardiand
+    - go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-train"    ./cmd/guardian-train
+    - go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-loadtest" ./cmd/guardian-loadtest
+    # Ship the operator-facing files alongside the binaries.
+    - cp -r README.md USAGE.md LICENSE guardian.example.yaml deploy "$PKG/"
+    - tar -czf "${PKG}.tar.gz" "$PKG"
+    - |
+      curl --fail --silent --show-error \
+        --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file "${PKG}.tar.gz" \
+        "${PACKAGE_REGISTRY_URL}/${PKG}.tar.gz"
+
+# Create the GitLab Release for the tag, then register each uploaded archive
+# as a release asset link via a POST to RELEASE_LINKS_URL with link_type=package.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  <<: *release-rules
+  needs:
+    - job: upload
+      artifacts: false
+  script:
+    - echo "Creating release ${CI_COMMIT_TAG}"
+    - release-cli create --tag-name "${CI_COMMIT_TAG}" --name "angie-guardian ${CI_COMMIT_TAG}"
+        --description "Automated release of ${CI_COMMIT_TAG}."
+    - |
+      for arch in amd64 arm64; do
+        asset="angie-guardian-${CI_COMMIT_TAG}-linux-${arch}.tar.gz"
+        curl --fail --silent --show-error --request POST \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --data "name=linux/${arch} (${CI_COMMIT_TAG})" \
+          --data "url=${PACKAGE_REGISTRY_URL}/${asset}" \
+          --data "link_type=package" \
+          "${RELEASE_LINKS_URL}"
+      done

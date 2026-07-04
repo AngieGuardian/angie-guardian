@@ -22,11 +22,18 @@ import (
 	"github.com/melroy89/angie-guardian/core/anomaly"
 )
 
+var version = "dev" // set via -ldflags "-X main.version=..."
+
 func main() {
 	out := flag.String("out", "model.json", "output model artifact path")
 	minRequests := flag.Int64("min-requests", 1000, "drop domains with fewer log lines (a thin baseline misclassifies)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println("guardian-train", version)
+		return
+	}
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: guardian-train -out model.json access1.json [access2.json ...]")
 		fmt.Fprintln(os.Stderr, "       use - to read from stdin")

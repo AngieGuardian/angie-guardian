@@ -32,6 +32,8 @@ import (
 	"time"
 )
 
+var version = "dev" // set via -ldflags "-X main.version=..."
+
 func main() {
 	baseURL := flag.String("url", "http://127.0.0.1:8071", "guardiand base URL")
 	scenario := flag.String("scenario", "allow", "allow | deny | token")
@@ -39,7 +41,13 @@ func main() {
 	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send")
 	concurrency := flag.Int("c", 64, "concurrent connections")
 	duration := flag.Duration("d", 5*time.Second, "test duration")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("guardian-loadtest", version)
+		return
+	}
 
 	ua := "Mozilla/5.0 (loadtest)"
 	if *scenario == "allow" || *scenario == "deny" {
