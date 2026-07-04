@@ -1,0 +1,41 @@
+default:
+  image: golang:latest
+
+  cache:
+    key:
+      files:
+        - go.mod
+    paths:
+      - .go/pkg/mod/
+
+variables:
+  GOPATH: $CI_PROJECT_DIR/.go
+  # Build metadata stamped into the binaries.
+  LDFLAGS: "-X main.version=$CI_COMMIT_SHORT_SHA"
+
+stages:
+  - test
+  - build
+
+format:
+  stage: test
+  script:
+    # gofmt must leave nothing to change; `go fmt` prints reformatted files.
+    - test -z "$(gofmt -l .)" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }
+    - go vet ./...
+
+test:
+  stage: test
+  script:
+    - go test -race -count=1 ./...
+
+build:
+  stage: build
+  script:
+    - go build -ldflags "$LDFLAGS" -o dist/guardiand ./cmd/guardiand
+    - go build -ldflags "$LDFLAGS" -o dist/guardian-train ./cmd/guardian-train
+    - go build -ldflags "$LDFLAGS" -o dist/guardian-loadtest ./cmd/guardian-loadtest
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
