@@ -25,8 +25,11 @@ stages:
 format:
   stage: test
   script:
-    # gofmt must leave nothing to change; `go fmt` prints reformatted files.
-    - test -z "$(gofmt -l .)" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }
+    # gofmt must leave nothing to change. Scope it to our own source dirs, not
+    # the module cache (GOPATH lives under $CI_PROJECT_DIR/.go, and gofmt -l .
+    # would otherwise flag unformatted files inside vendored dependencies).
+    - GOFMT_OUT=$(gofmt -l cmd core transport web) || true
+    - test -z "$GOFMT_OUT" || { echo 'gofmt needed on:'; echo "$GOFMT_OUT"; exit 1; }
     - go vet ./...
 
 test:
