@@ -14,11 +14,13 @@ Two cooperating subsystems sharing one config, one datastore, and one decision
 pipeline — everything per-domain configurable:
 
 1. **WAF layer** — runs on every request:
-   - behavioural IP blocking (404/403 rates, honeypot hits, PoW failures)
-   - hot-reloadable keyword/regex threat signatures *(P2)*
+   - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
+     construction), matched against decoded path/query/User-Agent
+   - behavioural IP blocking with exponential backoff (signature hits,
+     PoW failures, tamper events; request/404 rates land with P3)
+   - honeypot trap paths: one hit = instant block
+   - tamper-proof signed IDs (HMAC-bound to purpose + host)
    - anomaly scoring trained offline on Angie JSON access logs *(P3)*
-   - hidden honeypot form field + timing trap *(P2)*
-   - tamper-proof signed tokens (UUID + HMAC/Ed25519) *(P2)*
 
 2. **Proof-of-Work challenge layer** *(P1)* — only for suspicious/new clients:
    - SHA-256 leading-zeros challenge with JS/WASM solver
@@ -30,12 +32,12 @@ pipeline — everything per-domain configurable:
 
 ## Status
 
-Under active development. **P0 (skeleton & seam) and P1 (proof-of-work
-challenge layer) are complete and tested end-to-end**: decision pipeline,
-per-domain config, memory + bbolt store, challenge page with Web Worker
-solver, no-JS fallback, Ed25519 JWT cookies with a persistent shared signing
-key, and replay-safe spent-challenge tracking. Next up: P2 (WAF signatures,
-honeypot, behavioural scoreboard) and P3 (anomaly scoring).
+Under active development. **P0 (skeleton & seam), P1 (proof-of-work
+challenge layer) and P2 (WAF signatures, honeypot, behavioural blocking)
+are complete and tested end-to-end.** A vouched PoW token never exempts a
+client from the signature checks, so a stolen token can't ride past the WAF.
+Next up: P3 (statistical anomaly scoring over Angie JSON access logs) and
+P4 (Prometheus metrics, admin API, redis backend).
 
 ## Performance
 

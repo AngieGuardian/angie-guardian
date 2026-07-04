@@ -226,6 +226,14 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 			s.log.Error("redeem failed", "host", host, "ip", ip, "err", err)
 		} else {
 			s.log.Info("redeem rejected", "host", host, "ip", ip, "nojs", req.NoJS, "err", err)
+			// Failed solutions score against the client: repeated bad nonces
+			// or forged/replayed challenge IDs earn a behavioural block.
+			evtype := core.EventPoWFail
+			if errors.Is(err, pow.ErrChallengeUnknown) || errors.Is(err, pow.ErrBindingMismatch) ||
+				errors.Is(err, pow.ErrNoJSDisabled) {
+				evtype = core.EventTamper
+			}
+			s.engine.ReportEvent(r.Context(), host, ip, evtype, err.Error())
 		}
 		if req.NoJS {
 			http.Error(w, "challenge verification failed", status)

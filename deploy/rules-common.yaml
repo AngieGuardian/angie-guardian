@@ -1,0 +1,45 @@
+# Starter WAF signature rules for Angie Guardian.
+# Copy to /etc/guardian/rules.d/common.yaml (or wherever waf.keywords.rules_file
+# points) and tune per site. The file is hot-reloaded: edits apply within
+# seconds, and a file that fails to parse keeps the previous rules active.
+#
+# Rule fields:
+#   id:          unique name, shows up in logs as waf:<id>
+#   action:      deny (default) | challenge (force PoW) | block (deny + block IP)
+#   targets:     any of [path, query, ua]; default [path, query]
+#   keywords:    case-insensitive literal substrings, matched against the
+#                URL-decoded request
+#   regexes:     Go RE2 syntax — linear-time by construction, no ReDoS risk
+
+rules:
+  - id: dotfile-probe
+    description: Dotfiles are never served legitimately; fetching them is scanning
+    action: block
+    targets: [ path ]
+    keywords: [ "/.env", "/.git/", "/.aws/", "/.ssh/", "/.htpasswd", "/.svn/" ]
+
+  - id: wp-probe
+    description: WordPress probes — REMOVE on actual WordPress sites!
+    action: deny
+    targets: [ path ]
+    keywords: [ "/wp-login.php", "/xmlrpc.php", "/wp-config", "/wp-json/wp/v2/users" ]
+
+  - id: path-traversal
+    action: deny
+    targets: [ path, query ]
+    keywords: [ "../", "..\\", "%2e%2e/" ]
+
+  - id: sqli-basic
+    description: Cheap SQL injection heuristics; challenge rather than deny to spare false positives
+    action: challenge
+    targets: [ path, query ]
+    regexes:
+      - '(?i)\bunion\b[\s/*+]+(all[\s/*+]+)?select\b'
+      - '(?i)\b(sleep|benchmark|pg_sleep)\s*\('
+      - "(?i)['\"]\\s*or\\s+1\\s*=\\s*1"
+
+  - id: scanner-ua
+    description: Vulnerability scanners announce themselves in the User-Agent
+    action: block
+    targets: [ ua ]
+    keywords: [ "sqlmap", "nikto", "masscan", "nuclei", "wpscan", "acunetix" ]

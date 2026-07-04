@@ -55,7 +55,11 @@ func testServer(t *testing.T) *httptest.Server {
 	}
 	mgr := pow.NewManager(key, st)
 	mgr.NoJSMinDelay = 50 * time.Millisecond
-	engine := core.NewEngine(cfg, st, mgr, slog.Default())
+	engine, err := core.NewEngine(cfg, st, mgr, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
 	ts := httptest.NewServer(New(engine, cfg, mgr, st, slog.Default()))
 	t.Cleanup(ts.Close)
 	return ts

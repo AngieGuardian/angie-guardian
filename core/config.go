@@ -106,16 +106,27 @@ type DomainConfig struct {
 
 type WAFConfig struct {
 	IPBehaviour IPBehaviourConfig `yaml:"ip_behaviour"`
-	Keywords    KeywordsConfig    `yaml:"keywords"`    // enforced from P2
-	Anomaly     AnomalyConfig     `yaml:"anomaly"`     // enforced from P3
-	Honeypot    ToggleConfig      `yaml:"honeypot"`    // enforced from P2
-	UUIDTamper  ToggleConfig      `yaml:"uuid_tamper"` // enforced from P2
+	Keywords    KeywordsConfig    `yaml:"keywords"`
+	Anomaly     AnomalyConfig     `yaml:"anomaly"` // enforced from P3
+	Honeypot    HoneypotConfig    `yaml:"honeypot"`
+	UUIDTamper  ToggleConfig      `yaml:"uuid_tamper"`
 }
 
+// IPBehaviourConfig drives the behavioural scoreboard: how many bad events
+// of a given type (threshold key) an IP may produce per window before it is
+// temporarily blocked, with exponential backoff up to max_block_ttl.
 type IPBehaviourConfig struct {
-	Enabled    bool            `yaml:"enabled"`
-	BlockTTL   Duration        `yaml:"block_ttl"`
-	Thresholds map[string]Rate `yaml:"thresholds"`
+	Enabled     bool            `yaml:"enabled"`
+	BlockTTL    Duration        `yaml:"block_ttl"`
+	MaxBlockTTL Duration        `yaml:"max_block_ttl"`
+	Thresholds  map[string]Rate `yaml:"thresholds"`
+}
+
+// HoneypotConfig configures trap paths: URLs no legitimate client ever
+// requests (hidden links, robots.txt-disallowed paths). One hit blocks.
+type HoneypotConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Paths   []string `yaml:"paths"`
 }
 
 type KeywordsConfig struct {
@@ -203,7 +214,12 @@ func (l *ListConfig) MatchUA(ua string) bool {
 }
 
 func (l *ListConfig) MatchPath(path string) bool {
-	for _, entry := range l.Paths {
+	return matchPathList(l.Paths, path)
+}
+
+// matchPathList: exact match, or prefix match when the entry ends with "/".
+func matchPathList(entries []string, path string) bool {
+	for _, entry := range entries {
 		if strings.HasSuffix(entry, "/") {
 			if strings.HasPrefix(path, entry) || path == strings.TrimSuffix(entry, "/") {
 				return true
@@ -273,6 +289,16 @@ func (c *Config) finalize() error {
 	if c.Defaults.WAF.IPBehaviour.BlockTTL == 0 {
 		c.Defaults.WAF.IPBehaviour.BlockTTL = Duration(15 * time.Minute)
 	}
+	if c.Defaults.WAF.IPBehaviour.MaxBlockTTL == 0 {
+		c.Defaults.WAF.IPBehaviour.MaxBlockTTL = Duration(4 * time.Hour)
+	}
+	if c.Defaults.WAF.IPBehaviour.Thresholds == nil {
+		c.Defaults.WAF.IPBehaviour.Thresholds = map[string]Rate{
+			"signature": {Count: 10, Per: time.Minute},
+			"pow_fail":  {Count: 10, Per: time.Minute},
+			"tamper":    {Count: 10, Per: time.Minute},
+		}
+	}
 
 	// Domain configs = defaults deep-copied, then the domain's own YAML node
 	// decoded on top so only the fields it mentions are overridden.
@@ -321,6 +347,26 @@ func (dc *DomainConfig) validate() error {
 		return fmt.Errorf("denylist: %w", err)
 	}
 	return nil
+}
+
+// RuleFiles returns every distinct WAF rules file referenced by an enabled
+// keywords config, for the rule cache to load and watch.
+func (c *Config) RuleFiles() []string {
+	seen := make(map[string]bool)
+	add := func(dc *DomainConfig) {
+		if dc.WAF.Keywords.Enabled && dc.WAF.Keywords.RulesFile != "" {
+			seen[dc.WAF.Keywords.RulesFile] = true
+		}
+	}
+	add(&c.Defaults)
+	for _, dc := range c.resolved {
+		add(dc)
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	return files
 }
 
 // DomainFor returns the resolved config for a host, falling back to Defaults

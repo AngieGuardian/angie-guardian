@@ -19,19 +19,25 @@ defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 15m
-      thresholds:
-        notfound_rate: 20/min # enforced from P2
-    keywords:                 # enforced from P2
-      enabled: false
-      rules_file: /etc/guardian/rules.d/common.yaml
+      block_ttl: 15m          # first offense; doubles per repeat offense
+      max_block_ttl: 4h       # backoff cap
+      thresholds:             # bad events per window before the IP is blocked
+        signature: 10/min     # WAF signature hits
+        pow_fail: 10/min      # failed challenge solutions
+        tamper: 10/min        # forged/replayed challenge or signed IDs
+    keywords:
+      enabled: true           # requires the rules file to exist (fail-fast);
+      rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
     anomaly:                  # enforced from P3
       enabled: false
       model: /etc/guardian/model.bin
       challenge_at: 0.6
       deny_at: 0.9
-    honeypot: { enabled: false } # enforced from P2
-    uuid_tamper: { enabled: false } # enforced from P2
+    honeypot:
+      enabled: false          # trap paths: one hit = instant block. Add paths no
+      paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
+                              # Disallow them in robots.txt.
+    uuid_tamper: { enabled: true }
   pow:                        # enforced from P1
     enabled: true
     base_difficulty: 4

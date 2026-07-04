@@ -81,7 +81,11 @@ func run(configPath string) error {
 		log.Warn("no signing_key_file configured: proof-of-work challenges are disabled")
 	}
 
-	engine := core.NewEngine(cfg, st, powMgr, log)
+	engine, err := core.NewEngine(cfg, st, powMgr, log)
+	if err != nil {
+		return err
+	}
+	defer engine.Close()
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           httptransport.New(engine, cfg, powMgr, st, log),

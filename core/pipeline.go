@@ -8,10 +8,12 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/core/waf"
 )
 
 // Stage is one step of the decision pipeline. Returning a nil Decision means
@@ -26,6 +28,7 @@ type stageEnv struct {
 	store  store.Store
 	domain *DomainConfig
 	pow    *pow.Manager
+	rules  *waf.RuleCache
 }
 
 func requestPath(uri string) string {
@@ -33,6 +36,13 @@ func requestPath(uri string) string {
 		return uri[:i]
 	}
 	return uri
+}
+
+func requestQuery(uri string) string {
+	if i := strings.IndexByte(uri, '?'); i >= 0 {
+		return uri[i+1:]
+	}
+	return ""
 }
 
 // allowlistStage — pipeline stage 0. Trusted IPs/CIDRs, allowlisted UAs and
@@ -85,7 +95,7 @@ func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, en
 	if !env.domain.WAF.IPBehaviour.Enabled {
 		return nil, nil
 	}
-	reason, blocked, err := env.store.Get(ctx, blockKey(req.RemoteAddr))
+	reason, blocked, err := env.store.Get(ctx, waf.BlockKey(req.RemoteAddr))
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +106,104 @@ func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, en
 		}, nil
 	}
 	return nil, nil
+}
+
+// honeypotStage — trap paths (plan §4.4). No legitimate client ever requests
+// these (hidden links, robots.txt-disallowed URLs), so one hit is definitive:
+// deny and block the IP immediately.
+type honeypotStage struct{}
+
+func (honeypotStage) Name() string { return "honeypot" }
+
+func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	hp := &env.domain.WAF.Honeypot
+	if !hp.Enabled || len(hp.Paths) == 0 {
+		return nil, nil
+	}
+	if matchPathList(hp.Paths, requestPath(req.URI)) {
+		return &Decision{
+			Action: ActionDeny,
+			Reason: "honeypot:path",
+			Events: []Event{{Type: EventInstantBlock, Detail: "honeypot:path"}},
+		}, nil
+	}
+	return nil, nil
+}
+
+// wafSignatureStage — pipeline stage 4 (plan §4.2). Runs BEFORE the token
+// stage on purpose: a vouched client keeps passing these cheap precompiled
+// checks, so a stolen or borrowed token can't ride past the WAF ("WAF-lite",
+// plan §3 note on stage 3).
+type wafSignatureStage struct{}
+
+func (wafSignatureStage) Name() string { return "waf_signatures" }
+
+func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	kw := &env.domain.WAF.Keywords
+	if !kw.Enabled || env.rules == nil {
+		return nil, nil
+	}
+	rs := env.rules.Get(kw.RulesFile)
+	if rs == nil {
+		return nil, nil
+	}
+	in := waf.MatchInput{
+		Path:  strings.ToLower(decodePath(requestPath(req.URI))),
+		Query: strings.ToLower(decodeQuery(requestQuery(req.URI))),
+		UA:    strings.ToLower(req.UserAgent),
+	}
+	rule := rs.Match(&in)
+	if rule == nil {
+		return nil, nil
+	}
+	reason := "waf:" + rule.ID
+	switch rule.Action {
+	case waf.ActionChallenge:
+		if env.pow != nil && env.domain.PoW.Enabled {
+			return &Decision{
+				Action:     ActionChallenge,
+				Difficulty: min(env.domain.PoW.BaseDifficulty+1, env.domain.PoW.MaxDifficulty),
+				Reason:     reason,
+				Events:     []Event{{Type: EventSignature, Detail: rule.ID}},
+			}, nil
+		}
+		fallthrough // no PoW on this domain: challenge degrades to deny
+	case waf.ActionDeny:
+		return &Decision{
+			Action: ActionDeny,
+			Reason: reason,
+			Events: []Event{{Type: EventSignature, Detail: rule.ID}},
+		}, nil
+	default: // waf.ActionBlock
+		return &Decision{
+			Action: ActionDeny,
+			Reason: reason,
+			Events: []Event{{Type: EventInstantBlock, Detail: reason}},
+		}, nil
+	}
+}
+
+// decodePath/decodeQuery best-effort URL-decode for signature matching, so
+// %2e%65nv style encoding can't slip past literal keywords. On malformed
+// escapes the raw string is matched instead.
+func decodePath(p string) string {
+	if !strings.ContainsRune(p, '%') {
+		return p
+	}
+	if d, err := url.PathUnescape(p); err == nil {
+		return d
+	}
+	return p
+}
+
+func decodeQuery(q string) string {
+	if !strings.ContainsAny(q, "%+") {
+		return q
+	}
+	if d, err := url.QueryUnescape(q); err == nil {
+		return d
+	}
+	return q
 }
 
 // powTokenStage — pipeline stage 3. A valid signed token vouches for the

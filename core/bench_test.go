@@ -48,7 +48,12 @@ func benchEngine(b *testing.B, st store.Store) (*Engine, *pow.Manager) {
 	}
 	mgr := pow.NewManager(key, st)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewEngine(cfg, st, mgr, log), mgr
+	e, err := NewEngine(cfg, st, mgr, log)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(e.Close)
+	return e, mgr
 }
 
 // benchToken mints a real token by issuing at difficulty 0 (any nonce passes).

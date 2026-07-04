@@ -34,7 +34,12 @@ func testEngine(t *testing.T) *Engine {
 	cfg := loadTestConfig(t, pipelineYAML)
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
-	return NewEngine(cfg, st, nil, slog.Default())
+	e, err := NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	return e
 }
 
 func req(host, ip, uri, ua string) *RequestContext {

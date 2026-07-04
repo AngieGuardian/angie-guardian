@@ -37,7 +37,12 @@ func powEngine(t *testing.T) (*Engine, *pow.Manager) {
 		t.Fatal(err)
 	}
 	mgr := pow.NewManager(key, st)
-	return NewEngine(cfg, st, mgr, slog.Default()), mgr
+	e, err := NewEngine(cfg, st, mgr, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	return e, mgr
 }
 
 // mintTestToken runs the real issue→solve→redeem flow at difficulty 1.
