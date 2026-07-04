@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -47,6 +48,7 @@ const (
 	EventSignature    = "signature"
 	EventPoWFail      = "pow_fail"
 	EventTamper       = "tamper"
+	EventAnomaly      = "anomaly"
 	EventInstantBlock = "instant_block"
 )
 
@@ -65,27 +67,36 @@ type Engine struct {
 	store  store.Store
 	pow    *pow.Manager // nil when no signing key is configured: PoW stages inert
 	rules  *waf.RuleCache
+	models *anomaly.ModelCache
 	board  *waf.Scoreboard
 	stages []Stage
 	log    *slog.Logger
 }
 
-// rulesReloadInterval is how often WAF rules files are polled for changes.
-const rulesReloadInterval = 10 * time.Second
+// reloadInterval is how often WAF rules files and anomaly model artifacts
+// are polled for changes.
+const reloadInterval = 10 * time.Second
 
 func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logger) (*Engine, error) {
 	rules, err := waf.NewRuleCache(cfg.RuleFiles(), log)
 	if err != nil {
 		return nil, err
 	}
-	rules.Start(rulesReloadInterval)
+	models, err := anomaly.NewModelCache(cfg.ModelFiles(), log)
+	if err != nil {
+		rules.Close()
+		return nil, err
+	}
+	rules.Start(reloadInterval)
+	models.Start(reloadInterval)
 	return &Engine{
-		cfg:   cfg,
-		store: st,
-		pow:   powMgr,
-		rules: rules,
-		board: waf.NewScoreboard(st, log),
-		log:   log,
+		cfg:    cfg,
+		store:  st,
+		pow:    powMgr,
+		rules:  rules,
+		models: models,
+		board:  waf.NewScoreboard(st, log),
+		log:    log,
 		stages: []Stage{
 			// Pipeline order per plan §3; first terminal decision wins.
 			// Signatures run before the token stage so vouched clients keep
@@ -96,15 +107,16 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			honeypotStage{},       //    trap paths: one hit blocks
 			wafSignatureStage{},   // 4. keyword/regex signatures
 			powTokenStage{},       // 3. valid PoW token → allow
-			// 5. anomaly score (P3)
-			powChallengeStage{}, // 6. suspicion decision (challenge unvouched browsers)
+			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
+			powChallengeStage{},   // 6. challenge unvouched browsers (mode "always")
 		},
 	}, nil
 }
 
-// Close stops background work (rules hot-reload polling).
+// Close stops background work (rules + model hot-reload polling).
 func (e *Engine) Close() {
 	e.rules.Close()
+	e.models.Close()
 }
 
 // Evaluate resolves the domain config for the request's host and runs the
@@ -112,7 +124,7 @@ func (e *Engine) Close() {
 // taking a site down with it.
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	dcfg := e.cfg.DomainFor(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: e.rules}
+	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: e.rules, models: e.models}
 	for _, s := range e.stages {
 		d, err := s.Evaluate(ctx, req, env)
 		if err != nil {

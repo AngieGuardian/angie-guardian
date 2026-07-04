@@ -20,7 +20,11 @@ pipeline — everything per-domain configurable:
      PoW failures, tamper events; request/404 rates land with P3)
    - honeypot trap paths: one hit = instant block
    - tamper-proof signed IDs (HMAC-bound to purpose + host)
-   - anomaly scoring trained offline on Angie JSON access logs *(P3)*
+   - statistical anomaly scoring: `guardian-train` learns per-domain
+     baselines from Angie JSON access logs offline; the online scorer rates
+     every request in ~260ns and drives challenge/deny + difficulty
+     escalation (model artifact is versioned and hot-swapped — an ML
+     implementation can slot in behind the same seam later)
 
 2. **Proof-of-Work challenge layer** *(P1)* — only for suspicious/new clients:
    - SHA-256 leading-zeros challenge with JS/WASM solver
@@ -33,11 +37,14 @@ pipeline — everything per-domain configurable:
 ## Status
 
 Under active development. **P0 (skeleton & seam), P1 (proof-of-work
-challenge layer) and P2 (WAF signatures, honeypot, behavioural blocking)
-are complete and tested end-to-end.** A vouched PoW token never exempts a
-client from the signature checks, so a stolen token can't ride past the WAF.
-Next up: P3 (statistical anomaly scoring over Angie JSON access logs) and
-P4 (Prometheus metrics, admin API, redis backend).
+challenge layer), P2 (WAF signatures, honeypot, behavioural blocking) and
+P3 (statistical anomaly scoring) are complete and tested end-to-end.**
+A vouched PoW token never exempts a client from the signature checks, so a
+stolen token can't ride past the WAF. With `pow.mode: suspicion`, ordinary
+new visitors browse with no interstitial at all — only clients the anomaly
+scorer flags pay the proof-of-work tax, scaled to how suspicious they look.
+Next up: P4 (Prometheus metrics, admin API, key rotation, redis backend,
+Grafana dashboard).
 
 ## Performance
 

@@ -28,18 +28,20 @@ defaults:
     keywords:
       enabled: true           # requires the rules file to exist (fail-fast);
       rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
-    anomaly:                  # enforced from P3
-      enabled: false
-      model: /etc/guardian/model.bin
-      challenge_at: 0.6
-      deny_at: 0.9
+    anomaly:
+      enabled: false          # requires a model trained from your own logs:
+      model: /etc/guardian/model.json   #   guardian-train -out model.json /var/log/angie/*.access.json
+      challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
+      deny_at: 0.9            # score >= this -> deny outright
     honeypot:
       enabled: false          # trap paths: one hit = instant block. Add paths no
       paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
                               # Disallow them in robots.txt.
     uuid_tamper: { enabled: true }
-  pow:                        # enforced from P1
+  pow:
     enabled: true
+    mode: always              # always: challenge every unvouched browser
+                              # suspicion: only challenge anomalous clients (needs waf.anomaly)
     base_difficulty: 4
     max_difficulty: 6
     token_ttl: 4h

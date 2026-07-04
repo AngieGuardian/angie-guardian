@@ -1,0 +1,94 @@
+// Angie Guardian — WAF + proof-of-work bot firewall for Angie.
+// Copyright (C) 2026 Melroy van den Berg
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// guardian-train builds the anomaly-detection baseline from Angie JSON
+// access logs (the guardian_json format from deploy/angie-json-log.conf)
+// and writes the model artifact guardiand scores against. Run it from cron;
+// guardiand hot-swaps the artifact when the file changes.
+//
+//	guardian-train -out /etc/guardian/model.json /var/log/angie/*.access.json
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+
+	"github.com/melroy89/angie-guardian/core/anomaly"
+)
+
+func main() {
+	out := flag.String("out", "model.json", "output model artifact path")
+	minRequests := flag.Int64("min-requests", 1000, "drop domains with fewer log lines (a thin baseline misclassifies)")
+	flag.Parse()
+
+	if flag.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: guardian-train -out model.json access1.json [access2.json ...]")
+		fmt.Fprintln(os.Stderr, "       use - to read from stdin")
+		os.Exit(2)
+	}
+
+	trainer := &anomaly.Trainer{}
+	var lines, badLines int64
+	for _, path := range flag.Args() {
+		var r io.Reader
+		if path == "-" {
+			r = os.Stdin
+		} else {
+			f, err := os.Open(path)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			r = f
+		}
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			lines++
+			var rec anomaly.LogRecord
+			if err := json.Unmarshal(line, &rec); err != nil {
+				badLines++
+				continue
+			}
+			trainer.Add(&rec)
+		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path, err)
+			os.Exit(1)
+		}
+	}
+
+	model := trainer.Finish(*minRequests)
+	if len(model.Domains) == 0 {
+		fmt.Fprintf(os.Stderr, "no domain reached %d requests — model not written (got %d lines, %d unparseable)\n",
+			*minRequests, lines, badLines)
+		os.Exit(1)
+	}
+	if err := model.Save(*out); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("model written to %s (%d lines read, %d unparseable)\n", *out, lines, badLines)
+	hosts := make([]string, 0, len(model.Domains))
+	for h := range model.Domains {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		b := model.Domains[h]
+		fmt.Printf("  %-40s %8d requests, %3d UA prefixes, %3d path prefixes\n",
+			h, b.Requests, len(b.UAFreq), len(b.PathPrefixFreq))
+	}
+}

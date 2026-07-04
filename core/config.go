@@ -146,7 +146,10 @@ type ToggleConfig struct {
 }
 
 type PoWConfig struct {
-	Enabled          bool     `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Mode "always" challenges every unvouched browser; "suspicion" only
+	// challenges clients the anomaly scorer flags (requires waf.anomaly).
+	Mode             string   `yaml:"mode"`
 	BaseDifficulty   int      `yaml:"base_difficulty"`
 	MaxDifficulty    int      `yaml:"max_difficulty"`
 	TokenTTL         Duration `yaml:"token_ttl"`
@@ -330,6 +333,17 @@ func (c *Config) finalize() error {
 
 func (dc *DomainConfig) validate() error {
 	p := &dc.PoW
+	switch p.Mode {
+	case "":
+		p.Mode = "always"
+	case "always":
+	case "suspicion":
+		if p.Enabled && !dc.WAF.Anomaly.Enabled {
+			return fmt.Errorf("pow.mode suspicion requires waf.anomaly to be enabled")
+		}
+	default:
+		return fmt.Errorf("pow.mode must be always or suspicion, got %q", p.Mode)
+	}
 	if p.BaseDifficulty < 1 || p.BaseDifficulty > 8 {
 		return fmt.Errorf("pow.base_difficulty must be 1..8, got %d", p.BaseDifficulty)
 	}
@@ -356,6 +370,26 @@ func (c *Config) RuleFiles() []string {
 	add := func(dc *DomainConfig) {
 		if dc.WAF.Keywords.Enabled && dc.WAF.Keywords.RulesFile != "" {
 			seen[dc.WAF.Keywords.RulesFile] = true
+		}
+	}
+	add(&c.Defaults)
+	for _, dc := range c.resolved {
+		add(dc)
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	return files
+}
+
+// ModelFiles returns every distinct anomaly model artifact referenced by an
+// enabled anomaly config, for the model cache to load and watch.
+func (c *Config) ModelFiles() []string {
+	seen := make(map[string]bool)
+	add := func(dc *DomainConfig) {
+		if dc.WAF.Anomaly.Enabled && dc.WAF.Anomaly.Model != "" {
+			seen[dc.WAF.Anomaly.Model] = true
 		}
 	}
 	add(&c.Defaults)

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -29,6 +30,7 @@ type stageEnv struct {
 	domain *DomainConfig
 	pow    *pow.Manager
 	rules  *waf.RuleCache
+	models *anomaly.ModelCache
 }
 
 func requestPath(uri string) string {
@@ -228,9 +230,59 @@ func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
 }
 
-// powChallengeStage — pipeline stage 6, P1 form. Until anomaly scoring (P3)
-// drives a real suspicion function, every unvouched browser-shaped request
-// on a PoW-enabled domain gets challenged at the domain's base difficulty.
+// anomalyStage — pipeline stage 5 (plan §4.3). Scores the request against
+// the trained per-domain baseline: past deny_at it is rejected outright,
+// past challenge_at it gets a PoW challenge whose difficulty scales with the
+// score (a more suspicious client pays more, plan §5.5).
+type anomalyStage struct{}
+
+func (anomalyStage) Name() string { return "anomaly" }
+
+func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	a := &env.domain.WAF.Anomaly
+	if !a.Enabled || env.models == nil {
+		return nil, nil
+	}
+	m := env.models.Get(a.Model)
+	if m == nil {
+		return nil, nil
+	}
+	score := m.Score(req.Host,
+		decodePath(requestPath(req.URI)),
+		decodeQuery(requestQuery(req.URI)),
+		req.UserAgent)
+
+	switch {
+	case score >= a.DenyAt:
+		return &Decision{
+			Action: ActionDeny,
+			Reason: "anomaly:deny",
+			Events: []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
+		}, nil
+	case score >= a.ChallengeAt && env.pow != nil && env.domain.PoW.Enabled:
+		return &Decision{
+			Action:     ActionChallenge,
+			Difficulty: scaleDifficulty(env.domain.PoW.BaseDifficulty, env.domain.PoW.MaxDifficulty, score, a.ChallengeAt),
+			Reason:     "anomaly:challenge",
+			Events:     []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
+		}, nil
+	}
+	return nil, nil
+}
+
+// scaleDifficulty maps score ∈ [challengeAt, 1] linearly onto [base, max].
+func scaleDifficulty(base, maxDiff int, score, challengeAt float64) int {
+	if challengeAt >= 1 {
+		return base
+	}
+	d := base + int(float64(maxDiff-base)*(score-challengeAt)/(1-challengeAt)+0.5)
+	return min(max(d, base), maxDiff)
+}
+
+// powChallengeStage — pipeline stage 6. In mode "always" every unvouched
+// browser-shaped request on a PoW-enabled domain is challenged at base
+// difficulty. In mode "suspicion" the anomaly stage owns all challenge
+// decisions, so ordinary-looking new clients browse without interstitials.
 // Like Anubis, "browser-shaped" means a Mozilla User-Agent: the scrapers
 // worth taxing impersonate browsers, while honest tools (curl, feed readers,
 // package managers) pass through to the WAF-only path.
@@ -240,6 +292,9 @@ func (powChallengeStage) Name() string { return "pow_challenge" }
 
 func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
 	if env.pow == nil || !env.domain.PoW.Enabled {
+		return nil, nil
+	}
+	if env.domain.PoW.Mode == "suspicion" && env.domain.WAF.Anomaly.Enabled {
 		return nil, nil
 	}
 	if req.Method != "GET" && req.Method != "HEAD" {
