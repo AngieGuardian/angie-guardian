@@ -1,0 +1,64 @@
+# Guardian config for the Docker harness. Mirrors guardian.example.yaml but
+# with container paths and listeners bound to 0.0.0.0 so Angie (a different
+# container) can reach the sidecar over the compose network.
+#
+# NOTE: binding the hot path to 0.0.0.0 is exactly the "direct-reach" exposure
+# the security review flagged — safe here only because the port is NOT
+# published to the host (see compose.yaml). In production keep it on loopback
+# or an isolated network.
+listen: 0.0.0.0:8071
+log_level: info
+
+admin:
+  listen: 0.0.0.0:8072
+  token: "harness-admin-token"   # harness only; use ADMIN_TOKEN env in real deploys
+                                  # (0.0.0.0 admin bind without a token is refused)
+
+signing_key_file: /etc/guardian/keys/ed25519.key
+previous_key_dir: /etc/guardian/keys/keys.d
+
+store:
+  backend: bbolt
+  path: /var/lib/guardian/guardian.db
+
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      max_block_ttl: 4h
+      thresholds:
+        signature: 10/min
+        pow_fail: 10/min
+        tamper: 10/min
+    keywords:
+      enabled: true
+      rules_file: /etc/guardian/rules.d/common.yaml
+    honeypot:
+      enabled: false
+      paths: []
+  pow:
+    enabled: true
+    mode: always
+    base_difficulty: 4
+    max_difficulty: 6
+    token_ttl: 4h
+    challenge_ttl: 30m
+    noscript_fallback: true
+  allowlist:
+    ips: [ "127.0.0.1", "::1" ]
+    uas: [ "Googlebot" ]
+    paths:
+      - /robots.txt
+      - /favicon.ico
+      - /.well-known/
+  denylist:
+    ips: []
+
+domains:
+  # The harness site. PoW on so we can exercise the challenge flow.
+  localhost:
+    pow: { enabled: true }
+  # A WAF-only host to test the no-PoW path.
+  api.localhost:
+    pow: { enabled: false }
