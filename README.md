@@ -118,6 +118,13 @@ go build ./cmd/guardiand
 Then include the snippet from `deploy/angie-guardian.conf` in each protected
 `server {}` block of your Angie configuration.
 
+## Usage
+
+See **[USAGE.md](USAGE.md)** for a step-by-step guide: configuring Guardian,
+wiring it into Angie, running it under systemd, operating it through the admin
+API, training the anomaly model, load-testing, and multi-instance (redis)
+deployment.
+
 ## Architecture
 
 All decision logic lives behind a single transport-agnostic seam:
