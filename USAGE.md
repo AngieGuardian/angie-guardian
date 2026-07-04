@@ -63,11 +63,16 @@ domains:
                  challenge_at: 0.5, deny_at: 0.85 }
 ```
 
-Validate a config without starting the daemon by pointing a throwaway run at
-it. A bad config exits non-zero with the reason:
+Validate a config without starting the daemon with `-t` (like `angie -t`). It
+loads and validates the file — YAML syntax, unknown fields, and semantic checks
+— then exits: `0` and `ok` when valid, `1` and the reason when not.
 
 ```sh
-./guardiand -config guardian.yaml -version   # loads+validates, then prints version
+./guardiand -config guardian.yaml -t
+# config guardian.yaml: ok
+# ...or, on a bad config:
+# config guardian.yaml: FAILED
+# config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
 ```
 
 ## 2. Wire it into Angie

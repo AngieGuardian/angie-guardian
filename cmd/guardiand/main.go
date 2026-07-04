@@ -30,6 +30,7 @@ var version = "dev" // set via -ldflags "-X main.version=..."
 
 func main() {
 	configPath := flag.String("config", "", "path to guardian.yaml (required)")
+	testConfig := flag.Bool("t", false, "test the config: load and validate it, then exit (0 = ok, 1 = error)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -40,6 +41,14 @@ func main() {
 	if *configPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: guardiand -config /etc/guardian/guardian.yaml")
 		os.Exit(2)
+	}
+	if *testConfig {
+		if _, err := core.LoadConfig(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "config %s: FAILED\n%v\n", *configPath, err)
+			os.Exit(1)
+		}
+		fmt.Printf("config %s: ok\n", *configPath)
+		return
 	}
 	if err := run(*configPath); err != nil {
 		slog.Error("fatal", "err", err)
