@@ -18,7 +18,7 @@ pipeline. Everything is per-domain configurable.
    - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
      construction), matched against decoded path/query/User-Agent
    - behavioural IP blocking with exponential backoff (signature hits,
-     PoW failures, tamper events; request/404 rates land with P3)
+     PoW failures, tamper events)
    - honeypot trap paths: one hit = instant block
    - tamper-proof signed IDs (HMAC-bound to purpose + host)
    - statistical anomaly scoring: `guardian-train` learns per-domain
@@ -27,7 +27,7 @@ pipeline. Everything is per-domain configurable.
      escalation (model artifact is versioned and hot-swapped, so an ML
      implementation can slot in behind the same seam later)
 
-2. **Proof-of-Work challenge layer** *(P1)*, only for suspicious or new clients:
+2. **Proof-of-Work challenge layer**, only for suspicious or new clients:
    - SHA-256 leading-zeros challenge with JS/WASM solver
    - Ed25519-signed JWT cookie on success; cheap re-validation afterwards
    - **persistent shared signing key**, so restarts don't log everyone out,
