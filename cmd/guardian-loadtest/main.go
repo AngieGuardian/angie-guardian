@@ -9,10 +9,13 @@
 //
 // Scenarios:
 //
-//	allow  — plain request, full pipeline, terminal "default allow"
-//	deny   — denylisted client IP (exercises the logging deny path)
-//	token  — solves one real PoW challenge, then hammers /auth with the
-//	         minted cookie (the production common path)
+//	allow     — plain request, full pipeline, terminal "default allow"
+//	deny      — denylisted client IP (exercises the logging deny path)
+//	token     — solves one real PoW challenge, then hammers /auth with the
+//	            minted cookie (the production common path)
+//	challenge — hammers /challenge, issuing a fresh PoW challenge per request.
+//	            Each issuance is a store write (CAS), so this is the write-heavy
+//	            path that separates the store backends (bbolt vs redis).
 package main
 
 import (
@@ -68,6 +71,9 @@ func main() {
 		"X-Guardian-IP":     *ip,
 		"X-Guardian-UA":     ua,
 	}
+	// path is the endpoint each request hits; challenge is the only write-heavy
+	// scenario, so it targets /challenge instead of /auth.
+	path := "/auth"
 	wantStatus := http.StatusOK
 	switch *scenario {
 	case "allow":
@@ -80,13 +86,19 @@ func main() {
 			os.Exit(1)
 		}
 		headers["X-Guardian-Cookie"] = cookie
+	case "challenge":
+		path = "/challenge"
+		ua = "Mozilla/5.0 (loadtest)"
+		headers["X-Guardian-UA"] = ua
+		// Each issuance is rate-limited per IP (60/min); the worker rotates the
+		// IP per request (see below) so the limiter never trips.
 	default:
 		fmt.Fprintln(os.Stderr, "unknown scenario:", *scenario)
 		os.Exit(2)
 	}
 
-	fmt.Printf("scenario=%s url=%s/auth c=%d d=%s expect=%d\n",
-		*scenario, *baseURL, *concurrency, *duration, wantStatus)
+	fmt.Printf("scenario=%s url=%s%s c=%d d=%s expect=%d\n",
+		*scenario, *baseURL, path, *concurrency, *duration, wantStatus)
 
 	var (
 		wg        sync.WaitGroup
@@ -102,10 +114,20 @@ func main() {
 		go func(w int) {
 			defer wg.Done()
 			lats := make([]time.Duration, 0, 1<<16)
+			rotateIP := *scenario == "challenge" // spread issuance across IPs to dodge the per-IP limiter
+			var i int
 			for time.Now().Before(deadline) {
-				req, _ := http.NewRequest(http.MethodGet, *baseURL+"/auth", nil)
+				req, _ := http.NewRequest(http.MethodGet, *baseURL+path, nil)
 				for k, v := range headers {
 					req.Header.Set(k, v)
+				}
+				if rotateIP {
+					// A distinct IP per request across the 10.0.0.0/8 space:
+					// worker in the low bits of octet 2, iteration across the
+					// rest, so no request repeats an IP and hits the 60/min cap.
+					req.Header.Set("X-Guardian-IP", fmt.Sprintf("10.%d.%d.%d",
+						(w+(i>>16))&0x3f|0x40, (i>>8)&0xff, i&0xff))
+					i++
 				}
 				start := time.Now()
 				resp, err := client.Do(req)

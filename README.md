@@ -95,24 +95,67 @@ go test -bench=. -benchmem ./core/... ./core/pow/...
 
 ## Performance
 
-Guardian must never be the bottleneck behind Angie. On the `/auth` hot path
-(single node, loopback, bbolt store, 64 connections, with the load generator
-sharing the same CPU):
+Guardian must never be the bottleneck behind Angie. `guardian-loadtest` drives
+the hot path over keepalive HTTP the way Angie does and reports throughput and
+latency percentiles.
 
-| Scenario | Throughput | p50 | p99 |
-|---|---|---|---|
-| allow (full pipeline) | ~76k req/s | 0.6 ms | 3.3 ms |
-| valid-token client (common path) | ~74k req/s | 0.5 ms | 3.8 ms |
-| deny + decision logging | ~100k req/s | 0.3 ms | 3.0 ms |
+**Scenarios** (the first three are read-dominated; `challenge` is the one
+write-heavy path):
 
-Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
-verification), and the Angie glue uses a keepalive upstream so auth
-subrequests reuse connections. Reproduce with:
+| Scenario | What it does | Store I/O per request |
+|---|---|---|
+| `allow` | plain request, full pipeline, ends in "default allow" | 1 read (block lookup) |
+| `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | 1 read |
+| `deny` | denylisted client IP (deny + decision logging path) | 1 read |
+| `challenge` | issue a fresh PoW challenge per request | 1 **write** (CAS) |
+
+**Results** — single node, loopback, 64 connections, load generator sharing the
+same CPU (AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 8 for the
+redis backend). Numbers are req/s and per-request latency:
+
+| Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
+|---|---|---|
+| allow     | ~76k / 0.55 ms / 3.3 ms  | ~93k / 0.63 ms / 1.5 ms |
+| token     | ~83k / 0.46 ms / 3.4 ms  | ~91k / 0.64 ms / 1.6 ms |
+| deny      | ~130k / 0.37 ms / 2.1 ms | ~183k / 0.12 ms / 1.8 ms |
+| challenge (write) | **~2.4k / 27 ms / 29 ms** | **~36k / 1.7 ms / 3.3 ms** |
+
+The read paths all comfortably clear the ≥50k req/s budget on both backends.
+The takeaway is the **write** path: embedded bbolt fsyncs one transaction per challenge
+through a single writer (~2.4k/s, ~27 ms under contention), while redis/valkey
+sustains ~15× that (~36k/s). So the backend choice hinges on your *new-client*
+rate — the clients that trigger a challenge write:
+
+- With `pow.mode: always`, every unvouched browser is challenged, so a burst of
+  fresh visitors is bounded by the write path. If that burst can exceed a few
+  thousand/s, use the **redis** backend (Redis or [Valkey](https://valkey.io/),
+  a drop-in replacement), or set `pow.mode: suspicion` so only anomalous
+  clients are challenged and the vast majority of traffic does no write.
+- Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
+  verification), so a returning client's request stays on the fast read path
+  regardless of backend.
+
+### Reproduce
 
 ```sh
-go build ./cmd/guardian-loadtest
-./guardian-loadtest -url http://127.0.0.1:8071 -scenario token -host example.com -c 64 -d 5s
+go build ./cmd/guardiand ./cmd/guardian-loadtest
+
+# 1. Start guardiand with your store backend (bbolt shown; for redis set
+#    store.backend: redis and store.addr in the config). PoW must be enabled
+#    for the token/challenge scenarios.
+./guardiand -config guardian.example.yaml &
+
+# 2. Run each scenario (8s, 64 connections). Use a distinct -ip per read run so
+#    a behavioural block from one run doesn't bleed into the next; the
+#    challenge scenario rotates the client IP itself to dodge the issuance limit.
+./guardian-loadtest -scenario allow     -host example.com -ip 198.51.100.10 -c 64 -d 8s
+./guardian-loadtest -scenario token     -host example.com -ip 198.51.100.11 -c 64 -d 8s
+./guardian-loadtest -scenario deny      -host example.com -ip 203.0.113.9   -c 64 -d 8s   # IP must be denylisted
+./guardian-loadtest -scenario challenge -host example.com                    -c 64 -d 8s
 ```
+
+Micro-benchmarks for the hot functions (`Evaluate`, PoW verification, anomaly
+scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/pow/...`
 
 ## Quick start
 

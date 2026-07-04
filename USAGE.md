@@ -180,7 +180,17 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
 # Worst case: a denylisted client (exercises the deny + logging path).
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
+
+# Write path: issue a fresh PoW challenge per request (a store CAS write each).
+# This is what separates the store backends — see the Performance table in the
+# README. The scenario rotates the client IP itself to avoid the issuance limit.
+guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
 ```
+
+The `allow`, `token` and `deny` scenarios are read-dominated (one block lookup
+each) and behave the same on any backend; `challenge` is write-heavy and is
+where bbolt's single embedded writer trails redis/valkey. See
+[Choosing a store backend](#choosing-a-store-backend).
 
 ## Choosing a store backend
 
