@@ -198,6 +198,45 @@ domains:
 	}
 }
 
+// TestNoRulesStaysDisabled locks in that a config without any rules block
+// resolves every domain with keyword matching off, like the fallback. The
+// defaults round-trip serializes a zero Rules node as "rules: null", which
+// parses back as a non-zero !!null scalar; without the null guard in resolve()
+// every configured domain would spuriously enable signatures on an empty set.
+func TestNoRulesStaysDisabled(t *testing.T) {
+	gc := mustGuestConfig(t, `
+defaults:
+  denylist:
+    ips: [ "203.0.113.0/24" ]
+domains:
+  a.test: {}
+`)
+	dr := gc.resolved[NormalizeHost("a.test")]
+	if dr == nil {
+		t.Fatal("a.test not resolved")
+	}
+	if dr.KeywordsEnabled || dr.Rules != nil {
+		t.Errorf("no rules configured: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	}
+	if dr.KeywordsEnabled != gc.fallback.KeywordsEnabled {
+		t.Errorf("resolved domain KeywordsEnabled=%v diverges from fallback=%v", dr.KeywordsEnabled, gc.fallback.KeywordsEnabled)
+	}
+
+	// Positive counterpart: a real rules block does enable keyword matching.
+	gc = mustGuestConfig(t, `
+domains:
+  b.test:
+    rules:
+      - id: r
+        action: deny
+        keywords: [ "/.env" ]
+`)
+	dr = gc.resolved[NormalizeHost("b.test")]
+	if dr == nil || !dr.KeywordsEnabled || dr.Rules == nil {
+		t.Errorf("rules configured: got %+v, want KeywordsEnabled=true and non-nil Rules", dr)
+	}
+}
+
 // TestClientIP locks in address normalization, including bare (unbracketed)
 // IPv6 literals, which the old hand-rolled port-stripping mangled
 // (2001:db8::1 -> 2001:db8:), silently disabling IP allow/deny for that client.

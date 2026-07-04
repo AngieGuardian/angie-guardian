@@ -111,7 +111,11 @@ func (gd *GuestDomain) resolve(host string) (*DomainRules, error) {
 		Denylist:  gd.Denylist,
 		Honeypot:  gd.Honeypot,
 	}
-	if gd.Rules.Kind != 0 {
+	// A zero Rules node marshals as "rules: null" and comes back from the
+	// defaults round-trip as an explicit !!null scalar (Kind != 0), so both
+	// forms must count as "no rules" or every domain would spuriously enable
+	// keyword matching on an empty rule set.
+	if gd.Rules.Kind != 0 && gd.Rules.Tag != "!!null" {
 		// Re-marshal the inline node and compile it with the shared WAF rules
 		// compiler, so the guest and sidecar use one rules format.
 		doc := struct {
