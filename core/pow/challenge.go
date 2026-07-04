@@ -192,7 +192,7 @@ var (
 // Redeem validates a challenge solution and mints a signed token. The spent
 // flag is set with an atomic compare-and-swap on the exact stored bytes, so
 // two concurrent redemptions of one challenge can never both mint (the
-// Anubis mint-twice CVE class).
+// mint-twice replay class).
 func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult, error) {
 	if len(req.ChallengeID) != 32 {
 		return nil, ErrChallengeUnknown

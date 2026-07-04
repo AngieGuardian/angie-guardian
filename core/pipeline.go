@@ -286,9 +286,9 @@ func scaleDifficulty(base, maxDiff int, score, challengeAt float64) int {
 // browser-shaped request on a PoW-enabled domain is challenged at base
 // difficulty. In mode "suspicion" the anomaly stage owns all challenge
 // decisions, so ordinary-looking new clients browse without interstitials.
-// Like Anubis, "browser-shaped" means a Mozilla User-Agent: the scrapers
-// worth taxing impersonate browsers, while honest tools (curl, feed readers,
-// package managers) pass through to the WAF-only path.
+// "browser-shaped" means a Mozilla User-Agent: the scrapers worth taxing
+// impersonate browsers, while honest tools (curl, feed readers, package
+// managers) pass through to the WAF-only path.
 type powChallengeStage struct{}
 
 func (powChallengeStage) Name() string { return "pow_challenge" }

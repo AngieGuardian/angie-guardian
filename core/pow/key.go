@@ -4,9 +4,8 @@
 
 // Package pow implements the proof-of-work challenge layer: Ed25519-signed
 // JWT tokens, SHA-256 leading-zeros challenges, and replay-safe redemption.
-// It deliberately fixes Anubis's operational flaws: the signing key is
-// persistent (restarts don't invalidate cookies, replicas can share it) and
-// challenges are marked spent atomically from day one.
+// The signing key is persistent (restarts don't invalidate cookies, replicas
+// can share it) and challenges are marked spent atomically from day one.
 package pow
 
 import (

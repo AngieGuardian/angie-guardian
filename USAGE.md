@@ -1,4 +1,4 @@
-# Angie Guardian — Usage
+# Angie Guardian: Usage
 
 A step-by-step guide to configuring, deploying and operating Angie Guardian.
 For an overview of what Guardian is and how it works, see the
@@ -16,7 +16,7 @@ For an overview of what Guardian is and how it works, see the
 
 ## 1. Configure Guardian
 
-Copy `guardian.example.yaml` and adjust it. The minimum viable config is tiny —
+Copy `guardian.example.yaml` and adjust it. The minimum viable config is tiny;
 everything else inherits from `defaults`:
 
 ```yaml
@@ -45,7 +45,7 @@ domains:
     pow: { enabled: true, base_difficulty: 5, token_ttl: 2h }
     waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
 
-  # API host: WAF only — no interstitial a machine client can't solve.
+  # API host: WAF only, no interstitial a machine client can't solve.
   api.example.com:
     pow: { enabled: false }
 
@@ -64,7 +64,7 @@ domains:
 ```
 
 Validate a config without starting the daemon by pointing a throwaway run at
-it — a bad config exits non-zero with the reason:
+it. A bad config exits non-zero with the reason:
 
 ```sh
 ./guardiand -config guardian.yaml -version   # loads+validates, then prints version
@@ -76,7 +76,7 @@ Add the keepalive upstream once in the `http {}` context, then include the
 per-server snippet in each protected `server {}` block:
 
 ```nginx
-# http {} context — REQUIRED for throughput (connection reuse to the sidecar):
+# http {} context, REQUIRED for throughput (connection reuse to the sidecar):
 upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;
@@ -129,7 +129,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
 # Lift a block.
 curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
 
-# "Why would this request be challenged?" — score it against the domain's
+# "Why would this request be challenged?" Score it against the domain's
 # anomaly model, for tuning challenge_at / deny_at.
 curl -s -H "Authorization: Bearer $TOKEN" \
      "$A/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
@@ -151,7 +151,7 @@ curl -s $A/metrics | grep guardian_
 
 Once JSON logs have accumulated, build a per-domain baseline offline and drop
 it where the config's `anomaly.model` points. `guardiand` hot-swaps the
-artifact when the file changes — no restart:
+artifact when the file changes, no restart needed:
 
 ```sh
 guardian-train -out /etc/guardian/model.json \
