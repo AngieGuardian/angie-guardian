@@ -137,6 +137,7 @@ func TestConfigValidation(t *testing.T) {
 		"bad cidr":        "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
 		"bad rate":        "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
 		"unknown field":   "listne: 1.2.3.4:80",
+		"duplicate host":  "domains: { a.test: , \"A.test:443\": }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {

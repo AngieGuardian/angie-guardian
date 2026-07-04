@@ -4,7 +4,10 @@
 
 package stateless
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const guestYAML = `
 defaults:
@@ -104,10 +107,16 @@ func TestParseGuestConfigErrors(t *testing.T) {
 		"bad cidr":       `domains: { a: { denylist: { ips: [ "10.0.0.0/99" ] } } }`,
 		"bad rule regex": "domains: { a: { rules: [ { id: r, regexes: [ '([' ] } ] } }",
 		"unknown field":  `domains: { a: { nope: true } }`,
+		"duplicate host": `domains: { a.test: { }, "A.test:443": { } }`,
 	} {
 		if _, err := ParseGuestConfig([]byte(yaml)); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
+	}
+	// Compile errors must name the offending entry, not just the list.
+	_, err := ParseGuestConfig([]byte(`domains: { a: { denylist: { ips: [ "10.0.0.0/99" ] } } }`))
+	if err == nil || !strings.Contains(err.Error(), `invalid CIDR "10.0.0.0/99"`) {
+		t.Errorf("compile error should quote the bad entry, got: %v", err)
 	}
 }
 

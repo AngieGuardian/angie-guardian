@@ -14,6 +14,7 @@
 package stateless
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
@@ -88,14 +89,14 @@ func (l *ListConfig) Compile() error {
 		if strings.Contains(s, "/") {
 			p, err := netip.ParsePrefix(s)
 			if err != nil {
-				return err
+				return fmt.Errorf("invalid CIDR %q: %w", s, err)
 			}
 			l.prefixes = append(l.prefixes, p.Masked())
 			continue
 		}
 		a, err := netip.ParseAddr(s)
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid IP %q: %w", s, err)
 		}
 		l.prefixes = append(l.prefixes, netip.PrefixFrom(a, a.BitLen()))
 	}

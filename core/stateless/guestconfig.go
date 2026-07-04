@@ -80,7 +80,13 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		gc.resolved[NormalizeHost(host)] = r
+		// Reject keys that collapse to the same host after normalization
+		// ("A.test" vs "a.test"): map order would pick a random winner.
+		key := NormalizeHost(host)
+		if _, dup := gc.resolved[key]; dup {
+			return nil, fmt.Errorf("domains: %q duplicates %q after host normalization", host, key)
+		}
+		gc.resolved[key] = r
 	}
 	return gc, nil
 }

@@ -269,7 +269,13 @@ func (c *Config) finalize() error {
 		if err := dc.validate(); err != nil {
 			return fmt.Errorf("domain %s: %w", host, err)
 		}
-		c.resolved[normalizeHost(host)] = dc
+		// Reject keys that collapse to the same host after normalization
+		// ("A.test" vs "a.test"): map order would pick a random winner.
+		key := normalizeHost(host)
+		if _, dup := c.resolved[key]; dup {
+			return fmt.Errorf("domains: %q duplicates %q after host normalization", host, key)
+		}
+		c.resolved[key] = dc
 	}
 	if err := c.Defaults.validate(); err != nil {
 		return fmt.Errorf("defaults: %w", err)

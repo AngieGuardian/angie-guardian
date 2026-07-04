@@ -22,9 +22,6 @@ const (
 	kindResponse int32 = 1
 )
 
-//go:wasmimport http_handler get_method
-func hostGetMethod(buf uint32, bufLimit uint32) uint32
-
 //go:wasmimport http_handler get_uri
 func hostGetURI(buf uint32, bufLimit uint32) uint32
 
@@ -86,8 +83,7 @@ func readString(get func(buf uint32, bufLimit uint32) uint32) string {
 	return string(readInto(get))
 }
 
-// getMethod, getURI, getSourceAddr wrap the simple string getters.
-func getMethod() string     { return readString(hostGetMethod) }
+// getURI, getSourceAddr wrap the simple string getters.
 func getURI() string        { return readString(hostGetURI) }
 func getSourceAddr() string { return readString(hostGetSourceAddr) }
 
