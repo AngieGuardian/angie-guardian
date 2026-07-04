@@ -9,6 +9,7 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -79,14 +80,22 @@ func (r Rate) MarshalYAML() (any, error) {
 
 // Config is the top-level guardian.yaml.
 type Config struct {
-	Listen         string               `yaml:"listen"`
-	LogLevel       string               `yaml:"log_level"`
-	SigningKeyFile string               `yaml:"signing_key_file"`
-	PreviousKeyDir string               `yaml:"previous_key_dir"` // retired signing keys, still verified
-	Admin          AdminConfig          `yaml:"admin"`
-	Store          StoreConfig          `yaml:"store"`
-	Defaults       DomainConfig         `yaml:"defaults"`
-	Domains        map[string]yaml.Node `yaml:"domains"`
+	Listen         string `yaml:"listen"`
+	LogLevel       string `yaml:"log_level"`
+	SigningKeyFile string `yaml:"signing_key_file"`
+	PreviousKeyDir string `yaml:"previous_key_dir"` // retired signing keys, still verified
+	// TrustedProxy must be set true to bind the auth hot path to a non-loopback
+	// address. The sidecar trusts the X-Guardian-* headers (client IP, host,
+	// cookie) that Angie sets on the subrequest; if the listener is reachable
+	// by clients directly, anyone could forge those headers (spoof another
+	// client's IP, frame it into a block, or ride an allowlisted identity).
+	// Only enable this when the listener is isolated to Angie (private network,
+	// firewall, or mTLS) so no untrusted client can reach it.
+	TrustedProxy bool                 `yaml:"trusted_proxy"`
+	Admin        AdminConfig          `yaml:"admin"`
+	Store        StoreConfig          `yaml:"store"`
+	Defaults     DomainConfig         `yaml:"defaults"`
+	Domains      map[string]yaml.Node `yaml:"domains"`
 
 	resolved map[string]*DomainConfig
 }
@@ -195,6 +204,9 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) finalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8071"
+	}
+	if !c.TrustedProxy && !listenIsLoopback(c.Listen) {
+		return fmt.Errorf("listen %s is not loopback: the auth hot path trusts client-identity headers from its caller, so a non-loopback bind lets clients spoof them. Isolate the listener to Angie and set trusted_proxy: true to allow this", c.Listen)
 	}
 	switch c.LogLevel {
 	case "":
@@ -305,6 +317,13 @@ func (dc *DomainConfig) validate() error {
 	if a.Enabled && (a.ChallengeAt <= 0 || a.DenyAt <= a.ChallengeAt || a.DenyAt > 1) {
 		return fmt.Errorf("waf.anomaly: need 0 < challenge_at < deny_at <= 1, got %v / %v", a.ChallengeAt, a.DenyAt)
 	}
+	b := &dc.WAF.IPBehaviour
+	if b.BlockTTL < 0 || b.MaxBlockTTL < 0 {
+		return fmt.Errorf("waf.ip_behaviour: block_ttl and max_block_ttl must be >= 0, got %v / %v", b.BlockTTL.Std(), b.MaxBlockTTL.Std())
+	}
+	if b.MaxBlockTTL > 0 && b.BlockTTL > 0 && b.MaxBlockTTL < b.BlockTTL {
+		return fmt.Errorf("waf.ip_behaviour: max_block_ttl (%v) must be >= block_ttl (%v)", b.MaxBlockTTL.Std(), b.BlockTTL.Std())
+	}
 	if err := dc.Allowlist.Compile(); err != nil {
 		return fmt.Errorf("allowlist: %w", err)
 	}
@@ -369,4 +388,32 @@ func (c *Config) DomainFor(host string) *DomainConfig {
 	return &c.Defaults
 }
 
+// DomainLabel maps a request host to a bounded metric label: the normalized
+// key of a configured domain, or "default" for anything else. The raw Host
+// header is client-controlled and unbounded, so it must never be a label value
+// directly — a flood of distinct Host headers would otherwise explode the
+// Prometheus series count and OOM both this process and the scrape target.
+func (c *Config) DomainLabel(host string) string {
+	key := normalizeHost(host)
+	if _, ok := c.resolved[key]; ok {
+		return key
+	}
+	return "default"
+}
+
 func normalizeHost(host string) string { return stateless.NormalizeHost(host) }
+
+// listenIsLoopback reports whether a listen address binds only the loopback
+// interface. A wildcard bind ("0.0.0.0", "::", or an empty host) is NOT
+// loopback: it accepts connections from anywhere, so it is treated as remote.
+func listenIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}

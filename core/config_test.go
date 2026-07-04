@@ -130,14 +130,17 @@ func TestListMatching(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	for name, yaml := range map[string]string{
-		"bad backend":     "store: { backend: etcd }",
-		"bbolt sans path": "store: { backend: bbolt }",
-		"bad difficulty":  "defaults: { pow: { base_difficulty: 9 } }",
-		"max below base":  "defaults: { pow: { base_difficulty: 5, max_difficulty: 4 } }",
-		"bad cidr":        "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
-		"bad rate":        "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
-		"unknown field":   "listne: 1.2.3.4:80",
-		"duplicate host":  "domains: { a.test: , \"A.test:443\": }",
+		"bad backend":                            "store: { backend: etcd }",
+		"bbolt sans path":                        "store: { backend: bbolt }",
+		"bad difficulty":                         "defaults: { pow: { base_difficulty: 9 } }",
+		"max below base":                         "defaults: { pow: { base_difficulty: 5, max_difficulty: 4 } }",
+		"bad cidr":                               "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
+		"bad rate":                               "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
+		"unknown field":                          "listne: 1.2.3.4:80",
+		"duplicate host":                         "domains: { a.test: , \"A.test:443\": }",
+		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
+		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
+		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
@@ -145,6 +148,36 @@ func TestConfigValidation(t *testing.T) {
 		}
 		if _, err := LoadConfig(path); err == nil {
 			t.Errorf("%s: expected validation error, got nil", name)
+		}
+	}
+}
+
+// TestTrustedProxyAllowsNonLoopback confirms the opt-in lets a non-loopback
+// auth listener bind (the operator has isolated it to Angie), while it stays
+// refused without the flag (covered above).
+func TestTrustedProxyAllowsNonLoopback(t *testing.T) {
+	cfg := loadTestConfig(t, "listen: 0.0.0.0:8071\ntrusted_proxy: true\n")
+	if cfg.Listen != "0.0.0.0:8071" || !cfg.TrustedProxy {
+		t.Fatalf("trusted_proxy non-loopback bind should load, got listen=%q trusted=%v", cfg.Listen, cfg.TrustedProxy)
+	}
+}
+
+// TestDomainLabel confirms metric labels are bounded: configured hosts map to
+// their normalized key, everything else (including client-spoofed Host values)
+// collapses to "default" so the label set can't be exploded into an OOM.
+func TestDomainLabel(t *testing.T) {
+	cfg := loadTestConfig(t, testYAML)
+	cases := map[string]string{
+		"example.com":          "example.com",
+		"EXAMPLE.com:443":      "example.com", // case + port normalized
+		"api.example.com":      "api.example.com",
+		"unconfigured.test":    "default",
+		"evil-\x00-flood.test": "default",
+		"":                     "default",
+	}
+	for host, want := range cases {
+		if got := cfg.DomainLabel(host); got != want {
+			t.Errorf("DomainLabel(%q) = %q, want %q", host, got, want)
 		}
 	}
 }

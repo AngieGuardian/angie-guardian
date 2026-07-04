@@ -100,21 +100,28 @@ func (s *Bolt) Get(_ context.Context, key string) ([]byte, bool, error) {
 	return value, ok, err
 }
 
+// The mutating methods use db.Batch rather than db.Update: under concurrent
+// writers (the auth hot path issues a challenge CAS per new client) Batch
+// coalesces many calls into a few shared fsync'd commits, lifting throughput
+// past bbolt's one-fsync-per-Update ceiling. Batch may invoke the fn more than
+// once if a batch fails, so each closure recomputes its result from the tx and
+// assigns the out-var fresh on every call (never appends/accumulates).
+
 func (s *Bolt) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(boltBucket).Put([]byte(key), encode(value, ttl))
 	})
 }
 
 func (s *Bolt) Delete(_ context.Context, key string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
 		return tx.Bucket(boltBucket).Delete([]byte(key))
 	})
 }
 
 func (s *Bolt) Incr(_ context.Context, key string, ttl time.Duration) (int64, error) {
 	var n int64
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(boltBucket)
 		k := []byte(key)
 		raw := b.Get(k)
@@ -137,7 +144,8 @@ func (s *Bolt) Incr(_ context.Context, key string, ttl time.Duration) (int64, er
 
 func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
 	var swapped bool
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Batch(func(tx *bolt.Tx) error {
+		swapped = false // reset: Batch may retry this fn
 		b := tx.Bucket(boltBucket)
 		k := []byte(key)
 		cur, ok := decode(b.Get(k), time.Now())

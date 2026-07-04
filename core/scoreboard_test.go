@@ -100,3 +100,37 @@ func TestBlockBackoff(t *testing.T) {
 		t.Fatal("unblock did not lift the block")
 	}
 }
+
+// TestBlockBackoffNoOverflow guards the exponential backoff against a config
+// with no cap (max_block_ttl <= 0). Without the hard ceiling the doubling
+// overflows time.Duration negative around ~43 offenses, and a <= 0 TTL is
+// stored as "no expiry" — a permanent, only-admin-removable block. The
+// resulting TTL must stay positive and finite no matter how many offenses
+// accrue, which we detect via the store's ExpiresAt.
+func TestBlockBackoffNoOverflow(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	board := NewScoreboard(st, slog.Default())
+	ip := "203.0.113.9"
+
+	// 60 offenses with an uncapped config (maxBlockTTL = 0). 2^59 minutes would
+	// wrap Duration negative several times over without the guard.
+	for i := 0; i < 60; i++ {
+		if err := board.Block(ctx, ip, "flood", 15*time.Minute, 0); err != nil {
+			t.Fatalf("offense %d: %v", i, err)
+		}
+	}
+	// The stored block must have a finite (non-zero) expiry. A zero expiry is
+	// the "permanent" state the overflow produced — the exact bug.
+	exp, ok := st.ExpiresAt(BlockKey(ip))
+	if !ok {
+		t.Fatal("block not placed")
+	}
+	if exp.IsZero() {
+		t.Fatal("block is permanent (overflowed to a <=0 TTL) — no-cap backoff must still bound the TTL")
+	}
+	if until := time.Until(exp); until <= 0 || until > hardMaxBlockTTL+time.Minute {
+		t.Fatalf("block TTL out of range: expires in %v, want (0, %v]", until, hardMaxBlockTTL)
+	}
+}

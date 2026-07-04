@@ -6,6 +6,13 @@
 listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
 log_level: info
 
+# The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
+# (client IP, host, cookie). Keep `listen` on loopback so no client can reach
+# it directly and forge them. To bind a non-loopback address (Angie on another
+# host), isolate the listener to Angie (private network / firewall / mTLS) and
+# set the line below — otherwise guardiand refuses to start.
+# trusted_proxy: true
+
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
 # /metrics and /healthz are open (a scraper needs no secret); every /admin
 # route requires the bearer token. Binding to a non-loopback address without

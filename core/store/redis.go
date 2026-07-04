@@ -33,6 +33,16 @@ func NewRedis(opts RedisOptions) (*Redis, error) {
 		Addr:     opts.Addr,
 		Password: opts.Password,
 		DB:       opts.DB,
+		// The block lookup runs on every request, so a hung Redis must not
+		// stall the auth hot path: keep per-op and pool-wait timeouts tight so
+		// the engine's fail-open kicks in within tens of ms, not go-redis's
+		// multi-second defaults. Pool is generous for the 50k req/s target.
+		DialTimeout:  1 * time.Second,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: 100 * time.Millisecond,
+		PoolTimeout:  200 * time.Millisecond,
+		PoolSize:     256,
+		MinIdleConns: 16,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

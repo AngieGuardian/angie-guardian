@@ -53,18 +53,32 @@ func (s *Scoreboard) RecordEvent(ctx context.Context, ip, evtype string, limit i
 	return true, s.Block(ctx, ip, "threshold:"+evtype, blockTTL, maxBlockTTL)
 }
 
+// hardMaxBlockTTL caps a block TTL when the config leaves maxBlockTTL
+// unset/non-positive, so the exponential backoff can never overflow
+// time.Duration (which wraps negative around ~2^63ns ≈ 292 years and, being
+// ≤ 0, is stored as "no expiry" — a permanent, only-admin-removable block).
+const hardMaxBlockTTL = 30 * 24 * time.Hour // 30 days
+
 // Block places a behavioural block with exponential backoff: each block of
-// the same IP within 24h doubles the TTL, capped at maxBlockTTL.
+// the same IP within 24h doubles the TTL, capped at maxBlockTTL (or a hard
+// 30-day ceiling when no cap is configured).
 func (s *Scoreboard) Block(ctx context.Context, ip, reason string, ttl, maxBlockTTL time.Duration) error {
+	cap := maxBlockTTL
+	if cap <= 0 {
+		cap = hardMaxBlockTTL
+	}
+	if ttl <= 0 {
+		ttl = time.Minute // degenerate base config; never let the block be permanent
+	}
 	offenses, err := s.store.Incr(ctx, blockCountKey(ip), 24*time.Hour)
 	if err != nil {
 		offenses = 1 // still place the base block
 	}
-	for i := int64(1); i < offenses && (maxBlockTTL <= 0 || ttl < maxBlockTTL); i++ {
+	for i := int64(1); i < offenses && ttl < cap; i++ {
 		ttl *= 2
 	}
-	if maxBlockTTL > 0 && ttl > maxBlockTTL {
-		ttl = maxBlockTTL
+	if ttl > cap || ttl <= 0 { // ttl <= 0 guards a doubling that overflowed
+		ttl = cap
 	}
 	s.log.Info("blocking ip", "ip", ip, "reason", reason, "ttl", ttl, "offenses", offenses)
 	return s.store.Set(ctx, BlockKey(ip), []byte(reason), ttl)

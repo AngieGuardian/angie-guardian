@@ -131,3 +131,16 @@ func (s *Memory) Close() error {
 	close(s.done)
 	return nil
 }
+
+// ExpiresAt returns the expiry of a live key and whether it exists. A zero
+// time means "no expiry" (permanent). Exposed for tests that need to assert on
+// the TTL a caller stored, which the Store interface otherwise hides.
+func (s *Memory) ExpiresAt(key string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.get(key)
+	if !ok {
+		return time.Time{}, false
+	}
+	return e.expiresAt, true
+}

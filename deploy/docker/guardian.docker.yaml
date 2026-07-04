@@ -7,6 +7,11 @@
 # published to the host (see compose.yaml). In production keep it on loopback
 # or an isolated network.
 listen: 0.0.0.0:8071
+# The hot path binds 0.0.0.0 so Angie (a separate container) can reach it, but
+# the port is NOT published to the host (see compose.yaml), so it stays
+# isolated to the compose network. trusted_proxy acknowledges that isolation;
+# without it guardiand refuses a non-loopback bind.
+trusted_proxy: true
 log_level: info
 
 admin:

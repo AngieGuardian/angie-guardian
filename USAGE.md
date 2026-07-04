@@ -182,6 +182,20 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
 ```
 
+## Choosing a store backend
+
+- **memory** — single instance, state lost on restart. Fine for dev or a small
+  site that can re-learn blocks after a restart.
+- **bbolt** — single instance, persistent. The default. Writes are coalesced
+  (`db.Batch`) so concurrent challenge/event writes share fsyncs, but it is
+  still one embedded writer: under a very high sustained rate of *new* clients
+  (each of which triggers a challenge write in `pow.mode: always`), the single
+  writer becomes the ceiling. Load-test with `guardian-loadtest` at your
+  expected new-client rate before relying on it near 50k req/s; if the writer
+  saturates, switch to redis or set `pow.mode: suspicion` (only anomalous
+  clients are challenged, so most requests do no write).
+- **redis** — multi-instance and the highest write throughput. See below.
+
 ## Multi-instance (redis)
 
 To run replicas behind a load balancer, point every instance at one

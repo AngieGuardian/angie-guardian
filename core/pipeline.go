@@ -27,12 +27,13 @@ type Stage interface {
 
 // stageEnv bundles what stages may consult besides the request itself.
 type stageEnv struct {
-	store   store.Store
-	domain  *DomainConfig
-	pow     *pow.Manager
-	rules   *waf.RuleCache
-	models  *anomaly.ModelCache
-	metrics *metrics.Metrics
+	store       store.Store
+	domain      *DomainConfig
+	domainLabel string // bounded metric label for the resolved domain (never the raw Host)
+	pow         *pow.Manager
+	rules       *waf.RuleCache
+	models      *anomaly.ModelCache
+	metrics     *metrics.Metrics
 }
 
 // These thin wrappers keep the many in-file callsites terse while the actual
@@ -208,7 +209,7 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 		decodePath(requestPath(req.URI)),
 		decodeQuery(requestQuery(req.URI)),
 		req.UserAgent)
-	env.metrics.AnomalyScore(req.Host, score)
+	env.metrics.AnomalyScore(env.domainLabel, score)
 
 	switch {
 	case score >= a.DenyAt:

@@ -114,7 +114,8 @@ func (e *Engine) Close() {
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
 	dcfg := e.cfg.DomainFor(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics}
+	label := e.cfg.DomainLabel(req.Host)
+	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -130,7 +131,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 		}
 	}
 	e.metrics.EvaluateLatency(time.Since(start).Seconds())
-	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), req.Host)
+	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), label)
 	return d
 }
 
