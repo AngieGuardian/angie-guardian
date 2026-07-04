@@ -243,3 +243,13 @@ JSON) via the http-wasm `get_config` call. It returns *allow* to continue to
 your backend, or a `403` to block. Editing the rules means updating the Angie
 config and reloading Angie (the `.wasm` itself does not need rebuilding for a
 config change).
+
+**A config error fails closed.** If the `config=` blob does not parse — a
+typo'd field, an invalid CIDR, or two domain keys that collapse to the same
+host after normalization (`a.test` vs `A.test:443`) — the guest denies **every
+request on every host** with `500 Guardian WASM misconfigured`, and the only
+signal is one line in Angie's error log. Unlike the sidecar, which refuses to
+start on a bad `guardian.yaml`, a bad guest config only surfaces at request
+time, so validate before reloading production Angie: exercise a request
+against a staging instance first, or run the same blob through the sidecar's
+loader.

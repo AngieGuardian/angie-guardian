@@ -118,6 +118,12 @@ func TestParseGuestConfigErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `invalid CIDR "10.0.0.0/99"`) {
 		t.Errorf("compile error should quote the bad entry, got: %v", err)
 	}
+	// The duplicate-host error must name both raw keys, whichever map order
+	// they are visited in, so the operator can find the second entry.
+	_, err = ParseGuestConfig([]byte(`domains: { a.test: { }, "A.test:443": { } }`))
+	if err == nil || !strings.Contains(err.Error(), `"a.test"`) || !strings.Contains(err.Error(), `"A.test:443"`) {
+		t.Errorf("duplicate-host error should name both raw keys, got: %v", err)
+	}
 }
 
 func TestParseGuestConfigAcceptsJSON(t *testing.T) {
@@ -229,6 +235,31 @@ domains:
 	}
 	if dr.KeywordsEnabled != gc.fallback.KeywordsEnabled {
 		t.Errorf("resolved domain KeywordsEnabled=%v diverges from fallback=%v", dr.KeywordsEnabled, gc.fallback.KeywordsEnabled)
+	}
+
+	// An explicit empty list means the same as no rules.
+	gc = mustGuestConfig(t, `domains: { c.test: { rules: [] } }`)
+	if dr := gc.resolved["c.test"]; dr.KeywordsEnabled || dr.Rules != nil {
+		t.Errorf("rules []: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	}
+
+	// A domain can opt out of inherited default rules with an explicit null.
+	gc = mustGuestConfig(t, `
+defaults:
+  rules:
+    - id: r
+      action: deny
+      keywords: [ "/.env" ]
+domains:
+  optout.test:
+    rules: null
+  inherits.test: {}
+`)
+	if dr := gc.resolved["optout.test"]; dr.KeywordsEnabled || dr.Rules != nil {
+		t.Errorf("rules null opt-out: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	}
+	if dr := gc.resolved["inherits.test"]; !dr.KeywordsEnabled || dr.Rules == nil {
+		t.Errorf("sibling should inherit default rules: got %+v", dr)
 	}
 
 	// Positive counterpart: a real rules block does enable keyword matching.

@@ -64,6 +64,7 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 	gc.fallback = fb
 
 	gc.resolved = make(map[string]*DomainRules, len(gc.Domains))
+	seen := make(map[string]string, len(gc.Domains))
 	for host, node := range gc.Domains {
 		// Start from defaults, then overlay this domain's own fields so it
 		// inherits any field it does not set (sidecar parity).
@@ -71,7 +72,7 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 		if err := yaml.Unmarshal(defaultsRaw, &gd); err != nil {
 			return nil, fmt.Errorf("copy defaults for %s: %w", host, err)
 		}
-		if node.Kind != 0 && node.Tag != "!!null" {
+		if !isNullNode(&node) {
 			if err := decodeStrict(&node, &gd); err != nil {
 				return nil, fmt.Errorf("domain %s: %w", host, err)
 			}
@@ -80,15 +81,26 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Reject keys that collapse to the same host after normalization
-		// ("A.test" vs "a.test"): map order would pick a random winner.
-		key := NormalizeHost(host)
-		if _, dup := gc.resolved[key]; dup {
-			return nil, fmt.Errorf("domains: %q duplicates %q after host normalization", host, key)
+		key, err := NormalizeHostKey(seen, host)
+		if err != nil {
+			return nil, err
 		}
 		gc.resolved[key] = r
 	}
 	return gc, nil
+}
+
+// isNullNode reports whether a node is unset (zero value) or an explicit YAML
+// null. The two must be treated alike everywhere: the defaults round-trip in
+// ParseGuestConfig serializes a zero node as an explicit "null", so a check
+// that tests only Kind != 0 silently flips meaning after the round-trip.
+func isNullNode(n *yaml.Node) bool { return n.Kind == 0 || n.Tag == "!!null" }
+
+// hasRules reports whether an inline rules node carries any actual rules:
+// null/unset and an empty list both mean "no signature matching", so a domain
+// can opt out of inherited default rules with "rules: null" or "rules: []".
+func hasRules(n *yaml.Node) bool {
+	return !isNullNode(n) && (n.Kind != yaml.SequenceNode || len(n.Content) > 0)
 }
 
 // decodeStrict decodes a yaml.Node into v with unknown-field checking, which
@@ -117,11 +129,7 @@ func (gd *GuestDomain) resolve(host string) (*DomainRules, error) {
 		Denylist:  gd.Denylist,
 		Honeypot:  gd.Honeypot,
 	}
-	// A zero Rules node marshals as "rules: null" and comes back from the
-	// defaults round-trip as an explicit !!null scalar (Kind != 0), so both
-	// forms must count as "no rules" or every domain would spuriously enable
-	// keyword matching on an empty rule set.
-	if gd.Rules.Kind != 0 && gd.Rules.Tag != "!!null" {
+	if hasRules(&gd.Rules) {
 		// Re-marshal the inline node and compile it with the shared WAF rules
 		// compiler, so the guest and sidecar use one rules format.
 		doc := struct {

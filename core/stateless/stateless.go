@@ -319,6 +319,20 @@ func NormalizeHost(host string) string {
 	return strings.TrimSuffix(host, ".")
 }
 
+// NormalizeHostKey returns the normalized map key for a domain entry and
+// records it in seen (normalized -> raw key). Two entries that collapse to the
+// same normalized host ("A.test:443" vs "a.test") are a load error naming both
+// raw keys: silently keeping one would let map order pick a random winner.
+// Shared by the sidecar and guest config loaders so their policy cannot drift.
+func NormalizeHostKey(seen map[string]string, host string) (string, error) {
+	key := NormalizeHost(host)
+	if prev, dup := seen[key]; dup {
+		return "", fmt.Errorf("domains: %q and %q both normalize to %q", host, prev, key)
+	}
+	seen[key] = host
+	return key, nil
+}
+
 // ClientIP extracts the bare client IP from a source address that may carry a
 // port and/or IPv6 brackets ("1.2.3.4:80", "[2001:db8::1]:443", "2001:db8::1").
 // It must not corrupt a bare IPv6 literal, so it never hand-splits on the last
