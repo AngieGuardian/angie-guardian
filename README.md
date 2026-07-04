@@ -65,6 +65,28 @@ bottleneck — which the benchmarks say it is not.
   (multi-instance replicas behind a load balancer, sharing blocks + spent
   challenges + the signing key).
 
+## Testing
+
+The full suite runs via `go test` — unit tests cover every core package
+(engine pipeline, PoW/JWT/key rotation, WAF rules + scoreboard + signed IDs,
+anomaly scorer, all three stores) plus the HTTP `auth_request` and admin
+transports, using `miniredis` for the redis backend so no external services
+are required.
+
+```sh
+go test ./...            # whole suite
+go test -race ./...      # with the race detector
+go test ./core/...       # a subtree
+go test -run TestEvaluate ./core   # a single test by name
+```
+
+Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly
+scoring) also carry benchmarks:
+
+```sh
+go test -bench=. -benchmem ./core/... ./core/pow/...
+```
+
 ## Performance
 
 Guardian must never be the bottleneck behind Angie. On the `/auth` hot path
