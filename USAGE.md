@@ -12,7 +12,7 @@ For an overview of what Guardian is and how it works, see the
 4. [Operate it via the admin API](#4-operate-it-via-the-admin-api)
 5. [Train the anomaly model](#5-train-the-anomaly-model)
 6. [Load-test your deployment](#6-load-test-your-deployment)
-7. [Multi-instance (redis)](#multi-instance-redis)
+7. [Multi-instance (Redis/Valkey)](#multi-instance-redisvalkey)
 
 ## 1. Configure Guardian
 
@@ -192,19 +192,24 @@ guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
   (each of which triggers a challenge write in `pow.mode: always`), the single
   writer becomes the ceiling. Load-test with `guardian-loadtest` at your
   expected new-client rate before relying on it near 50k req/s; if the writer
-  saturates, switch to redis or set `pow.mode: suspicion` (only anomalous
-  clients are challenged, so most requests do no write).
-- **redis** — multi-instance and the highest write throughput. See below.
+  saturates, switch to the `redis` backend or set `pow.mode: suspicion` (only
+  anomalous clients are challenged, so most requests do no write).
+- **redis** — multi-instance and the highest write throughput. Works with both
+  Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which is
+  a drop-in replacement — same wire protocol, same `backend: redis` value. See
+  below.
 
-## Multi-instance (redis)
+## Multi-instance (Redis/Valkey)
 
-To run replicas behind a load balancer, point every instance at one
-redis/valkey and share the signing key + `previous_key_dir` across them, so any
-instance verifies any other's tokens and sees any other's blocks:
+To run replicas behind a load balancer, point every instance at one shared
+Redis or Valkey instance and share the signing key + `previous_key_dir` across
+them, so any instance verifies any other's tokens and sees any other's blocks.
+Valkey is a fully compatible drop-in replacement for Redis; the configuration
+is identical for both.
 
 ```yaml
 store:
-  backend: redis
+  backend: redis            # same value for both Redis and Valkey
   addr: 127.0.0.1:6379
   # password: ""          # or the REDIS_PASSWORD env var
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
