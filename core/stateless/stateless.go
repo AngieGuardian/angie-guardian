@@ -185,7 +185,14 @@ func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 }
 
 func evalAllowlist(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	l := &dr.Allowlist
+	return CheckAllowlist(req, &dr.Allowlist)
+}
+
+// CheckAllowlist runs the static allowlist (path, IP, UA). It returns a
+// terminal allow Decision and true on a match, or (zero, false) otherwise.
+// Exported so the sidecar's allowlist stage shares this exact logic with the
+// WASM guest and the two can never drift.
+func CheckAllowlist(req *RequestContext, l *ListConfig) (Decision, bool) {
 	if l.MatchPath(RequestPath(req.URI)) {
 		return Decision{Action: ActionAllow, Reason: "allowlist:path"}, true
 	}
@@ -214,7 +221,13 @@ func evalDenylist(req *RequestContext, dr *DomainRules) (Decision, bool) {
 }
 
 func evalHoneypot(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	hp := &dr.Honeypot
+	return CheckHoneypot(req, &dr.Honeypot)
+}
+
+// CheckHoneypot runs the honeypot trap-path check. It returns a terminal deny
+// Decision (with an instant-block event) and true on a hit. Exported so the
+// sidecar's honeypot stage shares this exact logic with the WASM guest.
+func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) (Decision, bool) {
 	if !hp.Enabled || len(hp.Paths) == 0 {
 		return Decision{}, false
 	}
@@ -303,4 +316,27 @@ func NormalizeHost(host string) string {
 	}
 	host = strings.Trim(host, "[]")
 	return strings.TrimSuffix(host, ".")
+}
+
+// ClientIP extracts the bare client IP from a source address that may carry a
+// port and/or IPv6 brackets ("1.2.3.4:80", "[2001:db8::1]:443", "2001:db8::1").
+// It must not corrupt a bare IPv6 literal, so it never hand-splits on the last
+// colon: it tries net.SplitHostPort first, then falls back to the string as-is
+// (bracket-trimmed) when there is no port. The result is validated as an IP;
+// anything that doesn't parse is returned unchanged for the caller to reject.
+func ClientIP(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	// host:port or [ipv6]:port
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	// No port. Trim brackets from a bare "[ipv6]" form.
+	trimmed := strings.Trim(addr, "[]")
+	if _, err := netip.ParseAddr(trimmed); err == nil {
+		return trimmed
+	}
+	// Not a bare IP either (e.g. still bracketed with junk); return as-is.
+	return addr
 }

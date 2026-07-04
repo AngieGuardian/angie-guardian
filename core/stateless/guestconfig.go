@@ -16,9 +16,14 @@ import (
 // the host (Angie's module config). It carries only the stateless WAF subset,
 // with signature rules inline (the guest has no filesystem to read a
 // rules_file from). It is a compact analogue of guardian.yaml.
+//
+// Domains are captured as raw nodes so each domain can be resolved by
+// overlaying its own fields on top of a copy of Defaults, exactly like the
+// sidecar's per-domain-over-defaults merge (core.Config.finalize). A domain
+// inherits every default field it does not itself set.
 type GuestConfig struct {
-	Defaults GuestDomain            `yaml:"defaults" json:"defaults"`
-	Domains  map[string]GuestDomain `yaml:"domains" json:"domains"`
+	Defaults GuestDomain          `yaml:"defaults" json:"defaults"`
+	Domains  map[string]yaml.Node `yaml:"domains" json:"domains"`
 
 	resolved map[string]*DomainRules
 	fallback *DomainRules
@@ -35,9 +40,9 @@ type GuestDomain struct {
 }
 
 // ParseGuestConfig parses and compiles the guest config document. It accepts
-// YAML (a superset of JSON, so a JSON blob works too). Allow/deny lists are
-// compiled and inline rules are turned into a RuleSet, so Evaluate does no
-// parsing on the hot path.
+// YAML (a superset of JSON, so a JSON blob works too). Each domain is merged
+// over Defaults field-by-field, then allow/deny lists are compiled and inline
+// rules turned into a RuleSet, so Evaluate does no parsing on the hot path.
 func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 	gc := &GuestConfig{}
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
@@ -46,13 +51,31 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 		return nil, fmt.Errorf("parse guest config: %w", err)
 	}
 
+	// Serialize the defaults once; each domain starts as a copy of them.
+	defaultsRaw, err := yaml.Marshal(&gc.Defaults)
+	if err != nil {
+		return nil, fmt.Errorf("marshal defaults: %w", err)
+	}
+
 	fb, err := gc.Defaults.resolve("defaults")
 	if err != nil {
 		return nil, err
 	}
 	gc.fallback = fb
+
 	gc.resolved = make(map[string]*DomainRules, len(gc.Domains))
-	for host, gd := range gc.Domains {
+	for host, node := range gc.Domains {
+		// Start from defaults, then overlay this domain's own fields so it
+		// inherits any field it does not set (sidecar parity).
+		gd := GuestDomain{}
+		if err := yaml.Unmarshal(defaultsRaw, &gd); err != nil {
+			return nil, fmt.Errorf("copy defaults for %s: %w", host, err)
+		}
+		if node.Kind != 0 && node.Tag != "!!null" {
+			if err := decodeStrict(&node, &gd); err != nil {
+				return nil, fmt.Errorf("domain %s: %w", host, err)
+			}
+		}
 		r, err := gd.resolve(host)
 		if err != nil {
 			return nil, err
@@ -60,6 +83,20 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 		gc.resolved[NormalizeHost(host)] = r
 	}
 	return gc, nil
+}
+
+// decodeStrict decodes a yaml.Node into v with unknown-field checking, which
+// yaml.Node.Decode does not do on its own. It re-marshals the node and runs it
+// through a KnownFields decoder, so a typo in a domain block is a load error
+// rather than a silently ignored field.
+func decodeStrict(node *yaml.Node, v any) error {
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+	return dec.Decode(v)
 }
 
 func (gd *GuestDomain) resolve(host string) (*DomainRules, error) {

@@ -49,15 +49,8 @@ type allowlistStage struct{}
 func (allowlistStage) Name() string { return "allowlist" }
 
 func (allowlistStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	l := &env.domain.Allowlist
-	if l.MatchPath(requestPath(req.URI)) {
-		return &Decision{Action: ActionAllow, Reason: "allowlist:path"}, nil
-	}
-	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
-		return &Decision{Action: ActionAllow, Reason: "allowlist:ip"}, nil
-	}
-	if l.MatchUA(req.UserAgent) {
-		return &Decision{Action: ActionAllow, Reason: "allowlist:ua"}, nil
+	if d, ok := stateless.CheckAllowlist(req, &env.domain.Allowlist); ok {
+		return &d, nil
 	}
 	return nil, nil
 }
@@ -113,16 +106,8 @@ type honeypotStage struct{}
 func (honeypotStage) Name() string { return "honeypot" }
 
 func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	hp := &env.domain.WAF.Honeypot
-	if !hp.Enabled || len(hp.Paths) == 0 {
-		return nil, nil
-	}
-	if stateless.MatchPathList(hp.Paths, requestPath(req.URI)) {
-		return &Decision{
-			Action: ActionDeny,
-			Reason: "honeypot:path",
-			Events: []Event{{Type: EventInstantBlock, Detail: "honeypot:path"}},
-		}, nil
+	if d, ok := stateless.CheckHoneypot(req, &env.domain.WAF.Honeypot); ok {
+		return &d, nil
 	}
 	return nil, nil
 }

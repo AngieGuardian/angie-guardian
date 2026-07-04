@@ -14,19 +14,13 @@
 // Build: GOOS=wasip1 GOARCH=wasm go build -o guardian.wasm ./transport/wasm
 package main
 
-import (
-	"strconv"
+import "github.com/melroy89/angie-guardian/core/stateless"
 
-	"github.com/melroy89/angie-guardian/core/stateless"
-)
-
-// config is parsed once from the host on first request and cached. A parse
-// failure is recorded so we fail closed (deny) rather than silently allowing
-// everything with no rules.
+// config is parsed once from the host on first request and cached. If parsing
+// fails, config stays nil and every request fails closed (see handleRequest).
 var (
-	config    *stateless.GuestConfig
-	configErr string
-	loaded    bool
+	config *stateless.GuestConfig
+	loaded bool
 )
 
 func ensureConfig() {
@@ -36,8 +30,7 @@ func ensureConfig() {
 	loaded = true
 	gc, err := stateless.ParseGuestConfig(getConfig())
 	if err != nil {
-		configErr = err.Error()
-		logError("guardian-wasm: config error: " + configErr)
+		logError("guardian-wasm: config error: " + err.Error())
 		return
 	}
 	config = gc
@@ -70,7 +63,7 @@ func handleRequest() uint64 {
 		Host:       getHeader("Host"),
 		Method:     getMethod(),
 		URI:        getURI(),
-		RemoteAddr: sourceIP(),
+		RemoteAddr: stateless.ClientIP(getSourceAddr()),
 		UserAgent:  getHeader("User-Agent"),
 		Cookie:     getHeader("Cookie"),
 	}
@@ -85,33 +78,6 @@ func handleRequest() uint64 {
 	writeResponseBody([]byte("Access denied by Angie Guardian\n"))
 	logInfo("guardian-wasm deny host=" + req.Host + " ip=" + req.RemoteAddr + " reason=" + d.Reason)
 	return stop
-}
-
-// sourceIP strips the port from the host-reported source address
-// ("ip:port"), leaving the bare client IP that RequestContext expects.
-func sourceIP() string {
-	addr := getSourceAddr()
-	// Split on the last colon; leave IPv6 literals in brackets intact.
-	if len(addr) > 0 && addr[len(addr)-1] != ']' {
-		for i := len(addr) - 1; i >= 0; i-- {
-			if addr[i] == ':' {
-				host := addr[:i]
-				// Confirm the tail is a port number; if not, keep the whole string.
-				if _, err := strconv.Atoi(addr[i+1:]); err == nil {
-					return trimBrackets(host)
-				}
-				break
-			}
-		}
-	}
-	return trimBrackets(addr)
-}
-
-func trimBrackets(s string) string {
-	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {
-		return s[1 : len(s)-1]
-	}
-	return s
 }
 
 // main is required for the wasip1 reactor but does nothing; the entry point is

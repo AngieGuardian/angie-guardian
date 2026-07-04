@@ -122,6 +122,104 @@ func TestParseGuestConfigAcceptsJSON(t *testing.T) {
 	}
 }
 
+// TestKnownDomainInheritsDefaults locks in that a known domain inherits every
+// field of `defaults` it does not itself override, matching the sidecar's
+// per-domain-over-defaults merge (core.Config.finalize). Without the merge the
+// WASM guest would silently apply weaker protection than the same YAML gives
+// the sidecar.
+func TestKnownDomainInheritsDefaults(t *testing.T) {
+	gc := mustGuestConfig(t, `
+defaults:
+  denylist:
+    ips: [ "203.0.113.0/24" ]
+  honeypot:
+    enabled: true
+    paths: [ "/trap" ]
+  rules:
+    - id: default-dotfile
+      action: deny
+      keywords: [ "/.env" ]
+domains:
+  site.test:
+    allowlist:
+      paths: [ "/ok" ]
+`)
+	cases := []struct {
+		name   string
+		req    *RequestContext
+		action Action
+		reason string
+	}{
+		{"inherited denylist applies", req("site.test", "203.0.113.9", "/page", "curl"), ActionDeny, "denylist:ip"},
+		{"inherited honeypot applies", req("site.test", "198.51.100.1", "/trap", "curl"), ActionDeny, "honeypot:path"},
+		{"inherited rules apply", req("site.test", "198.51.100.1", "/app/.env", "curl"), ActionDeny, "waf:default-dotfile"},
+		{"own allowlist still works", req("site.test", "198.51.100.1", "/ok", "curl"), ActionAllow, "allowlist:path"},
+		{"clean request allowed", req("site.test", "198.51.100.1", "/page", "curl"), ActionAllow, "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := gc.Evaluate(tc.req)
+			if d.Action != tc.action || d.Reason != tc.reason {
+				t.Errorf("got %s/%s, want %s/%s", d.Action, d.Reason, tc.action, tc.reason)
+			}
+		})
+	}
+}
+
+// TestDomainOverridesDefault confirms a domain that sets its own value for a
+// field replaces (does not append to) the default for that field, while other
+// default fields still apply.
+func TestDomainOverridesDefault(t *testing.T) {
+	gc := mustGuestConfig(t, `
+defaults:
+  denylist:
+    ips: [ "203.0.113.0/24" ]
+  honeypot:
+    enabled: true
+    paths: [ "/trap" ]
+domains:
+  site.test:
+    denylist:
+      ips: [ "198.51.100.66" ]
+`)
+	// The domain's own denylist replaces the default one.
+	if d := gc.Evaluate(req("site.test", "198.51.100.66", "/", "curl")); d.Action != ActionDeny {
+		t.Errorf("own denylist entry should apply, got %s/%s", d.Action, d.Reason)
+	}
+	// Replacement, not merge: the default denylist range no longer applies to
+	// this domain because it set its own denylist (matches the sidecar, where a
+	// domain field wholly overrides the default field).
+	if d := gc.Evaluate(req("site.test", "203.0.113.9", "/", "curl")); d.Action != ActionAllow {
+		t.Errorf("overridden denylist must replace the default range, got %s/%s", d.Action, d.Reason)
+	}
+	// The default honeypot (not overridden) still applies.
+	if d := gc.Evaluate(req("site.test", "192.0.2.1", "/trap", "curl")); d.Reason != "honeypot:path" {
+		t.Errorf("inherited honeypot should still apply, got %s/%s", d.Action, d.Reason)
+	}
+}
+
+// TestClientIP locks in address normalization, including bare (unbracketed)
+// IPv6 literals, which the old hand-rolled port-stripping mangled
+// (2001:db8::1 -> 2001:db8:), silently disabling IP allow/deny for that client.
+func TestClientIP(t *testing.T) {
+	cases := map[string]string{
+		"1.2.3.4:5678":      "1.2.3.4",        // IPv4 with port
+		"1.2.3.4":           "1.2.3.4",        // IPv4 no port
+		"[2001:db8::1]:443": "2001:db8::1",    // bracketed IPv6 with port
+		"[2001:db8::1]":     "2001:db8::1",    // bracketed IPv6 no port
+		"2001:db8::1":       "2001:db8::1",    // BARE IPv6, numeric tail (was mangled)
+		"fe80::2":           "fe80::2",        // BARE IPv6, numeric tail (was mangled)
+		"2001:db8::abcd":    "2001:db8::abcd", // BARE IPv6, hex tail
+		"203.0.113.9":       "203.0.113.9",
+		"":                  "",
+	}
+	for in, want := range cases {
+		if got := ClientIP(in); got != want {
+			t.Errorf("ClientIP(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestUnparseableIPNoMatch(t *testing.T) {
 	// The stateless denylist treats a garbage IP as "no match" (the guest has
 	// no logger to error into); it must not panic or deny spuriously.
