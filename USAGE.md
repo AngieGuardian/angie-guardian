@@ -196,3 +196,50 @@ store:
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
 previous_key_dir: /etc/guardian/keys.d        # shared, e.g. NFS or synced
 ```
+
+## WASM module (optional)
+
+Instead of the sidecar, you can run Guardian's **stateless WAF checks**
+in-process inside Angie via its WebAssembly support. This path does the
+store-free checks only (allowlist, denylist, honeypot, keyword/regex
+signatures); proof-of-work, behavioural IP blocking, and anomaly scoring need
+the shared store and remain sidecar-only. Use it when you want the WASM
+integration and the stateless WAF subset is enough, or alongside a backend that
+handles the rest.
+
+Build the module (architecture-independent):
+
+```sh
+make wasm        # -> dist/guardian.wasm
+# or: GOOS=wasip1 GOARCH=wasm go build -o guardian.wasm ./transport/wasm
+```
+
+Requires an Angie build with WASM support (wasmtime or WAMR). Load it and wire
+the handler using the snippet in `deploy/angie-wasm.conf`:
+
+```nginx
+# http {} context: load the module once, with the guest config inline.
+wasm_modules {
+    load /etc/guardian/guardian.wasm id=guardian type=reactor
+      config='
+        domains:
+          example.com:
+            allowlist: { paths: [ "/robots.txt" ] }
+            honeypot:  { enabled: true, paths: [ "/wp-login.php" ] }
+            rules:
+              - { id: dotfile, action: deny, keywords: [ "/.env", "/.git/" ] }
+      ';
+}
+
+# location {}: run the guest as the content handler.
+location / {
+    wasm_content handler "ngx:wasi/http-handler-entry#handle-request" module=guardian;
+    # ... your normal proxy_pass / root handling continues when allowed ...
+}
+```
+
+The guest reads its per-domain config from the module `config=` blob (YAML or
+JSON) via the http-wasm `get_config` call. It returns *allow* to continue to
+your backend, or a `403` to block. Editing the rules means updating the Angie
+config and reloading Angie (the `.wasm` itself does not need rebuilding for a
+config change).

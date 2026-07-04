@@ -9,13 +9,12 @@ package core
 
 import (
 	"fmt"
-	"net"
-	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/stateless"
 	"gopkg.in/yaml.v3"
 )
 
@@ -136,10 +135,8 @@ type IPBehaviourConfig struct {
 
 // HoneypotConfig configures trap paths: URLs no legitimate client ever
 // requests (hidden links, robots.txt-disallowed paths). One hit blocks.
-type HoneypotConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Paths   []string `yaml:"paths"`
-}
+// Aliased from the leaf package so the sidecar and WASM guest share the type.
+type HoneypotConfig = stateless.HoneypotConfig
 
 type KeywordsConfig struct {
 	Enabled   bool   `yaml:"enabled"`
@@ -169,82 +166,12 @@ type PoWConfig struct {
 	NoScriptFallback bool     `yaml:"noscript_fallback"`
 }
 
-// ListConfig is a static allow- or denylist. Matching rules:
-//   - ips: CIDRs or bare IPv4/IPv6 addresses
-//   - uas: case-insensitive substring match on User-Agent
-//   - paths: exact match, or prefix match when the entry ends with "/"
-type ListConfig struct {
-	IPs   []string `yaml:"ips"`
-	UAs   []string `yaml:"uas"`
-	Paths []string `yaml:"paths"`
-
-	prefixes []netip.Prefix
-	uasLower []string
-}
-
-func (l *ListConfig) compile() error {
-	l.prefixes = l.prefixes[:0]
-	for _, s := range l.IPs {
-		if strings.Contains(s, "/") {
-			p, err := netip.ParsePrefix(s)
-			if err != nil {
-				return fmt.Errorf("invalid CIDR %q: %w", s, err)
-			}
-			l.prefixes = append(l.prefixes, p.Masked())
-			continue
-		}
-		a, err := netip.ParseAddr(s)
-		if err != nil {
-			return fmt.Errorf("invalid IP %q: %w", s, err)
-		}
-		l.prefixes = append(l.prefixes, netip.PrefixFrom(a, a.BitLen()))
-	}
-	l.uasLower = l.uasLower[:0]
-	for _, ua := range l.UAs {
-		l.uasLower = append(l.uasLower, strings.ToLower(ua))
-	}
-	return nil
-}
-
-func (l *ListConfig) MatchIP(addr netip.Addr) bool {
-	for _, p := range l.prefixes {
-		if p.Contains(addr.Unmap()) {
-			return true
-		}
-	}
-	return false
-}
-
-func (l *ListConfig) MatchUA(ua string) bool {
-	if ua == "" {
-		return false
-	}
-	lower := strings.ToLower(ua)
-	for _, needle := range l.uasLower {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func (l *ListConfig) MatchPath(path string) bool {
-	return matchPathList(l.Paths, path)
-}
-
-// matchPathList: exact match, or prefix match when the entry ends with "/".
-func matchPathList(entries []string, path string) bool {
-	for _, entry := range entries {
-		if strings.HasSuffix(entry, "/") {
-			if strings.HasPrefix(path, entry) || path == strings.TrimSuffix(entry, "/") {
-				return true
-			}
-		} else if path == entry {
-			return true
-		}
-	}
-	return false
-}
+// ListConfig is a static allow- or denylist (aliased from the leaf package so
+// the sidecar and WASM guest share one implementation). Matching rules:
+//   - IPs: CIDRs or bare IPv4/IPv6 addresses
+//   - UAs: case-insensitive substring match on User-Agent
+//   - Paths: exact match, or prefix match when the entry ends with "/"
+type ListConfig = stateless.ListConfig
 
 // LoadConfig reads, validates and resolves guardian.yaml. Per-domain configs
 // are precomputed here so the request hot path is a single map lookup.
@@ -373,10 +300,10 @@ func (dc *DomainConfig) validate() error {
 	if a.Enabled && (a.ChallengeAt <= 0 || a.DenyAt <= a.ChallengeAt || a.DenyAt > 1) {
 		return fmt.Errorf("waf.anomaly: need 0 < challenge_at < deny_at <= 1, got %v / %v", a.ChallengeAt, a.DenyAt)
 	}
-	if err := dc.Allowlist.compile(); err != nil {
+	if err := dc.Allowlist.Compile(); err != nil {
 		return fmt.Errorf("allowlist: %w", err)
 	}
-	if err := dc.Denylist.compile(); err != nil {
+	if err := dc.Denylist.Compile(); err != nil {
 		return fmt.Errorf("denylist: %w", err)
 	}
 	return nil
@@ -437,11 +364,4 @@ func (c *Config) DomainFor(host string) *DomainConfig {
 	return &c.Defaults
 }
 
-func normalizeHost(host string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	return strings.TrimSuffix(host, ".")
-}
+func normalizeHost(host string) string { return stateless.NormalizeHost(host) }

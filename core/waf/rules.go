@@ -115,6 +115,14 @@ func (r *Rule) matchesText(text string) bool {
 	return false
 }
 
+// CompileRules compiles a rules document (the same YAML format as a
+// rules_file) into an immutable RuleSet. Exported for callers that hold the
+// rules in memory rather than on disk, such as the WASM guest, which receives
+// its rules inline in the host config. label is used only in error messages.
+func CompileRules(raw []byte, label string) (*RuleSet, error) {
+	return compileRules(raw, label)
+}
+
 func compileRules(raw []byte, path string) (*RuleSet, error) {
 	var file rulesFileYAML
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))

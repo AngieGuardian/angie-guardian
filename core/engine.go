@@ -14,53 +14,36 @@ import (
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
+	"github.com/melroy89/angie-guardian/core/stateless"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
 )
 
-// RequestContext carries only primitives so it can be populated from an HTTP
-// request (Path A), a cgo struct (Path B) or WASM host calls (Path C).
-type RequestContext struct {
-	Host       string
-	Method     string
-	URI        string // path with query string, as received
-	RemoteAddr string // client IP, no port
-	UserAgent  string
-	Cookie     string // raw Cookie header
-}
-
-type Action string
-
-const (
-	ActionAllow     Action = "allow"
-	ActionChallenge Action = "challenge"
-	ActionDeny      Action = "deny"
+// The request/decision value types and the store-free WAF checks live in the
+// leaf package core/stateless, so the WASM guest can reuse them without
+// dragging in the store/pow/anomaly dependencies. core aliases them here so
+// all existing core.RequestContext / core.Decision / core.Action references
+// (and the sidecar's stateless stages) keep working against one definition.
+type (
+	RequestContext = stateless.RequestContext
+	Decision       = stateless.Decision
+	Action         = stateless.Action
+	Event          = stateless.Event
 )
 
-// Event is a behaviour observation emitted alongside a decision; the
-// behavioural scoreboard consumes these to learn. Types matching a key in
-// waf.ip_behaviour.thresholds are rate-counted; EventInstantBlock blocks
-// immediately.
-type Event struct {
-	Type   string
-	Detail string
-}
-
 const (
-	EventSignature    = "signature"
-	EventPoWFail      = "pow_fail"
-	EventTamper       = "tamper"
-	EventAnomaly      = "anomaly"
-	EventInstantBlock = "instant_block"
+	ActionAllow     = stateless.ActionAllow
+	ActionChallenge = stateless.ActionChallenge
+	ActionDeny      = stateless.ActionDeny
 )
 
-// Decision is the outcome of evaluating one request.
-type Decision struct {
-	Action     Action
-	Difficulty int // PoW difficulty when Action == ActionChallenge
-	Reason     string
-	Events     []Event
-}
+const (
+	EventSignature    = stateless.EventSignature
+	EventPoWFail      = stateless.EventPoWFail
+	EventTamper       = stateless.EventTamper
+	EventAnomaly      = stateless.EventAnomaly
+	EventInstantBlock = stateless.EventInstantBlock
+)
 
 // Engine runs the ordered decision pipeline. This is THE seam: every
 // transport wraps Evaluate and nothing else.
@@ -70,7 +53,7 @@ type Engine struct {
 	pow     *pow.Manager // nil when no signing key is configured: PoW stages inert
 	rules   *waf.RuleCache
 	models  *anomaly.ModelCache
-	board   *waf.Scoreboard
+	board   *Scoreboard
 	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
 	stages  []Stage
 	log     *slog.Logger
@@ -101,7 +84,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		pow:    powMgr,
 		rules:  rules,
 		models: models,
-		board:  waf.NewScoreboard(st, log),
+		board:  NewScoreboard(st, log),
 		log:    log,
 		stages: []Stage{
 			// Pipeline order per plan §3; first terminal decision wins.
@@ -210,7 +193,7 @@ func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail strin
 // BlockIP places a temporary behavioural block with an explicit TTL (no
 // backoff): an operator/admin-API primitive.
 func (e *Engine) BlockIP(ctx context.Context, ip, reason string, ttl time.Duration) error {
-	return e.store.Set(ctx, waf.BlockKey(ip), []byte(reason), ttl)
+	return e.store.Set(ctx, BlockKey(ip), []byte(reason), ttl)
 }
 
 // UnblockIP clears a behavioural block.
@@ -220,7 +203,7 @@ func (e *Engine) UnblockIP(ctx context.Context, ip string) error {
 
 // BlockStatus reports whether an IP is currently blocked and why (admin API).
 func (e *Engine) BlockStatus(ctx context.Context, ip string) (reason string, blocked bool, err error) {
-	v, ok, err := e.store.Get(ctx, waf.BlockKey(ip))
+	v, ok, err := e.store.Get(ctx, BlockKey(ip))
 	return string(v), ok, err
 }
 

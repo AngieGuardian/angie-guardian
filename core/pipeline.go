@@ -8,12 +8,12 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"net/url"
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
+	"github.com/melroy89/angie-guardian/core/stateless"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
 )
@@ -35,19 +35,12 @@ type stageEnv struct {
 	metrics *metrics.Metrics
 }
 
-func requestPath(uri string) string {
-	if i := strings.IndexByte(uri, '?'); i >= 0 {
-		return uri[:i]
-	}
-	return uri
-}
-
-func requestQuery(uri string) string {
-	if i := strings.IndexByte(uri, '?'); i >= 0 {
-		return uri[i+1:]
-	}
-	return ""
-}
+// These thin wrappers keep the many in-file callsites terse while the actual
+// implementations live in the shared leaf package (used by the WASM guest too).
+func requestPath(uri string) string  { return stateless.RequestPath(uri) }
+func requestQuery(uri string) string { return stateless.RequestQuery(uri) }
+func decodePath(p string) string     { return stateless.DecodePath(p) }
+func decodeQuery(q string) string    { return stateless.DecodeQuery(q) }
 
 // allowlistStage — pipeline stage 0. Trusted IPs/CIDRs, allowlisted UAs and
 // well-known paths skip everything.
@@ -99,7 +92,7 @@ type behaviourBlockStage struct{}
 func (behaviourBlockStage) Name() string { return "behaviour_block" }
 
 func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	reason, blocked, err := env.store.Get(ctx, waf.BlockKey(req.RemoteAddr))
+	reason, blocked, err := env.store.Get(ctx, BlockKey(req.RemoteAddr))
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +117,7 @@ func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	if !hp.Enabled || len(hp.Paths) == 0 {
 		return nil, nil
 	}
-	if matchPathList(hp.Paths, requestPath(req.URI)) {
+	if stateless.MatchPathList(hp.Paths, requestPath(req.URI)) {
 		return &Decision{
 			Action: ActionDeny,
 			Reason: "honeypot:path",
@@ -185,29 +178,6 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 			Events: []Event{{Type: EventInstantBlock, Detail: reason}},
 		}, nil
 	}
-}
-
-// decodePath/decodeQuery best-effort URL-decode for signature matching, so
-// %2e%65nv style encoding can't slip past literal keywords. On malformed
-// escapes the raw string is matched instead.
-func decodePath(p string) string {
-	if !strings.ContainsRune(p, '%') {
-		return p
-	}
-	if d, err := url.PathUnescape(p); err == nil {
-		return d
-	}
-	return p
-}
-
-func decodeQuery(q string) string {
-	if !strings.ContainsAny(q, "%+") {
-		return q
-	}
-	if d, err := url.QueryUnescape(q); err == nil {
-		return d
-	}
-	return q
 }
 
 // powTokenStage — pipeline stage 3. A valid signed token vouches for the

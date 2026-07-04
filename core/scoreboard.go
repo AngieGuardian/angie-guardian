@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Melroy van den Berg
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package waf
+package core
 
 import (
 	"context"
@@ -14,16 +14,17 @@ import (
 )
 
 // BlockKey is the store key holding an active behavioural block for an IP.
-// Written here, read by pipeline stage 2.
+// Written by the scoreboard, read by the behaviour-block pipeline stage.
 func BlockKey(ip string) string { return "block:" + ip }
 
 func blockCountKey(ip string) string { return "blkct:" + ip }
 
 // Scoreboard counts bad-behaviour events per IP in time-bucketed windows and
 // places TTL'd blocks when a per-domain threshold is crossed. Only discrete
-// bad events are counted (signature hits, PoW failures, tamper, honeypot) —
-// they are rare, so a store write per event is affordable; per-request rate
-// counters arrive with the log pipeline in P3.
+// bad events are counted (signature hits, PoW failures, tamper, honeypot):
+// they are rare, so a store write per event is affordable. It is inherently
+// stateful (needs the shared store), so it lives with the sidecar, not in the
+// store-free stateless package.
 type Scoreboard struct {
 	store store.Store
 	log   *slog.Logger

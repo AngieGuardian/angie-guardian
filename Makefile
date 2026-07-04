@@ -1,0 +1,34 @@
+# Angie Guardian build targets.
+# The sidecar binaries are the primary, full-featured build; `wasm` is the
+# optional stateless in-process module. Nothing here is required to use Go
+# directly (`go build ./cmd/guardiand` etc. still works).
+
+VERSION ?= dev
+LDFLAGS := -X main.version=$(VERSION)
+
+.PHONY: all build wasm test vet fmt clean
+
+# Build the three sidecar binaries into dist/.
+build:
+	go build -ldflags "$(LDFLAGS)" -o dist/guardiand         ./cmd/guardiand
+	go build -ldflags "$(LDFLAGS)" -o dist/guardian-train    ./cmd/guardian-train
+	go build -ldflags "$(LDFLAGS)" -o dist/guardian-loadtest ./cmd/guardian-loadtest
+
+# Build the optional http-wasm guest (stateless WAF) for Angie's WASM support.
+wasm:
+	GOOS=wasip1 GOARCH=wasm go build -ldflags "$(LDFLAGS)" -o dist/guardian.wasm ./transport/wasm
+
+# Everything: sidecar binaries + the wasm module.
+all: build wasm
+
+test:
+	go test -race -count=1 ./...
+
+vet:
+	go vet ./...
+
+fmt:
+	gofmt -w cmd core transport web
+
+clean:
+	rm -rf dist/

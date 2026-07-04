@@ -35,19 +35,24 @@ pipeline. Everything is per-domain configurable.
    - spent-challenge tracking from day 1 (no mint-twice replay)
    - no-JS meta-refresh fallback
 
-## Status
+## Integration paths
 
-Under active development. **P0 through P4 are complete and tested end-to-end**:
-the core firewall (skeleton, proof-of-work, WAF signatures + honeypot +
-behavioural blocking, statistical anomaly scoring) plus the operations layer
-(Prometheus metrics, authenticated admin API, key rotation, redis backend,
-Grafana dashboard). A vouched PoW token never exempts a client from the
-signature checks, so a stolen token can't ride past the WAF. With
-`pow.mode: suspicion`, ordinary new visitors browse with no interstitial at
-all, and only clients the anomaly scorer flags pay the proof-of-work tax,
-scaled to how suspicious they look. The only remaining phase is the optional
-P5 (cgo/WASM embedding), warranted solely if the sidecar hop ever becomes a
-bottleneck, which the benchmarks say it does not.
+Guardian offers two ways to run, sharing one decision core:
+
+- **Sidecar (default, full-featured).** A Go daemon wired into Angie with
+  stock `auth_request` directives. This is the complete implementation:
+  proof-of-work, behavioural IP blocking, and anomaly scoring all require the
+  shared store the sidecar owns. Start here.
+- **WASM module (optional, stateless WAF).** The store-free checks (allowlist,
+  denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
+  in-process inside Angie via its WASM support, for operators who prefer that
+  integration. It is stateless WAF-only: proof-of-work, behavioural blocking,
+  and anomaly scoring need the sidecar. Build it with `make wasm`; see the
+  "WASM module" section of [USAGE.md](USAGE.md).
+
+Both paths call the same store-free evaluator, so the WAF decisions are
+identical; a vouched PoW token (sidecar only) never exempts a client from the
+signature checks, so a stolen token can't ride past the WAF.
 
 ## Operations
 
@@ -134,22 +139,25 @@ All decision logic lives behind a single transport-agnostic seam:
 core.Engine.Evaluate(ctx, RequestContext) Decision
 ```
 
-The HTTP `auth_request` transport is a thin wrapper around it, so the same
-core can later be embedded as a cgo-backed Angie module or a WASM module
-without a rewrite.
+The HTTP `auth_request` transport is a thin wrapper around it. The store-free
+WAF checks live in the leaf package `core/stateless`, which the WASM guest
+imports directly, so the in-process module reuses the exact same logic without
+dragging in the store, PoW or anomaly dependencies.
 
 ```
-core/          decision engine, pipeline, config
-core/pow/      challenges, Ed25519 JWTs, token cache, key persistence + rotation
-core/waf/      signature rules, behavioural scoreboard, signed IDs
-core/anomaly/  statistical baseline model, online scorer, hot-swap cache
-core/store/    TTL'd shared state: memory | bbolt | redis
-core/metrics/  Prometheus instrumentation (private registry)
-transport/     http (auth_request sidecar + admin/metrics); future: cgo, wasm
-cmd/           guardiand (sidecar), guardian-train (offline anomaly training),
-               guardian-loadtest (stress tool)
-deploy/        Angie snippets, systemd unit, rules, Grafana dashboard
-web/           challenge/denied pages (self-contained HTML + JS solver)
+core/            decision engine, pipeline, config
+core/stateless/  store-free WAF checks + value types (shared by sidecar & WASM)
+core/pow/        challenges, Ed25519 JWTs, token cache, key persistence + rotation
+core/waf/        signature rules, signed IDs
+core/anomaly/    statistical baseline model, online scorer, hot-swap cache
+core/store/      TTL'd shared state: memory | bbolt | redis
+core/metrics/    Prometheus instrumentation (private registry)
+transport/http/  auth_request sidecar + admin/metrics
+transport/wasm/  optional http-wasm guest (stateless WAF, runs inside Angie)
+cmd/             guardiand (sidecar), guardian-train (offline anomaly training),
+                 guardian-loadtest (stress tool)
+deploy/          Angie snippets, systemd unit, rules, Grafana dashboard
+web/             challenge/denied pages (self-contained HTML + JS solver)
 ```
 
 ## License

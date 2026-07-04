@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Melroy van den Berg
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package waf
+package core
 
 import (
 	"context"
@@ -20,7 +20,7 @@ func testBoard(t *testing.T) (*Scoreboard, store.Store) {
 	return NewScoreboard(st, slog.Default()), st
 }
 
-func blocked(t *testing.T, st store.Store, ip string) (string, bool) {
+func scoreboardBlocked(t *testing.T, st store.Store, ip string) (string, bool) {
 	t.Helper()
 	v, ok, err := st.Get(context.Background(), BlockKey(ip))
 	if err != nil {
@@ -40,14 +40,14 @@ func TestThresholdBlocks(t *testing.T) {
 			t.Fatalf("event %d: hit=%v err=%v, want no block yet", i, hit, err)
 		}
 	}
-	if _, ok := blocked(t, st, ip); ok {
+	if _, ok := scoreboardBlocked(t, st, ip); ok {
 		t.Fatal("blocked before reaching the threshold")
 	}
 	hit, err := board.RecordEvent(ctx, ip, "signature", 3, time.Minute, 15*time.Minute, time.Hour)
 	if err != nil || !hit {
 		t.Fatalf("third event: hit=%v err=%v, want block", hit, err)
 	}
-	if reason, ok := blocked(t, st, ip); !ok || reason != "threshold:signature" {
+	if reason, ok := scoreboardBlocked(t, st, ip); !ok || reason != "threshold:signature" {
 		t.Fatalf("block = %q %v, want threshold:signature true", reason, ok)
 	}
 
@@ -67,21 +67,27 @@ func TestBlockBackoff(t *testing.T) {
 	board, st := testBoard(t)
 	ip := "203.0.113.5"
 
-	// First offense: base TTL. We can't read TTLs from the interface, so use
-	// the offense counter as the observable: each Block doubles from base.
-	if err := board.Block(ctx, ip, "test", 10*time.Millisecond, 40*time.Millisecond); err != nil {
+	// A block at base TTL is placed and readable.
+	if err := board.Block(ctx, ip, "test", time.Hour, 4*time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := blocked(t, st, ip); !ok {
+	if _, ok := scoreboardBlocked(t, st, ip); !ok {
 		t.Fatal("first block not placed")
 	}
-	// Second offense: 20ms. Third: 40ms (capped). Verify the cap holds by
-	// checking the block expires within ~the cap rather than 80ms+.
-	_ = board.Block(ctx, ip, "test", 10*time.Millisecond, 40*time.Millisecond)
-	_ = board.Block(ctx, ip, "test", 10*time.Millisecond, 40*time.Millisecond)
-	_ = board.Block(ctx, ip, "test", 10*time.Millisecond, 40*time.Millisecond)
-	time.Sleep(60 * time.Millisecond)
-	if _, ok := blocked(t, st, ip); ok {
+
+	// Backoff caps at maxBlockTTL. Using a short cap and a base at the cap, the
+	// TTL never exceeds the cap regardless of offense count. We assert expiry
+	// with a generous window so a slow/contended runner can't flake it.
+	const cap = 300 * time.Millisecond
+	capIP := "203.0.113.6"
+	for i := 0; i < 5; i++ {
+		_ = board.Block(ctx, capIP, "test", cap, cap)
+	}
+	if _, ok := scoreboardBlocked(t, st, capIP); !ok {
+		t.Fatal("capped block should still be active immediately after placing")
+	}
+	time.Sleep(cap + 300*time.Millisecond)
+	if _, ok := scoreboardBlocked(t, st, capIP); ok {
 		t.Fatal("block outlived max_block_ttl cap")
 	}
 
@@ -90,7 +96,7 @@ func TestBlockBackoff(t *testing.T) {
 	if err := board.Unblock(ctx, ip); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := blocked(t, st, ip); ok {
+	if _, ok := scoreboardBlocked(t, st, ip); ok {
 		t.Fatal("unblock did not lift the block")
 	}
 }
