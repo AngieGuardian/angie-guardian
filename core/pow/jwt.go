@@ -41,12 +41,28 @@ func (m *Manager) mintToken(host, fingerprint, challengeID string, difficulty in
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(m.key)
+	return jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(m.signingKey())
+}
+
+// verifyKeys returns the current + previous public keys as a
+// jwt.VerificationKeySet, so the parser accepts a token signed by any of
+// them — this is what makes key rotation non-disruptive.
+func (m *Manager) verifyKeys() jwt.VerificationKeySet {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	keys := make([]jwt.VerificationKey, len(m.keys))
+	for i, k := range m.keys {
+		keys[i] = k.Public().(ed25519.PublicKey)
+	}
+	return jwt.VerificationKeySet{Keys: keys}
 }
 
 // VerifyToken checks signature, exp/nbf and the host + fingerprint binding.
 // Results are cached briefly so repeat requests from a vouched client don't
-// pay the Ed25519 verification on every request.
+// pay the Ed25519 verification on every request. During key rotation the
+// signature is checked against the current key first, then any previous
+// verification keys, so tokens minted before a rotation stay valid until
+// they age out via exp (plan §7).
 func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 	now := m.now()
 	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent))
@@ -55,7 +71,7 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 	}
 	claims := &TokenClaims{}
 	_, err := jwt.ParseWithClaims(token, claims,
-		func(*jwt.Token) (any, error) { return m.key.Public().(ed25519.PublicKey), nil },
+		func(*jwt.Token) (any, error) { return m.verifyKeys(), nil },
 		jwt.WithValidMethods([]string{"EdDSA"}),
 		jwt.WithExpirationRequired(),
 		jwt.WithTimeFunc(m.now),

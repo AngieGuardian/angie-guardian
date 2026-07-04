@@ -14,6 +14,14 @@ User=guardian
 Group=guardian
 StateDirectory=guardian
 ConfigurationDirectory=guardian
+# guardiand writes the signing key + rotated-key archive under /etc/guardian;
+# grant write to that config dir (default mode is read-only for the service).
+ConfigurationDirectoryMode=0750
+ReadWritePaths=/etc/guardian
+
+# Bearer token for the admin API — keep it out of the YAML, inject via env.
+# Environment=ADMIN_TOKEN=...    (better: EnvironmentFile=/etc/guardian/env)
+# Environment=REDIS_PASSWORD=... (when using the redis store backend)
 
 # Hardening
 NoNewPrivileges=true

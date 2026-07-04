@@ -93,9 +93,11 @@ func TestBehaviourBlock(t *testing.T) {
 		t.Fatalf("blocked IP: got %s/%s", d.Action, d.Reason)
 	}
 
-	// A domain with ip_behaviour disabled ignores the block.
-	if d := e.Evaluate(ctx, req("nowaf.test", ip, "/", "Mozilla")); d.Action != ActionAllow {
-		t.Fatalf("nowaf.test should ignore behaviour blocks, got %s", d.Action)
+	// Existing blocks are enforced even where ip_behaviour is disabled: that
+	// toggle only controls whether NEW blocks are placed automatically, not
+	// whether an already-placed block (admin or otherwise) is honoured.
+	if d := e.Evaluate(ctx, req("nowaf.test", ip, "/", "Mozilla")); d.Action != ActionDeny {
+		t.Fatalf("nowaf.test should still enforce an existing block, got %s", d.Action)
 	}
 
 	if err := e.UnblockIP(ctx, ip); err != nil {

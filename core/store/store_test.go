@@ -9,20 +9,42 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
-func backends(t *testing.T) map[string]Store {
+// backend pairs a Store with a way to make a TTL of d elapse. Real-clock
+// backends sleep; miniredis has a manual clock that must be fast-forwarded.
+type backend struct {
+	store   Store
+	advance func(d time.Duration)
+}
+
+func sleepAdvance(d time.Duration) { time.Sleep(d + d/2) }
+
+func backends(t *testing.T) map[string]backend {
 	t.Helper()
 	b, err := NewBolt(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]Store{"memory": NewMemory(), "bbolt": b}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+
+	return map[string]backend{
+		"memory": {NewMemory(), sleepAdvance},
+		"bbolt":  {b, sleepAdvance},
+		"redis":  {NewRedisFromClient(rdb), func(d time.Duration) { mr.FastForward(d + d/2) }},
+	}
 }
 
 func TestStoreConformance(t *testing.T) {
 	ctx := context.Background()
-	for name, s := range backends(t) {
+	for name, be := range backends(t) {
+		s, advance := be.store, be.advance
 		t.Run(name, func(t *testing.T) {
 			defer s.Close()
 
@@ -47,7 +69,7 @@ func TestStoreConformance(t *testing.T) {
 			if _, ok, _ := s.Get(ctx, "ttl"); !ok {
 				t.Fatal("fresh TTL key should be present")
 			}
-			time.Sleep(30 * time.Millisecond)
+			advance(20 * time.Millisecond)
 			if _, ok, _ := s.Get(ctx, "ttl"); ok {
 				t.Fatal("expired key reported present")
 			}
@@ -70,7 +92,7 @@ func TestStoreConformance(t *testing.T) {
 					t.Fatalf("incr = %d %v, want %d nil", n, err, want)
 				}
 			}
-			time.Sleep(30 * time.Millisecond)
+			advance(20 * time.Millisecond)
 			if n, _ := s.Incr(ctx, "ctr", time.Minute); n != 1 {
 				t.Fatalf("incr after expiry = %d, want 1", n)
 			}

@@ -38,6 +38,14 @@ func (c *tokenCache) get(key [32]byte, now time.Time) bool {
 	return ok && now.UnixNano() < exp
 }
 
+// reset drops all cached verifications, forcing the next request per token
+// through a full signature check. Called after a key rotation.
+func (c *tokenCache) reset() {
+	c.mu.Lock()
+	clear(c.m)
+	c.mu.Unlock()
+}
+
 func (c *tokenCache) put(key [32]byte, tokenExpiry, now time.Time) {
 	exp := now.Add(cacheMaxValidity)
 	if tokenExpiry.Before(exp) {

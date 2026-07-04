@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -26,11 +27,12 @@ type Stage interface {
 
 // stageEnv bundles what stages may consult besides the request itself.
 type stageEnv struct {
-	store  store.Store
-	domain *DomainConfig
-	pow    *pow.Manager
-	rules  *waf.RuleCache
-	models *anomaly.ModelCache
+	store   store.Store
+	domain  *DomainConfig
+	pow     *pow.Manager
+	rules   *waf.RuleCache
+	models  *anomaly.ModelCache
+	metrics *metrics.Metrics
 }
 
 func requestPath(uri string) string {
@@ -87,16 +89,16 @@ func (denylistStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	return nil, nil
 }
 
-// behaviourBlockStage — pipeline stage 2. Temporary TTL'd blocks placed in
-// the shared store by the behavioural scoreboard (P2) or the admin API.
+// behaviourBlockStage — pipeline stage 2. Enforces TTL'd blocks placed in the
+// shared store by the behavioural scoreboard, a WAF block action, or the
+// admin API. The block lookup always runs: the ip_behaviour.enabled toggle
+// only gates automatic *scoring* (whether new blocks get placed), not whether
+// an existing block — e.g. one an operator set by hand — is honoured.
 type behaviourBlockStage struct{}
 
 func (behaviourBlockStage) Name() string { return "behaviour_block" }
 
 func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if !env.domain.WAF.IPBehaviour.Enabled {
-		return nil, nil
-	}
 	reason, blocked, err := env.store.Get(ctx, waf.BlockKey(req.RemoteAddr))
 	if err != nil {
 		return nil, err
@@ -251,6 +253,7 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 		decodePath(requestPath(req.URI)),
 		decodeQuery(requestQuery(req.URI)),
 		req.UserAgent)
+	env.metrics.AnomalyScore(req.Host, score)
 
 	switch {
 	case score >= a.DenyAt:

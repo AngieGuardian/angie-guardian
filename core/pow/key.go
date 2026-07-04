@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // LoadOrCreateKey returns the Ed25519 signing key stored at path, generating
@@ -82,4 +84,65 @@ func generateKey(path string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	return key, nil
+}
+
+// LoadPreviousKeys loads retired signing keys from a directory, for the
+// verification set during rotation. Files are read in lexical order; missing
+// directory is not an error (no previous keys). Only *.key files are read.
+func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".key") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	keys := make([]ed25519.PrivateKey, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		k, err := parseKey(raw, path)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// RotateKey generates a fresh Ed25519 key, archives the current key file into
+// prevDir (timestamped) and writes the new key to keyPath. Returns the new
+// current key. All Guardian instances sharing keyPath + prevDir pick it up on
+// their next reload; tokens signed with the old key stay valid until exp.
+func RotateKey(keyPath, prevDir string, nowUnix int64) (ed25519.PrivateKey, error) {
+	current, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read current key: %w", err)
+	}
+	if prevDir != "" {
+		if err := os.MkdirAll(prevDir, 0o700); err != nil {
+			return nil, err
+		}
+		archive := filepath.Join(prevDir, fmt.Sprintf("%d.key", nowUnix))
+		if err := os.WriteFile(archive, current, 0o600); err != nil {
+			return nil, fmt.Errorf("archive current key: %w", err)
+		}
+	}
+	if err := os.Remove(keyPath); err != nil {
+		return nil, err
+	}
+	return generateKey(keyPath)
 }

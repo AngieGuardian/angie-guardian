@@ -8,9 +8,11 @@ import (
 	"context"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -63,15 +65,19 @@ type Decision struct {
 // Engine runs the ordered decision pipeline. This is THE seam: every
 // transport wraps Evaluate and nothing else.
 type Engine struct {
-	cfg    *Config
-	store  store.Store
-	pow    *pow.Manager // nil when no signing key is configured: PoW stages inert
-	rules  *waf.RuleCache
-	models *anomaly.ModelCache
-	board  *waf.Scoreboard
-	stages []Stage
-	log    *slog.Logger
+	cfg     *Config
+	store   store.Store
+	pow     *pow.Manager // nil when no signing key is configured: PoW stages inert
+	rules   *waf.RuleCache
+	models  *anomaly.ModelCache
+	board   *waf.Scoreboard
+	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
+	stages  []Stage
+	log     *slog.Logger
 }
+
+// SetMetrics attaches a metrics sink. Call once at startup before serving.
+func (e *Engine) SetMetrics(m *metrics.Metrics) { e.metrics = m }
 
 // reloadInterval is how often WAF rules files and anomaly model artifacts
 // are polled for changes.
@@ -123,21 +129,36 @@ func (e *Engine) Close() {
 // pipeline. Stage errors fail open: Guardian degrades to "allow" rather than
 // taking a site down with it.
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
+	start := time.Now()
 	dcfg := e.cfg.DomainFor(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: e.rules, models: e.models}
+	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics}
+	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
-		d, err := s.Evaluate(ctx, req, env)
+		sd, err := s.Evaluate(ctx, req, env)
 		if err != nil {
 			e.log.Warn("stage error, failing open",
 				"stage", s.Name(), "host", req.Host, "ip", req.RemoteAddr, "err", err)
 			continue
 		}
-		if d != nil {
-			e.recordEvents(ctx, req.RemoteAddr, dcfg, d.Events)
-			return *d
+		if sd != nil {
+			e.recordEvents(ctx, req.RemoteAddr, dcfg, sd.Events)
+			d = *sd
+			break
 		}
 	}
-	return Decision{Action: ActionAllow, Reason: "default"}
+	e.metrics.EvaluateLatency(time.Since(start).Seconds())
+	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), req.Host)
+	return d
+}
+
+// reasonCategory collapses a full reason string ("waf:dotfile-probe",
+// "behaviour_block:threshold:signature") to its leading token so the metric
+// label stays low-cardinality regardless of rule IDs and detail suffixes.
+func reasonCategory(reason string) string {
+	if i := strings.IndexByte(reason, ':'); i >= 0 {
+		return reason[:i]
+	}
+	return reason
 }
 
 // recordEvents feeds behaviour events into the scoreboard. Bad events are
@@ -152,17 +173,22 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 	}
 	for _, ev := range events {
 		var err error
+		var blocked bool
 		switch ev.Type {
 		case EventInstantBlock:
+			blocked = true
 			err = e.board.Block(ctx, ip, ev.Detail, ib.BlockTTL.Std(), ib.MaxBlockTTL.Std())
 		default:
 			if rate, ok := ib.Thresholds[ev.Type]; ok {
-				_, err = e.board.RecordEvent(ctx, ip, ev.Type, rate.Count, rate.Per,
+				blocked, err = e.board.RecordEvent(ctx, ip, ev.Type, rate.Count, rate.Per,
 					ib.BlockTTL.Std(), ib.MaxBlockTTL.Std())
 			}
 		}
 		if err != nil {
 			e.log.Warn("event recording failed", "type", ev.Type, "ip", ip, "err", err)
+		}
+		if blocked {
+			e.metrics.BlockPlaced(ev.Type)
 		}
 	}
 }
@@ -191,3 +217,30 @@ func (e *Engine) BlockIP(ctx context.Context, ip, reason string, ttl time.Durati
 func (e *Engine) UnblockIP(ctx context.Context, ip string) error {
 	return e.board.Unblock(ctx, ip)
 }
+
+// BlockStatus reports whether an IP is currently blocked and why (admin API).
+func (e *Engine) BlockStatus(ctx context.Context, ip string) (reason string, blocked bool, err error) {
+	v, ok, err := e.store.Get(ctx, waf.BlockKey(ip))
+	return string(v), ok, err
+}
+
+// ScoreRequest runs the anomaly scorer for a hypothetical request against the
+// domain's model, for admin inspection ("why would this be challenged?").
+// Returns -1 when the domain has no anomaly model loaded.
+func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
+	dcfg := e.cfg.DomainFor(host)
+	if !dcfg.WAF.Anomaly.Enabled {
+		return -1
+	}
+	m := e.models.Get(dcfg.WAF.Anomaly.Model)
+	if m == nil {
+		return -1
+	}
+	return m.Score(host, decodePath(requestPath(uri)), decodeQuery(requestQuery(uri)), ua)
+}
+
+// PoWManager exposes the PoW manager for admin key rotation (may be nil).
+func (e *Engine) PoWManager() *pow.Manager { return e.pow }
+
+// Config exposes the loaded configuration for admin inspection.
+func (e *Engine) Config() *Config { return e.cfg }

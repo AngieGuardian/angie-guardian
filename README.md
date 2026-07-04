@@ -36,15 +36,34 @@ pipeline — everything per-domain configurable:
 
 ## Status
 
-Under active development. **P0 (skeleton & seam), P1 (proof-of-work
-challenge layer), P2 (WAF signatures, honeypot, behavioural blocking) and
-P3 (statistical anomaly scoring) are complete and tested end-to-end.**
-A vouched PoW token never exempts a client from the signature checks, so a
-stolen token can't ride past the WAF. With `pow.mode: suspicion`, ordinary
-new visitors browse with no interstitial at all — only clients the anomaly
-scorer flags pay the proof-of-work tax, scaled to how suspicious they look.
-Next up: P4 (Prometheus metrics, admin API, key rotation, redis backend,
-Grafana dashboard).
+Under active development. **P0–P4 are complete and tested end-to-end** — the
+core firewall (skeleton, proof-of-work, WAF signatures + honeypot +
+behavioural blocking, statistical anomaly scoring) plus the operations layer
+(Prometheus metrics, authenticated admin API, key rotation, redis backend,
+Grafana dashboard). A vouched PoW token never exempts a client from the
+signature checks, so a stolen token can't ride past the WAF. With
+`pow.mode: suspicion`, ordinary new visitors browse with no interstitial at
+all — only clients the anomaly scorer flags pay the proof-of-work tax, scaled
+to how suspicious they look. The only remaining phase is the optional P5
+(cgo/WASM embedding), warranted solely if the sidecar hop ever becomes a
+bottleneck — which the benchmarks say it is not.
+
+## Operations
+
+- **Metrics** — Prometheus `/metrics` on the admin listener (open to
+  scrapers): decisions by action/reason/domain, challenge lifecycle, PoW
+  solve-time and anomaly-score histograms, blocks placed, store op latency,
+  and end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json`.
+- **Admin API** — bearer-token JSON API on the same listener: inspect/place/
+  clear IP blocks, score a hypothetical request against the anomaly model
+  (`GET /admin/score`), rotate the signing key, and view the active per-domain
+  config. Refuses to expose itself on a non-loopback address without a token.
+- **Key rotation** — `POST /admin/rotate-key` archives the current Ed25519
+  key and generates a new one; tokens signed by the old key keep verifying
+  until they expire, so rotation never logs anyone out.
+- **Stores** — `memory` (dev), `bbolt` (single box), or `redis`/`valkey`
+  (multi-instance replicas behind a load balancer, sharing blocks + spent
+  challenges + the signing key).
 
 ## Performance
 
@@ -90,14 +109,17 @@ core can later be embedded as a cgo-backed Angie module or a WASM module
 without a rewrite.
 
 ```
-core/        decision engine, pipeline, config
-core/pow/    challenges, Ed25519 JWTs, token cache, key persistence
-core/store/  TTL'd shared state: memory | bbolt (redis planned)
-transport/   http (auth_request sidecar); future: cgo, wasm
-cmd/         guardiand (sidecar), guardian-loadtest (stress tool),
-             guardian-train (offline anomaly training, P3)
-deploy/      Angie snippets, systemd unit
-web/         challenge/denied pages (self-contained HTML + JS solver)
+core/          decision engine, pipeline, config
+core/pow/      challenges, Ed25519 JWTs, token cache, key persistence + rotation
+core/waf/      signature rules, behavioural scoreboard, signed IDs
+core/anomaly/  statistical baseline model, online scorer, hot-swap cache
+core/store/    TTL'd shared state: memory | bbolt | redis
+core/metrics/  Prometheus instrumentation (private registry)
+transport/     http (auth_request sidecar + admin/metrics); future: cgo, wasm
+cmd/           guardiand (sidecar), guardian-train (offline anomaly training),
+               guardian-loadtest (stress tool)
+deploy/        Angie snippets, systemd unit, rules, Grafana dashboard
+web/           challenge/denied pages (self-contained HTML + JS solver)
 ```
 
 ## License

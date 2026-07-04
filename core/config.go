@@ -83,6 +83,8 @@ type Config struct {
 	Listen         string               `yaml:"listen"`
 	LogLevel       string               `yaml:"log_level"`
 	SigningKeyFile string               `yaml:"signing_key_file"`
+	PreviousKeyDir string               `yaml:"previous_key_dir"` // retired signing keys, still verified
+	Admin          AdminConfig          `yaml:"admin"`
 	Store          StoreConfig          `yaml:"store"`
 	Defaults       DomainConfig         `yaml:"defaults"`
 	Domains        map[string]yaml.Node `yaml:"domains"`
@@ -90,9 +92,19 @@ type Config struct {
 	resolved map[string]*DomainConfig
 }
 
+// AdminConfig configures the admin + metrics listener. It is separate from
+// the auth listener so it can bind to loopback / a management interface.
+type AdminConfig struct {
+	Listen string `yaml:"listen"` // empty disables the admin+metrics server
+	Token  string `yaml:"token"`  // bearer token; or ADMIN_TOKEN env var
+}
+
 type StoreConfig struct {
-	Backend string `yaml:"backend"` // memory | bbolt (redis planned)
-	Path    string `yaml:"path"`    // bbolt database file
+	Backend  string `yaml:"backend"`  // memory | bbolt | redis
+	Path     string `yaml:"path"`     // bbolt database file
+	Addr     string `yaml:"addr"`     // redis host:port
+	Password string `yaml:"password"` // redis password (or use REDIS_PASSWORD)
+	DB       int    `yaml:"db"`       // redis database number
 }
 
 // DomainConfig is the per-domain feature configuration. Domain entries are
@@ -264,6 +276,9 @@ func (c *Config) finalize() error {
 	default:
 		return fmt.Errorf("log_level must be debug, info, warn or error, got %q", c.LogLevel)
 	}
+	if c.Admin.Token == "" {
+		c.Admin.Token = os.Getenv("ADMIN_TOKEN")
+	}
 	switch c.Store.Backend {
 	case "":
 		c.Store.Backend = "memory"
@@ -272,8 +287,12 @@ func (c *Config) finalize() error {
 		if c.Store.Path == "" {
 			return fmt.Errorf("store.path is required for the bbolt backend")
 		}
+	case "redis":
+		if c.Store.Addr == "" {
+			return fmt.Errorf("store.addr is required for the redis backend")
+		}
 	default:
-		return fmt.Errorf("store.backend must be memory or bbolt, got %q", c.Store.Backend)
+		return fmt.Errorf("store.backend must be memory, bbolt or redis, got %q", c.Store.Backend)
 	}
 
 	// Defaults for the defaults.
@@ -401,6 +420,12 @@ func (c *Config) ModelFiles() []string {
 		files = append(files, f)
 	}
 	return files
+}
+
+// DomainViews returns the resolved per-domain configs keyed by host, for
+// admin inspection. The map is the engine's own; callers must not mutate it.
+func (c *Config) DomainViews() map[string]*DomainConfig {
+	return c.resolved
 }
 
 // DomainFor returns the resolved config for a host, falling back to Defaults

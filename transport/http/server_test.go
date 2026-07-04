@@ -60,7 +60,7 @@ func testServer(t *testing.T) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts := httptest.NewServer(New(engine, cfg, mgr, st, slog.Default()))
+	ts := httptest.NewServer(New(engine, cfg, mgr, st, nil, slog.Default()))
 	t.Cleanup(ts.Close)
 	return ts
 }

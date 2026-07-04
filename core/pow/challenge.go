@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
@@ -22,8 +23,14 @@ import (
 
 // Manager issues and redeems PoW challenges. It is transport-agnostic; all
 // per-domain policy (difficulty, TTLs) is passed in by the caller.
+//
+// The signing key can be rotated at runtime: keys is guarded by mu, holding
+// the current signing key at index 0 followed by retired keys still accepted
+// for verification. hmacSecret stays pinned to the key the Manager started
+// with so challenges issued around a rotation remain redeemable.
 type Manager struct {
-	key        ed25519.PrivateKey
+	mu         sync.RWMutex
+	keys       []ed25519.PrivateKey // keys[0] signs; all verify
 	hmacSecret []byte
 	store      store.Store
 	cache      *tokenCache
@@ -36,18 +43,57 @@ type Manager struct {
 }
 
 func NewManager(key ed25519.PrivateKey, st store.Store) *Manager {
+	return NewManagerWithKeys(key, nil, st)
+}
+
+// NewManagerWithKeys builds a Manager that signs with current and also
+// verifies tokens signed by any key in previous (rotation support, plan §7).
+func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKey, st store.Store) *Manager {
 	// The HMAC secret for challenge derivation is derived from the signing
 	// key's seed, so one persistent secret file serves both purposes and all
 	// instances sharing the key derive the same challenges.
-	sum := sha256.Sum256(append([]byte("guardian-hmac-v1\x00"), key.Seed()...))
+	sum := sha256.Sum256(append([]byte("guardian-hmac-v1\x00"), current.Seed()...))
 	return &Manager{
-		key:          key,
+		keys:         append([]ed25519.PrivateKey{current}, previous...),
 		hmacSecret:   sum[:],
 		store:        st,
 		cache:        newTokenCache(),
 		NoJSMinDelay: 5 * time.Second,
 		now:          time.Now,
 	}
+}
+
+// SetKeys atomically replaces the key set (current at index 0). Called after
+// a rotation reloads keys from disk. The token cache is cleared so a token
+// signed by a now-removed key is re-verified rather than served from cache.
+func (m *Manager) SetKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKey) {
+	m.mu.Lock()
+	m.keys = append([]ed25519.PrivateKey{current}, previous...)
+	m.mu.Unlock()
+	m.cache.reset()
+}
+
+func (m *Manager) signingKey() ed25519.PrivateKey {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.keys[0]
+}
+
+// Rotate generates a new signing key, archives the current one into prevDir,
+// and swaps the key set so the new key signs while the old key still
+// verifies live tokens. keyPath/prevDir are the same paths guardiand loaded
+// from, so a restart (or a peer instance's reload) reconstructs the same set.
+func (m *Manager) Rotate(keyPath, prevDir string) error {
+	newKey, err := RotateKey(keyPath, prevDir, m.now().Unix())
+	if err != nil {
+		return err
+	}
+	previous, err := LoadPreviousKeys(prevDir)
+	if err != nil {
+		return err
+	}
+	m.SetKeys(newKey, previous)
+	return nil
 }
 
 // Challenge is what the interstitial page needs to render and solve.

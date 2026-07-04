@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	httptransport "github.com/melroy89/angie-guardian/transport/http"
@@ -67,7 +69,19 @@ func run(configPath string) error {
 		if err != nil {
 			return fmt.Errorf("open bbolt store %s: %w", cfg.Store.Path, err)
 		}
+	case "redis":
+		password := cfg.Store.Password
+		if password == "" {
+			password = os.Getenv("REDIS_PASSWORD")
+		}
+		st, err = store.NewRedis(store.RedisOptions{Addr: cfg.Store.Addr, Password: password, DB: cfg.Store.DB})
+		if err != nil {
+			return fmt.Errorf("connect redis store %s: %w", cfg.Store.Addr, err)
+		}
 	}
+
+	m := metrics.New()
+	st = store.Instrument(st, m)
 	defer st.Close()
 
 	var powMgr *pow.Manager
@@ -76,7 +90,14 @@ func run(configPath string) error {
 		if err != nil {
 			return fmt.Errorf("signing key %s: %w", cfg.SigningKeyFile, err)
 		}
-		powMgr = pow.NewManager(key, st)
+		previous, err := pow.LoadPreviousKeys(cfg.PreviousKeyDir)
+		if err != nil {
+			return fmt.Errorf("previous keys %s: %w", cfg.PreviousKeyDir, err)
+		}
+		powMgr = pow.NewManagerWithKeys(key, previous, st)
+		if len(previous) > 0 {
+			log.Info("loaded retired signing keys for verification", "count", len(previous))
+		}
 	} else {
 		log.Warn("no signing_key_file configured: proof-of-work challenges are disabled")
 	}
@@ -85,10 +106,12 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
+	engine.SetMetrics(m)
 	defer engine.Close()
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httptransport.New(engine, cfg, powMgr, st, log),
+		Handler:           httptransport.New(engine, cfg, powMgr, st, m, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -101,6 +124,24 @@ func run(configPath string) error {
 		errCh <- srv.ListenAndServe()
 	}()
 
+	// Admin + metrics server on its own listener (loopback / management iface).
+	var admin *http.Server
+	if cfg.Admin.Listen != "" {
+		if cfg.Admin.Token == "" && !isLoopback(cfg.Admin.Listen) {
+			return fmt.Errorf("admin.listen %s is not loopback but no admin.token is set; refusing to expose an unauthenticated admin API", cfg.Admin.Listen)
+		}
+		admin = &http.Server{
+			Addr: cfg.Admin.Listen,
+			Handler: httptransport.NewAdminServer(engine, cfg, m,
+				cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, log),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen, "authenticated", cfg.Admin.Token != "")
+			errCh <- admin.ListenAndServe()
+		}()
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	select {
@@ -112,8 +153,25 @@ func run(configPath string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if admin != nil {
+		_ = admin.Shutdown(ctx)
+	}
 	if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	return nil
+}
+
+// isLoopback reports whether a listen address binds only to the loopback
+// interface, so an admin API without a token there is not remotely reachable.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

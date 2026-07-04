@@ -3,17 +3,31 @@
 # Per-domain settings are merged over `defaults` field-by-field: a domain only
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
-listen: 127.0.0.1:8071
+listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
 log_level: info
 
-# Persistent Ed25519 signing key for PoW JWTs (used from P1). Generated on
-# first run if missing; NEVER regenerated on restart, so restarts don't log
-# clients out and replicas can share it.
+# Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
+# /metrics and /healthz are open (a scraper needs no secret); every /admin
+# route requires the bearer token. Binding to a non-loopback address without
+# a token is refused at startup. Leave admin.listen empty to disable it.
+admin:
+  listen: 127.0.0.1:8072
+  token: ""                   # or set the ADMIN_TOKEN env var
+
+# Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
+# missing; NEVER regenerated on restart, so restarts don't log clients out
+# and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
+# archived here and still accepted for verification until their tokens expire.
 signing_key_file: /etc/guardian/ed25519.key
+previous_key_dir: /etc/guardian/keys.d
 
 store:
-  backend: bbolt              # memory | bbolt
+  backend: bbolt              # memory | bbolt | redis
   path: /var/lib/guardian/guardian.db
+  # redis backend (multi-instance): all replicas share one server.
+  # addr: 127.0.0.1:6379
+  # password: ""              # or the REDIS_PASSWORD env var
+  # db: 0
 
 defaults:
   waf:

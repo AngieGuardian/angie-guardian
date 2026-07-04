@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/web"
@@ -34,20 +35,21 @@ const PassPath = "/__guardian/pass"
 const issuanceRateLimit = 60
 
 type Server struct {
-	engine *core.Engine
-	cfg    *core.Config
-	pow    *pow.Manager // nil = PoW unavailable (no signing key configured)
-	store  store.Store
-	log    *slog.Logger
-	mux    *http.ServeMux
+	engine  *core.Engine
+	cfg     *core.Config
+	pow     *pow.Manager // nil = PoW unavailable (no signing key configured)
+	store   store.Store
+	metrics *metrics.Metrics // nil = no-op
+	log     *slog.Logger
+	mux     *http.ServeMux
 
 	challengeTmpl *template.Template
 	deniedHTML    []byte
 }
 
-func New(engine *core.Engine, cfg *core.Config, mgr *pow.Manager, st store.Store, log *slog.Logger) *Server {
+func New(engine *core.Engine, cfg *core.Config, mgr *pow.Manager, st store.Store, m *metrics.Metrics, log *slog.Logger) *Server {
 	s := &Server{
-		engine: engine, cfg: cfg, pow: mgr, store: st, log: log,
+		engine: engine, cfg: cfg, pow: mgr, store: st, metrics: m, log: log,
 		mux:           http.NewServeMux(),
 		challengeTmpl: template.Must(template.ParseFS(web.FS, "challenge.html.tmpl")),
 	}
@@ -153,6 +155,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "challenge unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	s.metrics.Challenge("issued")
 
 	payload, err := json.Marshal(map[string]any{
 		"challenge_id": ch.ID,
@@ -218,6 +221,7 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 
 	res, err := s.pow.Redeem(r.Context(), req)
 	if err != nil {
+		s.metrics.Challenge("failed")
 		status := http.StatusForbidden
 		if !errors.Is(err, pow.ErrChallengeUnknown) && !errors.Is(err, pow.ErrBadSolution) &&
 			!errors.Is(err, pow.ErrBindingMismatch) && !errors.Is(err, pow.ErrTooFast) &&
@@ -243,6 +247,10 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		return
 	}
 
+	s.metrics.Challenge("solved")
+	if elapsedMS > 0 {
+		s.metrics.SolveTime(float64(elapsedMS) / 1000)
+	}
 	s.log.Info("challenge solved",
 		"host", host, "ip", ip, "nojs", req.NoJS, "elapsed_ms", elapsedMS)
 	http.SetCookie(w, &http.Cookie{
