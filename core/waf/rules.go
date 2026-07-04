@@ -188,8 +188,16 @@ type RuleCache struct {
 
 type ruleFile struct {
 	path  string
-	mtime atomic.Int64 // unix nano of last loaded version
+	stamp atomic.Uint64 // fingerprint of the last loaded version (mtime ^ size)
 	set   atomic.Pointer[RuleSet]
+}
+
+// fileStamp fingerprints a file by mtime and size together. Size guards
+// against filesystems whose mtime resolution is too coarse to distinguish
+// two quick successive writes — a same-mtime edit of different length still
+// changes the stamp and triggers a reload.
+func fileStamp(fi os.FileInfo) uint64 {
+	return uint64(fi.ModTime().UnixNano()) ^ (uint64(fi.Size()) << 1)
 }
 
 // NewRuleCache loads every rules file eagerly; any parse error fails startup
@@ -220,7 +228,7 @@ func (f *ruleFile) load() error {
 		return err
 	}
 	f.set.Store(rs)
-	f.mtime.Store(fi.ModTime().UnixNano())
+	f.stamp.Store(fileStamp(fi))
 	return nil
 }
 
@@ -260,12 +268,12 @@ func (c *RuleCache) reloadChanged() {
 			c.log.Warn("rules file unreadable, keeping loaded rules", "file", f.path, "err", err)
 			continue
 		}
-		if fi.ModTime().UnixNano() == f.mtime.Load() {
+		if fileStamp(fi) == f.stamp.Load() {
 			continue
 		}
 		if err := f.load(); err != nil {
 			c.log.Error("rules reload failed, keeping previous rules", "file", f.path, "err", err)
-			f.mtime.Store(fi.ModTime().UnixNano()) // don't retry-spam the same broken version
+			f.stamp.Store(fileStamp(fi)) // don't retry-spam the same broken version
 			continue
 		}
 		c.log.Info("rules reloaded", "file", f.path, "rules", len(f.set.Load().Rules))

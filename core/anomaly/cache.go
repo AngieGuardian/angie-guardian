@@ -23,8 +23,14 @@ type ModelCache struct {
 
 type modelFile struct {
 	path  string
-	mtime atomic.Int64
+	stamp atomic.Uint64 // fingerprint of the last loaded version (mtime ^ size)
 	model atomic.Pointer[Model]
+}
+
+// fileStamp fingerprints a file by mtime and size, so a same-mtime rewrite of
+// a different length still triggers a reload on coarse-mtime filesystems.
+func fileStamp(fi os.FileInfo) uint64 {
+	return uint64(fi.ModTime().UnixNano()) ^ (uint64(fi.Size()) << 1)
 }
 
 // NewModelCache loads every artifact eagerly. A missing or invalid model
@@ -52,7 +58,7 @@ func (f *modelFile) load() error {
 		return err
 	}
 	f.model.Store(m)
-	f.mtime.Store(fi.ModTime().UnixNano())
+	f.stamp.Store(fileStamp(fi))
 	return nil
 }
 
@@ -90,12 +96,12 @@ func (c *ModelCache) reloadChanged() {
 			c.log.Warn("model unreadable, keeping loaded model", "file", f.path, "err", err)
 			continue
 		}
-		if fi.ModTime().UnixNano() == f.mtime.Load() {
+		if fileStamp(fi) == f.stamp.Load() {
 			continue
 		}
 		if err := f.load(); err != nil {
 			c.log.Error("model reload failed, keeping previous model", "file", f.path, "err", err)
-			f.mtime.Store(fi.ModTime().UnixNano())
+			f.stamp.Store(fileStamp(fi))
 			continue
 		}
 		c.log.Info("anomaly model reloaded", "file", f.path,

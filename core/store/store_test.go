@@ -21,7 +21,7 @@ type backend struct {
 	advance func(d time.Duration)
 }
 
-func sleepAdvance(d time.Duration) { time.Sleep(d + d/2) }
+func sleepAdvance(d time.Duration) { time.Sleep(d) }
 
 func backends(t *testing.T) map[string]backend {
 	t.Helper()
@@ -62,14 +62,24 @@ func TestStoreConformance(t *testing.T) {
 				t.Fatal("missing key reported present")
 			}
 
-			// TTL expiry.
-			if err := s.Set(ctx, "ttl", []byte("x"), 20*time.Millisecond); err != nil {
+			// "Still present" is checked with a long TTL and a separate key, so
+			// a slow/contended runner can never expire it before we read it
+			// back (the CI flake that a 20ms TTL caused).
+			if err := s.Set(ctx, "long", []byte("x"), time.Hour); err != nil {
 				t.Fatal(err)
 			}
-			if _, ok, _ := s.Get(ctx, "ttl"); !ok {
-				t.Fatal("fresh TTL key should be present")
+			if _, ok, _ := s.Get(ctx, "long"); !ok {
+				t.Fatal("fresh long-TTL key should be present")
 			}
-			advance(20 * time.Millisecond)
+
+			// Expiry direction: a short TTL, then advance past it. 500ms is far
+			// larger than any plausible scheduling pause, so the "still there"
+			// window before advance() is not asserted on the short key.
+			const shortTTL = 500 * time.Millisecond
+			if err := s.Set(ctx, "ttl", []byte("x"), shortTTL); err != nil {
+				t.Fatal(err)
+			}
+			advance(shortTTL + 200*time.Millisecond)
 			if _, ok, _ := s.Get(ctx, "ttl"); ok {
 				t.Fatal("expired key reported present")
 			}
@@ -85,15 +95,20 @@ func TestStoreConformance(t *testing.T) {
 				t.Fatal("deleted key reported present")
 			}
 
-			// Incr: starts at 1, counts up, restarts after expiry.
+			// Incr: starts at 1 and counts up within one long window (so a slow
+			// runner can't expire the counter mid-loop)...
 			for want := int64(1); want <= 3; want++ {
-				n, err := s.Incr(ctx, "ctr", 20*time.Millisecond)
+				n, err := s.Incr(ctx, "ctr", time.Hour)
 				if err != nil || n != want {
 					t.Fatalf("incr = %d %v, want %d nil", n, err, want)
 				}
 			}
-			advance(20 * time.Millisecond)
-			if n, _ := s.Incr(ctx, "ctr", time.Minute); n != 1 {
+			// ...and a separate short-lived counter restarts after its window.
+			if n, _ := s.Incr(ctx, "ctr2", shortTTL); n != 1 {
+				t.Fatalf("first incr = %d, want 1", n)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if n, _ := s.Incr(ctx, "ctr2", time.Minute); n != 1 {
 				t.Fatalf("incr after expiry = %d, want 1", n)
 			}
 

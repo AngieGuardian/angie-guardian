@@ -120,13 +120,18 @@ func TestHotReload(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Broken update keeps the last good rule set.
+	// Broken update keeps the last good rule set. Give the poller several
+	// intervals to have attempted (and rejected) the reload; the "newkw"
+	// rule must survive throughout.
 	if err := os.WriteFile(path, []byte("rules: [ { id: broken, regexes: [ '([' ] } ]"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if rs := cache.Get(path); rs.Match(&MatchInput{Path: "/newkw"}) == nil {
-		t.Fatal("broken reload must keep the previous good rules")
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if rs := cache.Get(path); rs.Match(&MatchInput{Path: "/newkw"}) == nil {
+			t.Fatal("broken reload must keep the previous good rules")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Unknown path returns nil.
