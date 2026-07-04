@@ -8,6 +8,7 @@ package waf
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"regexp"
@@ -187,17 +188,19 @@ type RuleCache struct {
 }
 
 type ruleFile struct {
-	path  string
-	stamp atomic.Uint64 // fingerprint of the last loaded version (mtime ^ size)
-	set   atomic.Pointer[RuleSet]
+	path string
+	hash atomic.Uint64 // FNV-64a of the last loaded file contents
+	set  atomic.Pointer[RuleSet]
 }
 
-// fileStamp fingerprints a file by mtime and size together. Size guards
-// against filesystems whose mtime resolution is too coarse to distinguish
-// two quick successive writes — a same-mtime edit of different length still
-// changes the stamp and triggers a reload.
-func fileStamp(fi os.FileInfo) uint64 {
-	return uint64(fi.ModTime().UnixNano()) ^ (uint64(fi.Size()) << 1)
+// contentHash fingerprints a file by its bytes, so change detection does not
+// depend on filesystem mtime resolution or file size (two same-length,
+// same-mtime edits still differ in content and reload). Rules files are tiny
+// and polled infrequently, so hashing them each cycle is negligible.
+func contentHash(raw []byte) uint64 {
+	h := fnv.New64a()
+	h.Write(raw)
+	return h.Sum64()
 }
 
 // NewRuleCache loads every rules file eagerly; any parse error fails startup
@@ -206,7 +209,7 @@ func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
 	c := &RuleCache{files: make(map[string]*ruleFile, len(paths)), log: log, stop: make(chan struct{})}
 	for _, path := range paths {
 		f := &ruleFile{path: path}
-		if err := f.load(); err != nil {
+		if _, err := f.load(); err != nil {
 			return nil, err
 		}
 		c.files[path] = f
@@ -214,22 +217,21 @@ func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
 	return c, nil
 }
 
-func (f *ruleFile) load() error {
-	fi, err := os.Stat(f.path)
-	if err != nil {
-		return err
-	}
+// load reads, compiles and installs the rules file, returning its content
+// hash so the poller can record what it loaded.
+func (f *ruleFile) load() (uint64, error) {
 	raw, err := os.ReadFile(f.path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	rs, err := compileRules(raw, f.path)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	hash := contentHash(raw)
 	f.set.Store(rs)
-	f.stamp.Store(fileStamp(fi))
-	return nil
+	f.hash.Store(hash)
+	return hash, nil
 }
 
 // Get returns the current rule set for a configured file, or nil.
@@ -263,20 +265,24 @@ func (c *RuleCache) Start(interval time.Duration) {
 
 func (c *RuleCache) reloadChanged() {
 	for _, f := range c.files {
-		fi, err := os.Stat(f.path)
+		raw, err := os.ReadFile(f.path)
 		if err != nil {
 			c.log.Warn("rules file unreadable, keeping loaded rules", "file", f.path, "err", err)
 			continue
 		}
-		if fileStamp(fi) == f.stamp.Load() {
+		hash := contentHash(raw)
+		if hash == f.hash.Load() {
 			continue
 		}
-		if err := f.load(); err != nil {
+		rs, err := compileRules(raw, f.path)
+		if err != nil {
 			c.log.Error("rules reload failed, keeping previous rules", "file", f.path, "err", err)
-			f.stamp.Store(fileStamp(fi)) // don't retry-spam the same broken version
+			f.hash.Store(hash) // don't retry-spam the same broken version
 			continue
 		}
-		c.log.Info("rules reloaded", "file", f.path, "rules", len(f.set.Load().Rules))
+		f.set.Store(rs)
+		f.hash.Store(hash)
+		c.log.Info("rules reloaded", "file", f.path, "rules", len(rs.Rules))
 	}
 }
 

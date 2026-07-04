@@ -5,6 +5,7 @@
 package anomaly
 
 import (
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"sync/atomic"
@@ -12,9 +13,9 @@ import (
 )
 
 // ModelCache serves the current model for each configured artifact path and
-// hot-swaps it when guardian-train writes a new version (mtime change, same
-// approach as the WAF rule cache). A model that fails to load keeps the
-// previous one active.
+// hot-swaps it when guardian-train writes a new version. Change detection is
+// content-based (a hash of the file bytes), so it never depends on filesystem
+// mtime resolution. A model that fails to load keeps the previous one active.
 type ModelCache struct {
 	files map[string]*modelFile
 	log   *slog.Logger
@@ -23,14 +24,14 @@ type ModelCache struct {
 
 type modelFile struct {
 	path  string
-	stamp atomic.Uint64 // fingerprint of the last loaded version (mtime ^ size)
+	hash  atomic.Uint64 // FNV-64a of the last loaded file contents
 	model atomic.Pointer[Model]
 }
 
-// fileStamp fingerprints a file by mtime and size, so a same-mtime rewrite of
-// a different length still triggers a reload on coarse-mtime filesystems.
-func fileStamp(fi os.FileInfo) uint64 {
-	return uint64(fi.ModTime().UnixNano()) ^ (uint64(fi.Size()) << 1)
+func contentHash(raw []byte) uint64 {
+	h := fnv.New64a()
+	h.Write(raw)
+	return h.Sum64()
 }
 
 // NewModelCache loads every artifact eagerly. A missing or invalid model
@@ -49,16 +50,16 @@ func NewModelCache(paths []string, log *slog.Logger) (*ModelCache, error) {
 }
 
 func (f *modelFile) load() error {
-	fi, err := os.Stat(f.path)
+	raw, err := os.ReadFile(f.path)
 	if err != nil {
 		return err
 	}
-	m, err := Load(f.path)
+	m, err := ParseModel(raw, f.path)
 	if err != nil {
 		return err
 	}
 	f.model.Store(m)
-	f.stamp.Store(fileStamp(fi))
+	f.hash.Store(contentHash(raw))
 	return nil
 }
 
@@ -91,21 +92,25 @@ func (c *ModelCache) Start(interval time.Duration) {
 
 func (c *ModelCache) reloadChanged() {
 	for _, f := range c.files {
-		fi, err := os.Stat(f.path)
+		raw, err := os.ReadFile(f.path)
 		if err != nil {
 			c.log.Warn("model unreadable, keeping loaded model", "file", f.path, "err", err)
 			continue
 		}
-		if fileStamp(fi) == f.stamp.Load() {
+		hash := contentHash(raw)
+		if hash == f.hash.Load() {
 			continue
 		}
-		if err := f.load(); err != nil {
+		m, err := ParseModel(raw, f.path)
+		if err != nil {
 			c.log.Error("model reload failed, keeping previous model", "file", f.path, "err", err)
-			f.stamp.Store(fileStamp(fi))
+			f.hash.Store(hash)
 			continue
 		}
+		f.model.Store(m)
+		f.hash.Store(hash)
 		c.log.Info("anomaly model reloaded", "file", f.path,
-			"domains", len(f.model.Load().Domains), "trained_at", f.model.Load().TrainedAt)
+			"domains", len(m.Domains), "trained_at", m.TrainedAt)
 	}
 }
 

@@ -170,6 +170,13 @@ func Load(path string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseModel(raw, path)
+}
+
+// ParseModel decodes and validates a model artifact from bytes. The cache
+// uses this to parse the same bytes it hashed for change detection, avoiding
+// a second read.
+func ParseModel(raw []byte, path string) (*Model, error) {
 	m := &Model{}
 	if err := json.Unmarshal(raw, m); err != nil {
 		return nil, fmt.Errorf("parse model %s: %w", path, err)
