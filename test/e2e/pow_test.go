@@ -42,7 +42,7 @@ func TestBrowserGetIsChallenged(t *testing.T) {
 }
 
 // TestNonBrowserUAPassesWAF confirms a non-browser User-Agent (curl) is NOT
-// taxed with a PoW challenge on a PoW-always host — it passes the WAF straight
+// taxed with a PoW challenge on a PoW-always host: it passes the WAF straight
 // to the backend, so honest tools are not blocked by the interstitial.
 func TestNonBrowserUAPassesWAF(t *testing.T) {
 	resp := get(t, "/api-ish", powHost, "curl/8.0", nil)
@@ -55,7 +55,7 @@ func TestNonBrowserUAPassesWAF(t *testing.T) {
 }
 
 // TestPoWFullSolveThroughAngie is the scenario the old in-process tests could
-// not cover: the complete browser journey through a REAL Angie —
+// not cover: the complete browser journey through a REAL Angie,
 //
 //	challenged → solve → redeem (cookie) → vouched request allowed → replay rejected.
 func TestPoWFullSolveThroughAngie(t *testing.T) {

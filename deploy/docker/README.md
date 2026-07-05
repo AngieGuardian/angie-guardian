@@ -8,9 +8,9 @@ Angie (reverse proxy, auth_request)  ──►  guardiand (sidecar)  ──►  
         :8080 on host loopback              internal only              internal only
 ```
 
-It wires the full Path A topology — the `auth_request` decision flow, the PoW
+It wires the full Path A topology (the `auth_request` decision flow, the PoW
 challenge interstitial, WAF signature denies, behavioural blocking, the admin
-API, and the fail-open toggle — so you can verify behaviour and reproduce
+API, and the fail-open toggle) so you can verify behaviour and reproduce
 findings on a real Angie binary.
 
 ## The end-to-end suite
@@ -19,7 +19,7 @@ The automated e2e tests live in `test/e2e/` (Go, `//go:build e2e`) and boot
 **this** compose stack with [testcontainers-go](https://golang.testcontainers.org/),
 drive traffic **through Angie**, and assert on the guardian's decisions and its
 report surface (Prometheus `/metrics` + the admin API). Run them from the repo
-root — Docker is the only prerequisite:
+root (Docker is the only prerequisite):
 
 ```sh
 make e2e                              # or: go test -tags e2e ./test/e2e/...
@@ -49,7 +49,7 @@ docker compose down -v     # tear down + drop volumes
 - Protected site: `http://127.0.0.1:8080` (override with `GUARDIAN_SITE_PORT`)
 - Admin API + `/metrics`: `http://127.0.0.1:8072` (token `harness-admin-token`,
   override the host port with `GUARDIAN_ADMIN_PORT`)
-- guardiand's hot path (8071) is **not** published — internal network only,
+- guardiand's hot path (8071) is **not** published (internal network only),
   mirroring production where the sidecar must not be directly reachable.
 
 ## Reproducing review findings
@@ -63,7 +63,7 @@ docker compose down -v     # tear down + drop volumes
 
 - **Direct-reach header spoofing:** add `ports: ["127.0.0.1:8071:8071"]` to the
   guardiand service, then `curl -H 'X-Guardian-IP: 9.9.9.9' http://127.0.0.1:8071/auth`
-  — the sidecar trusts the header when reached directly.
+  the sidecar trusts the header when reached directly.
 
 - **Fail-closed:** comment out `error_page 500 = @guardian_bypass;` in
   `angie.docker.conf`, `docker compose restart angie`, stop guardiand, and the

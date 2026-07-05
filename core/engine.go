@@ -145,7 +145,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 
 // RecentDecisions returns the last non-allow decisions, newest first, up to
 // limit (<= 0 for all). Backed by a bounded in-process ring: per-instance,
-// lost on restart — a live operator view, not an audit log (that's the
+// lost on restart. A live operator view, not an audit log (that's the
 // structured decision log).
 func (e *Engine) RecentDecisions(limit int) []RecentDecision {
 	return e.recent.list(limit)

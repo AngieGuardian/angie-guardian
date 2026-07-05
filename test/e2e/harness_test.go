@@ -8,11 +8,11 @@
 //
 // Unlike the in-process tests in transport/http (which call the Go handler via
 // httptest, with Angie out of the loop), this suite boots the full Path A
-// topology from deploy/docker/compose.yaml —
+// topology from deploy/docker/compose.yaml:
 //
 //	Angie (reverse proxy, auth_request) ──► guardiand (sidecar) ──► whoami backend
 //
-// — with testcontainers-go, then drives traffic through Angie on the published
+// with testcontainers-go, then drives traffic through Angie on the published
 // host ports and asserts on the guardian's decisions AND its report surface
 // (Prometheus /metrics + the admin API).
 //
@@ -51,7 +51,7 @@ const (
 
 // Base URLs of the two published listeners, set in runSuite once the harness
 // has picked free host ports (avoids colliding with whatever else runs on the
-// box — the compose file publishes them via ${GUARDIAN_SITE_PORT}/
+// box; the compose file publishes them via ${GUARDIAN_SITE_PORT}/
 // ${GUARDIAN_ADMIN_PORT}).
 var (
 	site  string // the protected site, through Angie
@@ -159,7 +159,7 @@ func req(t *testing.T, method, url string, headers map[string]string, body io.Re
 		t.Fatal(err)
 	}
 	for k, v := range headers {
-		// net/http ignores a "Host" entry in Header — the wire Host must be set
+		// net/http ignores a "Host" entry in Header: the wire Host must be set
 		// on r.Host. Route it there so Angie (and thus guardiand's
 		// X-Guardian-Host) sees the domain we're actually testing.
 		if http.CanonicalHeaderKey(k) == "Host" {
@@ -333,7 +333,7 @@ func fetchChallenge(t *testing.T, path, host, ua string) challengeData {
 }
 
 // solve brute-forces a nonce whose SHA-256(challenge+nonce) has `difficulty`
-// leading zero nibbles — the exact check core/pow does (challenge.go
+// leading zero nibbles, the exact check core/pow does (challenge.go
 // leadingZeroNibbles). Difficulties here are small (4–6) so this is fast.
 func solve(t *testing.T, challenge string, difficulty int) string {
 	t.Helper()

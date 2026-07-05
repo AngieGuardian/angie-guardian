@@ -84,7 +84,7 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	ts, engine := reportServer(t, reportYAML)
 	ctx := context.Background()
 
-	// Drive real pipeline decisions: three denies (denylisted range) — the
+	// Drive real pipeline decisions: three denies (denylisted range). The
 	// allow must NOT appear in the feed.
 	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
 		d := engine.Evaluate(ctx, &core.RequestContext{

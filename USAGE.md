@@ -64,8 +64,8 @@ domains:
 ```
 
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
-loads and validates the file — YAML syntax, unknown fields, and semantic checks
-— then exits: `0` and `ok` when valid, `1` and the reason when not.
+loads and validates the file (YAML syntax, unknown fields, and semantic checks),
+then exits: `0` and `ok` when valid, `1` and the reason when not.
 
 ```sh
 ./guardiand -config guardian.yaml -t
@@ -171,7 +171,7 @@ curl -s $A/metrics | grep guardian_
 Set `admin.dashboard: true` and open `http://127.0.0.1:8072/admin/dashboard` in
 a browser: active blocks (with one-click unblock), the recent deny/challenge
 feed, per-domain feature status, and headline counters, auto-refreshing. The
-page is a static shell — it stores no secrets and every data call goes to the
+page is a static shell: it stores no secrets and every data call goes to the
 token-guarded `/admin/*` endpoints with a token you paste once (kept in the
 tab's sessionStorage). It is **internal-only by construction**: it lives on the
 admin listener, which refuses a non-loopback bind without a token, and stays
@@ -212,7 +212,7 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
 
 # Write path: issue a fresh PoW challenge per request (a store CAS write each).
-# This is what separates the store backends — see the Performance table in the
+# This is what separates the store backends; see the Performance table in the
 # README. The scenario rotates the client IP itself to avoid the issuance limit.
 guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
 ```
@@ -224,9 +224,9 @@ where bbolt's single embedded writer trails redis/valkey. See
 
 ## Choosing a store backend
 
-- **memory** — single instance, state lost on restart. Fine for dev or a small
+- **memory**: single instance, state lost on restart. Fine for dev or a small
   site that can re-learn blocks after a restart.
-- **bbolt** — single instance, persistent. The default. Writes are coalesced
+- **bbolt**: single instance, persistent. The default. Writes are coalesced
   (`db.Batch`) so concurrent challenge/event writes share fsyncs, but it is
   still one embedded writer: under a very high sustained rate of *new* clients
   (each of which triggers a challenge write in `pow.mode: always`), the single
@@ -234,9 +234,9 @@ where bbolt's single embedded writer trails redis/valkey. See
   expected new-client rate before relying on it near 50k req/s; if the writer
   saturates, switch to the `redis` backend or set `pow.mode: suspicion` (only
   anomalous clients are challenged, so most requests do no write).
-- **redis** — multi-instance and the highest write throughput. Works with both
+- **redis**: multi-instance and the highest write throughput. Works with both
   Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which is
-  a drop-in replacement — same wire protocol, same `backend: redis` value. See
+  a drop-in replacement (same wire protocol, same `backend: redis` value). See
   below.
 
 ## Multi-instance (Redis/Valkey)
@@ -303,9 +303,9 @@ your backend, or a `403` to block. Editing the rules means updating the Angie
 config and reloading Angie (the `.wasm` itself does not need rebuilding for a
 config change).
 
-**A config error fails closed.** If the `config=` blob does not parse — a
+**A config error fails closed.** If the `config=` blob does not parse (a
 typo'd field, an invalid CIDR, or two domain keys that collapse to the same
-host after normalization (`a.test` vs `A.test:443`) — the guest denies **every
+host after normalization: `a.test` vs `A.test:443`) the guest denies **every
 request on every host** with `500 Guardian WASM misconfigured`, and the only
 signal is one line in Angie's error log. Unlike the sidecar, which refuses to
 start on a bad `guardian.yaml`, a bad guest config only surfaces at request

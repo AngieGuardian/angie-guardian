@@ -32,7 +32,7 @@ func TestWAFSignatureDeny(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("/wp-login.php: status %d, want 403", resp.StatusCode)
 	}
-	// A follow-up unrelated request from the same IP still gets through — proof
+	// A follow-up unrelated request from the same IP still gets through, proof
 	// the deny did not blanket-block the source IP.
 	clearGatewayBlocks()
 	if r := get(t, "/robots.txt", powHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
@@ -94,7 +94,7 @@ func TestWAFScannerUABlock(t *testing.T) {
 }
 
 // TestWAFChallengeAction confirms a `challenge` rule (sqli-basic) forces a PoW
-// challenge rather than an outright deny on a PoW-enabled host — a softer
+// challenge rather than an outright deny on a PoW-enabled host: a softer
 // response that spares false positives.
 func TestWAFChallengeAction(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)

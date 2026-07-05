@@ -14,7 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Redis is a shared Store backed by Redis/Valkey — the multi-instance
+// Redis is a shared Store backed by Redis/Valkey: the multi-instance
 // backend: all Guardian replicas behind a load balancer point at the same
 // server so any instance sees any other's blocks and spent challenges.
 // TTLs are native; Incr and CompareAndSwap use small Lua scripts so their
@@ -83,7 +83,7 @@ func (s *Redis) Delete(ctx context.Context, key string) error {
 }
 
 // incrScript: INCR, and set the TTL only when the key was just created (v==1),
-// so an existing time-bucketed counter keeps its original expiry — matching
+// so an existing time-bucketed counter keeps its original expiry, matching
 // the memory/bbolt Incr contract. ARGV[1] is the TTL in milliseconds (0 = none).
 var incrScript = redis.NewScript(`
 local v = redis.call('INCR', KEYS[1])

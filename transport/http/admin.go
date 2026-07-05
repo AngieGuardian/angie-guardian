@@ -247,7 +247,7 @@ func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDashboard serves the static reporting page. No auth: the shell holds
-// no data — everything it shows comes from the token-guarded endpoints, called
+// no data: everything it shows comes from the token-guarded endpoints, called
 // with a token the operator provides in-page (kept in sessionStorage).
 func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	page, err := web.FS.ReadFile("dashboard.html")

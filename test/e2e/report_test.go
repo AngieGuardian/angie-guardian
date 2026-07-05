@@ -115,7 +115,7 @@ func TestAdminAuthRequired(t *testing.T) {
 }
 
 // TestDecisionLogsAreStructured asserts guardiand emits structured decision log
-// lines (the audit trail a log pipeline / SIEM ingests) — a deny should appear
+// lines (the audit trail a log pipeline / SIEM ingests): a deny should appear
 // with its reason in the container logs.
 func TestDecisionLogsAreStructured(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
@@ -215,7 +215,7 @@ func TestAdminBlockListAndDecisions(t *testing.T) {
 }
 
 // TestDashboardServed confirms the reporting page is up (the harness enables
-// admin.dashboard) and is the static shell — no token required for the shell,
+// admin.dashboard) and is the static shell: no token required for the shell,
 // while its data endpoints stay guarded (TestAdminAuthRequired).
 func TestDashboardServed(t *testing.T) {
 	resp := req(t, http.MethodGet, admin+"/admin/dashboard", nil, nil)

@@ -13,7 +13,7 @@ import (
 )
 
 // TestFailOpenWhenGuardianDown exercises Angie's fail mode. The harness ships
-// the documented default — fail-OPEN — via `error_page 500 = @guardian_bypass`
+// the documented default (fail-OPEN) via `error_page 500 = @guardian_bypass`
 // in angie.docker.conf: when the guardiand sidecar is unreachable, the
 // auth_request subrequest errors, Angie turns that into a 500, and the bypass
 // route serves the backend anyway. So a sidecar outage does not take the site

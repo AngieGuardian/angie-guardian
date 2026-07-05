@@ -68,9 +68,9 @@ signature checks, so a stolen token can't ride past the WAF.
   active per-domain config. Refuses to expose itself on a non-loopback address
   without a token.
 - **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
-  internal page at `/admin/dashboard` — active blocks with one-click unblock,
-  the recent decisions feed, and per-domain status — driven entirely by the
-  token-guarded admin API. See USAGE.md § 4.
+  internal page at `/admin/dashboard`, driven entirely by the token-guarded
+  admin API. It shows active blocks with one-click unblock, the recent
+  decisions feed, and per-domain status. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` archives the current Ed25519
   key and generates a new one; tokens signed by the old key keep verifying
   until they expire, so rotation never logs anyone out.
@@ -96,7 +96,7 @@ go test -run TestEvaluate ./core   # a single test by name
 On top of the unit suite, an **end-to-end suite** (`test/e2e/`, gated behind the
 `e2e` build tag) boots the real `Angie → guardiand → whoami` Docker stack with
 [testcontainers-go](https://golang.testcontainers.org/) and drives traffic
-*through Angie* — solving a real PoW challenge, exercising the WAF
+*through Angie*: solving a real PoW challenge, exercising the WAF
 `deny`/`block`/`challenge` actions and behavioural blocking, the fail-open mode,
 and the `/metrics` + admin-API report surface. It needs Docker and is excluded
 from the default `go test ./...`:
@@ -128,8 +128,8 @@ write-heavy path):
 | `deny` | denylisted client IP (deny + decision logging path) | 1 read |
 | `challenge` | issue a fresh PoW challenge per request | 1 **write** (CAS) |
 
-**Results** — single node, loopback, 64 connections, load generator sharing the
-same CPU (AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 8 for the
+**Results** (single node, loopback, 64 connections, load generator sharing the
+same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 8 for the
 redis backend). Numbers are req/s and per-request latency:
 
 | Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
@@ -143,7 +143,7 @@ The read paths all comfortably clear the ≥50k req/s budget on both backends.
 The takeaway is the **write** path: embedded bbolt fsyncs one transaction per challenge
 through a single writer (~2.4k/s, ~27 ms under contention), while redis/valkey
 sustains ~15× that (~36k/s). So the backend choice hinges on your *new-client*
-rate — the clients that trigger a challenge write:
+rate, i.e. the clients that trigger a challenge write:
 
 - With `pow.mode: always`, every unvouched browser is challenged, so a burst of
   fresh visitors is bounded by the write path. If that burst can exceed a few

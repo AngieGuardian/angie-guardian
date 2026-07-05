@@ -43,7 +43,7 @@ type Store interface {
 	CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (swapped bool, err error)
 
 	// Scan returns every live key with the given literal prefix, sorted by
-	// key. An admin/reporting read (listing active blocks) — NOT for the auth
+	// key. An admin/reporting read (listing active blocks), NOT for the auth
 	// hot path: it may walk a large keyspace on some backends.
 	Scan(ctx context.Context, prefix string) ([]KV, error)
 

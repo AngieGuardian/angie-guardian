@@ -80,7 +80,7 @@
   td.wrap { word-break: break-all; max-width: 26rem; }
   .empty { color: var(--muted); padding: 0.7rem 0.75rem; }
 
-  /* Action chips: colored dot + text label — never color alone */
+  /* Action chips: colored dot + text label, never color alone */
   .chip { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
   .chip::before { content: ""; width: 0.55rem; height: 0.55rem; border-radius: 50%;
                   background: var(--muted); flex: none; }
@@ -206,7 +206,7 @@
       ...opts,
       headers: { Authorization: "Bearer " + sessionStorage.getItem(KEY), ...opts.headers },
     });
-    if (r.status === 401) { logout("Token rejected — paste it again."); throw new Error("unauthorized"); }
+    if (r.status === 401) { logout("Token rejected. Paste it again."); throw new Error("unauthorized"); }
     if (!r.ok) throw new Error(path + ": " + r.status);
     return r.json();
   };

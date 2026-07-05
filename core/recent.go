@@ -14,6 +14,9 @@ import (
 // answer "what did the guardian just act on?" without a store write on the
 // decision path. Allows are deliberately not recorded: they are the
 // overwhelming common case and carry no report value.
+//
+// The buffer is per-instance and cleared on restart: a live operator view,
+// not an audit log (that role belongs to the structured decision log).
 type RecentDecision struct {
 	Time   time.Time `json:"time"`
 	Host   string    `json:"host"`

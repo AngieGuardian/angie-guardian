@@ -10,7 +10,7 @@ log_level: info
 # (client IP, host, cookie). Keep `listen` on loopback so no client can reach
 # it directly and forge them. To bind a non-loopback address (Angie on another
 # host), isolate the listener to Angie (private network / firewall / mTLS) and
-# set the line below — otherwise guardiand refuses to start.
+# set the line below, otherwise guardiand refuses to start.
 # trusted_proxy: true
 
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
@@ -21,7 +21,7 @@ admin:
   listen: 127.0.0.1:8072
   token: ""                   # or set the ADMIN_TOKEN env var
   # Built-in reporting page at GET /admin/dashboard (active blocks, recent
-  # deny/challenge decisions, per-domain config). The page is a static shell —
+  # deny/challenge decisions, per-domain config). The page is a static shell:
   # all data flows through the token-guarded /admin/* endpoints, and the
   # operator pastes the token into the page once. Off by default.
   # dashboard: true
