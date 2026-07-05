@@ -53,9 +53,18 @@ e2e:
     DOCKER_TLS_CERTDIR: ""            # plain-HTTP dind (no TLS) for simplicity
     TESTCONTAINERS_RYUK_DISABLED: "true"  # dind tears itself down; Ryuk can't reap across it
   before_script:
-    # The golang image has no docker CLI; testcontainers speaks the API over
-    # DOCKER_HOST directly, but the compose build needs buildkit reachable too.
-    - until docker info >/dev/null 2>&1 || nc -z docker 2375; do sleep 1; done
+    # Wait for the dind daemon to accept connections before the test starts.
+    # The golang image ships neither the docker CLI nor netcat (the old probe
+    # using them retry-spun forever), so probe the TCP port with bash's
+    # built-in /dev/tcp — no extra packages. Run it under bash explicitly:
+    # the image's /bin/sh is dash, which has no /dev/tcp and would spin the
+    # whole loop then fall through. testcontainers talks to the daemon over
+    # DOCKER_HOST directly once it is up.
+    - |
+      bash -c 'for i in $(seq 1 60); do
+        if (exec 3<>/dev/tcp/docker/2375) 2>/dev/null; then exec 3>&-; echo "dind up after ${i}s"; exit 0; fi
+        sleep 1
+      done; echo "dind did not come up in 60s" >&2; exit 1'
   script:
     - go test -tags e2e -count=1 -timeout 20m ./test/e2e/...
   # Docker-in-docker isn't available on every runner; allow-fail keeps a missing
