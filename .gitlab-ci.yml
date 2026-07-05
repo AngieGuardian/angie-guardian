@@ -39,37 +39,14 @@ test:
   script:
     - go test -race -count=1 ./...
 
-# End-to-end suite against a REAL Angie: boots deploy/docker/compose.yaml
-# (Angie + guardiand + whoami) with testcontainers-go and drives it through
-# Angie. Runs in docker-in-docker so testcontainers has a Docker daemon; kept
-# separate from the fast unit `test` job so unit runs stay quick and daemon-free.
-e2e:
-  stage: test
-  image: golang:1.25
-  services:
-    - docker:dind
-  variables:
-    DOCKER_HOST: "tcp://docker:2375"
-    DOCKER_TLS_CERTDIR: ""            # plain-HTTP dind (no TLS) for simplicity
-    TESTCONTAINERS_RYUK_DISABLED: "true"  # dind tears itself down; Ryuk can't reap across it
-  before_script:
-    # Wait for the dind daemon to accept connections before the test starts.
-    # The golang image ships neither the docker CLI nor netcat (the old probe
-    # using them retry-spun forever), so probe the TCP port with bash's
-    # built-in /dev/tcp — no extra packages. Run it under bash explicitly:
-    # the image's /bin/sh is dash, which has no /dev/tcp and would spin the
-    # whole loop then fall through. testcontainers talks to the daemon over
-    # DOCKER_HOST directly once it is up.
-    - |
-      bash -c 'for i in $(seq 1 60); do
-        if (exec 3<>/dev/tcp/docker/2375) 2>/dev/null; then exec 3>&-; echo "dind up after ${i}s"; exit 0; fi
-        sleep 1
-      done; echo "dind did not come up in 60s" >&2; exit 1'
-  script:
-    - go test -tags e2e -count=1 -timeout 20m ./test/e2e/...
-  # Docker-in-docker isn't available on every runner; allow-fail keeps a missing
-  # dind runner from blocking the pipeline while still surfacing real failures.
-  allow_failure: true
+# NOTE: the end-to-end suite (test/e2e/, `make e2e`) is intentionally NOT a CI
+# job. It boots the real Angie + guardiand + whoami stack via testcontainers-go,
+# which needs a Docker daemon — i.e. a privileged docker:dind service. The
+# shared runners here are not privileged (dind fails with "mount: permission
+# denied" / AppArmor), so the job could only ever fail. The `format` job above
+# still `go vet -tags e2e`s the suite so it can't silently stop compiling. Run
+# the full suite locally with `make e2e`; add a CI job here if a privileged
+# (dind-capable) runner becomes available.
 
 build:
   stage: build
