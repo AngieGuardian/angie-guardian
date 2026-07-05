@@ -105,6 +105,12 @@ type Config struct {
 type AdminConfig struct {
 	Listen string `yaml:"listen"` // empty disables the admin+metrics server
 	Token  string `yaml:"token"`  // bearer token; or ADMIN_TOKEN env var
+
+	// Dashboard serves the built-in reporting page at GET /admin/dashboard.
+	// The page itself is a static shell (all data flows through the
+	// token-guarded /admin/* endpoints), but it stays off by default so the
+	// admin surface exposes nothing extra unless asked to.
+	Dashboard bool `yaml:"dashboard"`
 }
 
 type StoreConfig struct {

@@ -4,10 +4,10 @@
 #
 # Brings up the full Path A topology so the auth flow, PoW challenge, fail
 # modes, and header trust can be exercised end to end without touching a real
-# site. Run from this directory:
+# site. The automated e2e suite (test/e2e/, `make e2e`) boots this same file
+# via testcontainers-go; to drive it by hand instead, run from this directory:
 #
 #   docker compose up --build -d
-#   ../docker/smoke.sh          # end-to-end assertions
 #   docker compose down -v
 #
 # Networking note: guardiand's port is deliberately NOT published to the host
@@ -29,12 +29,14 @@ services:
       - guardian-data:/var/lib/guardian
       - guardian-keys:/etc/guardian/keys
     # Hot path (8071) is internal only — Angie reaches it as http://guardiand:8071.
-    # Admin/metrics (8072) is published to host loopback so smoke.sh and manual
-    # curl can reach the admin API and /metrics.
+    # Admin/metrics (8072) is published to host loopback so the e2e suite and
+    # manual curl can reach the admin API and /metrics. The host port is
+    # overridable via GUARDIAN_ADMIN_PORT so the Go e2e harness can pick a free
+    # port and never collide with whatever else is running on the box.
     expose:
       - "8071"
     ports:
-      - "127.0.0.1:8072:8072"
+      - "127.0.0.1:${GUARDIAN_ADMIN_PORT:-8072}:8072"
     healthcheck:
       # The distroless image has no shell; guardiand serves /healthz on both
       # listeners. Angie depends on this being healthy before it starts.
@@ -61,7 +63,9 @@ services:
     volumes:
       - ./angie.docker.conf:/etc/angie/angie.conf:ro
     ports:
-      - "127.0.0.1:8080:80"   # the protected site, on the host loopback
+      # The protected site, on the host loopback. Host port overridable via
+      # GUARDIAN_SITE_PORT so the e2e harness can pick a free port.
+      - "127.0.0.1:${GUARDIAN_SITE_PORT:-8080}:80"
 
 volumes:
   guardian-data:

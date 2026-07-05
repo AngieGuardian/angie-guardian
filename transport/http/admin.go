@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/metrics"
+	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -44,12 +47,23 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	})
 
 	// Authenticated admin API.
+	s.mux.HandleFunc("GET /admin/blocks", s.auth(s.handleBlockList))
 	s.mux.HandleFunc("GET /admin/blocks/{ip}", s.auth(s.handleBlockStatus))
 	s.mux.HandleFunc("PUT /admin/blocks/{ip}", s.auth(s.handleBlock))
 	s.mux.HandleFunc("DELETE /admin/blocks/{ip}", s.auth(s.handleUnblock))
+	s.mux.HandleFunc("GET /admin/decisions", s.auth(s.handleDecisions))
+	s.mux.HandleFunc("GET /admin/stats", s.auth(s.handleStats))
 	s.mux.HandleFunc("GET /admin/score", s.auth(s.handleScore))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
+
+	// The reporting dashboard is a static self-contained page: it holds no data
+	// itself (all data comes from the token-guarded endpoints above, which the
+	// page calls with a token the operator pastes once), so serving the shell
+	// unauthenticated is safe. Off by default; enable with admin.dashboard.
+	if cfg.Admin.Dashboard {
+		s.mux.HandleFunc("GET /admin/dashboard", s.handleDashboard)
+	}
 	return s
 }
 
@@ -116,6 +130,87 @@ func (s *AdminServer) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "blocked": false})
 }
 
+// handleBlockList returns every currently active behavioural block.
+func (s *AdminServer) handleBlockList(w http.ResponseWriter, r *http.Request) {
+	blocks, err := s.engine.ListBlocks(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(blocks), "blocks": blocks})
+}
+
+// handleDecisions returns the engine's recent non-allow decisions, newest
+// first. Query: ?limit= (default 50), ?action=deny|challenge, ?reason=<prefix>.
+func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be a positive integer"})
+			return
+		}
+		limit = n
+	}
+	action, reason := q.Get("action"), q.Get("reason")
+
+	// Filter over the full ring, then cut to limit, so a filtered view is not
+	// starved by unrelated entries.
+	all := s.engine.RecentDecisions(0)
+	out := make([]core.RecentDecision, 0, min(limit, len(all)))
+	for _, d := range all {
+		if action != "" && d.Action != action {
+			continue
+		}
+		if reason != "" && !strings.HasPrefix(d.Reason, reason) {
+			continue
+		}
+		out = append(out, d)
+		if len(out) == limit {
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "decisions": out})
+}
+
+// handleStats returns a small rollup for the dashboard header: active block
+// count plus action/reason-category counts over the recent-decisions window.
+// Long-horizon numbers live in /metrics; this is the "right now" view.
+func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
+	blocks, err := s.engine.ListBlocks(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	recent := s.engine.RecentDecisions(0)
+	byAction := map[string]int{}
+	byReason := map[string]int{}
+	for _, d := range recent {
+		byAction[d.Action]++
+		// Collapse to the leading token ("waf:dotfile-probe" → "waf"), the same
+		// categories the guardian_decisions_total metric uses.
+		cat := d.Reason
+		if i := strings.IndexByte(cat, ':'); i >= 0 {
+			cat = cat[:i]
+		}
+		byReason[cat]++
+	}
+	out := map[string]any{
+		"blocks_active": len(blocks),
+		"recent": map[string]any{
+			"total":     len(recent),
+			"by_action": byAction,
+			"by_reason": byReason,
+		},
+	}
+	if len(recent) > 0 {
+		out["recent"].(map[string]any)["newest"] = recent[0].Time
+		out["recent"].(map[string]any)["oldest"] = recent[len(recent)-1].Time
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleScore answers "how anomalous would this request look?" for tuning
 // challenge_at/deny_at. Query: ?host=&uri=&ua=
 func (s *AdminServer) handleScore(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +244,20 @@ func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("admin rotated signing key", "key", s.keyPath, "prev_dir", s.prevDir)
 	writeJSON(w, http.StatusOK, map[string]any{"rotated": true})
+}
+
+// handleDashboard serves the static reporting page. No auth: the shell holds
+// no data — everything it shows comes from the token-guarded endpoints, called
+// with a token the operator provides in-page (kept in sessionStorage).
+func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		http.Error(w, "dashboard page missing", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(page)
 }
 
 // handleConfig returns a redacted view of the loaded per-domain config, so an

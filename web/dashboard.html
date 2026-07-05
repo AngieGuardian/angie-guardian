@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<!-- Angie Guardian — WAF + proof-of-work bot firewall for Angie.
+     Copyright (C) 2026 Melroy van den Berg
+     SPDX-License-Identifier: AGPL-3.0-or-later
+
+     Internal reporting dashboard. This file is a static shell: it holds no
+     data and no secrets. All data comes from the bearer-token-guarded
+     /admin/* endpoints; the operator pastes the admin token once and it is
+     kept in sessionStorage only. Served at GET /admin/dashboard when
+     admin.dashboard is enabled (off by default).
+
+     Everything the API returns (URIs, User-Agents, block reasons) is
+     attacker-influenced text: rendering uses textContent exclusively, never
+     interpolated HTML. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Guardian dashboard</title>
+<style>
+  :root {
+    --plane: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+    --critical: #d03b3b; --warning: #fab219; --good: #0ca30c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --plane: #0d0d0d; --surface: #1a1a19;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    }
+  }
+  /* Manual override (the Theme button): data-theme on :root beats the
+     media-query default in both directions. */
+  :root[data-theme="dark"] {
+    --plane: #0d0d0d; --surface: #1a1a19;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+  }
+  :root[data-theme="light"] {
+    --plane: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--plane); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+  header { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+  h1 { font-size: 1.15rem; margin: 0 auto 0 0; }
+  h2 { font-size: 0.85rem; font-weight: 600; color: var(--ink-2);
+       text-transform: uppercase; letter-spacing: 0.04em; margin: 1.75rem 0 0.5rem; }
+  .meta { color: var(--muted); font-size: 0.8rem; }
+  button { font: inherit; color: var(--ink); background: var(--surface);
+           border: 1px solid var(--border); border-radius: 6px;
+           padding: 0.25rem 0.7rem; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+
+  /* KPI stat tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+           gap: 0.75rem; margin-top: 1rem; }
+  .tile { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 10px; padding: 0.8rem 1rem; }
+  .tile .label { color: var(--ink-2); font-size: 0.8rem; }
+  .tile .value { font-size: 1.9rem; font-weight: 600; margin-top: 0.15rem; }
+  .tile .sub { color: var(--muted); font-size: 0.75rem; margin-top: 0.1rem; }
+
+  /* Tables (wide content scrolls inside its own container) */
+  .tablewrap { background: var(--surface); border: 1px solid var(--border);
+               border-radius: 10px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+  th { text-align: left; color: var(--muted); font-weight: 500;
+       padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  td { padding: 0.45rem 0.75rem; border-bottom: 1px solid var(--grid);
+       vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, td.time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.wrap { word-break: break-all; max-width: 26rem; }
+  .empty { color: var(--muted); padding: 0.7rem 0.75rem; }
+
+  /* Action chips: colored dot + text label — never color alone */
+  .chip { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
+  .chip::before { content: ""; width: 0.55rem; height: 0.55rem; border-radius: 50%;
+                  background: var(--muted); flex: none; }
+  .chip.deny::before { background: var(--critical); }
+  .chip.challenge::before { background: var(--warning); }
+  .chip.on::before { background: var(--good); }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 56rem) { .cols { grid-template-columns: 1fr; } }
+
+  /* Token gate */
+  #gate { max-width: 26rem; margin: 15vh auto 0; background: var(--surface);
+          border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; }
+  #gate input { width: 100%; font: inherit; color: var(--ink); background: var(--plane);
+                border: 1px solid var(--border); border-radius: 6px;
+                padding: 0.45rem 0.6rem; margin: 0.75rem 0; }
+  #gate .err { color: var(--critical); font-size: 0.8rem; min-height: 1.2em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="gate" hidden>
+  <h1>Guardian dashboard</h1>
+  <p class="meta">Paste the admin bearer token (<code>admin.token</code>).
+     It is kept in this tab's sessionStorage only.</p>
+  <input id="token-input" type="password" autocomplete="off" placeholder="admin token">
+  <div class="err" id="gate-err"></div>
+  <button id="token-go">Connect</button>
+</div>
+
+<main id="app" hidden>
+  <header>
+    <h1>Guardian dashboard</h1>
+    <span class="meta" id="refreshed"></span>
+    <button id="theme">Theme: auto</button>
+    <button id="pause">Pause</button>
+    <button id="logout">Forget token</button>
+  </header>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Active blocks</div>
+      <div class="value" id="t-blocks">–</div>
+      <div class="sub">behavioural + admin</div></div>
+    <div class="tile"><div class="label">Recent denies</div>
+      <div class="value" id="t-denies">–</div>
+      <div class="sub" id="t-window">in the recent window</div></div>
+    <div class="tile"><div class="label">Recent challenges</div>
+      <div class="value" id="t-challenges">–</div>
+      <div class="sub">proof-of-work issued</div></div>
+    <div class="tile"><div class="label">Top reason</div>
+      <div class="value" id="t-reason">–</div>
+      <div class="sub" id="t-reason-n"></div></div>
+  </div>
+
+  <h2>Active blocks</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+      <tbody id="blocks"></tbody>
+    </table>
+    <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
+  </div>
+
+  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
+                 <th>IP</th><th>Request</th><th>User-Agent</th></tr></thead>
+      <tbody id="decisions"></tbody>
+    </table>
+    <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Domains</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Domain</th><th>PoW</th><th>Mode</th><th>Signatures</th>
+                     <th>Behaviour</th></tr></thead>
+          <tbody id="domains"></tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <h2>Recent by reason</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Reason category</th><th>Count</th></tr></thead>
+          <tbody id="reasons"></tbody>
+        </table>
+        <div class="empty" id="reasons-empty" hidden>No recent activity.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const KEY = "guardian_admin_token";
+  let paused = false;
+  let timer = null;
+
+  // --- tiny DOM builders: data always lands via textContent, never HTML ---
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const row = (...cells) => {
+    const tr = document.createElement("tr");
+    for (const c of cells) tr.appendChild(c);
+    return tr;
+  };
+  const td = (cls, text) => el("td", cls, text);
+
+  const api = async (path, opts = {}) => {
+    const r = await fetch(path, {
+      ...opts,
+      headers: { Authorization: "Bearer " + sessionStorage.getItem(KEY), ...opts.headers },
+    });
+    if (r.status === 401) { logout("Token rejected — paste it again."); throw new Error("unauthorized"); }
+    if (!r.ok) throw new Error(path + ": " + r.status);
+    return r.json();
+  };
+
+  const relTime = (iso) => {
+    const d = (new Date(iso) - Date.now()) / 1000;
+    const abs = Math.abs(d);
+    const fmt = (n, u) => (d < 0 ? `${n}${u} ago` : `in ${n}${u}`);
+    if (abs < 90) return fmt(Math.round(abs), "s");
+    if (abs < 5400) return fmt(Math.round(abs / 60), "m");
+    if (abs < 129600) return fmt(Math.round(abs / 3600), "h");
+    return fmt(Math.round(abs / 86400), "d");
+  };
+  const clock = (iso) => new Date(iso).toLocaleTimeString();
+
+  const render = async () => {
+    const [stats, blocks, decisions, config] = await Promise.all([
+      api("/admin/stats"), api("/admin/blocks"),
+      api("/admin/decisions?limit=100"), api("/admin/config"),
+    ]);
+
+    // KPI tiles.
+    $("t-blocks").textContent = stats.blocks_active;
+    const byAction = stats.recent.by_action || {};
+    $("t-denies").textContent = byAction.deny || 0;
+    $("t-challenges").textContent = byAction.challenge || 0;
+    const reasons = Object.entries(stats.recent.by_reason || {}).sort((a, b) => b[1] - a[1]);
+    $("t-reason").textContent = reasons.length ? reasons[0][0] : "–";
+    $("t-reason-n").textContent = reasons.length ? reasons[0][1] + " recent" : "";
+    $("t-window").textContent = stats.recent.oldest
+      ? "since " + clock(stats.recent.oldest) : "in the recent window";
+
+    // Active blocks.
+    const bt = $("blocks");
+    bt.replaceChildren(...blocks.blocks.map((b) => {
+      const unblock = el("button", null, "Unblock");
+      unblock.addEventListener("click", async () => {
+        await api("/admin/blocks/" + encodeURIComponent(b.ip), { method: "DELETE" });
+        render().catch(() => {});
+      });
+      const act = td(null, ""); act.appendChild(unblock);
+      return row(td("num", b.ip), td("wrap", b.reason),
+        td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
+    }));
+    $("blocks-empty").hidden = blocks.blocks.length > 0;
+
+    // Recent decisions.
+    const dt = $("decisions");
+    dt.replaceChildren(...decisions.decisions.map((d) => {
+      const action = td(null, "");
+      action.appendChild(el("span", "chip " + d.action, d.action));
+      return row(td("time", clock(d.time)), action, td("wrap", d.reason),
+        td("wrap", d.host), td("num", d.ip),
+        td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+    }));
+    $("decisions-empty").hidden = decisions.decisions.length > 0;
+
+    // Reason rollup.
+    $("reasons").replaceChildren(...reasons.map(([r, n]) =>
+      row(td("wrap", r), td("num", String(n)))));
+    $("reasons-empty").hidden = reasons.length > 0;
+
+    // Domains.
+    const doms = Object.entries(config.domains || {}).sort((a, b) => a[0].localeCompare(b[0]));
+    doms.push(["(defaults)", config.defaults]);
+    $("domains").replaceChildren(...doms.map(([name, dc]) => {
+      const pow = td(null, "");
+      pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
+      return row(td("wrap", name), pow, td(null, dc.pow_mode),
+        td(null, dc.waf_keywords ? "on" : "off"),
+        td(null, dc.waf_ip_behaviour ? "on" : "off"));
+    }));
+
+    $("refreshed").textContent = "updated " + new Date().toLocaleTimeString();
+  };
+
+  const tick = () => {
+    if (!paused) render().catch((e) => { if (e.message !== "unauthorized") console.error(e); });
+  };
+  const start = () => {
+    $("gate").hidden = true; $("app").hidden = false;
+    tick();
+    timer = setInterval(tick, 5000);
+  };
+  const logout = (msg) => {
+    sessionStorage.removeItem(KEY);
+    clearInterval(timer);
+    $("app").hidden = true; $("gate").hidden = false;
+    $("gate-err").textContent = msg || "";
+  };
+
+  $("token-go").addEventListener("click", async () => {
+    sessionStorage.setItem(KEY, $("token-input").value.trim());
+    try { await api("/admin/stats"); start(); }
+    catch { /* logout() already re-opened the gate on 401 */ }
+  });
+  $("token-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("token-go").click();
+  });
+  $("pause").addEventListener("click", (e) => {
+    paused = !paused;
+    e.target.textContent = paused ? "Resume" : "Pause";
+  });
+  $("logout").addEventListener("click", () => logout());
+
+  // Theme: auto (follow the OS) → dark → light, persisted per browser. A
+  // preference is plain UI state, so localStorage (not the token's
+  // sessionStorage) is fine.
+  const THEME_KEY = "guardian_dashboard_theme";
+  const applyTheme = (mode) => {
+    if (mode === "dark" || mode === "light") {
+      document.documentElement.dataset.theme = mode;
+    } else {
+      delete document.documentElement.dataset.theme;
+      mode = "auto";
+    }
+    $("theme").textContent = "Theme: " + mode;
+  };
+  $("theme").addEventListener("click", () => {
+    const order = ["auto", "dark", "light"];
+    const next = order[(order.indexOf(localStorage.getItem(THEME_KEY) || "auto") + 1) % order.length];
+    if (next === "auto") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  });
+  applyTheme(localStorage.getItem(THEME_KEY));
+
+  if (sessionStorage.getItem(KEY)) start(); else $("gate").hidden = false;
+})();
+</script>
+</body>
+</html>

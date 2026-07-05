@@ -1,0 +1,229 @@
+// Angie Guardian — WAF + proof-of-work bot firewall for Angie.
+// Copyright (C) 2026 Melroy van den Berg
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build e2e
+
+package e2e
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// The "WAF report" surface Guardian exposes is Prometheus /metrics plus the
+// admin API JSON. These tests drive a known action and assert the relevant
+// counter moved (deltas, so they're order-independent), and that the admin API
+// reflects live state.
+
+// TestMetricsDecisionsCounter drives a WAF deny through Angie and asserts the
+// guardian_decisions_total{action="deny"} counter incremented by at least the
+// requests we made.
+func TestMetricsDecisionsCounter(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	before := metric(t, "guardian_decisions_total", `action="deny"`)
+
+	// A deny (not block, to avoid poisoning): two wp-login probes.
+	for range 2 {
+		if r := get(t, "/wp-login.php", powHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 deny, got %d", r.StatusCode)
+		}
+	}
+
+	after := metric(t, "guardian_decisions_total", `action="deny"`)
+	if after < before+2 {
+		t.Fatalf("guardian_decisions_total{action=deny}: %v → %v, want +2 or more", before, after)
+	}
+}
+
+// TestMetricsChallengeLifecycle drives a full challenge→solve through Angie and
+// asserts both the "issued" and "solved" challenge outcomes are counted.
+func TestMetricsChallengeLifecycle(t *testing.T) {
+	issuedBefore := metric(t, "guardian_challenges_total", `outcome="issued"`)
+	solvedBefore := metric(t, "guardian_challenges_total", `outcome="solved"`)
+
+	// One complete solve through Angie bumps issued (the /challenge fetch) and
+	// solved (the successful /pass).
+	_ = solvePoWThroughAngie(t, "/metrics-solve", powHost, browserUA+" m")
+
+	if got := metric(t, "guardian_challenges_total", `outcome="issued"`); got < issuedBefore+1 {
+		t.Errorf("challenges issued: %v → %v, want +1", issuedBefore, got)
+	}
+	if got := metric(t, "guardian_challenges_total", `outcome="solved"`); got < solvedBefore+1 {
+		t.Errorf("challenges solved: %v → %v, want +1", solvedBefore, got)
+	}
+}
+
+// TestMetricsBlocksPlaced drives a WAF `block` and asserts the blocks-placed
+// counter incremented.
+func TestMetricsBlocksPlaced(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks()
+
+	before := metric(t, "guardian_blocks_placed_total")
+	if r := get(t, "/.env", powHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("/.env: status %d, want 403", r.StatusCode)
+	}
+	if after := metric(t, "guardian_blocks_placed_total"); after < before+1 {
+		t.Fatalf("guardian_blocks_placed_total: %v → %v, want +1", before, after)
+	}
+}
+
+// TestAdminConfigReflectsDomains asserts the admin /admin/config view reflects
+// the per-domain policy the harness config declares: PoW on for localhost, off
+// for api.localhost.
+func TestAdminConfigReflectsDomains(t *testing.T) {
+	resp := adminReq(t, http.MethodGet, "/admin/config", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/config: status %d, want 200", resp.StatusCode)
+	}
+	var cfg struct {
+		Store   string `json:"store"`
+		Domains map[string]struct {
+			PoWEnabled bool `json:"pow_enabled"`
+			Keywords   bool `json:"waf_keywords"`
+		} `json:"domains"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode /admin/config: %v", err)
+	}
+	if cfg.Store != "bbolt" {
+		t.Errorf("store = %q, want bbolt (harness config)", cfg.Store)
+	}
+	if d, ok := cfg.Domains["localhost"]; !ok || !d.PoWEnabled {
+		t.Errorf("localhost pow_enabled = %+v, want present and true", d)
+	}
+	if d, ok := cfg.Domains["api.localhost"]; !ok || d.PoWEnabled {
+		t.Errorf("api.localhost pow_enabled = %+v, want present and false", d)
+	}
+}
+
+// TestAdminAuthRequired confirms the admin API rejects an unauthenticated
+// request (defense-in-depth for the internal listener).
+func TestAdminAuthRequired(t *testing.T) {
+	resp, err := noRedirect.Get(admin + "/admin/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/admin/config without token: status %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestDecisionLogsAreStructured asserts guardiand emits structured decision log
+// lines (the audit trail a log pipeline / SIEM ingests) — a deny should appear
+// with its reason in the container logs.
+func TestDecisionLogsAreStructured(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	// Drive a distinctive deny, then look for it in the logs.
+	if r := get(t, "/xmlrpc.php", powHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("/xmlrpc.php: status %d, want 403", r.StatusCode)
+	}
+	logs := guardiandLogs(t)
+	if !strings.Contains(logs, "decision") || !strings.Contains(logs, "waf:wp-probe") {
+		t.Errorf("expected a structured decision log line mentioning waf:wp-probe; recent logs:\n%s",
+			tail(logs, 2000))
+	}
+}
+
+// tail returns the last n bytes of s (for readable failure output).
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
+}
+
+// TestAdminBlockListAndDecisions covers the dashboard's data endpoints: after a
+// WAF `block`, GET /admin/blocks lists the blocked source IP and GET
+// /admin/decisions shows the deny, and /admin/stats rolls both up.
+func TestAdminBlockListAndDecisions(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks()
+
+	// One instant-block probe (dotfile-probe) through Angie.
+	if r := get(t, "/.git/config", powHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("/.git/config: status %d, want 403", r.StatusCode)
+	}
+
+	// /admin/blocks lists the gateway IP with the rule as reason and a TTL.
+	resp := adminReq(t, http.MethodGet, "/admin/blocks", nil)
+	var bl struct {
+		Count  int `json:"count"`
+		Blocks []struct {
+			IP        string  `json:"ip"`
+			Reason    string  `json:"reason"`
+			ExpiresAt *string `json:"expires_at"`
+		} `json:"blocks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&bl); err != nil {
+		t.Fatalf("decode /admin/blocks: %v", err)
+	}
+	if bl.Count < 1 {
+		t.Fatal("/admin/blocks lists nothing after a WAF block")
+	}
+	var found bool
+	for _, b := range bl.Blocks {
+		if strings.Contains(b.Reason, "dotfile-probe") {
+			found = true
+			if b.ExpiresAt == nil {
+				t.Error("behavioural block should carry expires_at")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no dotfile-probe block in %+v", bl.Blocks)
+	}
+
+	// /admin/decisions has the deny, newest first, with the request details.
+	resp = adminReq(t, http.MethodGet, "/admin/decisions?action=deny&reason=waf&limit=10", nil)
+	var dl struct {
+		Count     int `json:"count"`
+		Decisions []struct {
+			URI    string `json:"uri"`
+			Reason string `json:"reason"`
+			Action string `json:"action"`
+		} `json:"decisions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dl); err != nil {
+		t.Fatalf("decode /admin/decisions: %v", err)
+	}
+	if dl.Count < 1 || !strings.Contains(dl.Decisions[0].URI, "/.git/config") {
+		t.Fatalf("decisions = %+v, want the /.git/config deny first", dl.Decisions)
+	}
+
+	// /admin/stats reflects the same activity.
+	resp = adminReq(t, http.MethodGet, "/admin/stats", nil)
+	var st struct {
+		BlocksActive int `json:"blocks_active"`
+		Recent       struct {
+			Total    int            `json:"total"`
+			ByAction map[string]int `json:"by_action"`
+		} `json:"recent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("decode /admin/stats: %v", err)
+	}
+	if st.BlocksActive < 1 || st.Recent.ByAction["deny"] < 1 {
+		t.Fatalf("stats = %+v, want ≥1 active block and ≥1 recent deny", st)
+	}
+}
+
+// TestDashboardServed confirms the reporting page is up (the harness enables
+// admin.dashboard) and is the static shell — no token required for the shell,
+// while its data endpoints stay guarded (TestAdminAuthRequired).
+func TestDashboardServed(t *testing.T) {
+	resp := req(t, http.MethodGet, admin+"/admin/dashboard", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/dashboard: status %d, want 200", resp.StatusCode)
+	}
+	body := bodyOf(t, resp)
+	if !strings.Contains(body, "Guardian dashboard") || !strings.Contains(body, "/admin/stats") {
+		t.Fatalf("dashboard page content unexpected:\n%s", tail(body, 500))
+	}
+}

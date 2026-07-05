@@ -20,6 +20,11 @@ log_level: info
 admin:
   listen: 127.0.0.1:8072
   token: ""                   # or set the ADMIN_TOKEN env var
+  # Built-in reporting page at GET /admin/dashboard (active blocks, recent
+  # deny/challenge decisions, per-domain config). The page is a static shell —
+  # all data flows through the token-guarded /admin/* endpoints, and the
+  # operator pastes the token into the page once. Off by default.
+  # dashboard: true
 
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
 # missing; NEVER regenerated on restart, so restarts don't log clients out

@@ -7,6 +7,8 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -128,6 +130,59 @@ func (s *Redis) CompareAndSwap(ctx context.Context, key string, old, new []byte,
 		return false, err
 	}
 	return n == 1, nil
+}
+
+// globEscape neutralizes SCAN MATCH glob metacharacters so a prefix is always
+// matched literally (our key prefixes are plain, but be correct regardless).
+func globEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`, "[", `\[`, "]", `\]`)
+	return r.Replace(s)
+}
+
+func (s *Redis) Scan(ctx context.Context, prefix string) ([]KV, error) {
+	// SCAN walks the whole keyspace and filters server-side; fine for an
+	// occasional admin read, unfit for the hot path (see the interface doc).
+	var keys []string
+	iter := s.rdb.Scan(ctx, 0, globEscape(prefix)+"*", 512).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fetch values + TTLs in one pipelined round trip.
+	gets := make([]*redis.StringCmd, len(keys))
+	ttls := make([]*redis.DurationCmd, len(keys))
+	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		for i, k := range keys {
+			gets[i] = p.Get(ctx, k)
+			ttls[i] = p.PTTL(ctx, k)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, err
+	}
+
+	now := time.Now()
+	var out []KV
+	for i, k := range keys {
+		v, err := gets[i].Bytes()
+		if errors.Is(err, redis.Nil) {
+			continue // expired between SCAN and GET
+		}
+		if err != nil {
+			return nil, err
+		}
+		var exp time.Time
+		if ttl := ttls[i].Val(); ttl > 0 {
+			exp = now.Add(ttl)
+		}
+		out = append(out, KV{Key: k, Value: v, ExpiresAt: exp})
+	}
+	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+	return out, nil
 }
 
 func (s *Redis) Close() error { return s.rdb.Close() }

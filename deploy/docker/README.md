@@ -13,33 +13,44 @@ challenge interstitial, WAF signature denies, behavioural blocking, the admin
 API, and the fail-open toggle — so you can verify behaviour and reproduce
 findings on a real Angie binary.
 
-## Usage
+## The end-to-end suite
+
+The automated e2e tests live in `test/e2e/` (Go, `//go:build e2e`) and boot
+**this** compose stack with [testcontainers-go](https://golang.testcontainers.org/),
+drive traffic **through Angie**, and assert on the guardian's decisions and its
+report surface (Prometheus `/metrics` + the admin API). Run them from the repo
+root — Docker is the only prerequisite:
+
+```sh
+make e2e                              # or: go test -tags e2e ./test/e2e/...
+```
+
+The suite picks two free host ports, brings the stack up, runs every scenario,
+and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
+PoW challenge issuance, a **full PoW solve through Angie** (challenge → solve →
+cookie → vouched request → spent-challenge replay), the no-JS meta-refresh
+fallback, WAF `deny`/`block`/`challenge` actions, scanner-UA blocking, per-domain
+policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped, and
+the `/metrics` + `/admin/*` report surface.
+
+Because every request from the host shares one source IP (the Docker gateway), a
+WAF `block` blocks that IP; the harness clears such blocks via the admin API
+(`DELETE /admin/blocks/{ip}`) around block-placing tests so they can't poison the
+rest of the run.
+
+## Manual use
 
 ```sh
 cd deploy/docker
 docker compose up --build -d
-./smoke.sh                 # end-to-end assertions (expects 6/6)
 docker compose down -v     # tear down + drop volumes
 ```
 
-- Protected site: `http://127.0.0.1:8080`
-- Admin API + `/metrics`: `http://127.0.0.1:8072` (token `harness-admin-token`)
+- Protected site: `http://127.0.0.1:8080` (override with `GUARDIAN_SITE_PORT`)
+- Admin API + `/metrics`: `http://127.0.0.1:8072` (token `harness-admin-token`,
+  override the host port with `GUARDIAN_ADMIN_PORT`)
 - guardiand's hot path (8071) is **not** published — internal network only,
   mirroring production where the sidecar must not be directly reachable.
-
-## What the smoke test checks
-
-| Check | Expected |
-|-------|----------|
-| Allowlisted `/robots.txt` | reaches backend (200, whoami body) |
-| Browser-shaped GET (`Mozilla` UA) | PoW challenge interstitial (200 HTML) |
-| curl UA on PoW-always domain | passes WAF to backend |
-| `/.env` signature | 403 deny (and places a behavioural block) |
-| guardiand stopped | backend still served (fail-open) |
-
-Because every request from the host shares one source IP (the Docker gateway),
-a WAF deny blocks that IP; the smoke test clears the block via the admin API
-between phases and runs the blocking probe last.
 
 ## Reproducing review findings
 

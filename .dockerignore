@@ -1,0 +1,30 @@
+# Keep the Docker build context small and reproducible. The image is built
+# from the repo root (deploy/docker/Dockerfile does COPY . .), so exclude
+# everything the build does not need — most importantly the committed 25MB
+# guardiand binary at the repo root, which would otherwise bloat every build.
+
+# Binaries / build output
+/guardiand
+/guardian-train
+/guardian-loadtest
+/bin/
+/dist/
+
+# Test & coverage
+*.test
+coverage.out
+
+# Runtime data (bbolt db, signing keys) — never belongs in an image
+*.db
+*.key
+
+# VCS / editor / OS
+.git/
+.gitignore
+.idea/
+.vscode/
+*~
+
+# Docs and CI that the build does not need
+*.md
+.gitlab-ci.yml

@@ -61,9 +61,16 @@ signature checks, so a stolen token can't ride past the WAF.
   solve-time and anomaly-score histograms, blocks placed, store op latency,
   and end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json`.
 - **Admin API**: bearer-token JSON API on the same listener: inspect/place/
-  clear IP blocks, score a hypothetical request against the anomaly model
-  (`GET /admin/score`), rotate the signing key, and view the active per-domain
-  config. Refuses to expose itself on a non-loopback address without a token.
+  clear IP blocks (`/admin/blocks/{ip}`), list all active blocks
+  (`/admin/blocks`), read the recent deny/challenge feed (`/admin/decisions`)
+  and its rollup (`/admin/stats`), score a hypothetical request against the
+  anomaly model (`GET /admin/score`), rotate the signing key, and view the
+  active per-domain config. Refuses to expose itself on a non-loopback address
+  without a token.
+- **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
+  internal page at `/admin/dashboard` — active blocks with one-click unblock,
+  the recent decisions feed, and per-domain status — driven entirely by the
+  token-guarded admin API. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` archives the current Ed25519
   key and generates a new one; tokens signed by the old key keep verifying
   until they expire, so rotation never logs anyone out.
@@ -84,6 +91,18 @@ go test ./...            # whole suite
 go test -race ./...      # with the race detector
 go test ./core/...       # a subtree
 go test -run TestEvaluate ./core   # a single test by name
+```
+
+On top of the unit suite, an **end-to-end suite** (`test/e2e/`, gated behind the
+`e2e` build tag) boots the real `Angie → guardiand → whoami` Docker stack with
+[testcontainers-go](https://golang.testcontainers.org/) and drives traffic
+*through Angie* — solving a real PoW challenge, exercising the WAF
+`deny`/`block`/`challenge` actions and behavioural blocking, the fail-open mode,
+and the `/metrics` + admin-API report surface. It needs Docker and is excluded
+from the default `go test ./...`:
+
+```sh
+make e2e                 # or: go test -tags e2e ./test/e2e/...
 ```
 
 Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly

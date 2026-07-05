@@ -7,7 +7,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,6 +127,21 @@ func (s *Memory) CompareAndSwap(_ context.Context, key string, old, new []byte, 
 	}
 	s.m[key] = entry{value: bytes.Clone(new), expiresAt: expiry(ttl)}
 	return true, nil
+}
+
+func (s *Memory) Scan(_ context.Context, prefix string) ([]KV, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var out []KV
+	for k, e := range s.m {
+		if !strings.HasPrefix(k, prefix) || e.expired(now) {
+			continue
+		}
+		out = append(out, KV{Key: k, Value: bytes.Clone(e.value), ExpiresAt: e.expiresAt})
+	}
+	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+	return out, nil
 }
 
 func (s *Memory) Close() error {

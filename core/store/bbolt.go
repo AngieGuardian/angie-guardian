@@ -162,6 +162,28 @@ func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, tt
 	return swapped, err
 }
 
+func (s *Bolt) Scan(_ context.Context, prefix string) ([]KV, error) {
+	var out []KV
+	err := s.db.View(func(tx *bolt.Tx) error {
+		now := time.Now()
+		p := []byte(prefix)
+		c := tx.Bucket(boltBucket).Cursor()
+		for k, raw := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, raw = c.Next() {
+			v, ok := decode(raw, now)
+			if !ok {
+				continue // expired but not yet swept
+			}
+			var exp time.Time
+			if nano := binary.BigEndian.Uint64(raw); nano != 0 {
+				exp = time.Unix(0, int64(nano))
+			}
+			out = append(out, KV{Key: string(k), Value: bytes.Clone(v), ExpiresAt: exp})
+		}
+		return nil
+	})
+	return out, err // cursor iteration is already key-ordered
+}
+
 func (s *Bolt) Close() error {
 	close(s.done)
 	return s.db.Close()

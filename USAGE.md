@@ -126,6 +126,20 @@ A=http://127.0.0.1:8072
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # {"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
 
+# List every currently active block, with reasons and expiry.
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks
+# {"count":2,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
+#                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
+
+# What did the guardian just challenge or deny? Newest first, from an
+# in-process ring buffer (per instance, cleared on restart). Filters:
+# ?limit= (default 50), ?action=deny|challenge, ?reason=<prefix e.g. waf>.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
+
+# A small "right now" rollup: active blocks + recent counts by action and
+# reason category. (Long-horizon numbers live in /metrics.)
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
+
 # Block an IP for two hours (reason + ttl optional; default 15m).
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
@@ -151,6 +165,17 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/config
 # Prometheus scrape (no token needed).
 curl -s $A/metrics | grep guardian_
 ```
+
+### The reporting dashboard
+
+Set `admin.dashboard: true` and open `http://127.0.0.1:8072/admin/dashboard` in
+a browser: active blocks (with one-click unblock), the recent deny/challenge
+feed, per-domain feature status, and headline counters, auto-refreshing. The
+page is a static shell — it stores no secrets and every data call goes to the
+token-guarded `/admin/*` endpoints with a token you paste once (kept in the
+tab's sessionStorage). It is **internal-only by construction**: it lives on the
+admin listener, which refuses a non-loopback bind without a token, and stays
+off unless enabled.
 
 ## 5. Train the anomaly model
 

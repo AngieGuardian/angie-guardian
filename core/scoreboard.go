@@ -13,9 +13,13 @@ import (
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
+// blockKeyPrefix namespaces active behavioural blocks in the store; the
+// admin API's ListBlocks enumerates it with Store.Scan.
+const blockKeyPrefix = "block:"
+
 // BlockKey is the store key holding an active behavioural block for an IP.
 // Written by the scoreboard, read by the behaviour-block pipeline stage.
-func BlockKey(ip string) string { return "block:" + ip }
+func BlockKey(ip string) string { return blockKeyPrefix + ip }
 
 func blockCountKey(ip string) string { return "blkct:" + ip }
 

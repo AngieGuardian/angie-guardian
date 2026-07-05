@@ -27,14 +27,40 @@ format:
     # gofmt must leave nothing to change. Scope it to our own source dirs, not
     # the module cache (GOPATH lives under $CI_PROJECT_DIR/.go, and gofmt -l .
     # would otherwise flag unformatted files inside vendored dependencies).
-    - GOFMT_OUT=$(gofmt -l cmd core transport web) || true
+    - GOFMT_OUT=$(gofmt -l cmd core transport web test) || true
     - test -z "$GOFMT_OUT" || { echo 'gofmt needed on:'; echo "$GOFMT_OUT"; exit 1; }
     - go vet ./...
+    # Also vet the e2e-tagged suite so it can never silently fail to compile
+    # (it is excluded from the plain `./...` build by its //go:build e2e tag).
+    - go vet -tags e2e ./test/e2e/...
 
 test:
   stage: test
   script:
     - go test -race -count=1 ./...
+
+# End-to-end suite against a REAL Angie: boots deploy/docker/compose.yaml
+# (Angie + guardiand + whoami) with testcontainers-go and drives it through
+# Angie. Runs in docker-in-docker so testcontainers has a Docker daemon; kept
+# separate from the fast unit `test` job so unit runs stay quick and daemon-free.
+e2e:
+  stage: test
+  image: golang:1.25
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""            # plain-HTTP dind (no TLS) for simplicity
+    TESTCONTAINERS_RYUK_DISABLED: "true"  # dind tears itself down; Ryuk can't reap across it
+  before_script:
+    # The golang image has no docker CLI; testcontainers speaks the API over
+    # DOCKER_HOST directly, but the compose build needs buildkit reachable too.
+    - until docker info >/dev/null 2>&1 || nc -z docker 2375; do sleep 1; done
+  script:
+    - go test -tags e2e -count=1 -timeout 20m ./test/e2e/...
+  # Docker-in-docker isn't available on every runner; allow-fail keeps a missing
+  # dind runner from blocking the pipeline while still surfacing real failures.
+  allow_failure: true
 
 build:
   stage: build

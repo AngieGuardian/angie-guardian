@@ -1,0 +1,141 @@
+// Angie Guardian — WAF + proof-of-work bot firewall for Angie.
+// Copyright (C) 2026 Melroy van den Berg
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build e2e
+
+package e2e
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// The WAF rules under test are defined in deploy/docker/rules-common.yaml:
+//   wp-probe      deny   /wp-login.php ...
+//   dotfile-probe block  /.env /.git/ ...
+//   sqli-basic    challenge  UNION SELECT / ' or 1=1 ...
+//   scanner-ua    block  sqlmap nikto ...
+//
+// Every request from the test host shares the Docker gateway source IP, so a
+// `block` action places a behavioural block on that IP. Tests that trigger a
+// block clear it afterwards (t.Cleanup → clearGatewayBlocks) so they don't
+// poison later assertions.
+
+// TestWAFSignatureDeny confirms a `deny` rule (wp-probe) returns Angie's 403
+// denied page and does NOT place a behavioural block (deny != block).
+func TestWAFSignatureDeny(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks) // defensive; a deny shouldn't block, but be safe
+
+	resp := get(t, "/wp-login.php", powHost, "curl/8.0", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("/wp-login.php: status %d, want 403", resp.StatusCode)
+	}
+	// A follow-up unrelated request from the same IP still gets through — proof
+	// the deny did not blanket-block the source IP.
+	clearGatewayBlocks()
+	if r := get(t, "/robots.txt", powHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("benign request after a deny: status %d, want 200 (deny must not block the IP)", r.StatusCode)
+	}
+}
+
+// TestWAFInstantBlock confirms a `block` rule (dotfile-probe on /.env) both
+// denies the request AND places a behavioural block on the source IP: a
+// subsequent benign request from the same IP is then denied until the block is
+// cleared.
+func TestWAFInstantBlock(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks() // start clean
+
+	// The block probe.
+	resp := get(t, "/.env", powHost, "curl/8.0", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("/.env: status %d, want 403", resp.StatusCode)
+	}
+
+	// The admin API now reports the source (gateway) IP as blocked, with the
+	// rule as the reason.
+	ip, reason := findBlockedGateway(t)
+	if ip == "" {
+		t.Fatal("/.env did not place a behavioural block on the source IP")
+	}
+	if !strings.Contains(reason, "dotfile-probe") {
+		t.Errorf("block reason = %q, want it to mention the dotfile-probe rule", reason)
+	}
+
+	// While blocked, an otherwise-benign request from the same IP is denied.
+	if r := get(t, "/some-benign-page", powHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("benign request while blocked: status %d, want 403", r.StatusCode)
+	}
+
+	// Clearing the block via the admin API restores access.
+	clearGatewayBlocks()
+	if r := get(t, "/robots.txt", powHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("after unblock: status %d, want 200", r.StatusCode)
+	}
+}
+
+// TestWAFScannerUABlock confirms a `block` rule matched on the User-Agent
+// (scanner-ua: sqlmap) denies and blocks.
+func TestWAFScannerUABlock(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks()
+
+	resp := get(t, "/", powHost, "sqlmap/1.7", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("sqlmap UA: status %d, want 403", resp.StatusCode)
+	}
+	if ip, reason := findBlockedGateway(t); ip == "" {
+		t.Error("sqlmap UA did not place a behavioural block")
+	} else if !strings.Contains(reason, "scanner-ua") {
+		t.Errorf("block reason = %q, want scanner-ua", reason)
+	}
+}
+
+// TestWAFChallengeAction confirms a `challenge` rule (sqli-basic) forces a PoW
+// challenge rather than an outright deny on a PoW-enabled host — a softer
+// response that spares false positives.
+func TestWAFChallengeAction(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	// A SQLi-shaped query on the PoW host. The sqli-basic rule's action is
+	// `challenge`, so the browser is diverted to the interstitial (200 HTML),
+	// not denied.
+	resp := get(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("sqli challenge: status %d, want 200 interstitial", resp.StatusCode)
+	}
+	if body := bodyOf(t, resp); !strings.Contains(body, "guardian-data") {
+		t.Fatalf("sqli did not yield the PoW interstitial; body:\n%s", body)
+	}
+}
+
+// TestPerDomainPolicy confirms per-domain config is honoured through Angie: on
+// the PoW-disabled host (api.localhost) a browser UA is NOT challenged (WAF
+// only, no interstitial a machine client can't solve), yet a WAF signature
+// still denies. This proves the domain merge reaches the live decision.
+func TestPerDomainPolicy(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	// Browser UA on the WAF-only host: no challenge, reaches the backend.
+	resp := get(t, "/browse", wafOnlyHost, browserUA, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("browser UA on WAF-only host: status %d, want 200 (no PoW)", resp.StatusCode)
+	}
+	if body := bodyOf(t, resp); strings.Contains(body, "guardian-data") {
+		t.Fatal("WAF-only host must not serve a PoW interstitial")
+	}
+
+	// A WAF `deny` signature still fires on the same host.
+	if r := get(t, "/wp-login.php", wafOnlyHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("signature on WAF-only host: status %d, want 403", r.StatusCode)
+	}
+}
+
+// urlEscape is a tiny query-value escaper (avoids importing net/url just for a
+// couple of characters used in the SQLi probe).
+func urlEscape(s string) string {
+	r := strings.NewReplacer(" ", "%20", "'", "%27", "=", "%3D")
+	return r.Replace(s)
+}

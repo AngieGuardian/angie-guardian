@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test vet fmt clean
+.PHONY: all build wasm test e2e vet fmt clean
 
 # Build the three sidecar binaries into dist/.
 build:
@@ -24,11 +24,18 @@ all: build wasm
 test:
 	go test -race -count=1 ./...
 
+# End-to-end suite: boots the real Angie + guardiand + whoami stack from
+# deploy/docker/compose.yaml (via testcontainers-go) and drives it through
+# Angie. Requires Docker. Gated behind the `e2e` build tag so it never runs in
+# the fast unit `test` target above.
+e2e:
+	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+
 vet:
 	go vet ./...
 
 fmt:
-	gofmt -w cmd core transport web
+	gofmt -w cmd core transport web test
 
 clean:
 	rm -rf dist/

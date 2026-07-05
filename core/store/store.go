@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// KV is one live key returned by Scan, with its value and expiry.
+type KV struct {
+	Key       string
+	Value     []byte
+	ExpiresAt time.Time // zero = no expiry
+}
+
 // Store is the shared-state interface. All values are TTL-based so nothing
 // grows without bound; ttl <= 0 means no expiry.
 type Store interface {
@@ -34,6 +41,11 @@ type Store interface {
 	// equals old. old == nil requires the key to be absent (create-only).
 	// This is what makes spent-challenge marking replay-safe.
 	CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (swapped bool, err error)
+
+	// Scan returns every live key with the given literal prefix, sorted by
+	// key. An admin/reporting read (listing active blocks) — NOT for the auth
+	// hot path: it may walk a large keyspace on some backends.
+	Scan(ctx context.Context, prefix string) ([]KV, error)
 
 	Close() error
 }

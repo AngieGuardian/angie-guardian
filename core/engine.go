@@ -55,6 +55,7 @@ type Engine struct {
 	models  *anomaly.ModelCache
 	board   *Scoreboard
 	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
+	recent  recentRing       // last non-allow decisions, for the admin API
 	stages  []Stage
 	log     *slog.Logger
 }
@@ -132,7 +133,22 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	}
 	e.metrics.EvaluateLatency(time.Since(start).Seconds())
 	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), label)
+	if d.Action != ActionAllow {
+		e.recent.add(RecentDecision{
+			Time: start, Host: req.Host, IP: req.RemoteAddr,
+			Method: req.Method, URI: req.URI, UA: req.UserAgent,
+			Action: string(d.Action), Reason: d.Reason,
+		})
+	}
 	return d
+}
+
+// RecentDecisions returns the last non-allow decisions, newest first, up to
+// limit (<= 0 for all). Backed by a bounded in-process ring: per-instance,
+// lost on restart — a live operator view, not an audit log (that's the
+// structured decision log).
+func (e *Engine) RecentDecisions(limit int) []RecentDecision {
+	return e.recent.list(limit)
 }
 
 // reasonCategory collapses a full reason string ("waf:dotfile-probe",
@@ -206,6 +222,32 @@ func (e *Engine) UnblockIP(ctx context.Context, ip string) error {
 func (e *Engine) BlockStatus(ctx context.Context, ip string) (reason string, blocked bool, err error) {
 	v, ok, err := e.store.Get(ctx, BlockKey(ip))
 	return string(v), ok, err
+}
+
+// BlockEntry is one active behavioural block, as listed by the admin API.
+type BlockEntry struct {
+	IP        string     `json:"ip"`
+	Reason    string     `json:"reason"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = no expiry
+}
+
+// ListBlocks returns every currently active block (admin API / dashboard).
+// It scans the store, so it is an occasional admin read, not a hot-path call.
+func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
+	kvs, err := e.store.Scan(ctx, blockKeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BlockEntry, 0, len(kvs))
+	for _, kv := range kvs {
+		b := BlockEntry{IP: kv.Key[len(blockKeyPrefix):], Reason: string(kv.Value)}
+		if !kv.ExpiresAt.IsZero() {
+			exp := kv.ExpiresAt
+			b.ExpiresAt = &exp
+		}
+		out = append(out, b)
+	}
+	return out, nil
 }
 
 // ScoreRequest runs the anomaly scorer for a hypothetical request against the

@@ -135,6 +135,40 @@ func TestStoreConformance(t *testing.T) {
 			if string(v) != "spent" {
 				t.Fatalf("cas value = %q, want spent", v)
 			}
+
+			// Scan: live keys with the prefix only, key-sorted, values intact,
+			// expired entries filtered even before any sweeper runs.
+			for k, val := range map[string]string{"scan:a": "1", "scan:b": "2", "other": "x"} {
+				if err := s.Set(ctx, k, []byte(val), time.Hour); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.Set(ctx, "scan:dead", []byte("gone"), shortTTL); err != nil {
+				t.Fatal(err)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if err := s.Set(ctx, "scan:perm", []byte("3"), 0); err != nil {
+				t.Fatal(err)
+			}
+			kvs, err := s.Scan(ctx, "scan:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(kvs) != 3 || kvs[0].Key != "scan:a" || kvs[1].Key != "scan:b" || kvs[2].Key != "scan:perm" {
+				t.Fatalf("scan keys = %+v, want [scan:a scan:b scan:perm]", kvs)
+			}
+			if string(kvs[0].Value) != "1" || string(kvs[2].Value) != "3" {
+				t.Fatalf("scan values = %q %q, want 1 3", kvs[0].Value, kvs[2].Value)
+			}
+			if kvs[0].ExpiresAt.IsZero() {
+				t.Error("TTL'd key must report a non-zero ExpiresAt")
+			}
+			if !kvs[2].ExpiresAt.IsZero() {
+				t.Errorf("permanent key must report a zero ExpiresAt, got %v", kvs[2].ExpiresAt)
+			}
+			if got, _ := s.Scan(ctx, "nothing:"); len(got) != 0 {
+				t.Fatalf("scan of absent prefix = %+v, want empty", got)
+			}
 		})
 	}
 }

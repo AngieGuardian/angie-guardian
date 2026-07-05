@@ -18,6 +18,7 @@ admin:
   listen: 0.0.0.0:8072
   token: "harness-admin-token"   # harness only; use ADMIN_TOKEN env in real deploys
                                   # (0.0.0.0 admin bind without a token is refused)
+  dashboard: true                 # the reporting page at /admin/dashboard
 
 signing_key_file: /etc/guardian/keys/ed25519.key
 previous_key_dir: /etc/guardian/keys/keys.d

@@ -69,4 +69,11 @@ func (s *Instrumented) CompareAndSwap(ctx context.Context, key string, old, new 
 	return ok, err
 }
 
+func (s *Instrumented) Scan(ctx context.Context, prefix string) ([]KV, error) {
+	start := time.Now()
+	kvs, err := s.inner.Scan(ctx, prefix)
+	s.observe("scan", start, err)
+	return kvs, err
+}
+
 func (s *Instrumented) Close() error { return s.inner.Close() }
