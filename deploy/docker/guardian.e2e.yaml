@@ -40,6 +40,7 @@ defaults:
         signature: 10/min
         pow_fail: 10/min
         tamper: 10/min
+        bot_spoof: 5/min
     keywords:
       enabled: true
       rules_file: /etc/guardian/rules.d/common.yaml
@@ -59,13 +60,20 @@ defaults:
     noscript_fallback: true
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
-    uas: [ "Googlebot" ]
+    # No crawler names in uas: a UA string is forgeable. See verified_bots.
+    uas: []
     paths:
       - /robots.txt
       - /favicon.ico
       - /.well-known/
   denylist:
     ips: []
+  # Kept in sync with guardian.docker.yaml. Inert in the e2e suite: no test
+  # claims a crawler UA, and the compose network has no real crawler rDNS.
+  verified_bots:
+    bots:
+      - name: googlebot
+      - name: bingbot
 
 domains:
   # The harness site. PoW on so we can exercise the challenge flow.

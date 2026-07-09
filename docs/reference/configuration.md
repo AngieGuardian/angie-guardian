@@ -116,10 +116,17 @@ Static lists, evaluated before everything else. Matching rules:
 | `uas` | list | Case-insensitive substring match on User-Agent. |
 | `paths` | list | Exact match, or prefix match when the entry ends with `/`. |
 
+`uas` is a plain substring match on a client-controlled, freely forgeable
+header. Reserve it for UAs you control (an internal uptime monitor, say).
+**Never** put search-crawler names here (`uas: [ Googlebot ]`): any scraper
+can claim that UA and skip the entire pipeline. Use `verified_bots` below
+for crawlers instead; loading a config where an `allowlist.uas` entry
+overlaps a configured bot fails fast for exactly this reason.
+
 ```yaml
 allowlist:
   ips: [ "127.0.0.1", "::1" ]
-  uas: [ "Googlebot", "bingbot" ]
+  uas: []
   paths:
     - /robots.txt
     - /favicon.ico
@@ -127,3 +134,47 @@ allowlist:
 denylist:
   ips: []
 ```
+
+### verified_bots
+
+Allowlists well-known crawlers by **verified identity** instead of by their
+forgeable User-Agent string. A client claiming a listed bot's UA is admitted
+only after its IP reverse-DNS (PTR) resolves under the bot's published
+domains **and** that hostname forward-resolves back to the same IP, the
+verification Google/Bing/Apple themselves document. Results are cached in
+the shared store, so DNS runs once per crawler IP, not per request.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `bots` | list | `[]` | Bots to verify. Each entry needs `name`, plus `uas` and `domains` unless `name` is a built-in preset. |
+| `dns_timeout` | duration | `1s` | DNS budget for one first-sight verification. |
+| `cache_ttl` | duration | `12h` | How long a confirmed identity is cached. |
+| `negative_ttl` | duration | `1h` | How long a proven impostor is cached. |
+| `spoof_action` | `deny` \| `continue` | `deny` | What happens to a client that claims a listed UA but definitively fails verification (no PTR, or rDNS owned by someone else). `deny` rejects and scores a `bot_spoof` behaviour event (see `waf.ip_behaviour.thresholds`); `continue` just withholds the allowlist skip and lets the rest of the pipeline handle the request. |
+
+Built-in presets (need only `name`): `googlebot`, `google-special`,
+`bingbot`, `applebot`, `yandexbot`, `baiduspider`. DuckDuckBot publishes a
+static IP list instead of rDNS domains; allowlist it with `allowlist.ips`.
+
+Google's crawler categories are kept apart on purpose. `googlebot` verifies
+under `googlebot.com` only (the published domain for common crawlers, i.e.
+everything with a Googlebot UA). `google-special` covers the special-case
+crawlers (AdsBot, Mediapartners-Google, APIs-Google) under `google.com`;
+enable it if you run Google Ads. User-triggered fetchers (Feedfetcher,
+Read-Aloud, Apps Script) are deliberately not a preset, because third
+parties can aim them at any site on demand; add a custom bot entry if you
+really want them allowlisted.
+
+```yaml
+verified_bots:
+  bots:
+    - name: googlebot
+    - name: bingbot
+    - name: mybot                 # custom bots: spell out both fields
+      uas: [ "MyBot/1.0" ]
+      domains: [ "crawler.example.net" ]
+  spoof_action: deny
+```
+
+A transient DNS failure proves nothing and falls through unverified: it
+never blocks a real crawler or admits a scraper.

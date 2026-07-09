@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
+	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/stateless"
@@ -43,6 +44,7 @@ const (
 	EventTamper       = stateless.EventTamper
 	EventAnomaly      = stateless.EventAnomaly
 	EventInstantBlock = stateless.EventInstantBlock
+	EventBotSpoof     = stateless.EventBotSpoof
 )
 
 // Engine runs the ordered decision pipeline. This is THE seam: every
@@ -53,6 +55,7 @@ type Engine struct {
 	pow     *pow.Manager // nil when no signing key is configured: PoW stages inert
 	rules   *waf.RuleCache
 	models  *anomaly.ModelCache
+	bots    *botverify.Verifier
 	board   *Scoreboard
 	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
 	recent  recentRing       // last non-allow decisions, for the admin API
@@ -85,6 +88,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		pow:    powMgr,
 		rules:  rules,
 		models: models,
+		bots:   botverify.New(st, log),
 		board:  NewScoreboard(st, log),
 		log:    log,
 		stages: []Stage{
@@ -93,6 +97,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			// passing the cheap WAF checks (stage "4-lite" from the plan).
 			allowlistStage{},      // 0. static allowlist
 			denylistStage{},       // 1. static denylist
+			verifiedBotStage{},    //    rDNS-verified crawler allow / impostor deny
 			behaviourBlockStage{}, // 2. behavioural IP block (store-backed)
 			honeypotStage{},       //    trap paths: one hit blocks
 			wafSignatureStage{},   // 4. keyword/regex signatures
@@ -116,7 +121,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
 	dcfg := e.cfg.DomainFor(req.Host)
 	label := e.cfg.DomainLabel(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics}
+	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics, bots: e.bots}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -267,6 +272,9 @@ func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
 
 // PoWManager exposes the PoW manager for admin key rotation (may be nil).
 func (e *Engine) PoWManager() *pow.Manager { return e.pow }
+
+// BotVerifier exposes the crawler rDNS verifier (tests swap its resolver).
+func (e *Engine) BotVerifier() *botverify.Verifier { return e.bots }
 
 // Config exposes the loaded configuration for admin inspection.
 func (e *Engine) Config() *Config { return e.cfg }

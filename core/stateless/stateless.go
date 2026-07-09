@@ -72,6 +72,7 @@ const (
 	EventTamper       = "tamper"
 	EventAnomaly      = "anomaly"
 	EventInstantBlock = "instant_block"
+	EventBotSpoof     = "bot_spoof"
 )
 
 // Decision is the outcome of evaluating one request.

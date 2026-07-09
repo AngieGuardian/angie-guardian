@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
+	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/stateless"
@@ -34,6 +35,7 @@ type stageEnv struct {
 	rules       *waf.RuleCache
 	models      *anomaly.ModelCache
 	metrics     *metrics.Metrics
+	bots        *botverify.Verifier
 }
 
 // These thin wrappers keep the many in-file callsites terse while the actual
@@ -74,6 +76,56 @@ func (denylistStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 		}, nil
 	}
 	return nil, nil
+}
+
+// verifiedBotStage — verified crawler allowlist. A UA allowlist entry like
+// "Googlebot" is spoofable by anyone; this stage instead admits a client
+// claiming a configured bot UA only after its IP reverse-DNS + forward-
+// confirms to the bot's published domains (see core/botverify; results are
+// cached in the shared store, so DNS is paid once per IP, not per request).
+//
+// It runs after the static lists but before the behavioural block stage:
+// explicit operator config (allowlist, denylist) still wins, while a genuine
+// crawler can't be locked out by a behavioural block it picked up crawling
+// odd third-party URLs. A client that claims the UA but definitively fails
+// verification is an impostor: denied and scored (spoof_action: deny), or
+// merely stripped of the allowlist skip (spoof_action: continue). DNS errors
+// prove nothing, so they just fall through unverified.
+type verifiedBotStage struct{}
+
+func (verifiedBotStage) Name() string { return "verified_bot" }
+
+func (verifiedBotStage) Evaluate(ctx context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	vb := &env.domain.VerifiedBots
+	bot := vb.match(req.UserAgent)
+	if bot == nil || env.bots == nil {
+		return nil, nil
+	}
+	res := env.bots.Verify(ctx, req.RemoteAddr, botverify.Options{
+		Timeout:     vb.DNSTimeout.Std(),
+		CacheTTL:    vb.CacheTTL.Std(),
+		NegativeTTL: vb.NegativeTTL.Std(),
+	})
+	switch {
+	case res.Status == botverify.StatusConfirmed && res.MatchesDomains(bot.domainsLower):
+		env.metrics.BotVerification(bot.Name, "verified")
+		return &Decision{Action: ActionAllow, Reason: "verified_bot:" + bot.Name}, nil
+	case res.Status == botverify.StatusError:
+		env.metrics.BotVerification(bot.Name, "error")
+		return nil, nil
+	default:
+		// Definitive: the IP's rDNS identity is absent or is not the claimed
+		// bot's (StatusNone, or confirmed under someone else's domain).
+		env.metrics.BotVerification(bot.Name, "spoof")
+		if vb.SpoofAction == "continue" {
+			return nil, nil
+		}
+		return &Decision{
+			Action: ActionDeny,
+			Reason: "bot_spoof:" + bot.Name,
+			Events: []Event{{Type: EventBotSpoof, Detail: bot.Name}},
+		}, nil
+	}
 }
 
 // behaviourBlockStage — pipeline stage 2. Enforces TTL'd blocks placed in the

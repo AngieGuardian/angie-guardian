@@ -177,6 +177,72 @@ and escalated (see challenge farming above), but a raw flood that never even
 follows the challenge redirect is **not** PoW's problem: see
 [Rate limiting](#rate-limiting-volumetric-ddos) below.
 
+### Search crawlers: verified_bots, not allowlist.uas
+
+Search crawlers won't solve a PoW puzzle, so they need an allowlist entry or
+your site drops out of the index. **Do not** allowlist them by User-Agent
+(`allowlist.uas: [ Googlebot ]`): the UA string is freely forgeable, and such
+an entry lets any scraper skip the entire pipeline by claiming to be
+Googlebot. Guardian refuses to load a config where an `allowlist.uas` entry
+overlaps a configured bot for exactly this reason.
+
+Instead, `verified_bots` admits a crawler only after proving its identity the
+way the search engines themselves document:
+
+1. reverse-DNS (PTR) lookup on the client IP,
+2. the returned hostname must be under one of the bot's published domains
+   (e.g. `crawl-66-249-66-1.googlebot.com`),
+3. forward-confirm: that hostname must resolve back to the same IP, so an
+   attacker who controls the PTR of their own IP space can't fake step 2.
+
+```yaml
+defaults:
+  verified_bots:
+    bots:
+      - name: googlebot            # presets: googlebot, google-special,
+      - name: bingbot              #   bingbot, applebot, yandexbot, baiduspider
+      - name: mybot                # custom bots: spell out both fields
+        uas: [ "MyBot/1.0" ]
+        domains: [ "crawler.example.net" ]
+    spoof_action: deny             # or: continue
+```
+
+Google splits its traffic into three rDNS categories, and the presets keep
+them apart deliberately. The `googlebot` preset verifies under
+`googlebot.com` only, Google's published domain for its **common crawlers**
+(everything presenting a Googlebot UA). Google's **special-case crawlers**
+(AdsBot, Mediapartners-Google, APIs-Google) verify under `google.com` via
+the separate `google-special` preset; enable it if you run Google Ads, since
+AdsBot can't solve PoW and blocking it hurts ad quality. Google's
+**user-triggered fetchers** (Feedfetcher, Read-Aloud, Apps Script fetches)
+are deliberately not a preset: third parties can point them at any site on
+demand, so allowlisting them is an explicit operator decision (write a
+custom bot entry if you need it).
+
+A verified crawler is allowed with reason `verified_bot:<name>` and skips the
+rest of the pipeline, including behavioural IP blocks (admin-placed or
+automatic), so a scoring mishap can never knock a search crawler offline.
+Static `allowlist`/`denylist` entries still run first: an explicit denylist
+entry is the one thing that outranks a verified bot. A client that claims a listed UA but
+**definitively** fails verification, meaning its IP has no PTR record or its
+rDNS belongs to someone else, is an impostor: with `spoof_action: deny` (the
+default) it is rejected and scored as a `bot_spoof` behaviour event (5/min
+blocks the IP, tune under `waf.ip_behaviour.thresholds`); with `continue` it
+is simply not allowlisted and the normal WAF/PoW pipeline applies. Transient
+DNS failures prove nothing and just fall through unverified, so a flaky
+resolver can neither block Googlebot nor admit a scraper.
+
+Verification costs two DNS lookups (budget: `dns_timeout`, default 1s) the
+first time an IP claims a bot UA. The result is cached in the shared store
+(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors), so
+the hot path stays DNS-free; in-flight lookups are deduplicated per IP and
+capped process-wide, degrading to "unverified" under a spoof flood rather
+than amplifying it into a DNS storm. Watch it via the
+`guardian_bot_verifications_total{bot,result}` metric.
+
+DuckDuckBot publishes a static IP list instead of rDNS domains; allowlist it
+with `allowlist.ips`.
+
 ## 2. Wire it into Angie
 
 Add the keepalive upstream once in the `http {}` context, then include the
@@ -283,6 +349,10 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
 # Block an IP for two hours (reason + ttl optional; default 15m).
+# NOTE: a crawler that passes verified_bots outranks these blocks (so a
+# behavioural mishap can never knock Googlebot offline). To hard-block an
+# IP even against a verified crawler, use the static denylist, which runs
+# before everything.
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
      $A/admin/blocks/203.0.113.9
