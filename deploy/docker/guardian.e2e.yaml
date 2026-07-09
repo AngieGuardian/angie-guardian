@@ -1,16 +1,14 @@
-# Guardian config for the MANUAL Docker demo harness (`docker compose up`).
-# Mirrors guardian.example.yaml but with container paths and listeners bound
-# to 0.0.0.0 so Angie (a different container) can reach the sidecar over the
-# compose network.
+# Guardian config for the AUTOMATED e2e suite (test/e2e, `make e2e`).
 #
-# The automated e2e suite uses guardian.e2e.yaml instead (selected via the
-# GUARDIAN_CONFIG env var, see compose.yaml): same file except for a lower PoW
-# difficulty so the suite stays fast. Keep the two structurally in sync.
+# Identical to guardian.docker.yaml (the manual demo harness) except for the
+# PoW difficulty: the suite brute-forces challenges in Go on every run, so it
+# runs one step below the production default to stay fast, and the WAF
+# escalation test asserts base 16 bits + 4 = 20. If you change anything
+# structural here (hosts, thresholds, token), keep guardian.docker.yaml in
+# sync and vice versa; the e2e assertions depend on these exact values.
 #
-# NOTE: binding the hot path to 0.0.0.0 is exactly the "direct-reach" exposure
-# the security review flagged — safe here only because the port is NOT
-# published to the host (see compose.yaml). In production keep it on loopback
-# or an isolated network.
+# The compose file mounts guardian.docker.yaml by default; the e2e harness
+# selects this file via the GUARDIAN_CONFIG env var (see compose.yaml).
 listen: 0.0.0.0:8071
 # The hot path binds 0.0.0.0 so Angie (a separate container) can reach it, but
 # the port is NOT published to the host (see compose.yaml), so it stays
@@ -51,11 +49,10 @@ defaults:
   pow:
     enabled: true
     mode: always
-    # One quarter-step above the production default (5) so the interstitial
-    # is actually perceptible on a fast desktop when demoing (about half a
-    # second; 5 solves in ~0.1s there). The e2e suite uses guardian.e2e.yaml
-    # with a lower value instead.
-    base_difficulty: 5.5
+    # Deliberately below the production default (5): the e2e suite solves
+    # challenges in Go on every run, and the WAF escalation test asserts
+    # base 16 bits + 4 = 20. Raising this slows every e2e run.
+    base_difficulty: 4
     max_difficulty: 6
     token_ttl: 4h
     challenge_ttl: 30m

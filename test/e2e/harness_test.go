@@ -42,9 +42,9 @@ import (
 )
 
 const (
-	adminToken = "harness-admin-token" // guardian.docker.yaml admin.token
+	adminToken = "harness-admin-token" // guardian.e2e.yaml admin.token
 
-	// powHost is the harness domain with pow.mode: always (guardian.docker.yaml).
+	// powHost is the harness domain with pow.mode: always (guardian.e2e.yaml).
 	powHost = "localhost"
 	// wafOnlyHost has pow disabled: WAF runs, but no interstitial.
 	wafOnlyHost = "api.localhost"
@@ -97,6 +97,10 @@ func runSuite(m *testing.M) int {
 	stack = stack.WithEnv(map[string]string{
 		"GUARDIAN_SITE_PORT":  strconv.Itoa(sitePort),
 		"GUARDIAN_ADMIN_PORT": strconv.Itoa(adminPort),
+		// The e2e config: identical to the manual harness's
+		// guardian.docker.yaml except for a low PoW difficulty, so the
+		// Go solver in this suite stays fast.
+		"GUARDIAN_CONFIG": "./guardian.e2e.yaml",
 	})
 
 	// Wait strategies run in parallel per service. guardiand serves /healthz on

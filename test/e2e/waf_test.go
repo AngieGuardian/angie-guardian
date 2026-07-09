@@ -106,7 +106,7 @@ func TestWAFChallengeAction(t *testing.T) {
 	// `challenge`, so the browser is diverted to the interstitial (200 HTML),
 	// not denied.
 	ch := fetchChallenge(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA)
-	// guardian.docker.yaml: base_difficulty 4 = 16 bits; signature escalation
+	// guardian.e2e.yaml: base_difficulty 4 = 16 bits; signature escalation
 	// adds one full step (4 bits).
 	if ch.Difficulty != 20 {
 		t.Fatalf("signature challenge difficulty = %d bits, want escalated 20 (base 16 + 4)", ch.Difficulty)
