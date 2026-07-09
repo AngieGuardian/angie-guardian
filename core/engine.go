@@ -13,6 +13,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/botverify"
+	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/stateless"
@@ -56,6 +57,7 @@ type Engine struct {
 	rules   *waf.RuleCache
 	models  *anomaly.ModelCache
 	bots    *botverify.Verifier
+	intel   *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
 	board   *Scoreboard
 	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
 	recent  recentRing       // last non-allow decisions, for the admin API
@@ -64,7 +66,10 @@ type Engine struct {
 }
 
 // SetMetrics attaches a metrics sink. Call once at startup before serving.
-func (e *Engine) SetMetrics(m *metrics.Metrics) { e.metrics = m }
+func (e *Engine) SetMetrics(m *metrics.Metrics) {
+	e.metrics = m
+	e.intel.SetMetrics(m)
+}
 
 // reloadInterval is how often WAF rules files and anomaly model artifacts
 // are polled for changes.
@@ -80,8 +85,15 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		rules.Close()
 		return nil, err
 	}
+	itl, err := intel.New(cfg.IntelConfig(), log)
+	if err != nil {
+		rules.Close()
+		models.Close()
+		return nil, err
+	}
 	rules.Start(reloadInterval)
 	models.Start(reloadInterval)
+	itl.Start()
 	return &Engine{
 		cfg:    cfg,
 		store:  st,
@@ -89,6 +101,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		rules:  rules,
 		models: models,
 		bots:   botverify.New(st, log),
+		intel:  itl,
 		board:  NewScoreboard(st, log),
 		log:    log,
 		stages: []Stage{
@@ -98,20 +111,23 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			allowlistStage{},      // 0. static allowlist
 			denylistStage{},       // 1. static denylist
 			verifiedBotStage{},    //    rDNS-verified crawler allow / impostor deny
+			intelDenyStage{},      //    geo scoping + reputation feeds (deny half)
 			behaviourBlockStage{}, // 2. behavioural IP block (store-backed)
 			honeypotStage{},       //    trap paths: one hit blocks
 			wafSignatureStage{},   // 4. keyword/regex signatures
 			powTokenStage{},       // 3. valid PoW token → allow
+			intelChallengeStage{}, //    geo scoping + reputation feeds (challenge half)
 			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
 			powChallengeStage{},   // 6. challenge unvouched browsers (mode "always")
 		},
 	}, nil
 }
 
-// Close stops background work (rules + model hot-reload polling).
+// Close stops background work (rules/model/geoip/feed refresh).
 func (e *Engine) Close() {
 	e.rules.Close()
 	e.models.Close()
+	e.intel.Close()
 }
 
 // Evaluate resolves the domain config for the request's host and runs the
@@ -121,7 +137,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
 	dcfg := e.cfg.DomainFor(req.Host)
 	label := e.cfg.DomainLabel(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, metrics: e.metrics, bots: e.bots}
+	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, intel: e.intel, metrics: e.metrics, bots: e.bots}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -275,6 +291,10 @@ func (e *Engine) PoWManager() *pow.Manager { return e.pow }
 
 // BotVerifier exposes the crawler rDNS verifier (tests swap its resolver).
 func (e *Engine) BotVerifier() *botverify.Verifier { return e.bots }
+
+// Intel exposes the intel provider for admin inspection (may be nil; its
+// methods are nil-safe).
+func (e *Engine) Intel() *intel.Provider { return e.intel }
 
 // Config exposes the loaded configuration for admin inspection.
 func (e *Engine) Config() *Config { return e.cfg }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,8 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/score", s.auth(s.handleScore))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
+	s.mux.HandleFunc("GET /admin/intel", s.auth(s.handleIntel))
+	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
 
 	// The reporting dashboard is a static self-contained page: it holds no data
 	// itself (all data comes from the token-guarded endpoints above, which the
@@ -286,6 +289,40 @@ func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rotated": true})
 }
 
+// handleIntel reports the state of the IP-intelligence sources: which GeoIP
+// databases are loaded (type, build date) and every reputation feed's entry
+// count, last refresh and last error.
+func (s *AdminServer) handleIntel(w http.ResponseWriter, _ *http.Request) {
+	p := s.engine.Intel()
+	if p == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "intel": p.Status()})
+}
+
+// handleIntelLookup answers "what do we know about this IP?": country, ASN
+// and the reputation feeds it appears in, for testing geo rules and
+// answering "why was this client denied".
+func (s *AdminServer) handleIntelLookup(w http.ResponseWriter, r *http.Request) {
+	ip := r.PathValue("ip")
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ip: " + err.Error()})
+		return
+	}
+	p := s.engine.Intel()
+	if p == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "enabled": false})
+		return
+	}
+	out := map[string]any{"ip": ip, "enabled": true, "info": p.Lookup(addr)}
+	if hits := p.FeedHits(addr); len(hits) > 0 {
+		out["feeds"] = hits
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleDashboard serves the static reporting page. No auth: the shell holds
 // no data: everything it shows comes from the token-guarded endpoints, called
 // with a token the operator provides in-page (kept in sessionStorage).
@@ -310,12 +347,15 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Anomaly     bool   `json:"waf_anomaly"`
 		Honeypot    bool   `json:"waf_honeypot"`
 		IPBehaviour bool   `json:"waf_ip_behaviour"`
+		Geo         bool   `json:"geo"`
+		Reputation  bool   `json:"reputation"`
 	}
 	view := func(dc *core.DomainConfig) domainView {
 		return domainView{
 			PoWEnabled: dc.PoW.Enabled, PoWMode: dc.PoW.Mode,
 			Keywords: dc.WAF.Keywords.Enabled, Anomaly: dc.WAF.Anomaly.Enabled,
 			Honeypot: dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,
+			Geo: dc.Geo.Enabled, Reputation: dc.Reputation.Enabled,
 		}
 	}
 	out := map[string]any{

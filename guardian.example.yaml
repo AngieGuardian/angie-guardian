@@ -49,6 +49,31 @@ store:
   # password: ""              # or the REDIS_PASSWORD env var
   # db: 0
 
+# GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
+# for the per-domain `geo` scoping below. Keep them updated with geoipupdate
+# or a scheduled download; guardiand hot-reloads the files when they are
+# replaced on disk, no restart needed. Omit a database you don't use; config
+# is refused if a geo rule needs one that isn't configured.
+# geoip:
+#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
+
+# External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
+# line, '#'/';' comments), like the FireHOL netsets or a local file you
+# maintain. URL feeds refresh in the background: a slow or down mirror never
+# blocks startup, and the last good list keeps serving. cache_dir persists
+# fetched feeds so a restart enforces yesterday's list immediately. Feeds are
+# defined once here; each domain opts in via `reputation.enabled` below.
+# reputation:
+#   cache_dir: /var/lib/guardian/feeds
+#   feeds:
+#     - name: firehol-level1  # names the reason ("reputation:firehol-level1")
+#       url: https://iplists.firehol.org/files/firehol_level1.netset
+#       refresh: 12h          # default 12h
+#       action: deny          # deny (default) | challenge (= solve PoW first)
+#     - name: local-badnets
+#       file: /etc/guardian/badnets.txt   # hot-reloaded like the rules files
+
 defaults:
   waf:
     ip_behaviour:
@@ -85,6 +110,19 @@ defaults:
     token_ttl: 4h
     challenge_ttl: 30m
     noscript_fallback: true
+  geo:
+    enabled: false            # needs the geoip: databases above
+    # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
+    # deny beats challenge; allow exempts an origin from default_action.
+    # Origins with no database record (private ranges) match no selector and
+    # get default_action, so allowlist internal IPs before tightening it.
+    # challenge: { countries: [ CN, RU ], asns: [] }
+    # deny: { countries: [] }
+    # allow: { countries: [] }
+    # default_action: allow   # allow | challenge | deny for unlisted origins
+  reputation:
+    enabled: true             # honour the reputation feeds (no-op until some
+                              # are configured above)
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
@@ -145,3 +183,11 @@ domains:
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
+
+  # Home-market shop: serve NL/BE/DE normally, make everyone else prove work
+  # first (requires geoip.country_db and pow enabled).
+  # shop.example.nl:
+  #   geo:
+  #     enabled: true
+  #     allow: { countries: [ NL, BE, DE ] }
+  #     default_action: challenge

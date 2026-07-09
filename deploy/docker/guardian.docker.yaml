@@ -32,6 +32,18 @@ store:
   backend: bbolt
   path: /var/lib/guardian/guardian.db
 
+# GeoIP scoping + reputation feeds (see guardian.example.yaml). Off in the
+# harness: the fixture databases/feeds would have to be mounted into the
+# container first.
+# geoip:
+#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
+# reputation:
+#   cache_dir: /var/lib/guardian/feeds
+#   feeds:
+#     - name: firehol-level1
+#       url: https://iplists.firehol.org/files/firehol_level1.netset
+
 defaults:
   waf:
     ip_behaviour:

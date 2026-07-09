@@ -12,6 +12,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/botverify"
+	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/stateless"
@@ -34,8 +35,21 @@ type stageEnv struct {
 	pow         *pow.Manager
 	rules       *waf.RuleCache
 	models      *anomaly.ModelCache
+	intel       *intel.Provider // nil when no geoip/reputation is configured
 	metrics     *metrics.Metrics
 	bots        *botverify.Verifier
+
+	origin *intel.Info // memoized geo lookup: both intel stages share one
+}
+
+// originInfo looks up the request origin (country/ASN) once per request; the
+// deny and challenge stages both consult it.
+func (env *stageEnv) originInfo(addr netip.Addr) intel.Info {
+	if env.origin == nil {
+		info := env.intel.Lookup(addr)
+		env.origin = &info
+	}
+	return *env.origin
 }
 
 // These thin wrappers keep the many in-file callsites terse while the actual
@@ -147,6 +161,81 @@ func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, en
 			Action: ActionDeny,
 			Reason: "behaviour_block:" + string(reason),
 		}, nil
+	}
+	return nil, nil
+}
+
+// intelDenyStage is the deny half of GeoIP/ASN scoping and IP reputation.
+// It sits right after the static denylist (with only the verified-crawler
+// stage between them, so a feed false positive can't cut off a genuine,
+// rDNS-confirmed bot) because these are the same kind of verdict: policy
+// says this origin is never served, regardless of tokens or behaviour. The
+// challenge half lives in intelChallengeStage, after the PoW token stage, so
+// a client that already proved work is not re-challenged.
+type intelDenyStage struct{}
+
+func (intelDenyStage) Name() string { return "intel_deny" }
+
+func (intelDenyStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	if env.intel == nil {
+		return nil, nil
+	}
+	addr, err := netip.ParseAddr(req.RemoteAddr)
+	if err != nil {
+		// The denylist stage already reported this request's unparseable IP.
+		return nil, nil
+	}
+	if env.domain.Reputation.Enabled {
+		if feed, ok := env.intel.FeedMatch(addr, intel.FeedActionDeny); ok {
+			return &Decision{Action: ActionDeny, Reason: "reputation:" + feed}, nil
+		}
+	}
+	if env.domain.Geo.Enabled {
+		info := env.originInfo(addr)
+		if action, reason := env.domain.Geo.Action(info.Country, info.ASN); action == "deny" {
+			return &Decision{Action: ActionDeny, Reason: reason}, nil
+		}
+	}
+	return nil, nil
+}
+
+// intelChallengeStage is the challenge half of GeoIP/ASN scoping and IP
+// reputation, after the token stage: solve once, then browse normally until
+// the token expires. Like the anomaly stage, it is inert on domains without
+// PoW, because degrading a challenge to a deny would cut off whole countries
+// over a "make them prove work" policy.
+type intelChallengeStage struct{}
+
+func (intelChallengeStage) Name() string { return "intel_challenge" }
+
+func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	if env.intel == nil || env.pow == nil || !env.domain.PoW.Enabled {
+		return nil, nil
+	}
+	addr, err := netip.ParseAddr(req.RemoteAddr)
+	if err != nil {
+		return nil, nil
+	}
+	if env.domain.Reputation.Enabled {
+		if feed, ok := env.intel.FeedMatch(addr, intel.FeedActionChallenge); ok {
+			return &Decision{
+				Action: ActionChallenge,
+				// A reputation-listed client pays one full step (+4 bits =
+				// 16x) more than a clean one, like a WAF signature hit.
+				Difficulty: min(env.domain.PoW.BaseBits()+4, env.domain.PoW.MaxBits()),
+				Reason:     "reputation:" + feed,
+			}, nil
+		}
+	}
+	if env.domain.Geo.Enabled {
+		info := env.originInfo(addr)
+		if action, reason := env.domain.Geo.Action(info.Country, info.ASN); action == "challenge" {
+			return &Decision{
+				Action:     ActionChallenge,
+				Difficulty: env.domain.PoW.BaseBits(),
+				Reason:     reason,
+			}, nil
+		}
 	}
 	return nil, nil
 }

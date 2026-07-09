@@ -6,6 +6,7 @@ package httptransport
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/intel/inteltest"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
@@ -243,5 +245,82 @@ func TestAdminConfigView(t *testing.T) {
 	}
 	if _, ok := m["defaults"]; !ok {
 		t.Fatal("config view missing defaults")
+	}
+}
+
+// TestAdminIntel exercises /admin/intel and /admin/intel/{ip} against an
+// engine with a real (fixture) country database and one local feed.
+func TestAdminIntel(t *testing.T) {
+	// The default adminServer has no intel configured.
+	ts, _ := adminServer(t)
+	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/intel", adminToken, ""))
+	if m["enabled"] != false {
+		t.Fatalf("unconfigured intel: %v, want enabled=false", m)
+	}
+
+	// Now one with geoip + a deny feed.
+	dir := t.TempDir()
+	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{"203.0.113.0/24": "RU"})
+	feedFile := filepath.Join(dir, "bad.list")
+	if err := os.WriteFile(feedFile, []byte("203.0.113.0/26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`
+store: { backend: memory }
+geoip: { country_db: %s }
+reputation:
+  feeds: [ { name: bad-actors, file: %s } ]
+defaults:
+  geo: { enabled: true, deny: { countries: [ RU ] } }
+  reputation: { enabled: true }
+`, countryDB, feedFile)
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+	ts2 := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", slog.Default()))
+	t.Cleanup(ts2.Close)
+
+	m = decodeJSON(t, adminReq(t, ts2, "GET", "/admin/intel", adminToken, ""))
+	if m["enabled"] != true {
+		t.Fatalf("intel status: %v, want enabled=true", m)
+	}
+	intelView := m["intel"].(map[string]any)
+	if intelView["country_db"] == nil {
+		t.Fatal("intel status missing country_db")
+	}
+	feeds := intelView["feeds"].([]any)
+	if len(feeds) != 1 || feeds[0].(map[string]any)["entries"] != float64(1) {
+		t.Fatalf("unexpected feeds view: %v", feeds)
+	}
+
+	m = decodeJSON(t, adminReq(t, ts2, "GET", "/admin/intel/203.0.113.9", adminToken, ""))
+	info := m["info"].(map[string]any)
+	if info["country"] != "RU" {
+		t.Fatalf("lookup info: %v, want country RU", info)
+	}
+	hits := m["feeds"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["feed"] != "bad-actors" {
+		t.Fatalf("lookup feeds: %v", hits)
+	}
+	// Outside the feed range but inside the country.
+	m = decodeJSON(t, adminReq(t, ts2, "GET", "/admin/intel/203.0.113.99", adminToken, ""))
+	if _, ok := m["feeds"]; ok {
+		t.Fatalf("no feed hit expected: %v", m)
+	}
+	// Garbage IP → 400.
+	if resp := adminReq(t, ts2, "GET", "/admin/intel/not-an-ip", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad ip: status = %d, want 400", resp.StatusCode)
 	}
 }

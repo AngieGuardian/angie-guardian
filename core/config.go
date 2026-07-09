@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
 	"gopkg.in/yaml.v3"
 )
@@ -95,6 +96,8 @@ type Config struct {
 	TrustedProxy bool                 `yaml:"trusted_proxy"`
 	Admin        AdminConfig          `yaml:"admin"`
 	Store        StoreConfig          `yaml:"store"`
+	GeoIP        GeoIPConfig          `yaml:"geoip"`
+	Reputation   ReputationFeeds      `yaml:"reputation"`
 	Defaults     DomainConfig         `yaml:"defaults"`
 	Domains      map[string]yaml.Node `yaml:"domains"`
 
@@ -129,11 +132,44 @@ type StoreConfig struct {
 	DB       int    `yaml:"db"`       // redis database number
 }
 
+// GeoIPConfig points at MaxMind-format (.mmdb) databases: MaxMind
+// GeoLite2/GeoIP2, DB-IP or any other publisher of the format. The files are
+// hot-reloaded when replaced on disk (geoipupdate does this atomically), so
+// scheduled updates need no restart. Either may be omitted; geo rules that
+// would need the missing database are refused at config load.
+type GeoIPConfig struct {
+	CountryDB string `yaml:"country_db"`
+	ASNDB     string `yaml:"asn_db"`
+}
+
+// ReputationFeeds is the global list of external IP reputation feeds. Feeds
+// are defined once here; each domain opts in via reputation.enabled.
+type ReputationFeeds struct {
+	// CacheDir persists the last good copy of every URL feed, so a restart
+	// enforces yesterday's list immediately instead of nothing until the
+	// first fetch completes. Strongly recommended when URL feeds are used.
+	CacheDir string       `yaml:"cache_dir"`
+	Feeds    []FeedConfig `yaml:"feeds"`
+}
+
+// FeedConfig is one reputation feed: a plain-text list of IPs/CIDRs (one per
+// line, '#'/';' comments), like the FireHOL netsets or a hand-maintained
+// local file. Exactly one of url/file must be set.
+type FeedConfig struct {
+	Name    string   `yaml:"name"`    // label in reasons/metrics and the cache file name
+	URL     string   `yaml:"url"`     // fetched in the background every refresh interval
+	File    string   `yaml:"file"`    // local list, hot-reloaded like the WAF rules files
+	Refresh Duration `yaml:"refresh"` // URL feeds only; default 12h, minimum 1m
+	Action  string   `yaml:"action"`  // deny (default) | challenge
+}
+
 // DomainConfig is the per-domain feature configuration. Domain entries are
 // merged over Defaults field-by-field at load time.
 type DomainConfig struct {
 	WAF          WAFConfig          `yaml:"waf"`
 	PoW          PoWConfig          `yaml:"pow"`
+	Geo          GeoConfig          `yaml:"geo"`
+	Reputation   ReputationConfig   `yaml:"reputation"`
 	Allowlist    ListConfig         `yaml:"allowlist"`
 	Denylist     ListConfig         `yaml:"denylist"`
 	VerifiedBots VerifiedBotsConfig `yaml:"verified_bots"`
@@ -243,6 +279,50 @@ func (vb *VerifiedBotsConfig) compile() error {
 	return nil
 }
 
+// GeoConfig scopes a domain by request origin: deny or challenge selected
+// countries/ASNs, with default_action covering everything unlisted (so
+// "serve only my own country" is default_action: deny plus the home country
+// under allow). An IP with no record in
+// the databases (private ranges, brand-new allocations) matches no selector
+// and gets default_action; keep internal ranges on the static allowlist when
+// tightening it. deny wins over challenge when both match.
+type GeoConfig struct {
+	Enabled       bool        `yaml:"enabled"`
+	Deny          GeoSelector `yaml:"deny"`
+	Challenge     GeoSelector `yaml:"challenge"`
+	Allow         GeoSelector `yaml:"allow"`          // exempt from default_action
+	DefaultAction string      `yaml:"default_action"` // allow (default) | challenge | deny
+}
+
+// GeoSelector matches ISO 3166-1 alpha-2 country codes (any case in config)
+// and/or autonomous system numbers.
+type GeoSelector struct {
+	Countries []string `yaml:"countries"`
+	ASNs      []uint32 `yaml:"asns"`
+
+	countries map[string]bool
+	asns      map[uint32]bool
+}
+
+func (s *GeoSelector) compile() error {
+	s.countries = make(map[string]bool, len(s.Countries))
+	for _, c := range s.Countries {
+		cc := strings.ToUpper(strings.TrimSpace(c))
+		if len(cc) != 2 || cc[0] < 'A' || cc[0] > 'Z' || cc[1] < 'A' || cc[1] > 'Z' {
+			return fmt.Errorf("invalid country code %q: want ISO 3166-1 alpha-2 like \"NL\"", c)
+		}
+		s.countries[cc] = true
+	}
+	s.asns = make(map[uint32]bool, len(s.ASNs))
+	for _, a := range s.ASNs {
+		if a == 0 {
+			return fmt.Errorf("invalid asn 0")
+		}
+		s.asns[a] = true
+	}
+	return nil
+}
+
 // match returns the first bot whose UA needle appears in ua, or nil.
 func (vb *VerifiedBotsConfig) match(ua string) *BotConfig {
 	if len(vb.Bots) == 0 || ua == "" {
@@ -257,6 +337,47 @@ func (vb *VerifiedBotsConfig) match(ua string) *BotConfig {
 		}
 	}
 	return nil
+}
+
+// match reports whether the country or ASN is selected, with the reason
+// detail ("country:CN" / "asn:64500"). Unknown values never match.
+func (s *GeoSelector) match(country string, asn uint32) (string, bool) {
+	if country != "" && s.countries[country] {
+		return "country:" + country, true
+	}
+	if asn != 0 && s.asns[asn] {
+		return fmt.Sprintf("asn:%d", asn), true
+	}
+	return "", false
+}
+
+func (s *GeoSelector) empty() bool { return len(s.Countries) == 0 && len(s.ASNs) == 0 }
+
+// Action resolves the geo policy for a looked-up origin: "deny" or
+// "challenge" with a reason, or ("", "") for pass. Precedence: deny,
+// challenge, allow, then default_action.
+func (g *GeoConfig) Action(country string, asn uint32) (action, reason string) {
+	if !g.Enabled {
+		return "", ""
+	}
+	if detail, ok := g.Deny.match(country, asn); ok {
+		return "deny", "geo:" + detail
+	}
+	if detail, ok := g.Challenge.match(country, asn); ok {
+		return "challenge", "geo:" + detail
+	}
+	if _, ok := g.Allow.match(country, asn); ok {
+		return "", ""
+	}
+	if g.DefaultAction != "allow" {
+		return g.DefaultAction, "geo:default"
+	}
+	return "", ""
+}
+
+// ReputationConfig opts a domain in to the globally configured feeds.
+type ReputationConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type WAFConfig struct {
@@ -382,6 +503,9 @@ func (c *Config) finalize() error {
 	default:
 		return fmt.Errorf("store.backend must be memory, bbolt or redis, got %q", c.Store.Backend)
 	}
+	if err := c.Reputation.validate(); err != nil {
+		return err
+	}
 
 	// Defaults for the defaults. Difficulty 5 = 20 leading zero bits: with the
 	// in-page JS solver that is roughly a second on a mid-range phone and near
@@ -445,6 +569,9 @@ func (c *Config) finalize() error {
 		if err := dc.validate(); err != nil {
 			return fmt.Errorf("domain %s: %w", host, err)
 		}
+		if err := c.checkGeoRefs(dc); err != nil {
+			return fmt.Errorf("domain %s: %w", host, err)
+		}
 		key, err := stateless.NormalizeHostKey(seen, host)
 		if err != nil {
 			return err
@@ -452,6 +579,9 @@ func (c *Config) finalize() error {
 		c.resolved[key] = dc
 	}
 	if err := c.Defaults.validate(); err != nil {
+		return fmt.Errorf("defaults: %w", err)
+	}
+	if err := c.checkGeoRefs(&c.Defaults); err != nil {
 		return fmt.Errorf("defaults: %w", err)
 	}
 	return nil
@@ -492,6 +622,42 @@ func (dc *DomainConfig) validate() error {
 	if b.MaxBlockTTL > 0 && b.BlockTTL > 0 && b.MaxBlockTTL < b.BlockTTL {
 		return fmt.Errorf("waf.ip_behaviour: max_block_ttl (%v) must be >= block_ttl (%v)", b.MaxBlockTTL.Std(), b.BlockTTL.Std())
 	}
+	g := &dc.Geo
+	switch g.DefaultAction {
+	case "":
+		g.DefaultAction = "allow"
+	case "allow", "challenge", "deny":
+	default:
+		return fmt.Errorf("geo.default_action must be allow, challenge or deny, got %q", g.DefaultAction)
+	}
+	for name, sel := range map[string]*GeoSelector{"deny": &g.Deny, "challenge": &g.Challenge, "allow": &g.Allow} {
+		if err := sel.compile(); err != nil {
+			return fmt.Errorf("geo.%s: %w", name, err)
+		}
+	}
+	for c := range g.Deny.countries {
+		if g.Challenge.countries[c] || g.Allow.countries[c] {
+			return fmt.Errorf("geo: country %s appears in more than one selector", c)
+		}
+	}
+	for c := range g.Challenge.countries {
+		if g.Allow.countries[c] {
+			return fmt.Errorf("geo: country %s appears in more than one selector", c)
+		}
+	}
+	for a := range g.Deny.asns {
+		if g.Challenge.asns[a] || g.Allow.asns[a] {
+			return fmt.Errorf("geo: asn %d appears in more than one selector", a)
+		}
+	}
+	for a := range g.Challenge.asns {
+		if g.Allow.asns[a] {
+			return fmt.Errorf("geo: asn %d appears in more than one selector", a)
+		}
+	}
+	if g.Enabled && g.Deny.empty() && g.Challenge.empty() && g.DefaultAction == "allow" {
+		return fmt.Errorf("geo: enabled but no deny/challenge selectors and default_action is allow; it would never do anything")
+	}
 	if err := dc.Allowlist.Compile(); err != nil {
 		return fmt.Errorf("allowlist: %w", err)
 	}
@@ -517,6 +683,95 @@ func (dc *DomainConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+// checkGeoRefs refuses geo rules that could never match because the database
+// they need is not configured: a silently inert country block is a security
+// hole, not a default.
+func (c *Config) checkGeoRefs(dc *DomainConfig) error {
+	g := &dc.Geo
+	if !g.Enabled {
+		return nil
+	}
+	if c.GeoIP.CountryDB == "" && c.GeoIP.ASNDB == "" {
+		return fmt.Errorf("geo is enabled but no geoip.country_db or geoip.asn_db is configured")
+	}
+	usesCountries := len(g.Deny.Countries)+len(g.Challenge.Countries)+len(g.Allow.Countries) > 0
+	usesASNs := len(g.Deny.ASNs)+len(g.Challenge.ASNs)+len(g.Allow.ASNs) > 0
+	if usesCountries && c.GeoIP.CountryDB == "" {
+		return fmt.Errorf("geo uses country selectors but geoip.country_db is not configured")
+	}
+	if usesASNs && c.GeoIP.ASNDB == "" {
+		return fmt.Errorf("geo uses asn selectors but geoip.asn_db is not configured")
+	}
+	return nil
+}
+
+// validate checks the global feed list: names must be unique and safe to use
+// as file names and metric labels, and every feed needs exactly one source.
+func (r *ReputationFeeds) validate() error {
+	seen := make(map[string]bool, len(r.Feeds))
+	for i := range r.Feeds {
+		f := &r.Feeds[i]
+		if !validFeedName(f.Name) {
+			return fmt.Errorf("reputation.feeds[%d]: name %q must be 1..64 chars of [a-zA-Z0-9._-]", i, f.Name)
+		}
+		if seen[f.Name] {
+			return fmt.Errorf("reputation.feeds: duplicate name %q", f.Name)
+		}
+		seen[f.Name] = true
+		if (f.URL == "") == (f.File == "") {
+			return fmt.Errorf("reputation feed %s: exactly one of url or file must be set", f.Name)
+		}
+		if f.URL != "" && !strings.HasPrefix(f.URL, "http://") && !strings.HasPrefix(f.URL, "https://") {
+			return fmt.Errorf("reputation feed %s: url must be http(s), got %q", f.Name, f.URL)
+		}
+		switch f.Action {
+		case "":
+			f.Action = "deny"
+		case "deny", "challenge":
+		default:
+			return fmt.Errorf("reputation feed %s: action must be deny or challenge, got %q", f.Name, f.Action)
+		}
+		if f.Refresh == 0 {
+			f.Refresh = Duration(12 * time.Hour)
+		}
+		if f.URL != "" && f.Refresh.Std() < time.Minute {
+			return fmt.Errorf("reputation feed %s: refresh must be at least 1m, got %v", f.Name, f.Refresh.Std())
+		}
+	}
+	return nil
+}
+
+func validFeedName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// IntelConfig assembles the intel provider's configuration (GeoIP databases
+// plus reputation feeds) from the loaded top-level config.
+func (c *Config) IntelConfig() intel.Config {
+	ic := intel.Config{
+		CountryDB: c.GeoIP.CountryDB,
+		ASNDB:     c.GeoIP.ASNDB,
+		CacheDir:  c.Reputation.CacheDir,
+	}
+	for _, f := range c.Reputation.Feeds {
+		ic.Feeds = append(ic.Feeds, intel.FeedConfig{
+			Name: f.Name, URL: f.URL, File: f.File,
+			Refresh: f.Refresh.Std(), Action: f.Action,
+		})
+	}
+	return ic
 }
 
 // RuleFiles returns every distinct WAF rules file referenced by an enabled
