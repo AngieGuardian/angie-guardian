@@ -10,20 +10,26 @@
   body { font-family: system-ui, sans-serif; display: flex; align-items: center;
          justify-content: center; min-height: 100vh; margin: 0;
          background: #f4f4f5; color: #18181b; }
-  @media (prefers-color-scheme: dark) { body { background: #18181b; color: #f4f4f5; } }
   main { text-align: center; padding: 2rem; max-width: 26rem; }
-  .spinner { width: 3rem; height: 3rem; margin: 0 auto 1.5rem;
-             border: 4px solid #d4d4d8; border-top-color: #2563eb;
-             border-radius: 50%; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .bar { width: min(20rem, 80%); height: 0.5rem; margin: 0 auto 1.5rem;
+         background: #d4d4d8; border-radius: 999px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: #2563eb;
+             border-radius: 999px; transition: width 0.2s ease; }
   h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
   p { margin: 0.25rem 0; color: #71717a; font-size: 0.9rem; }
   #status { min-height: 1.2rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #18181b; color: #f4f4f5; }
+    .bar { background: #3f3f46; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <div class="spinner" aria-hidden="true"></div>
+  <div class="bar" role="progressbar" aria-label="Verification progress"
+       aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
+    <i id="fill"></i>
+  </div>
   <h1>Checking your browser…</h1>
   <p>This site verifies visitors with a short proof-of-work computation.
      No personal data is collected.</p>
@@ -43,6 +49,17 @@
   "use strict";
   const data = JSON.parse(document.getElementById("guardian-data").textContent);
   const status = document.getElementById("status");
+  const bar = document.getElementById("bar");
+  const fill = document.getElementById("fill");
+  // Expected hashes for this difficulty. Progress is probabilistic: the odds
+  // the puzzle is solved by `tried` attempts is 1 - e^(-tried/expected), so we
+  // fill the bar by that curve and cap it below 100% until a nonce is actually
+  // found. It gives a rough "how far along" feel without claiming a false ETA.
+  const expected = Math.pow(16, data.difficulty);
+  const setProgress = (pct) => {
+    fill.style.width = pct + "%";
+    bar.setAttribute("aria-valuenow", Math.round(pct));
+  };
   if (!self.crypto || !crypto.subtle) {
     status.textContent = "A secure (HTTPS) connection is required for verification.";
     return;
@@ -76,6 +93,7 @@
     if (done) return;
     done = true;
     workers.forEach((w) => w.terminate());
+    setProgress(100);
     status.textContent = "Verifying…";
     try {
       const resp = await fetch(data.pass_url, {
@@ -97,6 +115,7 @@
     w.onmessage = (e) => {
       if (e.data.nonce !== undefined) { finish(e.data.nonce); return; }
       total += e.data.tried;
+      setProgress(Math.min((1 - Math.exp(-total / expected)) * 100, 90));
       status.textContent = "Computing… " + total.toLocaleString() + " hashes";
     };
     w.onerror = () => { status.textContent = "Solver error — please reload this page."; };
