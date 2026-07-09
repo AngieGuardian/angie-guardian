@@ -75,6 +75,29 @@ then exits: `0` and `ok` when valid, `1` and the reason when not.
 # config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
 ```
 
+### base_difficulty and max_difficulty
+
+`base_difficulty` is the **floor** every clean client pays; `max_difficulty` is
+the **ceiling**. They are not a choice between two modes: a request's suspicion
+score decides where in `[base, max]` it lands. Difficulty counts leading hex
+zero nibbles in the SHA-256, so each step up is roughly **16x more work**.
+
+Which value fires:
+
+- **`mode: always` (the default):** every unvouched browser-shaped request pays
+  exactly `base_difficulty`, once, then rides a `token_ttl` cookie.
+- **A WAF signature hit:** `base + 1` (capped at `max`).
+- **The anomaly scorer:** scales the difficulty across the `[base, max]` range
+  with the score, so a more bot-like client pays more. This is the only path
+  that reaches `max`, and only when `waf.anomaly` is enabled with a trained
+  model. Without a model, `max` is dormant and every client pays `base`.
+
+Because each step is ~16x the work, small changes to `base` are felt strongly by
+real visitors. Test a value against your own traffic before raising it. Note
+that PoW only taxes clients that solve the puzzle; it is **not** a defense
+against a flood that never solves anything: see
+[Rate limiting](#rate-limiting-volumetric-ddos) below.
+
 ## 2. Wire it into Angie
 
 Add the keepalive upstream once in the `http {}` context, then include the
@@ -98,6 +121,31 @@ trainer, switch protected vhosts to the JSON access log from
 
 ```nginx
 access_log /var/log/angie/example.com.access.json guardian_json;
+```
+
+### Rate limiting (volumetric DDoS)
+
+PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a raw
+flood. Every request still costs an `auth_request` subrequest and a store lookup
+whether or not the client ever solves anything, and a client that follows the
+challenge redirect also makes the sidecar issue and persist a challenge. Under
+enough load the sidecar saturates and fail-open (the default) sends the flood
+straight to your backend. Volumetric DDoS is Angie's job, in front of the
+`auth_request`, so a flood is dropped before it reaches the sidecar at all. The
+two layers are complementary: rate limits absorb volume, PoW taxes the bots that
+get through. Tune the rates to your real traffic before enabling.
+
+```nginx
+# http {} context: one shared zone per limiter.
+limit_req_zone  $binary_remote_addr zone=guard:10m rate=30r/s;
+limit_conn_zone $binary_remote_addr zone=gconn:10m;
+
+# in each protected server {} (or the location / block). limit_req runs in an
+# earlier phase than auth_request, so a rejected flood never reaches the sidecar.
+limit_req  zone=guard burst=60 nodelay;   # smooth spikes, reject sustained floods
+limit_conn gconn 20;                       # cap concurrent connections per client
+limit_req_status  429;
+limit_conn_status 429;
 ```
 
 ## 3. Run it (systemd)
