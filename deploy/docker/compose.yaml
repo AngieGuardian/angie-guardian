@@ -24,7 +24,10 @@ services:
       dockerfile: deploy/docker/Dockerfile
     command: ["-config", "/etc/guardian/guardian.yaml"]
     volumes:
-      - ./guardian.docker.yaml:/etc/guardian/guardian.yaml:ro
+      # Manual demo harness config by default (realistic PoW difficulty). The
+      # automated e2e suite selects the faster guardian.e2e.yaml via
+      # GUARDIAN_CONFIG (see test/e2e/harness_test.go).
+      - ${GUARDIAN_CONFIG:-./guardian.docker.yaml}:/etc/guardian/guardian.yaml:ro
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
       - guardian-data:/var/lib/guardian
       - guardian-keys:/etc/guardian/keys

@@ -49,8 +49,22 @@ docker compose down -v     # tear down + drop volumes
 - Protected site: `http://127.0.0.1:8080` (override with `GUARDIAN_SITE_PORT`)
 - Admin API + `/metrics`: `http://127.0.0.1:8072` (token `harness-admin-token`,
   override the host port with `GUARDIAN_ADMIN_PORT`)
+- Dashboard login: `http://127.0.0.1:8072/admin/dashboard#token=harness-admin-token`
 - guardiand's hot path (8071) is **not** published (internal network only),
   mirroring production where the sidecar must not be directly reachable.
+
+## Two guardian configs
+
+- `guardian.docker.yaml` — the manual demo harness (mounted by default):
+  realistic PoW difficulty (5.5, so the interstitial is perceptible on a fast
+  desktop).
+- `guardian.e2e.yaml` — the automated suite's config, selected via
+  `GUARDIAN_CONFIG=./guardian.e2e.yaml`: identical except for a lower PoW
+  difficulty (4), because the suite brute-forces every challenge in Go and
+  asserts exact escalation values (16 bits + 4 = 20).
+
+Keep the two structurally in sync (hosts, thresholds, admin token); the e2e
+assertions depend on those exact values.
 
 ## Reproducing review findings
 

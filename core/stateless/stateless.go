@@ -61,7 +61,7 @@ const (
 // Decision is the outcome of evaluating one request.
 type Decision struct {
 	Action     Action
-	Difficulty int // PoW difficulty when Action == ActionChallenge
+	Difficulty int // PoW difficulty in leading-zero bits when Action == ActionChallenge
 	Reason     string
 	Events     []Event
 }

@@ -51,34 +51,91 @@
   const status = document.getElementById("status");
   const bar = document.getElementById("bar");
   const fill = document.getElementById("fill");
-  // Expected hashes for this difficulty. Progress is probabilistic: the odds
-  // the puzzle is solved by `tried` attempts is 1 - e^(-tried/expected), so we
-  // fill the bar by that curve and cap it below 100% until a nonce is actually
-  // found. It gives a rough "how far along" feel without claiming a false ETA.
-  const expected = Math.pow(16, data.difficulty);
+  // Expected hashes for this difficulty (one per required leading zero bit).
+  // Progress is probabilistic: the odds the puzzle is solved by `tried`
+  // attempts is 1 - e^(-tried/expected), so we fill the bar by that curve and
+  // cap it below 100% until a nonce is actually found. It gives a rough "how
+  // far along" feel without claiming a false ETA.
+  const expected = Math.pow(2, data.difficulty_bits);
   const setProgress = (pct) => {
     fill.style.width = pct + "%";
     bar.setAttribute("aria-valuenow", Math.round(pct));
   };
-  if (!self.crypto || !crypto.subtle) {
-    status.textContent = "A secure (HTTPS) connection is required for verification.";
-    return;
-  }
 
+  // The solver runs a pure-JS SHA-256 rather than crypto.subtle.digest: a
+  // synchronous call is ~7x faster than an awaited WebCrypto round trip per
+  // tiny message (narrowing the honest-browser vs native-bot cost gap), and
+  // it also works on plain-http origins where crypto.subtle is unavailable.
   const workerSrc = `
-    self.onmessage = async (e) => {
-      const { challenge, difficulty, start, stride } = e.data;
-      const enc = new TextEncoder();
-      const prefix = "0".repeat(difficulty);
-      const hexBytes = Math.ceil(difficulty / 2);
-      let tried = 0;
-      for (let nonce = start; ; nonce += stride) {
-        const digest = new Uint8Array(
-          await crypto.subtle.digest("SHA-256", enc.encode(challenge + nonce)));
-        let hex = "";
-        for (let i = 0; i < hexBytes; i++) hex += digest[i].toString(16).padStart(2, "0");
-        if (hex.startsWith(prefix)) { self.postMessage({ nonce: String(nonce) }); return; }
-        if (++tried % 2000 === 0) self.postMessage({ tried: 2000 });
+    "use strict";
+    const K = new Uint32Array([
+      0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+      0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+      0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+      0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+      0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+      0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+      0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+      0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+    const w = new Uint32Array(64);
+    const buf = new Uint8Array(256);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    // SHA-256 (FIPS 180-4) of an ASCII string (the hex challenge + a decimal
+    // nonce is always ASCII), returning only the first hash word: 32 bits is
+    // more than any allowed difficulty.
+    const sha256w0 = (msg) => {
+      const len = msg.length;
+      const total = ((len + 9 + 63) >> 6) << 6;
+      for (let i = 0; i < len; i++) buf[i] = msg.charCodeAt(i);
+      buf.fill(0, len, total);
+      buf[len] = 0x80;
+      const bitLen = len * 8;
+      buf[total - 2] = (bitLen >>> 8) & 0xff;
+      buf[total - 1] = bitLen & 0xff;
+      let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,
+          h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+      for (let off = 0; off < total; off += 64) {
+        for (let i = 0; i < 16; i++) {
+          const j = off + 4 * i;
+          w[i] = (buf[j] << 24) | (buf[j+1] << 16) | (buf[j+2] << 8) | buf[j+3];
+        }
+        for (let i = 16; i < 64; i++) {
+          const a = w[i-15], b = w[i-2];
+          const s0 = rotr(a,7) ^ rotr(a,18) ^ (a >>> 3);
+          const s1 = rotr(b,17) ^ rotr(b,19) ^ (b >>> 10);
+          w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+        }
+        let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+        for (let i = 0; i < 64; i++) {
+          const S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25);
+          const ch = (e & f) ^ (~e & g);
+          const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+          const S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22);
+          const maj = (a & b) ^ (a & c) ^ (b & c);
+          const t2 = (S0 + maj) | 0;
+          h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+        }
+        h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0;
+        h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+      }
+      return h0 >>> 0;
+    };
+
+    self.onmessage = (e) => {
+      const { challenge, bits, start, stride } = e.data;
+      // A hash meets the difficulty when its first word has >= bits leading
+      // zeros; difficulty is capped at 32 bits so one word always suffices.
+      // (JS >>> takes the shift count mod 32, so bits=32 needs its own case.)
+      const limit = bits >= 32 ? 0 : (0xffffffff >>> bits);
+      const batch = 4096;
+      for (let nonce = start; ; ) {
+        for (let i = 0; i < batch; i++, nonce += stride) {
+          if (sha256w0(challenge + nonce) <= limit) {
+            self.postMessage({ nonce: String(nonce) });
+            return;
+          }
+        }
+        self.postMessage({ tried: batch });
       }
     };
   `;
@@ -119,7 +176,7 @@
       status.textContent = "Computing… " + total.toLocaleString() + " hashes";
     };
     w.onerror = () => { status.textContent = "Solver error — please reload this page."; };
-    w.postMessage({ challenge: data.challenge, difficulty: data.difficulty, start: i, stride: threads });
+    w.postMessage({ challenge: data.challenge, bits: data.difficulty_bits, start: i, stride: threads });
     workers.push(w);
   }
 })();

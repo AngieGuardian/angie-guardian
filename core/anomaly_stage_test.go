@@ -90,8 +90,8 @@ func TestAnomalyStage(t *testing.T) {
 	if d.Action != ActionChallenge || d.Reason != "anomaly:challenge" {
 		t.Fatalf("weird path: got %s/%s, want challenge/anomaly:challenge", d.Action, d.Reason)
 	}
-	if d.Difficulty <= 2 || d.Difficulty > 6 {
-		t.Fatalf("escalated difficulty = %d, want in (2..6]", d.Difficulty)
+	if d.Difficulty <= 8 || d.Difficulty > 24 {
+		t.Fatalf("escalated difficulty = %d bits, want in (8..24]", d.Difficulty)
 	}
 
 	// Fully anomalous (scanner path + rare UA) crosses deny_at.
@@ -102,21 +102,22 @@ func TestAnomalyStage(t *testing.T) {
 }
 
 func TestScaleDifficulty(t *testing.T) {
+	// Bits scale: base_difficulty 2 = 8 bits, max_difficulty 6 = 24 bits.
 	for _, tc := range []struct {
 		score float64
 		want  int
 	}{
-		{0.40, 2}, // at the challenge threshold: base
-		{0.70, 4}, // halfway: middle
-		{1.00, 6}, // maximal: max
-		{0.97, 6},
+		{0.40, 8},  // at the challenge threshold: base
+		{0.70, 16}, // halfway: middle
+		{1.00, 24}, // maximal: max
+		{0.97, 23},
 	} {
-		if got := scaleDifficulty(2, 6, tc.score, 0.4); got != tc.want {
+		if got := scaleDifficulty(8, 24, tc.score, 0.4); got != tc.want {
 			t.Errorf("scaleDifficulty(score=%.2f) = %d, want %d", tc.score, got, tc.want)
 		}
 	}
 	// Degenerate config: challenge_at = 1 falls back to base.
-	if got := scaleDifficulty(2, 6, 1.0, 1.0); got != 2 {
+	if got := scaleDifficulty(8, 24, 1.0, 1.0); got != 8 {
 		t.Errorf("challengeAt=1: got %d, want base", got)
 	}
 }

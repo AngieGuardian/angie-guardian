@@ -27,7 +27,7 @@ store:
   path: /var/lib/guardian/guardian.db
 
 defaults:
-  pow: { enabled: true, base_difficulty: 4 }
+  pow: { enabled: true, base_difficulty: 5 }
   waf:
     ip_behaviour: { enabled: true }
 
@@ -40,9 +40,10 @@ names what it changes. Unknown hosts fall back to `defaults`.
 
 ```yaml
 domains:
-  # HTML site behind PHP/Node: full protection.
+  # HTML site behind PHP/Node: full protection. Difficulty takes quarter
+  # steps: 5.25 is exactly 2x the work of 5 (see the difficulty table below).
   example.com:
-    pow: { enabled: true, base_difficulty: 5, token_ttl: 2h }
+    pow: { enabled: true, base_difficulty: 5.25, token_ttl: 2h }
     waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
 
   # API host: WAF only, no interstitial a machine client can't solve.
@@ -57,7 +58,7 @@ domains:
   # Only challenge clients the anomaly scorer flags; ordinary visitors
   # never see an interstitial. Requires a trained model (see below).
   shop.example.com:
-    pow: { enabled: true, mode: suspicion, base_difficulty: 4, max_difficulty: 6 }
+    pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
                  challenge_at: 0.5, deny_at: 0.85 }
@@ -79,23 +80,68 @@ then exits: `0` and `ok` when valid, `1` and the reason when not.
 
 `base_difficulty` is the **floor** every clean client pays; `max_difficulty` is
 the **ceiling**. They are not a choice between two modes: a request's suspicion
-score decides where in `[base, max]` it lands. Difficulty counts leading hex
-zero nibbles in the SHA-256, so each step up is roughly **16x more work**.
+score decides where in `[base, max]` it lands.
+
+A difficulty of `N` requires `4 * N` leading zero **bits** in the SHA-256, so a
+full step (+1) is 16x the work, and the scale takes **quarter steps**: each
++0.25 is exactly one bit, doubling the expected work. `5.25` is twice as hard
+as `5`, `5.5` four times, giving fine-grained control between the huge full
+steps. Values off the quarter grid (like `4.3`) are rejected at load.
 
 Which value fires:
 
 - **`mode: always` (the default):** every unvouched browser-shaped request pays
   exactly `base_difficulty`, once, then rides a `token_ttl` cookie.
-- **A WAF signature hit:** `base + 1` (capped at `max`).
+- **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits =
+  16x, capped at `max`).
 - **The anomaly scorer:** scales the difficulty across the `[base, max]` range
   with the score, so a more bot-like client pays more. This is the only path
   that reaches `max`, and only when `waf.anomaly` is enabled with a trained
   model. Without a model, `max` is dormant and every client pays `base`.
 
-Because each step is ~16x the work, small changes to `base` are felt strongly by
-real visitors. Test a value against your own traffic before raising it. Note
-that PoW only taxes clients that solve the puzzle; it is **not** a defense
-against a flood that never solves anything: see
+#### Measured solve times and recommended values
+
+The interstitial solves in parallel web workers (up to 8) with a pure-JS
+SHA-256. Measured throughput in Chrome on a fast desktop is ~1.1 million
+hashes/s per worker, ~9 MH/s with 8 workers; scale down for weaker devices.
+For comparison, a native (Go) solver does ~7.6 MH/s **per core**, so a bot
+pays the same order of work a real browser does.
+
+Expected (mean) solve times by device class:
+
+| difficulty | bits | expected hashes | desktop (9 MH/s) | laptop (3 MH/s) | phone (1 MH/s) |
+|-----------:|-----:|----------------:|-----------------:|----------------:|---------------:|
+| 4.0        | 16   | 66 k            | 0.01 s           | 0.02 s          | 0.07 s         |
+| 4.5        | 18   | 262 k           | 0.03 s           | 0.09 s          | 0.26 s         |
+| 5.0        | 20   | 1.0 M           | 0.12 s           | 0.35 s          | 1.0 s          |
+| 5.25       | 21   | 2.1 M           | 0.23 s           | 0.7 s           | 2.1 s          |
+| 5.5        | 22   | 4.2 M           | 0.47 s           | 1.4 s           | 4.2 s          |
+| 5.75       | 23   | 8.4 M           | 0.9 s            | 2.8 s           | 8.4 s          |
+| 6.0        | 24   | 16.8 M          | 1.9 s            | 5.6 s           | 17 s           |
+| 6.5        | 26   | 67 M            | 7.5 s            | 22 s            | 67 s           |
+
+Solve time is exponentially distributed around the mean: the median visitor
+waits ~0.7x the mean, but ~5% wait 3x and ~1% wait 4.6x. Budget for the tail,
+not the mean.
+
+Recommendations:
+
+- **`base_difficulty: 5`** (the default): imperceptible on desktop, about a
+  second on a mid-range phone. A sensible tax for `mode: always`, paid once
+  per `token_ttl`.
+- **`5.25`–`5.5`** when you are actively being scraped and can accept a few
+  seconds on phones.
+- **`4`–`4.5`** only when the interstitial itself (not the work) is the
+  deterrent you want; the computation is near instant everywhere.
+- **`max_difficulty: 6`** (the default) for anomaly escalation. `6.5` and up
+  is effectively a soft deny: a minute of hashing on a phone. Values above 7
+  mostly punish real visitors on slow devices.
+- Watch `guardian_challenge_solve_seconds` in Prometheus (or the average on
+  the dashboard) after changing values: it is the real-world solve time of
+  *your* visitors' devices.
+
+Note that PoW only taxes clients that solve the puzzle; it is **not** a
+defense against a flood that never solves anything: see
 [Rate limiting](#rate-limiting-volumetric-ddos) below.
 
 ## 2. Wire it into Angie
@@ -115,9 +161,16 @@ include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
 ```
 
 `deploy/angie-guardian.conf` documents the fail-open toggle (what happens when
-the sidecar is down) and the challenge/pass/denied routes. To feed the anomaly
-trainer, switch protected vhosts to the JSON access log from
-`deploy/angie-json-log.conf`:
+the sidecar is down) and the challenge/pass/denied routes. Two header relays in
+that snippet matter beyond routing: `X-Guardian-Difficulty` carries an
+escalated difficulty (WAF signature hit, anomaly score) from the auth decision
+into the issued challenge, and `X-Guardian-Proto` (`$scheme`) tells Guardian
+whether the token cookie may carry the `Secure` flag; without it a plain-http
+site would loop on the challenge. If you wrote your own glue before these
+lines existed, copy them over.
+
+To feed the anomaly trainer, switch protected vhosts to the JSON access log
+from `deploy/angie-json-log.conf`:
 
 ```nginx
 access_log /var/log/angie/example.com.access.json guardian_json;
@@ -160,14 +213,21 @@ curl -s localhost:8072/healthz         # -> ok
 
 ## 4. Operate it via the admin API
 
-The admin API + `/metrics` live on `admin.listen` (default `127.0.0.1:8072`),
+The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
 separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs the bearer token (`admin.token`, or the `ADMIN_TOKEN`
-env var). Bind to a non-loopback address and Guardian refuses to start without
-a token.
+`/admin/*` route needs a bearer token.
+
+You never have to invent that token yourself. It resolves in this order:
+
+1. `admin.token` (or the `ADMIN_TOKEN` env var), if set;
+2. `admin.token_file`: auto-generated on first start (0600) and reused
+   forever after, like the PoW signing key;
+3. neither set: a loopback listener gets a fresh ephemeral token each start,
+   printed in the startup log. A non-loopback bind refuses to start without
+   an explicitly configured token (1 or 2).
 
 ```sh
-TOKEN=your-admin-token
+TOKEN=$(cat /etc/guardian/admin.token)   # or your admin.token value
 A=http://127.0.0.1:8072
 
 # Is an IP currently blocked, and why?
@@ -184,8 +244,9 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks
 # ?limit= (default 50), ?action=deny|challenge, ?reason=<prefix e.g. waf>.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
-# A small "right now" rollup: active blocks + recent counts by action and
-# reason category. (Long-horizon numbers live in /metrics.)
+# A small "right now" rollup: active blocks, recent counts by action and
+# reason category, and the PoW lifecycle (challenges issued/solved/failed +
+# average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
 # Block an IP for two hours (reason + ttl optional; default 15m).
@@ -216,14 +277,25 @@ curl -s $A/metrics | grep guardian_
 
 ### The reporting dashboard
 
-Set `admin.dashboard: true` and open `http://127.0.0.1:8072/admin/dashboard` in
-a browser: active blocks (with one-click unblock), the recent deny/challenge
-feed, per-domain feature status, and headline counters, auto-refreshing. The
-page is a static shell: it stores no secrets and every data call goes to the
-token-guarded `/admin/*` endpoints with a token you paste once (kept in the
-tab's sessionStorage). It is **internal-only by construction**: it lives on the
-admin listener, which refuses a non-loopback bind without a token, and stays
-off unless enabled.
+Set `admin.dashboard: true`, start guardiand, and open the login link it
+prints:
+
+```
+INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard#token=9f2c…
+```
+
+The token rides the URL **fragment**, which browsers never send over the
+network; the page moves it into the tab's sessionStorage and scrubs it from
+the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
+
+The dashboard shows active blocks (with one-click unblock and a block-an-IP
+form), the recent deny/challenge feed (filterable by action and free text),
+challenge lifecycle counters with the average solve time, per-domain feature
+status, and headline counters, auto-refreshing every 5 seconds. The page is a
+static shell: it stores no secrets and every data call goes to the
+token-guarded `/admin/*` endpoints. It is **internal-only by construction**:
+it lives on the admin listener, which refuses a non-loopback bind without a
+configured token, and stays off unless enabled.
 
 ## 5. Train the anomaly model
 

@@ -99,8 +99,8 @@ func TestWAFSignatureStage(t *testing.T) {
 			if d.Action != tc.action || d.Reason != tc.reason {
 				t.Errorf("got %s/%s, want %s/%s", d.Action, d.Reason, tc.action, tc.reason)
 			}
-			if tc.action == ActionChallenge && d.Difficulty != 3 {
-				t.Errorf("escalated difficulty = %d, want base+1 = 3", d.Difficulty)
+			if tc.action == ActionChallenge && d.Difficulty != 12 {
+				t.Errorf("escalated difficulty = %d bits, want base 8 + 4 = 12", d.Difficulty)
 			}
 		})
 	}

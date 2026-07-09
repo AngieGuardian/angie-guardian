@@ -28,7 +28,9 @@ pipeline. Everything is per-domain configurable.
      implementation can slot in behind the same seam later)
 
 2. **Proof-of-Work challenge layer**, only for suspicious or new clients:
-   - SHA-256 leading-zeros challenge with JS/WASM solver
+   - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver
+     (works on plain-http origins too); difficulty tunes in 2x steps
+     (`base_difficulty: 5.25`) and escalates with suspicion
    - Ed25519-signed JWT cookie on success; cheap re-validation afterwards
    - **persistent shared signing key**, so restarts don't log everyone out,
      and replicas behind a load balancer can share one key
@@ -69,8 +71,10 @@ signature checks, so a stolen token can't ride past the WAF.
   without a token.
 - **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
   internal page at `/admin/dashboard`, driven entirely by the token-guarded
-  admin API. It shows active blocks with one-click unblock, the recent
-  decisions feed, and per-domain status. See USAGE.md § 4.
+  admin API; guardiand prints a ready-to-open login link at startup (the
+  admin token is auto-generated, see `admin.token_file`). It shows active
+  blocks with one-click block/unblock, the filterable recent decisions feed,
+  challenge/solve counters, and per-domain status. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` archives the current Ed25519
   key and generates a new one; tokens signed by the old key keep verifying
   until they expire, so rotation never logs anyone out.

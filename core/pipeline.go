@@ -144,8 +144,10 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
 			return &Decision{
-				Action:     ActionChallenge,
-				Difficulty: min(env.domain.PoW.BaseDifficulty+1, env.domain.PoW.MaxDifficulty),
+				Action: ActionChallenge,
+				// A signature hit pays one full difficulty step (+4 bits = 16x
+				// the base work), capped at the domain ceiling.
+				Difficulty: min(env.domain.PoW.BaseBits()+4, env.domain.PoW.MaxBits()),
 				Reason:     reason,
 				Events:     []Event{{Type: EventSignature, Detail: rule.ID}},
 			}, nil
@@ -221,7 +223,7 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 	case score >= a.ChallengeAt && env.pow != nil && env.domain.PoW.Enabled:
 		return &Decision{
 			Action:     ActionChallenge,
-			Difficulty: scaleDifficulty(env.domain.PoW.BaseDifficulty, env.domain.PoW.MaxDifficulty, score, a.ChallengeAt),
+			Difficulty: scaleDifficulty(env.domain.PoW.BaseBits(), env.domain.PoW.MaxBits(), score, a.ChallengeAt),
 			Reason:     "anomaly:challenge",
 			Events:     []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
 		}, nil
@@ -229,7 +231,8 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 	return nil, nil
 }
 
-// scaleDifficulty maps score ∈ [challengeAt, 1] linearly onto [base, max].
+// scaleDifficulty maps score ∈ [challengeAt, 1] linearly onto [base, max]
+// bits, so a more suspicious client pays exponentially more work.
 func scaleDifficulty(base, maxDiff int, score, challengeAt float64) int {
 	if challengeAt >= 1 {
 		return base
@@ -264,7 +267,7 @@ func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	}
 	return &Decision{
 		Action:     ActionChallenge,
-		Difficulty: env.domain.PoW.BaseDifficulty,
+		Difficulty: env.domain.PoW.BaseBits(),
 		Reason:     "pow:no_token",
 	}, nil
 }

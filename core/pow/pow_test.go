@@ -31,13 +31,13 @@ func testManager(t *testing.T) *Manager {
 }
 
 // solve brute-forces a nonce for the given challenge — the Go equivalent of
-// the browser solver. Tests use difficulty 1-2 so this is instant.
+// the browser solver. Tests use difficulties of a few bits so this is instant.
 func solve(t *testing.T, challenge string, difficulty int) string {
 	t.Helper()
 	for n := 0; n < 1_000_000; n++ {
 		nonce := strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(challenge + nonce))
-		if leadingZeroNibbles(sum[:]) >= difficulty {
+		if leadingZeroBits(sum[:]) >= difficulty {
 			return nonce
 		}
 	}
@@ -67,16 +67,16 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	m := testManager(t)
 
-	ch, err := m.Issue(ctx, "Example.COM", "198.51.100.7", "/original?q=1", 2, time.Minute, false)
+	ch, err := m.Issue(ctx, "Example.COM", "198.51.100.7", "/original?q=1", 8, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ch.ID) != 32 || len(ch.Challenge) != 64 || ch.Difficulty != 2 {
+	if len(ch.ID) != 32 || len(ch.Challenge) != 64 || ch.Difficulty != 8 {
 		t.Fatalf("unexpected challenge shape: %+v", ch)
 	}
 
 	req := &RedeemRequest{
-		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 2),
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
 		Host: "example.com", IP: "198.51.100.7", UserAgent: "Mozilla/5.0",
 		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
 	}
@@ -112,11 +112,11 @@ func TestRedeemRejections(t *testing.T) {
 	ctx := context.Background()
 	m := testManager(t)
 
-	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 1, time.Minute, false)
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 4, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonce := solve(t, ch.Challenge, 1)
+	nonce := solve(t, ch.Challenge, 4)
 	base := RedeemRequest{
 		ChallengeID: ch.ID, Nonce: nonce,
 		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
@@ -145,7 +145,7 @@ func TestRedeemRejections(t *testing.T) {
 	for n := 0; ; n++ {
 		s := strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(ch.Challenge + s))
-		if leadingZeroNibbles(sum[:]) < 1 {
+		if leadingZeroBits(sum[:]) < 4 {
 			req.Nonce = s
 			break
 		}
@@ -190,19 +190,24 @@ func TestNoJSRedemption(t *testing.T) {
 	}
 }
 
-func TestLeadingZeroNibbles(t *testing.T) {
+func TestLeadingZeroBits(t *testing.T) {
 	for _, tc := range []struct {
 		sum  []byte
 		want int
 	}{
 		{[]byte{0xff, 0x00}, 0},
-		{[]byte{0x0f, 0x00}, 1},
-		{[]byte{0x00, 0xff}, 2},
-		{[]byte{0x00, 0x0f}, 3},
-		{[]byte{0x00, 0x00}, 4},
+		{[]byte{0x80, 0x00}, 0},
+		{[]byte{0x40, 0x00}, 1},
+		{[]byte{0x20, 0x00}, 2},
+		{[]byte{0x0f, 0x00}, 4},
+		{[]byte{0x01, 0xff}, 7},
+		{[]byte{0x00, 0xff}, 8},
+		{[]byte{0x00, 0x0f}, 12},
+		{[]byte{0x00, 0x01}, 15},
+		{[]byte{0x00, 0x00}, 16},
 	} {
-		if got := leadingZeroNibbles(tc.sum); got != tc.want {
-			t.Errorf("leadingZeroNibbles(%x) = %d, want %d", tc.sum, got, tc.want)
+		if got := leadingZeroBits(tc.sum); got != tc.want {
+			t.Errorf("leadingZeroBits(%x) = %d, want %d", tc.sum, got, tc.want)
 		}
 	}
 }
