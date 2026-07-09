@@ -26,6 +26,7 @@ import (
 type AdminServer struct {
 	engine  *core.Engine
 	cfg     *core.Config
+	metrics *metrics.Metrics // nil = no metrics endpoint, no challenge stats
 	token   string
 	keyPath string
 	prevDir string
@@ -35,7 +36,7 @@ type AdminServer struct {
 
 func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, token, keyPath, prevDir string, log *slog.Logger) *AdminServer {
 	s := &AdminServer{
-		engine: engine, cfg: cfg, token: token,
+		engine: engine, cfg: cfg, metrics: m, token: token,
 		keyPath: keyPath, prevDir: prevDir, log: log,
 		mux: http.NewServeMux(),
 	}
@@ -208,7 +209,46 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["recent"].(map[string]any)["newest"] = recent[0].Time
 		out["recent"].(map[string]any)["oldest"] = recent[len(recent)-1].Time
 	}
+	if ch := s.challengeStats(); ch != nil {
+		out["challenges"] = ch
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// challengeStats reads the PoW lifecycle counters and the mean solve time
+// back out of the Prometheus registry, so the dashboard shows them without a
+// second bookkeeping path (process lifetime, not just the recent window).
+// Returns nil when metrics are disabled.
+func (s *AdminServer) challengeStats() map[string]any {
+	if s.metrics == nil {
+		return nil
+	}
+	families, err := s.metrics.Registry().Gather()
+	if err != nil {
+		s.log.Warn("metrics gather failed", "err", err)
+		return nil
+	}
+	out := map[string]any{"issued": 0.0, "solved": 0.0, "failed": 0.0}
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_challenges_total":
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "outcome" {
+						out[l.GetValue()] = m.GetCounter().GetValue()
+					}
+				}
+			}
+		case "guardian_challenge_solve_seconds":
+			for _, m := range mf.GetMetric() {
+				h := m.GetHistogram()
+				if h.GetSampleCount() > 0 {
+					out["avg_solve_seconds"] = h.GetSampleSum() / float64(h.GetSampleCount())
+				}
+			}
+		}
+	}
+	return out
 }
 
 // handleScore answers "how anomalous would this request look?" for tuning

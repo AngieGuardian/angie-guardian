@@ -92,6 +92,50 @@ func decodeJSON(t *testing.T, resp *http.Response) map[string]any {
 	return m
 }
 
+// TestAdminStatsChallenges: the stats rollup surfaces the PoW lifecycle
+// counters (read back from the Prometheus registry) for the dashboard tiles.
+func TestAdminStatsChallenges(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(adminYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+
+	m := metrics.New()
+	m.Challenge("issued")
+	m.Challenge("issued")
+	m.Challenge("solved")
+	m.Challenge("failed")
+	m.SolveTime(1.0)
+	m.SolveTime(3.0)
+
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, m, adminToken, "", "", slog.Default()))
+	t.Cleanup(ts.Close)
+
+	stats := decodeJSON(t, adminReq(t, ts, "GET", "/admin/stats", adminToken, ""))
+	ch, ok := stats["challenges"].(map[string]any)
+	if !ok {
+		t.Fatalf("stats has no challenges rollup: %v", stats)
+	}
+	if ch["issued"] != 2.0 || ch["solved"] != 1.0 || ch["failed"] != 1.0 {
+		t.Errorf("challenges = %v, want issued 2 / solved 1 / failed 1", ch)
+	}
+	if avg, _ := ch["avg_solve_seconds"].(float64); avg != 2.0 {
+		t.Errorf("avg_solve_seconds = %v, want 2", ch["avg_solve_seconds"])
+	}
+}
+
 func TestAdminAuth(t *testing.T) {
 	ts, _ := adminServer(t)
 

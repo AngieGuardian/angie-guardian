@@ -136,9 +136,32 @@ func run(configPath string) error {
 	// Admin + metrics server on its own listener (loopback / management iface).
 	var admin *http.Server
 	if cfg.Admin.Listen != "" {
-		if cfg.Admin.Token == "" && !isLoopback(cfg.Admin.Listen) {
-			return fmt.Errorf("admin.listen %s is not loopback but no admin.token is set; refusing to expose an unauthenticated admin API", cfg.Admin.Listen)
+		// Establish the bearer token: explicit admin.token (or ADMIN_TOKEN)
+		// wins; otherwise load-or-create the persistent token_file; otherwise
+		// mint an ephemeral token for this run. Only a loopback bind may fall
+		// through to the ephemeral token: exposing the API beyond the box
+		// requires a token the operator configured deliberately.
+		switch {
+		case cfg.Admin.Token != "":
+		case cfg.Admin.TokenFile != "":
+			token, err := core.LoadOrCreateAdminToken(cfg.Admin.TokenFile)
+			if err != nil {
+				return fmt.Errorf("admin token %s: %w", cfg.Admin.TokenFile, err)
+			}
+			cfg.Admin.Token = token
+			log.Info("admin token loaded", "file", cfg.Admin.TokenFile)
+		case isLoopback(cfg.Admin.Listen):
+			token, err := core.GenerateAdminToken()
+			if err != nil {
+				return err
+			}
+			cfg.Admin.Token = token
+			log.Info("admin token generated for this run (set admin.token_file to persist one)",
+				"token", token)
+		default:
+			return fmt.Errorf("admin.listen %s is not loopback but no admin.token or admin.token_file is set; refusing to expose an unauthenticated admin API", cfg.Admin.Listen)
 		}
+
 		admin = &http.Server{
 			Addr: cfg.Admin.Listen,
 			Handler: httptransport.NewAdminServer(engine, cfg, m,
@@ -146,7 +169,16 @@ func run(configPath string) error {
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
-			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen, "authenticated", cfg.Admin.Token != "")
+			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen)
+			if cfg.Admin.Dashboard {
+				// Ready-to-open login link. The token rides the URL fragment,
+				// which browsers never send over the network or write to
+				// server logs; the page moves it into sessionStorage and
+				// strips it from the address bar on load.
+				log.Info("admin dashboard ready",
+					"url", fmt.Sprintf("http://%s/admin/dashboard#token=%s",
+						displayAddr(cfg.Admin.Listen), cfg.Admin.Token))
+			}
 			errCh <- admin.ListenAndServe()
 		}()
 	}
@@ -169,6 +201,19 @@ func run(configPath string) error {
 		return err
 	}
 	return nil
+}
+
+// displayAddr turns a listen address into one a browser on this box can open:
+// a wildcard bind (0.0.0.0, ::, or an empty host) becomes 127.0.0.1.
+func displayAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
 }
 
 // isLoopback reports whether a listen address binds only to the loopback
