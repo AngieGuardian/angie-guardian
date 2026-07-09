@@ -23,7 +23,10 @@ ConfigurationDirectory=guardian
 ConfigurationDirectoryMode=0750
 ReadWritePaths=/etc/guardian
 
-# Bearer token for the admin API — keep it out of the YAML, inject via env.
+# Admin API bearer token: simplest is admin.token_file in guardian.yaml
+# (auto-generated 0600 on first start; ReadWritePaths above already allows
+# it). To manage the token yourself instead, keep it out of the YAML and
+# inject via env:
 # Environment=ADMIN_TOKEN=...    (better: EnvironmentFile=/etc/guardian/env)
 # Environment=REDIS_PASSWORD=... (when using the redis store backend)
 

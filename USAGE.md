@@ -6,13 +6,17 @@ For an overview of what Guardian is and how it works, see the
 
 ## Contents
 
-1. [Configure Guardian](#1-configure-guardian)
+1. [Configure Guardian](#1-configure-guardian) (including
+   [difficulty tuning](#base_difficulty-and-max_difficulty))
 2. [Wire it into Angie](#2-wire-it-into-angie)
 3. [Run it (systemd)](#3-run-it-systemd)
-4. [Operate it via the admin API](#4-operate-it-via-the-admin-api)
+4. [Operate it via the admin API](#4-operate-it-via-the-admin-api) (including
+   [the reporting dashboard](#the-reporting-dashboard))
 5. [Train the anomaly model](#5-train-the-anomaly-model)
 6. [Load-test your deployment](#6-load-test-your-deployment)
-7. [Multi-instance (Redis/Valkey)](#multi-instance-redisvalkey)
+7. [Choosing a store backend](#choosing-a-store-backend)
+8. [Multi-instance (Redis/Valkey)](#multi-instance-redisvalkey)
+9. [WASM module (optional)](#wasm-module-optional)
 
 ## 1. Configure Guardian
 
