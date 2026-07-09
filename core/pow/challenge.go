@@ -246,6 +246,10 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 		return nil, ErrChallengeUnknown // lost the race: someone spent it first
 	}
 
+	// The client just proved it solves what it requests: forget its
+	// unsolved-issuance escalation counter (best-effort; see escalation.go).
+	_ = m.store.Delete(ctx, escalationKey(rec.IP))
+
 	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, req.TokenTTL)
 	if err != nil {
 		return nil, err

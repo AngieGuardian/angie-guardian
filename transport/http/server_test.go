@@ -323,19 +323,22 @@ func TestNoJSFlow(t *testing.T) {
 func TestChallengeDifficultyHeader(t *testing.T) {
 	ts := testServer(t)
 	// html.test: base_difficulty 1 (4 bits), max_difficulty 6 (24 bits).
+	// Distinct IPs per case keep the per-IP unsolved-challenge escalation
+	// (TestChallengeIssuanceEscalation) out of these assertions.
 	cases := map[string]struct {
+		ip     string
 		header string
 		want   int
 	}{
-		"absent header issues base":  {"", 4},
-		"escalated value honored":    {"12", 12},
-		"below base clamps up":       {"2", 4},
-		"above max clamps down":      {"99", 24},
-		"garbage falls back to base": {"lol", 4},
+		"absent header issues base":  {"198.51.100.20", "", 4},
+		"escalated value honored":    {"198.51.100.21", "12", 12},
+		"below base clamps up":       {"198.51.100.22", "2", 4},
+		"above max clamps down":      {"198.51.100.23", "99", 24},
+		"garbage falls back to base": {"198.51.100.24", "lol", 4},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			h := guardianHeaders("html.test", "198.51.100.20", "/x", "Mozilla/5.0")
+			h := guardianHeaders("html.test", tc.ip, "/x", "Mozilla/5.0")
 			if tc.header != "" {
 				h["X-Guardian-Difficulty"] = tc.header
 			}
@@ -355,6 +358,45 @@ func TestChallengeDifficultyHeader(t *testing.T) {
 				t.Errorf("difficulty_bits = %d, want %d", data.Difficulty, tc.want)
 			}
 		})
+	}
+}
+
+// TestChallengeIssuanceEscalation: an IP that keeps fetching challenges
+// without solving any pays progressively more work (a small allowance is
+// free, then +1 bit per two abandoned challenges), and one successful solve
+// resets it back to base.
+func TestChallengeIssuanceEscalation(t *testing.T) {
+	ts := testServer(t)
+	ip, ua := "198.51.100.60", "Mozilla/5.0"
+
+	// html.test base is 4 bits; free allowance 4, step 2:
+	// issuances 1..5 stay at base, 6-7 pay +1 bit, 8 pays +2.
+	want := []int{4, 4, 4, 4, 4, 5, 5, 6}
+	var id, challenge string
+	var difficulty int
+	for i, w := range want {
+		id, challenge, difficulty = fetchChallenge(t, ts, ip, ua)
+		if difficulty != w {
+			t.Fatalf("issuance %d: difficulty_bits = %d, want %d", i+1, difficulty, w)
+		}
+	}
+
+	// Solving the last challenge clears the counter...
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": solve(t, challenge, difficulty)})
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/", ua), body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("redeem: status = %d body = %s", resp.StatusCode, b)
+	}
+
+	// ...so the next challenge is back at base difficulty.
+	if _, _, d := fetchChallenge(t, ts, ip, ua); d != 4 {
+		t.Fatalf("difficulty after solve = %d bits, want base 4 (counter reset)", d)
+	}
+
+	// An unrelated IP was never escalated.
+	if _, _, d := fetchChallenge(t, ts, "198.51.100.61", ua); d != 4 {
+		t.Fatalf("fresh ip difficulty = %d bits, want base 4", d)
 	}
 }
 
