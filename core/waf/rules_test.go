@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -28,6 +29,18 @@ rules:
     keywords: [ "sqlmap", "nikto" ]
   - id: default-targets
     keywords: [ "boot.ini" ]
+  - id: log4shell-header
+    action: block
+    targets: [ "header:Referer", "header:x-forwarded-for" ]
+    keywords: [ "${jndi:" ]
+  - id: trace-method
+    action: deny
+    methods: [ trace, TRACK ]
+  - id: put-script
+    action: deny
+    methods: [ PUT ]
+    targets: [ query ]
+    keywords: [ "<script" ]
 `
 
 func writeRules(t *testing.T, content string) string {
@@ -60,6 +73,14 @@ func TestRuleMatching(t *testing.T) {
 		{"default action is deny", MatchInput{Path: "/boot.ini"}, "default-targets", ActionDeny},
 		{"clean request", MatchInput{Path: "/blog/post", Query: "page=2", UA: "mozilla/5.0"}, "", ""},
 		{"ua rule must not match path", MatchInput{Path: "/nikto"}, "", ""},
+		{"header keyword, name lowered at compile", MatchInput{Headers: map[string]string{"referer": "http://evil/${jndi:ldap://x}"}}, "log4shell-header", ActionBlock},
+		{"second header target", MatchInput{Headers: map[string]string{"x-forwarded-for": "${jndi:dns://x}"}}, "log4shell-header", ActionBlock},
+		{"header rule must not match path", MatchInput{Path: "/${jndi:x"}, "", ""},
+		{"methods-only rule, method uppercased at compile", MatchInput{Method: "TRACE", Path: "/"}, "trace-method", ActionDeny},
+		{"methods-only rule ignores clean fields", MatchInput{Method: "TRACK", Path: "/blog", UA: "mozilla/5.0"}, "trace-method", ActionDeny},
+		{"method gate passes", MatchInput{Method: "PUT", Query: "x=<script>alert(1)"}, "put-script", ActionDeny},
+		{"method gate blocks other methods", MatchInput{Method: "GET", Query: "x=<script>alert(1)"}, "", ""},
+		{"empty method never matches a method rule", MatchInput{Path: "/"}, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,15 +97,40 @@ func TestRuleMatching(t *testing.T) {
 	}
 }
 
+func TestRuleSetPrecomputation(t *testing.T) {
+	rs, err := compileRules([]byte(rulesYAML), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"referer", "x-forwarded-for"}; !slices.Equal(rs.HeaderTargets(), want) {
+		t.Errorf("HeaderTargets() = %v, want %v", rs.HeaderTargets(), want)
+	}
+	if !rs.NeedsMethod() {
+		t.Error("NeedsMethod() = false, want true")
+	}
+
+	plain, err := compileRules([]byte("rules: [ { id: a, keywords: [x] } ]"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.HeaderTargets()) != 0 || plain.NeedsMethod() {
+		t.Errorf("plain rule set: HeaderTargets() = %v, NeedsMethod() = %v, want none/false",
+			plain.HeaderTargets(), plain.NeedsMethod())
+	}
+}
+
 func TestRuleValidation(t *testing.T) {
 	for name, body := range map[string]string{
-		"missing id":    "rules: [ { keywords: [x] } ]",
-		"duplicate id":  "rules: [ { id: a, keywords: [x] }, { id: a, keywords: [y] } ]",
-		"empty rule":    "rules: [ { id: a } ]",
-		"bad action":    "rules: [ { id: a, action: nuke, keywords: [x] } ]",
-		"bad target":    "rules: [ { id: a, targets: [ body ], keywords: [x] } ]",
-		"bad regex":     "rules: [ { id: a, regexes: [ '([' ] } ]",
-		"unknown field": "rules: [ { id: a, keywords: [x], severity: high } ]",
+		"missing id":               "rules: [ { keywords: [x] } ]",
+		"duplicate id":             "rules: [ { id: a, keywords: [x] }, { id: a, keywords: [y] } ]",
+		"empty rule":               "rules: [ { id: a } ]",
+		"bad action":               "rules: [ { id: a, action: nuke, keywords: [x] } ]",
+		"bad target":               "rules: [ { id: a, targets: [ body ], keywords: [x] } ]",
+		"bad regex":                "rules: [ { id: a, regexes: [ '([' ] } ]",
+		"unknown field":            "rules: [ { id: a, keywords: [x], severity: high } ]",
+		"empty header name":        "rules: [ { id: a, targets: [ 'header:' ], keywords: [x] } ]",
+		"empty method":             "rules: [ { id: a, methods: [ '' ] } ]",
+		"targets without patterns": "rules: [ { id: a, methods: [ GET ], targets: [ path ] } ]",
 	} {
 		if _, err := compileRules([]byte(body), "test"); err == nil {
 			t.Errorf("%s: expected error, got nil", name)

@@ -76,6 +76,27 @@ then exits: `0` and `ok` when valid, `1` and the reason when not.
 # config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
 ```
 
+### Signature rules
+
+`waf.keywords.rules_file` points at a YAML rules file (start from
+`deploy/rules-common.yaml`, which documents every field). Rules are keyword
+and RE2-regex signatures with an `action` of `deny`, `challenge` or `block`,
+hot-reloaded on change. A rule matches against the targets it names:
+
+- `path`, `query` (the default pair) and `ua`, all URL-decoded and lowercased;
+- `header:<name>` for any request header, e.g. `header:referer` to catch
+  Log4Shell-style payloads hiding in URL-shaped headers (values are
+  percent-decoded too, so encoding is no escape hatch);
+- `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods, and a
+  rule with only `methods` fires on the method alone.
+
+**Request bodies are never inspected.** Angie's `auth_request` subrequest
+carries only the request line and headers, never the body, so no rule can see
+POST payloads. That is a deliberate design boundary, not a missing feature:
+inspecting bodies would mean buffering every upload through the sidecar.
+Body-borne attacks are for your backend's input validation or a full inline
+WAF; Guardian's job is keeping bots and scanners from reaching it at all.
+
 ### base_difficulty and max_difficulty
 
 `base_difficulty` is the **floor** every clean client pays; `max_difficulty` is

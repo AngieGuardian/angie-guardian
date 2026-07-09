@@ -59,14 +59,19 @@ func handleRequest() uint64 {
 		return stop
 	}
 
-	// Method and Cookie stay unset: nothing in the stateless pipeline reads
-	// them (PoW token/method checks are sidecar-only), so fetching them would
-	// be two wasted host calls on every request.
+	// Cookie stays unset: nothing in the stateless pipeline reads it (PoW
+	// tokens are sidecar-only), so fetching it would be a wasted host call on
+	// every request. Method is fetched only when some rule filters by it, and
+	// the Header getter costs nothing until a header-targeting rule calls it.
 	req := &stateless.RequestContext{
 		Host:       getHeader("Host"),
 		URI:        getURI(),
 		RemoteAddr: stateless.ClientIP(getSourceAddr()),
 		UserAgent:  getHeader("User-Agent"),
+		Header:     getHeader,
+	}
+	if config.NeedsMethod() {
+		req.Method = getMethod()
 	}
 
 	d := config.Evaluate(req)

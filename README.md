@@ -16,7 +16,8 @@ pipeline. Everything is per-domain configurable.
 
 1. **WAF layer**, runs on every request:
    - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
-     construction), matched against decoded path/query/User-Agent
+     construction), matched against the decoded path, query, User-Agent
+     and any named request header, with optional HTTP-method filters
    - behavioural IP blocking with exponential backoff (signature hits,
      PoW failures, tamper events)
    - honeypot trap paths: one hit = instant block

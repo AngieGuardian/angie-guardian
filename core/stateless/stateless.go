@@ -23,8 +23,9 @@ import (
 	"github.com/melroy89/angie-guardian/core/waf"
 )
 
-// RequestContext carries only primitives so it can be populated from an HTTP
-// request (sidecar), a WASM host call, or a future cgo struct.
+// RequestContext carries only primitives (plus one transport-supplied getter)
+// so it can be populated from an HTTP request (sidecar), a WASM host call, or
+// a future cgo struct.
 type RequestContext struct {
 	Host       string
 	Method     string
@@ -32,6 +33,21 @@ type RequestContext struct {
 	RemoteAddr string // client IP, no port
 	UserAgent  string
 	Cookie     string // raw Cookie header
+
+	// Header returns one request header by (case-insensitive) name, or ""
+	// when absent. Transports set it so header-targeting WAF rules fetch only
+	// the headers they actually name; nil means headers are unavailable and
+	// header targets simply never match. Read it via HeaderValue.
+	Header func(name string) string
+}
+
+// HeaderValue returns a request header via the transport's getter, or "" when
+// none was provided.
+func (r *RequestContext) HeaderValue(name string) string {
+	if r.Header == nil {
+		return ""
+	}
+	return r.Header(name)
 }
 
 // Action is the outcome kind of a decision.
@@ -242,15 +258,37 @@ func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) (Decision, bool) {
 	return Decision{}, false
 }
 
-func evalSignatures(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	if !dr.KeywordsEnabled || dr.Rules == nil {
-		return Decision{}, false
-	}
+// BuildMatchInput assembles the normalized signature-matcher input for a rule
+// set, fetching method and headers only when some rule targets them. Header
+// values get the same best-effort percent-decoding as the path, so encoded
+// payloads in URL-shaped headers (Referer and friends) can't slip past
+// literal keywords. Shared by the sidecar's WAF stage and the WASM guest so
+// their matching semantics cannot drift.
+func BuildMatchInput(req *RequestContext, rs *waf.RuleSet) waf.MatchInput {
 	in := waf.MatchInput{
 		Path:  strings.ToLower(DecodePath(RequestPath(req.URI))),
 		Query: strings.ToLower(DecodeQuery(RequestQuery(req.URI))),
 		UA:    strings.ToLower(req.UserAgent),
 	}
+	if rs.NeedsMethod() {
+		in.Method = strings.ToUpper(req.Method)
+	}
+	if names := rs.HeaderTargets(); len(names) > 0 && req.Header != nil {
+		in.Headers = make(map[string]string, len(names))
+		for _, name := range names {
+			if v := req.HeaderValue(name); v != "" {
+				in.Headers[name] = strings.ToLower(DecodePath(v))
+			}
+		}
+	}
+	return in
+}
+
+func evalSignatures(req *RequestContext, dr *DomainRules) (Decision, bool) {
+	if !dr.KeywordsEnabled || dr.Rules == nil {
+		return Decision{}, false
+	}
+	in := BuildMatchInput(req, dr.Rules)
 	rule := dr.Rules.Match(&in)
 	if rule == nil {
 		return Decision{}, false

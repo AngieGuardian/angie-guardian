@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,8 @@ type Rule struct {
 	Action      Action
 
 	targets  target
+	headers  []string // pre-lowered header names to match against
+	methods  []string // uppercased; non-empty restricts the rule to these methods
 	keywords []string // pre-lowered
 	regexes  []*regexp.Regexp
 }
@@ -54,6 +57,7 @@ type ruleYAML struct {
 	Description string   `yaml:"description"`
 	Action      string   `yaml:"action"`
 	Targets     []string `yaml:"targets"`
+	Methods     []string `yaml:"methods"`
 	Keywords    []string `yaml:"keywords"`
 	Regexes     []string `yaml:"regexes"`
 }
@@ -65,14 +69,40 @@ type rulesFileYAML struct {
 // RuleSet is an immutable compiled rules file; swapped atomically on reload.
 type RuleSet struct {
 	Rules []Rule
+
+	headerTargets []string // sorted union of every rule's header targets
+	needsMethod   bool     // any rule carries a methods restriction
+}
+
+// HeaderTargets returns the lowered names of every header any rule in the set
+// targets, so callers fetch (and lowercase) only those before Match. Callers
+// must not mutate the returned slice. Nil-safe: a nil set targets nothing.
+func (rs *RuleSet) HeaderTargets() []string {
+	if rs == nil {
+		return nil
+	}
+	return rs.headerTargets
+}
+
+// NeedsMethod reports whether any rule restricts by HTTP method, so callers
+// that pay per request-field (the WASM guest) can skip fetching it. Nil-safe.
+func (rs *RuleSet) NeedsMethod() bool {
+	if rs == nil {
+		return false
+	}
+	return rs.needsMethod
 }
 
 // MatchInput carries the pre-normalized (decoded, lowercased) request fields
-// so per-rule matching does no allocation.
+// so per-rule matching does no allocation. Headers maps lowered header name to
+// lowered value and only needs the names in RuleSet.HeaderTargets; Method is
+// uppercase and only consulted when RuleSet.NeedsMethod.
 type MatchInput struct {
-	Path  string
-	Query string
-	UA    string
+	Method  string
+	Path    string
+	Query   string
+	UA      string
+	Headers map[string]string
 }
 
 // Match returns the first matching rule, or nil.
@@ -86,6 +116,15 @@ func (rs *RuleSet) Match(in *MatchInput) *Rule {
 }
 
 func (r *Rule) matches(in *MatchInput) bool {
+	if len(r.methods) > 0 {
+		if !slices.Contains(r.methods, in.Method) {
+			return false
+		}
+		// A rule with methods but no patterns matches on method alone.
+		if len(r.keywords) == 0 && len(r.regexes) == 0 {
+			return true
+		}
+	}
 	if r.targets&targetPath != 0 && r.matchesText(in.Path) {
 		return true
 	}
@@ -94,6 +133,11 @@ func (r *Rule) matches(in *MatchInput) bool {
 	}
 	if r.targets&targetUA != 0 && r.matchesText(in.UA) {
 		return true
+	}
+	for _, name := range r.headers {
+		if r.matchesText(in.Headers[name]) {
+			return true
+		}
 	}
 	return false
 }
@@ -141,7 +185,14 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 		}
 		seen[ry.ID] = true
 		if len(ry.Keywords) == 0 && len(ry.Regexes) == 0 {
-			return nil, fmt.Errorf("%s: rule %s has no keywords or regexes", path, ry.ID)
+			if len(ry.Methods) == 0 {
+				return nil, fmt.Errorf("%s: rule %s has no keywords, regexes or methods", path, ry.ID)
+			}
+			// Methods alone are a complete rule (e.g. deny TRACE); targets
+			// without patterns to match against them are a config mistake.
+			if len(ry.Targets) > 0 {
+				return nil, fmt.Errorf("%s: rule %s has targets but no keywords or regexes", path, ry.ID)
+			}
 		}
 
 		r := Rule{ID: ry.ID, Description: ry.Description}
@@ -154,7 +205,7 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 			return nil, fmt.Errorf("%s: rule %s: unknown action %q", path, ry.ID, ry.Action)
 		}
 
-		if len(ry.Targets) == 0 {
+		if len(ry.Targets) == 0 && (len(ry.Keywords) > 0 || len(ry.Regexes) > 0) {
 			r.targets = targetPath | targetQuery
 		}
 		for _, t := range ry.Targets {
@@ -166,7 +217,24 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 			case "ua":
 				r.targets |= targetUA
 			default:
-				return nil, fmt.Errorf("%s: rule %s: unknown target %q (want path, query or ua)", path, ry.ID, t)
+				name, ok := strings.CutPrefix(t, "header:")
+				name = strings.ToLower(strings.TrimSpace(name))
+				if !ok || name == "" {
+					return nil, fmt.Errorf("%s: rule %s: unknown target %q (want path, query, ua or header:<name>)", path, ry.ID, t)
+				}
+				if !slices.Contains(r.headers, name) {
+					r.headers = append(r.headers, name)
+				}
+			}
+		}
+
+		for _, m := range ry.Methods {
+			m = strings.ToUpper(strings.TrimSpace(m))
+			if m == "" {
+				return nil, fmt.Errorf("%s: rule %s: empty method", path, ry.ID)
+			}
+			if !slices.Contains(r.methods, m) {
+				r.methods = append(r.methods, m)
 			}
 		}
 
@@ -182,6 +250,15 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 		}
 		rs.Rules = append(rs.Rules, r)
 	}
+	for i := range rs.Rules {
+		rs.needsMethod = rs.needsMethod || len(rs.Rules[i].methods) > 0
+		for _, name := range rs.Rules[i].headers {
+			if !slices.Contains(rs.headerTargets, name) {
+				rs.headerTargets = append(rs.headerTargets, name)
+			}
+		}
+	}
+	slices.Sort(rs.headerTargets)
 	return rs, nil
 }
 

