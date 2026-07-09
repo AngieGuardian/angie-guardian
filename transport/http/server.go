@@ -163,6 +163,18 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Escalate for clients that keep requesting challenges without solving
+	// them: within the rate limit above, a challenge farmer would otherwise
+	// pay base difficulty forever. Each unsolved issuance past a small
+	// allowance raises the work, capped at the domain ceiling; a successful
+	// redemption resets the counter (core/pow/escalation.go).
+	if extra := s.pow.BumpEscalation(r.Context(), ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+		difficulty = min(difficulty+extra, dcfg.PoW.MaxBits())
+		s.metrics.Challenge("escalated")
+		s.log.Info("challenge difficulty escalated",
+			"ip", ip, "host", host, "extra_bits", extra, "difficulty", difficulty)
+	}
+
 	ch, err := s.pow.Issue(r.Context(), host, ip, uri,
 		difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
 	if err != nil {

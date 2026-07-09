@@ -21,7 +21,7 @@ type Metrics struct {
 	reg *prometheus.Registry
 
 	decisions    *prometheus.CounterVec // by action, reason_category, domain
-	challenge    *prometheus.CounterVec // by outcome: issued|solved|failed
+	challenge    *prometheus.CounterVec // by outcome: issued|escalated|solved|failed
 	solveTime    prometheus.Histogram   // client-reported solve time, seconds
 	anomalyScore *prometheus.HistogramVec
 	blocksPlaced *prometheus.CounterVec // by reason_category
