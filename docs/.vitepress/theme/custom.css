@@ -1,0 +1,41 @@
+/**
+ * Angie Guardian brand palette: a guardian green over the default theme.
+ */
+:root {
+  --vp-c-brand-1: #1a8a5f;
+  --vp-c-brand-2: #23a874;
+  --vp-c-brand-3: #2fbd85;
+  --vp-c-brand-soft: rgba(47, 189, 133, 0.14);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    #1a8a5f 30%,
+    #41d1a7
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(47, 189, 133, 0.55) 50%,
+    rgba(26, 138, 95, 0.45) 50%
+  );
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+.dark {
+  --vp-c-brand-1: #3fd39a;
+  --vp-c-brand-2: #2fbd85;
+  --vp-c-brand-3: #23a874;
+  --vp-c-brand-soft: rgba(63, 211, 154, 0.16);
+}
+
+@media (min-width: 640px) {
+  :root {
+    --vp-home-hero-image-filter: blur(56px);
+  }
+}
+
+@media (min-width: 960px) {
+  :root {
+    --vp-home-hero-image-filter: blur(68px);
+  }
+}

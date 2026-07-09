@@ -16,6 +16,15 @@ variables:
   PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/angie-guardian/${CI_COMMIT_TAG}"
   RELEASE_LINKS_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
 
+# Branch pipelines only. Without this, the `rules:` on the docs job makes
+# GitLab also attempt a (job-less, thus failed) merge-request pipeline for
+# every MR next to the branch pipeline that does the real work.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - when: always
+
 stages:
   - test
   - build
@@ -38,6 +47,25 @@ test:
   stage: test
   script:
     - go test -race -count=1 ./...
+
+# Build-check the VitePress documentation site on branches that touch it, so
+# a broken docs change (dead link, bad config) fails the MR instead of the
+# Pages deploy on main. VitePress link checking runs as part of the build.
+docs:
+  stage: test
+  image: node:24
+  cache:
+    key: vitepress
+    paths:
+      - docs/node_modules/
+  rules:
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+      changes:
+        - docs/**/*
+  script:
+    - cd docs
+    - npm ci
+    - npm run build
 
 # NOTE: the end-to-end suite (test/e2e/, `make e2e`) is intentionally NOT a CI
 # job. It boots the real Angie + guardiand + whoami stack via testcontainers-go,
@@ -117,3 +145,28 @@ upload_and_release:
       --header "Content-Type: application/json"
       --data "{\"name\":\"Angie Guardian ${CI_COMMIT_TAG} - Linux amd64 (.tar.gz)\",\"url\":\"${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz\",\"link_type\":\"package\"}"
       ${RELEASE_LINKS_URL}'
+
+# --- Documentation site (GitLab Pages) --------------------------------------
+# Builds the VitePress site from docs/ and publishes it via Pages on every
+# push to the default branch. The site's base path is derived from
+# $CI_PAGES_URL so it works whether Pages serves from a subpath
+# (https://host/angie-guardian/) or a root domain.
+pages:
+  stage: deploy
+  image: node:24
+  cache:
+    key: vitepress
+    paths:
+      - docs/node_modules/
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - cd docs
+    - npm ci
+    - export DOCS_BASE="$(node -p 'new URL(process.env.CI_PAGES_URL).pathname.replace(/\/?$/, "/")')"
+    - echo "Building with base $DOCS_BASE"
+    - npm run build
+    - mv .vitepress/dist ../public
+  artifacts:
+    paths:
+      - public

@@ -190,6 +190,13 @@ go build ./cmd/guardiand
 Then include the snippet from `deploy/angie-guardian.conf` in each protected
 `server {}` block of your Angie configuration.
 
+## Documentation
+
+The full documentation (guides, examples, and a complete option/API
+reference) lives in [`docs/`](docs/) as a VitePress site, published via
+GitLab Pages on every push to `main`. Browse it locally with
+`make docs-dev`, or build the static site with `make docs`.
+
 ## Usage
 
 See **[USAGE.md](USAGE.md)** for a step-by-step guide: configuring Guardian,

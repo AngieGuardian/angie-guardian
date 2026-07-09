@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e vet fmt clean
+.PHONY: all build wasm test e2e vet fmt clean docs docs-dev
 
 # Build the three sidecar binaries into dist/.
 build:
@@ -33,6 +33,14 @@ e2e:
 
 vet:
 	go vet ./...
+
+# Documentation site (VitePress). `docs` builds the static site into
+# docs/.vitepress/dist; `docs-dev` serves it locally with hot reload.
+docs:
+	cd docs && npm install && npm run build
+
+docs-dev:
+	cd docs && npm install && npm run dev
 
 fmt:
 	gofmt -w cmd core transport web test
