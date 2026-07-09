@@ -25,6 +25,7 @@ type Metrics struct {
 	solveTime    prometheus.Histogram   // client-reported solve time, seconds
 	anomalyScore *prometheus.HistogramVec
 	blocksPlaced *prometheus.CounterVec // by reason_category
+	botVerify    *prometheus.CounterVec // by bot (config-bounded), result
 	storeOps     *prometheus.CounterVec // by op, status
 	storeLatency *prometheus.HistogramVec
 	evalLatency  prometheus.Histogram
@@ -63,6 +64,10 @@ func New() *Metrics {
 			Namespace: "guardian", Name: "blocks_placed_total",
 			Help: "Behavioural IP blocks placed, by reason category.",
 		}, []string{"reason"}),
+		botVerify: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "bot_verifications_total",
+			Help: "Verified-bot checks by bot name and result (verified|spoof|error).",
+		}, []string{"bot", "result"}),
 		storeOps: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "store_ops_total",
 			Help: "Store operations by op and status (ok|error).",
@@ -116,6 +121,13 @@ func (m *Metrics) BlockPlaced(reason string) {
 		return
 	}
 	m.blocksPlaced.WithLabelValues(reason).Inc()
+}
+
+func (m *Metrics) BotVerification(bot, result string) {
+	if m == nil {
+		return
+	}
+	m.botVerify.WithLabelValues(bot, result).Inc()
 }
 
 func (m *Metrics) StoreOp(op string, seconds float64, err error) {

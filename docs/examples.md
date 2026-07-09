@@ -126,6 +126,7 @@ defaults:
         signature: 10/min     # WAF signature hits
         pow_fail: 10/min      # failed challenge solutions
         tamper: 10/min        # forged/replayed challenge or signed IDs
+        bot_spoof: 5/min      # clients caught impersonating a verified bot
     keywords:
       enabled: true           # requires the rules file to exist (fail-fast);
       rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
@@ -153,13 +154,21 @@ defaults:
     noscript_fallback: true
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
-    uas: [ "Googlebot", "bingbot" ]
+    # No crawler names in uas: a UA string is forgeable. Use verified_bots
+    # below instead (see the configuration reference).
+    uas: []
     paths:
       - /robots.txt
       - /favicon.ico
       - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
   denylist:
     ips: []
+  # Crawlers allowlisted by proven rDNS identity, not by their forgeable
+  # User-Agent string.
+  verified_bots:
+    bots:
+      - name: googlebot
+      - name: bingbot
 
 domains:
   # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.

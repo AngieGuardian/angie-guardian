@@ -167,6 +167,61 @@ func TestListMatching(t *testing.T) {
 	}
 }
 
+func TestVerifiedBotsConfig(t *testing.T) {
+	cfg := loadTestConfig(t, `
+defaults:
+  verified_bots:
+    bots:
+      - name: googlebot
+      - name: google-special
+      - name: mybot
+        uas: [ "MyBot/1.0" ]
+        domains: [ "Crawler.Example.NET." ]
+`)
+	vb := &cfg.Defaults.VerifiedBots
+
+	if vb.DNSTimeout.Std() != time.Second || vb.CacheTTL.Std() != 12*time.Hour || vb.NegativeTTL.Std() != time.Hour {
+		t.Errorf("defaults not applied: %v / %v / %v", vb.DNSTimeout.Std(), vb.CacheTTL.Std(), vb.NegativeTTL.Std())
+	}
+	if vb.SpoofAction != "deny" {
+		t.Errorf("spoof_action = %q, want default deny", vb.SpoofAction)
+	}
+
+	g := vb.match("Mozilla/5.0 (compatible; googlebot/2.1; +http://www.google.com/bot.html)")
+	if g == nil || g.Name != "googlebot" {
+		t.Fatalf("preset UA needle should match, got %v", g)
+	}
+	// googlebot.com ONLY: google.com belongs to the special-case crawler and
+	// user-triggered fetcher categories, which must not vouch for Googlebot.
+	if len(g.domainsLower) != 1 || g.domainsLower[0] != "googlebot.com" {
+		t.Errorf("preset domains = %v, want [googlebot.com]", g.domainsLower)
+	}
+
+	s := vb.match("AdsBot-Google-Mobile (+http://www.google.com/mobile/adsbot.html)")
+	if s == nil || s.Name != "google-special" {
+		t.Fatalf("AdsBot UA should match the google-special preset, got %v", s)
+	}
+	if len(s.domainsLower) != 1 || s.domainsLower[0] != "google.com" {
+		t.Errorf("google-special domains = %v, want [google.com]", s.domainsLower)
+	}
+
+	m := vb.match("mybot/1.0 (+https://example.net)")
+	if m == nil || m.Name != "mybot" {
+		t.Fatalf("custom UA needle should match case-insensitively, got %v", m)
+	}
+	if len(m.domainsLower) != 1 || m.domainsLower[0] != "crawler.example.net" {
+		t.Errorf("custom domains should be lowercased and dot-trimmed: %v", m.domainsLower)
+	}
+
+	if vb.match("Mozilla/5.0 Firefox/140.0") != nil {
+		t.Error("plain browser UA must not match any bot")
+	}
+
+	if _, ok := cfg.Defaults.WAF.IPBehaviour.Thresholds["bot_spoof"]; !ok {
+		t.Error("default thresholds should include bot_spoof")
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	for name, yaml := range map[string]string{
 		"bad backend":                            "store: { backend: etcd }",
@@ -183,6 +238,13 @@ func TestConfigValidation(t *testing.T) {
 		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
 		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
+		"bot without name":                       "defaults: { verified_bots: { bots: [ { uas: [X], domains: [x.test] } ] } }",
+		"unknown bot preset":                     "defaults: { verified_bots: { bots: [ { name: mybot } ] } }",
+		"bot empty domain":                       "defaults: { verified_bots: { bots: [ { name: mybot, uas: [MyBot], domains: [\"\"] } ] } }",
+		"bad spoof_action":                       "defaults: { verified_bots: { spoof_action: block } }",
+		"negative dns_timeout":                   "defaults: { verified_bots: { dns_timeout: -1s } }",
+		"bot also in ua allowlist":               "defaults: { allowlist: { uas: [ Googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } }",
+		"bot overlaps ua allowlist per-domain":   "domains: { a.test: { allowlist: { uas: [ googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } } }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {

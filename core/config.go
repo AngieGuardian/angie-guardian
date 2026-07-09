@@ -132,10 +132,131 @@ type StoreConfig struct {
 // DomainConfig is the per-domain feature configuration. Domain entries are
 // merged over Defaults field-by-field at load time.
 type DomainConfig struct {
-	WAF       WAFConfig  `yaml:"waf"`
-	PoW       PoWConfig  `yaml:"pow"`
-	Allowlist ListConfig `yaml:"allowlist"`
-	Denylist  ListConfig `yaml:"denylist"`
+	WAF          WAFConfig          `yaml:"waf"`
+	PoW          PoWConfig          `yaml:"pow"`
+	Allowlist    ListConfig         `yaml:"allowlist"`
+	Denylist     ListConfig         `yaml:"denylist"`
+	VerifiedBots VerifiedBotsConfig `yaml:"verified_bots"`
+}
+
+// VerifiedBotsConfig allowlists well-known crawlers by verified identity
+// instead of by their (freely forgeable) User-Agent string: a client whose
+// UA claims a listed bot is admitted only if its IP reverse-DNS + forward-
+// confirms to one of the bot's published domains (core/botverify). A client
+// that claims the UA but definitively fails verification is an impostor and
+// is handled per SpoofAction.
+type VerifiedBotsConfig struct {
+	Bots []BotConfig `yaml:"bots"`
+	// DNSTimeout is the total DNS budget for one first-sight verification;
+	// results are cached, so this cost is paid once per IP per CacheTTL.
+	DNSTimeout  Duration `yaml:"dns_timeout"`
+	CacheTTL    Duration `yaml:"cache_ttl"`
+	NegativeTTL Duration `yaml:"negative_ttl"`
+	// SpoofAction is what happens to a proven impostor: "deny" (default)
+	// rejects and scores a bot_spoof event; "continue" just withholds the
+	// allowlist skip and lets the rest of the pipeline handle the request.
+	SpoofAction string `yaml:"spoof_action"`
+}
+
+// BotConfig is one verifiable crawler: UA needles that claim it, and the
+// domains its reverse DNS must confirm to. For well-known names (see
+// botPresets) both lists may be omitted.
+type BotConfig struct {
+	Name    string   `yaml:"name"`
+	UAs     []string `yaml:"uas"`
+	Domains []string `yaml:"domains"`
+
+	uasLower     []string
+	domainsLower []string
+}
+
+// botPresets carries the published UA substrings and rDNS domains of
+// well-known crawlers, so a config entry can be just "name: googlebot".
+//
+// Google splits its traffic into three rDNS categories, and the presets keep
+// them apart on purpose:
+//   - common crawlers (Googlebot UAs): PTR under googlebot.com ONLY. The
+//     preset must not also accept google.com, because that domain belongs to
+//     the other two categories and would let e.g. a user-triggered fetch
+//     carrying a Googlebot UA ride the allowlist.
+//   - special-case crawlers (AdsBot, Mediapartners, APIs-Google): PTR under
+//     google.com — the separate "google-special" preset.
+//   - user-triggered fetchers (Feedfetcher, Read-Aloud, Apps Script...):
+//     deliberately NOT a preset. Third parties can aim those at any site on
+//     demand, so allowlisting them is an operator decision; write a custom
+//     bot entry if you truly want it.
+//
+// (DuckDuckBot is absent on purpose too: DuckDuckGo publishes an IP list,
+// not rDNS domains — use allowlist.ips for it.)
+var botPresets = map[string]struct{ uas, domains []string }{
+	"googlebot":      {[]string{"Googlebot"}, []string{"googlebot.com"}},
+	"google-special": {[]string{"AdsBot-Google", "Mediapartners-Google", "APIs-Google"}, []string{"google.com"}},
+	"bingbot":        {[]string{"bingbot"}, []string{"search.msn.com"}},
+	"applebot":       {[]string{"Applebot"}, []string{"applebot.apple.com"}},
+	"yandexbot":      {[]string{"Yandex"}, []string{"yandex.ru", "yandex.net", "yandex.com"}},
+	"baiduspider":    {[]string{"Baiduspider"}, []string{"baidu.com", "baidu.jp"}},
+}
+
+// compile expands presets, validates and precomputes lowercase needles.
+func (vb *VerifiedBotsConfig) compile() error {
+	switch vb.SpoofAction {
+	case "":
+		vb.SpoofAction = "deny"
+	case "deny", "continue":
+	default:
+		return fmt.Errorf("verified_bots.spoof_action must be deny or continue, got %q", vb.SpoofAction)
+	}
+	if vb.DNSTimeout < 0 || vb.CacheTTL < 0 || vb.NegativeTTL < 0 {
+		return fmt.Errorf("verified_bots: dns_timeout, cache_ttl and negative_ttl must be >= 0")
+	}
+	for i := range vb.Bots {
+		b := &vb.Bots[i]
+		if b.Name == "" {
+			return fmt.Errorf("verified_bots.bots[%d]: name is required", i)
+		}
+		preset, known := botPresets[strings.ToLower(b.Name)]
+		if len(b.UAs) == 0 {
+			if !known {
+				return fmt.Errorf("verified_bots bot %q: not a built-in preset, so uas is required", b.Name)
+			}
+			b.UAs = preset.uas
+		}
+		if len(b.Domains) == 0 {
+			if !known {
+				return fmt.Errorf("verified_bots bot %q: not a built-in preset, so domains is required", b.Name)
+			}
+			b.Domains = preset.domains
+		}
+		b.uasLower = b.uasLower[:0]
+		for _, ua := range b.UAs {
+			b.uasLower = append(b.uasLower, strings.ToLower(ua))
+		}
+		b.domainsLower = b.domainsLower[:0]
+		for _, d := range b.Domains {
+			d = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+			if d == "" {
+				return fmt.Errorf("verified_bots bot %q: empty domain entry", b.Name)
+			}
+			b.domainsLower = append(b.domainsLower, d)
+		}
+	}
+	return nil
+}
+
+// match returns the first bot whose UA needle appears in ua, or nil.
+func (vb *VerifiedBotsConfig) match(ua string) *BotConfig {
+	if len(vb.Bots) == 0 || ua == "" {
+		return nil
+	}
+	lower := strings.ToLower(ua)
+	for i := range vb.Bots {
+		for _, needle := range vb.Bots[i].uasLower {
+			if strings.Contains(lower, needle) {
+				return &vb.Bots[i]
+			}
+		}
+	}
+	return nil
 }
 
 type WAFConfig struct {
@@ -288,7 +409,19 @@ func (c *Config) finalize() error {
 			"signature": {Count: 10, Per: time.Minute},
 			"pow_fail":  {Count: 10, Per: time.Minute},
 			"tamper":    {Count: 10, Per: time.Minute},
+			"bot_spoof": {Count: 5, Per: time.Minute},
 		}
+	}
+	if c.Defaults.VerifiedBots.DNSTimeout == 0 {
+		// Generous on purpose: a cold recursive PTR resolution can exceed
+		// 500ms, and the budget is paid once per IP per cache_ttl.
+		c.Defaults.VerifiedBots.DNSTimeout = Duration(time.Second)
+	}
+	if c.Defaults.VerifiedBots.CacheTTL == 0 {
+		c.Defaults.VerifiedBots.CacheTTL = Duration(12 * time.Hour)
+	}
+	if c.Defaults.VerifiedBots.NegativeTTL == 0 {
+		c.Defaults.VerifiedBots.NegativeTTL = Duration(time.Hour)
 	}
 
 	// Domain configs = defaults deep-copied, then the domain's own YAML node
@@ -364,6 +497,24 @@ func (dc *DomainConfig) validate() error {
 	}
 	if err := dc.Denylist.Compile(); err != nil {
 		return fmt.Errorf("denylist: %w", err)
+	}
+	if err := dc.VerifiedBots.compile(); err != nil {
+		return err
+	}
+	// A bot listed under verified_bots must not also appear in allowlist.uas:
+	// the plain UA allowlist runs first and matches by substring, so an
+	// overlapping entry would admit any client claiming the UA, unverified —
+	// exactly what verified_bots exists to prevent. Fail fast at load.
+	for i := range dc.VerifiedBots.Bots {
+		b := &dc.VerifiedBots.Bots[i]
+		for _, an := range dc.Allowlist.UAs {
+			anLower := strings.ToLower(an)
+			for _, bn := range b.uasLower {
+				if strings.Contains(bn, anLower) || strings.Contains(anLower, bn) {
+					return fmt.Errorf("allowlist.uas entry %q overlaps verified_bots bot %q: it would allowlist the bot's User-Agent without verification; remove it from allowlist.uas", an, b.Name)
+				}
+			}
+		}
 	}
 	return nil
 }

@@ -59,6 +59,7 @@ defaults:
         signature: 10/min     # WAF signature hits
         pow_fail: 10/min      # failed challenge solutions
         tamper: 10/min        # forged/replayed challenge or signed IDs
+        bot_spoof: 5/min      # clients caught impersonating a verified bot
     keywords:
       enabled: true           # requires the rules file to exist (fail-fast);
       rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
@@ -86,13 +87,48 @@ defaults:
     noscript_fallback: true
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
-    uas: [ "Googlebot", "bingbot" ]
+    # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
+    # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
+    # everything by claiming to be Googlebot. Use verified_bots below instead
+    # (Guardian refuses a config where the two overlap). Reserve uas for
+    # UAs you control, e.g. your own uptime monitor.
+    uas: []
     paths:
       - /robots.txt
       - /favicon.ico
       - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
   denylist:
     ips: []
+  # Crawlers allowlisted by PROVEN identity, not by their UA string: a client
+  # claiming a listed bot's User-Agent is admitted only if its IP reverse-DNS
+  # resolves under the bot's published domains AND that hostname resolves back
+  # to the same IP (the verification Google/Bing/Apple document). Results are
+  # cached in the store, so DNS is paid once per crawler IP, not per request.
+  verified_bots:
+    bots:
+      - name: googlebot       # built-in presets: googlebot, google-special,
+      - name: bingbot         #   bingbot, applebot, yandexbot, baiduspider
+      # googlebot verifies under googlebot.com ONLY (Google's common-crawler
+      # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
+      # APIs-Google) verify under google.com via the google-special preset;
+      # enable it if you run Google Ads:
+      # - name: google-special
+      # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
+      # preset: third parties can aim them at your site on demand.
+      # Custom bots: give the UA needles and rDNS domains yourself.
+      # - name: mybot
+      #   uas: [ "MyBot/1.0" ]
+      #   domains: [ "crawler.example.net" ]
+    # spoof_action: what happens to a client that claims a listed UA but
+    # definitively fails verification (no PTR, or rDNS owned by someone else):
+    #   deny (default) - reject and score a bot_spoof event (see thresholds)
+    #   continue       - just withhold the allowlist skip; the WAF/PoW
+    #                    pipeline handles the request like any other client
+    spoof_action: deny
+    dns_timeout: 1s           # DNS budget for a first-sight verification
+    cache_ttl: 12h            # confirmed identities
+    negative_ttl: 1h          # proven impostors
+    # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
 
 domains:
   # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.

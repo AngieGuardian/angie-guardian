@@ -21,6 +21,10 @@ pipeline. Everything is per-domain configurable.
    - behavioural IP blocking with exponential backoff (signature hits,
      PoW failures, tamper events)
    - honeypot trap paths: one hit = instant block
+   - verified-bot allowlisting: search crawlers (Googlebot, bingbot, ...) are
+     admitted by reverse-DNS + forward-confirmed identity with store-backed
+     caching, never by their forgeable User-Agent string; proven impostors
+     are denied and scored
    - tamper-proof signed IDs (HMAC-bound to purpose + host)
    - statistical anomaly scoring: `guardian-train` learns per-domain
      baselines from Angie JSON access logs offline; the online scorer rates
@@ -50,7 +54,7 @@ Guardian offers two ways to run, sharing one decision core:
   denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
   in-process inside Angie via its WASM support, for operators who prefer that
   integration. It is stateless WAF-only: proof-of-work, behavioural blocking,
-  and anomaly scoring need the sidecar. Build it with `make wasm`; see the
+  anomaly scoring and verified-bot DNS checks need the sidecar. Build it with `make wasm`; see the
   "WASM module" section of [USAGE.md](USAGE.md).
 
 Both paths call the same store-free evaluator, so the WAF decisions are
