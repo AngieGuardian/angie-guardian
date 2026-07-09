@@ -58,7 +58,7 @@ domains:
   # Only challenge clients the anomaly scorer flags; ordinary visitors
   # never see an interstitial. Requires a trained model (see below).
   shop.example.com:
-    pow: { enabled: true, mode: suspicion, base_difficulty: 4, max_difficulty: 6 }
+    pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
                  challenge_at: 0.5, deny_at: 0.85 }

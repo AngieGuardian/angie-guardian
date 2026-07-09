@@ -76,8 +76,11 @@ defaults:
     enabled: true
     mode: always              # always: challenge every unvouched browser
                               # suspicion: only challenge anomalous clients (needs waf.anomaly)
-    base_difficulty: 4
-    max_difficulty: 6
+    # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
+    # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
+    # See "Measured solve times" in USAGE.md before changing these.
+    base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
+    max_difficulty: 6         # ceiling for anomaly-scaled challenges
     token_ttl: 4h
     challenge_ttl: 30m
     noscript_fallback: true
@@ -93,8 +96,9 @@ defaults:
 
 domains:
   # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
+  # Fractional difficulty: 5.25 is exactly 2x the work of the default 5.
   example.com:
-    pow: { enabled: true, base_difficulty: 5, max_difficulty: 6, token_ttl: 2h }
+    pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
     waf: { honeypot: { enabled: true } }
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.

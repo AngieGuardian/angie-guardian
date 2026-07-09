@@ -46,6 +46,9 @@ defaults:
   pow:
     enabled: true
     mode: always
+    # Deliberately below the production default (5): the e2e suite solves
+    # challenges in Go on every run, and the WAF escalation test asserts
+    # base 16 bits + 4 = 20. Raising this slows every e2e run.
     base_difficulty: 4
     max_difficulty: 6
     token_ttl: 4h

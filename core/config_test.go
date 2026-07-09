@@ -101,6 +101,25 @@ func TestDomainMerge(t *testing.T) {
 	}
 }
 
+// TestBuiltinDifficultyDefaults pins the shipped defaults: a config that
+// never mentions difficulty must resolve to base 5 (20 bits) / max 6 (24
+// bits), including for unknown hosts falling back to defaults.
+func TestBuiltinDifficultyDefaults(t *testing.T) {
+	cfg := loadTestConfig(t, "store: { backend: memory }\ndomains: { bare.test: }\n")
+	for _, dc := range []*DomainConfig{
+		&cfg.Defaults,
+		cfg.DomainFor("bare.test"),
+		cfg.DomainFor("never-configured.test"),
+	} {
+		if dc.PoW.BaseDifficulty != 5 || dc.PoW.MaxDifficulty != 6 {
+			t.Errorf("default difficulty = %v/%v, want 5/6", dc.PoW.BaseDifficulty, dc.PoW.MaxDifficulty)
+		}
+		if dc.PoW.BaseBits() != 20 || dc.PoW.MaxBits() != 24 {
+			t.Errorf("default bits = %d/%d, want 20/24", dc.PoW.BaseBits(), dc.PoW.MaxBits())
+		}
+	}
+}
+
 // TestFractionalDifficulty covers the fine-grained quarter steps: each 0.25
 // on the config scale is exactly one leading-zero bit (2x the work).
 func TestFractionalDifficulty(t *testing.T) {
