@@ -58,13 +58,16 @@ func TestDomainMerge(t *testing.T) {
 
 	ex := cfg.DomainFor("example.com")
 	if ex.PoW.BaseDifficulty != 5 {
-		t.Errorf("example.com base_difficulty = %d, want override 5", ex.PoW.BaseDifficulty)
+		t.Errorf("example.com base_difficulty = %v, want override 5", ex.PoW.BaseDifficulty)
+	}
+	if ex.PoW.BaseBits() != 20 || ex.PoW.MaxBits() != 24 {
+		t.Errorf("example.com bits = %d/%d, want 20/24", ex.PoW.BaseBits(), ex.PoW.MaxBits())
 	}
 	if ex.PoW.TokenTTL.Std() != 2*time.Hour {
 		t.Errorf("example.com token_ttl = %v, want override 2h", ex.PoW.TokenTTL.Std())
 	}
 	if ex.PoW.MaxDifficulty != 6 {
-		t.Errorf("example.com max_difficulty = %d, want inherited 6", ex.PoW.MaxDifficulty)
+		t.Errorf("example.com max_difficulty = %v, want inherited 6", ex.PoW.MaxDifficulty)
 	}
 	if !ex.WAF.IPBehaviour.Enabled {
 		t.Error("example.com ip_behaviour should be inherited enabled")
@@ -81,7 +84,7 @@ func TestDomainMerge(t *testing.T) {
 		t.Error("api.example.com pow should be disabled")
 	}
 	if api.PoW.BaseDifficulty != 4 {
-		t.Errorf("api.example.com base_difficulty = %d, want inherited 4", api.PoW.BaseDifficulty)
+		t.Errorf("api.example.com base_difficulty = %v, want inherited 4", api.PoW.BaseDifficulty)
 	}
 
 	bare := cfg.DomainFor("bare.example.com")
@@ -95,6 +98,23 @@ func TestDomainMerge(t *testing.T) {
 	}
 	if cfg.DomainFor("EXAMPLE.com:443").PoW.BaseDifficulty != 5 {
 		t.Error("host lookup should be case-insensitive and strip the port")
+	}
+}
+
+// TestFractionalDifficulty covers the fine-grained quarter steps: each 0.25
+// on the config scale is exactly one leading-zero bit (2x the work).
+func TestFractionalDifficulty(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+defaults:
+  pow: { enabled: true, base_difficulty: 4.25, max_difficulty: 5.75 }
+`)
+	p := &cfg.Defaults.PoW
+	if p.BaseBits() != 17 {
+		t.Errorf("base 4.25 = %d bits, want 17", p.BaseBits())
+	}
+	if p.MaxBits() != 23 {
+		t.Errorf("max 5.75 = %d bits, want 23", p.MaxBits())
 	}
 }
 
@@ -134,6 +154,9 @@ func TestConfigValidation(t *testing.T) {
 		"bbolt sans path":                        "store: { backend: bbolt }",
 		"bad difficulty":                         "defaults: { pow: { base_difficulty: 9 } }",
 		"max below base":                         "defaults: { pow: { base_difficulty: 5, max_difficulty: 4 } }",
+		"difficulty below one":                   "defaults: { pow: { base_difficulty: 0.5 } }",
+		"difficulty off the quarter grid":        "defaults: { pow: { base_difficulty: 4.3 } }",
+		"max off the quarter grid":               "defaults: { pow: { base_difficulty: 4, max_difficulty: 6.1 } }",
 		"bad cidr":                               "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
 		"bad rate":                               "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
 		"unknown field":                          "listne: 1.2.3.4:80",

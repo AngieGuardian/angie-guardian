@@ -148,8 +148,20 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The auth decision may have escalated the difficulty (WAF signature hit,
+	// anomaly score); Angie relays it via X-Guardian-Difficulty (see the
+	// auth_request_set lines in deploy/angie-guardian.conf). Clamp it to the
+	// domain's [base, max] so a client forging the header can only raise its
+	// own difficulty within policy, never lower it.
+	difficulty := dcfg.PoW.BaseBits()
+	if v := r.Header.Get("X-Guardian-Difficulty"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			difficulty = min(max(n, difficulty), dcfg.PoW.MaxBits())
+		}
+	}
+
 	ch, err := s.pow.Issue(r.Context(), host, ip, uri,
-		dcfg.PoW.BaseDifficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
+		difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
 	if err != nil {
 		s.log.Error("challenge issuance failed", "host", host, "ip", ip, "err", err)
 		http.Error(w, "challenge unavailable", http.StatusServiceUnavailable)
@@ -158,10 +170,10 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Challenge("issued")
 
 	payload, err := json.Marshal(map[string]any{
-		"challenge_id": ch.ID,
-		"challenge":    ch.Challenge,
-		"difficulty":   ch.Difficulty,
-		"pass_url":     PassPath,
+		"challenge_id":    ch.ID,
+		"challenge":       ch.Challenge,
+		"difficulty_bits": ch.Difficulty,
+		"pass_url":        PassPath,
 	})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -253,13 +265,17 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	}
 	s.log.Info("challenge solved",
 		"host", host, "ip", ip, "nojs", req.NoJS, "elapsed_ms", elapsedMS)
+	// Secure by default; dropped only when Angie says the client connection is
+	// plain http (X-Guardian-Proto, $scheme), because a browser will not send
+	// a Secure cookie back over http and the client would loop on the
+	// challenge forever. An absent header means Secure stays on.
 	http.SetCookie(w, &http.Cookie{
 		Name:     pow.CookieName,
 		Value:    res.Token,
 		Path:     "/",
 		MaxAge:   int(res.TokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   r.Header.Get("X-Guardian-Proto") != "http",
 		SameSite: http.SameSiteLaxMode,
 	})
 	if req.NoJS {

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/bits"
 	"strings"
 	"sync"
 	"time"
@@ -97,14 +98,17 @@ func (m *Manager) Rotate(keyPath, prevDir string) error {
 }
 
 // Challenge is what the interstitial page needs to render and solve.
+// Difficulty is the required number of leading zero bits of
+// SHA-256(challenge + nonce); each bit doubles the expected work.
 type Challenge struct {
 	ID         string `json:"challenge_id"`
 	Challenge  string `json:"challenge"`
-	Difficulty int    `json:"difficulty"`
+	Difficulty int    `json:"difficulty_bits"`
 }
 
 // record is the stored issuance record (plan §5.1). State moves from
-// "issued" to "spent" exactly once via compare-and-swap.
+// "issued" to "spent" exactly once via compare-and-swap. Difficulty is in
+// leading zero bits.
 type record struct {
 	State      string `json:"state"`
 	Host       string `json:"host"`
@@ -224,7 +228,7 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 		}
 	} else {
 		sum := sha256.Sum256([]byte(rec.Challenge + req.Nonce))
-		if leadingZeroNibbles(sum[:]) < rec.Difficulty {
+		if leadingZeroBits(sum[:]) < rec.Difficulty {
 			return nil, ErrBadSolution
 		}
 	}
@@ -249,17 +253,17 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	return &RedeemResult{Token: token, TokenTTL: req.TokenTTL, RedirectURI: rec.URI}, nil
 }
 
-func leadingZeroNibbles(sum []byte) int {
+// leadingZeroBits counts the leading zero bits of a hash, the unit of
+// challenge difficulty: each required bit doubles the expected solve work
+// (a hex-digit step on the config scale is 4 bits = 16x).
+func leadingZeroBits(sum []byte) int {
 	n := 0
 	for _, b := range sum {
-		if b>>4 != 0 {
-			return n
+		if b == 0 {
+			n += 8
+			continue
 		}
-		n++
-		if b&0x0f != 0 {
-			return n
-		}
-		n++
+		return n + bits.LeadingZeros8(b)
 	}
 	return n
 }

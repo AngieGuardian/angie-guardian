@@ -9,6 +9,7 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -106,6 +107,13 @@ type AdminConfig struct {
 	Listen string `yaml:"listen"` // empty disables the admin+metrics server
 	Token  string `yaml:"token"`  // bearer token; or ADMIN_TOKEN env var
 
+	// TokenFile persists an auto-generated bearer token (like the PoW signing
+	// key: created 0600 on first start, never regenerated). Used when Token
+	// and ADMIN_TOKEN are unset, so the operator never invents a token by
+	// hand. With neither token nor token_file, a loopback admin listener gets
+	// a fresh ephemeral token per start (printed in the startup log).
+	TokenFile string `yaml:"token_file"`
+
 	// Dashboard serves the built-in reporting page at GET /admin/dashboard.
 	// The page itself is a static shell (all data flows through the
 	// token-guarded /admin/* endpoints), but it stays off by default so the
@@ -173,13 +181,27 @@ type PoWConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Mode "always" challenges every unvouched browser; "suspicion" only
 	// challenges clients the anomaly scorer flags (requires waf.anomaly).
-	Mode             string   `yaml:"mode"`
-	BaseDifficulty   int      `yaml:"base_difficulty"`
-	MaxDifficulty    int      `yaml:"max_difficulty"`
+	Mode string `yaml:"mode"`
+	// Difficulty is configured on the historical hex-digit scale (1..8, one
+	// step = 16x the work) but accepts quarter steps for fine-grained control:
+	// each +0.25 doubles the work (4.25 is 2x harder than 4). Internally a
+	// difficulty is the number of leading zero BITS required of the SHA-256,
+	// i.e. round(difficulty * 4); see BaseBits/MaxBits.
+	BaseDifficulty   float64  `yaml:"base_difficulty"`
+	MaxDifficulty    float64  `yaml:"max_difficulty"`
 	TokenTTL         Duration `yaml:"token_ttl"`
 	ChallengeTTL     Duration `yaml:"challenge_ttl"`
 	NoScriptFallback bool     `yaml:"noscript_fallback"`
 }
+
+// BaseBits is the floor difficulty in leading zero bits (what every clean
+// client pays); MaxBits the ceiling reached only via anomaly scaling.
+func (p *PoWConfig) BaseBits() int { return difficultyBits(p.BaseDifficulty) }
+func (p *PoWConfig) MaxBits() int  { return difficultyBits(p.MaxDifficulty) }
+
+// difficultyBits converts the configured hex-digit-scale difficulty to bits.
+// The scale is 4 bits per unit, so quarter steps land exactly on whole bits.
+func difficultyBits(d float64) int { return int(math.Round(d * 4)) }
 
 // ListConfig is a static allow- or denylist (aliased from the leaf package so
 // the sidecar and WASM guest share one implementation). Matching rules:
@@ -240,9 +262,11 @@ func (c *Config) finalize() error {
 		return fmt.Errorf("store.backend must be memory, bbolt or redis, got %q", c.Store.Backend)
 	}
 
-	// Defaults for the defaults.
+	// Defaults for the defaults. Difficulty 5 = 20 leading zero bits: with the
+	// in-page JS solver that is roughly a second on a mid-range phone and near
+	// instant on a desktop (see USAGE.md for the measured table).
 	if c.Defaults.PoW.BaseDifficulty == 0 {
-		c.Defaults.PoW.BaseDifficulty = 4
+		c.Defaults.PoW.BaseDifficulty = 5
 	}
 	if c.Defaults.PoW.MaxDifficulty == 0 {
 		c.Defaults.PoW.MaxDifficulty = 6
@@ -314,10 +338,15 @@ func (dc *DomainConfig) validate() error {
 		return fmt.Errorf("pow.mode must be always or suspicion, got %q", p.Mode)
 	}
 	if p.BaseDifficulty < 1 || p.BaseDifficulty > 8 {
-		return fmt.Errorf("pow.base_difficulty must be 1..8, got %d", p.BaseDifficulty)
+		return fmt.Errorf("pow.base_difficulty must be 1..8, got %v", p.BaseDifficulty)
 	}
 	if p.MaxDifficulty < p.BaseDifficulty || p.MaxDifficulty > 8 {
-		return fmt.Errorf("pow.max_difficulty must be %d..8, got %d", p.BaseDifficulty, p.MaxDifficulty)
+		return fmt.Errorf("pow.max_difficulty must be %v..8, got %v", p.BaseDifficulty, p.MaxDifficulty)
+	}
+	for _, d := range []float64{p.BaseDifficulty, p.MaxDifficulty} {
+		if math.Abs(d*4-math.Round(d*4)) > 1e-9 {
+			return fmt.Errorf("pow difficulty %v is not a multiple of 0.25 (each 0.25 step doubles the work)", d)
+		}
 	}
 	a := &dc.WAF.Anomaly
 	if a.Enabled && (a.ChallengeAt <= 0 || a.DenyAt <= a.ChallengeAt || a.DenyAt > 1) {

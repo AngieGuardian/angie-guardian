@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/bits"
 	"net/http"
 	"os"
 	"regexp"
@@ -199,26 +200,26 @@ func bootstrapToken(client *http.Client, baseURL, host, ip, ua string) (string, 
 	var data struct {
 		ChallengeID string `json:"challenge_id"`
 		Challenge   string `json:"challenge"`
-		Difficulty  int    `json:"difficulty"`
+		Difficulty  int    `json:"difficulty_bits"`
 	}
 	if err := json.Unmarshal(m[1], &data); err != nil {
 		return "", err
 	}
 
+	// Brute-force a nonce with data.Difficulty leading zero bits, the same
+	// check core/pow's leadingZeroBits performs.
 	var nonce string
 	for n := 0; ; n++ {
 		nonce = strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(data.Challenge + nonce))
-		ok := true
-		for i := 0; i < data.Difficulty; i++ {
-			nib := sum[i/2] >> 4
-			if i%2 == 1 {
-				nib = sum[i/2] & 0x0f
+		zeros, ok := 0, false
+		for _, b := range sum {
+			if b == 0 {
+				zeros += 8
+				continue
 			}
-			if nib != 0 {
-				ok = false
-				break
-			}
+			ok = zeros+bits.LeadingZeros8(b) >= data.Difficulty
+			break
 		}
 		if ok {
 			break

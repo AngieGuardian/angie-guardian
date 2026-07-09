@@ -45,11 +45,11 @@ func powEngine(t *testing.T) (*Engine, *pow.Manager) {
 	return e, mgr
 }
 
-// mintTestToken runs the real issue→solve→redeem flow at difficulty 1.
+// mintTestToken runs the real issue→solve→redeem flow at 4 bits difficulty.
 func mintTestToken(t *testing.T, mgr *pow.Manager, host, ip, ua string) string {
 	t.Helper()
 	ctx := context.Background()
-	ch, err := mgr.Issue(ctx, host, ip, "/", 1, time.Minute, false)
+	ch, err := mgr.Issue(ctx, host, ip, "/", 4, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,8 +115,8 @@ func TestPoWStages(t *testing.T) {
 			if d.Action != tc.action || d.Reason != tc.reason {
 				t.Errorf("got %s/%s, want %s/%s", d.Action, d.Reason, tc.action, tc.reason)
 			}
-			if tc.action == ActionChallenge && d.Difficulty != 1 {
-				t.Errorf("difficulty = %d, want base 1", d.Difficulty)
+			if tc.action == ActionChallenge && d.Difficulty != 4 {
+				t.Errorf("difficulty = %d bits, want base_difficulty 1 = 4 bits", d.Difficulty)
 			}
 		})
 	}

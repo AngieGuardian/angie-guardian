@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/bits"
 	"net"
 	"net/http"
 	"os"
@@ -304,10 +305,11 @@ func metric(t *testing.T, name string, labels ...string) float64 {
 var dataRe = regexp.MustCompile(`<script id="guardian-data" type="application/json">(.*?)</script>`)
 
 // challengeData is the JSON the interstitial embeds for its JS solver.
+// Difficulty is in leading zero bits.
 type challengeData struct {
 	ChallengeID string `json:"challenge_id"`
 	Challenge   string `json:"challenge"`
-	Difficulty  int    `json:"difficulty"`
+	Difficulty  int    `json:"difficulty_bits"`
 	PassURL     string `json:"pass_url"`
 }
 
@@ -333,32 +335,29 @@ func fetchChallenge(t *testing.T, path, host, ua string) challengeData {
 }
 
 // solve brute-forces a nonce whose SHA-256(challenge+nonce) has `difficulty`
-// leading zero nibbles, the exact check core/pow does (challenge.go
-// leadingZeroNibbles). Difficulties here are small (4–6) so this is fast.
+// leading zero bits, the exact check core/pow does (challenge.go
+// leadingZeroBits). Harness difficulties are small (~16 bits) so this is fast.
 func solve(t *testing.T, challenge string, difficulty int) string {
 	t.Helper()
-	for n := 0; n < 1<<28; n++ {
+	for n := 0; n < 1<<30; n++ {
 		nonce := strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(challenge + nonce))
-		if leadingZeroNibbles(sum[:]) >= difficulty {
+		if leadingZeroBits(sum[:]) >= difficulty {
 			return nonce
 		}
 	}
-	t.Fatalf("no nonce found for difficulty %d", difficulty)
+	t.Fatalf("no nonce found for difficulty %d bits", difficulty)
 	return ""
 }
 
-func leadingZeroNibbles(sum []byte) int {
+func leadingZeroBits(sum []byte) int {
 	n := 0
 	for _, b := range sum {
-		if b>>4 != 0 {
-			return n
+		if b == 0 {
+			n += 8
+			continue
 		}
-		n++
-		if b&0x0f != 0 {
-			return n
-		}
-		n++
+		return n + bits.LeadingZeros8(b)
 	}
 	return n
 }

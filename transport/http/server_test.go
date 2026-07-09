@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/bits"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -142,7 +143,7 @@ func fetchChallenge(t *testing.T, ts *httptest.Server, ip, ua string) (id, chall
 	var data struct {
 		ChallengeID string `json:"challenge_id"`
 		Challenge   string `json:"challenge"`
-		Difficulty  int    `json:"difficulty"`
+		Difficulty  int    `json:"difficulty_bits"`
 		PassURL     string `json:"pass_url"`
 	}
 	if err := json.Unmarshal(m[1], &data); err != nil {
@@ -154,23 +155,23 @@ func fetchChallenge(t *testing.T, ts *httptest.Server, ip, ua string) (id, chall
 	return data.ChallengeID, data.Challenge, data.Difficulty
 }
 
+// solve brute-forces a nonce with `difficulty` leading zero bits, the check
+// core/pow's leadingZeroBits performs.
 func solve(t *testing.T, challenge string, difficulty int) string {
 	t.Helper()
 	for n := 0; n < 1_000_000; n++ {
 		nonce := strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(challenge + nonce))
-		ok := true
-		for i := 0; i < difficulty; i++ {
-			nib := sum[i/2] >> 4
-			if i%2 == 1 {
-				nib = sum[i/2] & 0x0f
+		zeros := 0
+		for _, b := range sum {
+			if b == 0 {
+				zeros += 8
+				continue
 			}
-			if nib != 0 {
-				ok = false
-				break
-			}
+			zeros += bits.LeadingZeros8(b)
+			break
 		}
-		if ok {
+		if zeros >= difficulty {
 			return nonce
 		}
 	}
@@ -189,7 +190,8 @@ func TestPoWFlowEndToEnd(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("step 1: status = %d, want 401", resp.StatusCode)
 	}
-	if resp.Header.Get("X-Guardian-Action") != "challenge" || resp.Header.Get("X-Guardian-Difficulty") != "1" {
+	// base_difficulty 1 on the config scale = 4 leading zero bits.
+	if resp.Header.Get("X-Guardian-Action") != "challenge" || resp.Header.Get("X-Guardian-Difficulty") != "4" {
 		t.Fatalf("step 1: headers action=%q difficulty=%q", resp.Header.Get("X-Guardian-Action"), resp.Header.Get("X-Guardian-Difficulty"))
 	}
 
@@ -262,6 +264,73 @@ func TestNoJSFlow(t *testing.T) {
 	if !found {
 		t.Error("no-JS redeem: no cookie set")
 	}
+}
+
+// TestChallengeDifficultyHeader covers the escalation relay: Angie passes the
+// auth decision's difficulty to /challenge via X-Guardian-Difficulty, and the
+// issued challenge honors it, clamped to the domain's [base, max] bits so a
+// client forging the header can never lower its own difficulty.
+func TestChallengeDifficultyHeader(t *testing.T) {
+	ts := testServer(t)
+	// html.test: base_difficulty 1 (4 bits), max_difficulty 6 (24 bits).
+	cases := map[string]struct {
+		header string
+		want   int
+	}{
+		"absent header issues base":  {"", 4},
+		"escalated value honored":    {"12", 12},
+		"below base clamps up":       {"2", 4},
+		"above max clamps down":      {"99", 24},
+		"garbage falls back to base": {"lol", 4},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := guardianHeaders("html.test", "198.51.100.20", "/x", "Mozilla/5.0")
+			if tc.header != "" {
+				h["X-Guardian-Difficulty"] = tc.header
+			}
+			resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+			page, _ := io.ReadAll(resp.Body)
+			m := dataRe.FindSubmatch(page)
+			if m == nil {
+				t.Fatalf("no guardian-data in page (status %d)", resp.StatusCode)
+			}
+			var data struct {
+				Difficulty int `json:"difficulty_bits"`
+			}
+			if err := json.Unmarshal(m[1], &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.Difficulty != tc.want {
+				t.Errorf("difficulty_bits = %d, want %d", data.Difficulty, tc.want)
+			}
+		})
+	}
+}
+
+// TestCookieSecureFollowsProto: over plain http (X-Guardian-Proto: http, set
+// by the Angie glue from $scheme) the token cookie must not carry Secure, or
+// the browser would never send it back and the client would loop on the
+// challenge. Any other value, or no header at all, keeps Secure on.
+func TestCookieSecureFollowsProto(t *testing.T) {
+	ts := testServer(t)
+	ip, ua := "198.51.100.21", "Mozilla/5.0"
+
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": solve(t, challenge, difficulty)})
+	h := guardianHeaders("html.test", ip, "/", ua)
+	h["X-Guardian-Proto"] = "http"
+	resp := do(t, "POST", ts.URL+"/pass", h, body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("redeem: status = %d body = %s", resp.StatusCode, b)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == pow.CookieName && c.Secure {
+			t.Error("cookie is Secure on a plain-http request; the browser would never send it back")
+		}
+	}
+	// The Secure default (no proto header) is asserted in TestPoWFlowEndToEnd.
 }
 
 func TestChallengeRateLimit(t *testing.T) {

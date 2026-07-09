@@ -95,19 +95,21 @@ func TestWAFScannerUABlock(t *testing.T) {
 
 // TestWAFChallengeAction confirms a `challenge` rule (sqli-basic) forces a PoW
 // challenge rather than an outright deny on a PoW-enabled host: a softer
-// response that spares false positives.
+// response that spares false positives. It also proves the difficulty relay
+// works through real Angie: the escalated difficulty from the auth decision
+// (base + 4 bits for a signature hit) must reach the issued challenge via
+// auth_request_set + X-Guardian-Difficulty, not fall back to base.
 func TestWAFChallengeAction(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
 
 	// A SQLi-shaped query on the PoW host. The sqli-basic rule's action is
 	// `challenge`, so the browser is diverted to the interstitial (200 HTML),
 	// not denied.
-	resp := get(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("sqli challenge: status %d, want 200 interstitial", resp.StatusCode)
-	}
-	if body := bodyOf(t, resp); !strings.Contains(body, "guardian-data") {
-		t.Fatalf("sqli did not yield the PoW interstitial; body:\n%s", body)
+	ch := fetchChallenge(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA)
+	// guardian.docker.yaml: base_difficulty 4 = 16 bits; signature escalation
+	// adds one full step (4 bits).
+	if ch.Difficulty != 20 {
+		t.Fatalf("signature challenge difficulty = %d bits, want escalated 20 (base 16 + 4)", ch.Difficulty)
 	}
 }
 
