@@ -25,9 +25,14 @@ type GuestConfig struct {
 	Defaults GuestDomain          `yaml:"defaults" json:"defaults"`
 	Domains  map[string]yaml.Node `yaml:"domains" json:"domains"`
 
-	resolved map[string]*DomainRules
-	fallback *DomainRules
+	resolved    map[string]*DomainRules
+	fallback    *DomainRules
+	needsMethod bool
 }
+
+// NeedsMethod reports whether any domain's rules restrict by HTTP method, so
+// the guest spends the get_method host call only when a rule will read it.
+func (gc *GuestConfig) NeedsMethod() bool { return gc.needsMethod }
 
 // GuestDomain is one domain's stateless config in the guest document.
 type GuestDomain struct {
@@ -86,6 +91,10 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 			return nil, err
 		}
 		gc.resolved[key] = r
+	}
+	gc.needsMethod = fb.Rules.NeedsMethod()
+	for _, r := range gc.resolved {
+		gc.needsMethod = gc.needsMethod || r.Rules.NeedsMethod()
 	}
 	return gc, nil
 }

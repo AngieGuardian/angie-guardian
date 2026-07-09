@@ -84,6 +84,46 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 	}
 }
 
+func TestSignatureHeaderAndMethodRules(t *testing.T) {
+	gc := mustGuestConfig(t, `
+domains:
+  h.test:
+    rules:
+      - id: jndi-header
+        targets: [ "header:referer" ]
+        keywords: [ "${jndi:" ]
+      - id: no-trace
+        methods: [ TRACE ]
+`)
+	if !gc.NeedsMethod() {
+		t.Fatal("NeedsMethod() = false, want true (a rule filters by method)")
+	}
+
+	hdrs := map[string]string{"referer": "http://evil/%24%7Bjndi%3Aldap://x%7D"}
+	r := req("h.test", "192.0.2.9", "/page", "Mozilla")
+	r.Header = func(name string) string { return hdrs[name] }
+	if d := gc.Evaluate(r); d.Action != ActionDeny || d.Reason != "waf:jndi-header" {
+		t.Errorf("encoded jndi referer: got %s/%s, want deny/waf:jndi-header", d.Action, d.Reason)
+	}
+
+	// Same request without the header getter: header targets never match.
+	if d := gc.Evaluate(req("h.test", "192.0.2.9", "/page", "Mozilla")); d.Action != ActionAllow {
+		t.Errorf("nil Header getter: got %s/%s, want allow", d.Action, d.Reason)
+	}
+
+	tr := req("h.test", "192.0.2.9", "/page", "Mozilla")
+	tr.Method = "TRACE"
+	if d := gc.Evaluate(tr); d.Action != ActionDeny || d.Reason != "waf:no-trace" {
+		t.Errorf("TRACE: got %s/%s, want deny/waf:no-trace", d.Action, d.Reason)
+	}
+
+	// Rules without method filters never consult Method at all.
+	plain := mustGuestConfig(t, `domains: { p.test: { rules: [ { id: kw, keywords: [ x ] } ] } }`)
+	if plain.NeedsMethod() {
+		t.Error("NeedsMethod() = true for a rule set without method filters")
+	}
+}
+
 func TestEvaluatePrecedence(t *testing.T) {
 	// allowlist -> denylist -> honeypot -> signatures; first terminal wins.
 	gc := mustGuestConfig(t, `

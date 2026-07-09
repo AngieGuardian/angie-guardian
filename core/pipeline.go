@@ -130,11 +130,7 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	if rs == nil {
 		return nil, nil
 	}
-	in := waf.MatchInput{
-		Path:  strings.ToLower(decodePath(requestPath(req.URI))),
-		Query: strings.ToLower(decodeQuery(requestQuery(req.URI))),
-		UA:    strings.ToLower(req.UserAgent),
-	}
+	in := stateless.BuildMatchInput(req, rs)
 	rule := rs.Match(&in)
 	if rule == nil {
 		return nil, nil
