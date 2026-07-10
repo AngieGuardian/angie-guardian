@@ -164,7 +164,14 @@ docker-release:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    - docker build --pull
+    # Pre-pull the base images through the daemon and build WITHOUT --pull:
+    # BuildKit's own registry resolver reliably stalls on this host fetching
+    # the 32-byte OCI empty blob (sha256:4f4fb700...) that the base images'
+    # attestation manifests reference; the daemon's classic pull path never
+    # requests it, and without --pull the FROMs resolve from the local store.
+    # The images are read from the Dockerfile so they can never drift.
+    - awk '/^FROM /{print $2}' deploy/docker/Dockerfile | xargs -n1 docker pull
+    - docker build
       -f deploy/docker/Dockerfile
       --build-arg VERSION=$CI_COMMIT_TAG
       -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
