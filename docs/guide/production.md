@@ -98,6 +98,33 @@ collections. If you chase peak throughput, set `GOGC` (or a `GOMEMLIMIT`
 budget) in the systemd unit's `Environment=` and measure with
 `guardian-loadtest`; at typical production rates the default is fine.
 
+## Memory footprint
+
+guardiand's in-process memory is bounded independently of traffic, so a flood
+of distinct IPs, hosts, User-Agents or URLs cannot grow it without limit (no
+remote OOM). The client-keyed structures and their caps:
+
+- **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
+  full, entries repopulate cheaply on the next verify.
+- **Counter cache** (issuance rate limit + farming escalation): at most 2^17
+  entries, same reset behaviour; a reset costs one under-counted request per
+  hot key, not the counter state (which lives in the store).
+- **Recent-decisions ring** (admin/dashboard feed): fixed 512 entries
+  (~100 KiB), overwrite-oldest. Holds raw host/URI/UA but never grows.
+- **Bot-verification in-flight map**: bounded by concurrent lookups, not
+  distinct IPs (entries are added and removed within one call, and a
+  concurrency cap sheds excess). The verification *results* live in the store
+  with a TTL, not in-process.
+- **Prometheus label cardinality**: the `domain` label collapses unconfigured
+  hosts to `default`, and `reason` collapses to a fixed set of stage prefixes
+  (`waf`, `denylist`, `geo`, …), so rule IDs, feed names and Host-header
+  floods never create new series.
+
+Everything else keyed by client input (blocks, spent challenges, bot verdicts)
+lives in the store with a TTL, so its memory is the store's concern, not the
+daemon's. A steady-state instance sits in the low tens of MiB plus whatever
+`GOGC`/`GOMEMLIMIT` you allow the heap to grow to between collections.
+
 ## Multi-instance (Redis/Valkey)
 
 To run replicas behind a load balancer, point every instance at one shared
