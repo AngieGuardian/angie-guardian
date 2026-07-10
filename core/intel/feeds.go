@@ -5,6 +5,7 @@
 package intel
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -132,8 +133,10 @@ func (f *feed) cachePath(cacheDir string) string {
 }
 
 // fetch pulls the feed URL, installs the body and persists it to the cache.
-func (f *feed) fetch(client *http.Client, cacheDir string, log *slog.Logger) error {
-	req, err := http.NewRequest(http.MethodGet, f.cfg.URL, nil)
+// ctx aborts the request mid-flight, so a stalled remote cannot hold up
+// provider shutdown.
+func (f *feed) fetch(ctx context.Context, client *http.Client, cacheDir string, log *slog.Logger) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.cfg.URL, nil)
 	if err != nil {
 		return err
 	}

@@ -13,6 +13,7 @@
 package intel
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -67,8 +68,12 @@ type Provider struct {
 	// geoFn overrides mmdb lookups in tests.
 	geoFn func(netip.Addr) Info
 
-	stop chan struct{}
-	wg   sync.WaitGroup
+	// ctx is cancelled by Close: it both stops the background loops and
+	// aborts any in-flight feed fetch, so shutdown never waits out the
+	// HTTP client timeout on a stalled remote.
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // New loads the configured databases and feeds. Local resources (mmdb files,
@@ -85,16 +90,16 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 		cacheDir: cfg.CacheDir,
 		client:   &http.Client{Timeout: 90 * time.Second},
 		log:      log,
-		stop:     make(chan struct{}),
 	}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 	var err error
 	if cfg.CountryDB != "" {
-		if p.country, err = openMMDB(cfg.CountryDB); err != nil {
+		if p.country, err = openMMDB(cfg.CountryDB, kindCountry); err != nil {
 			return nil, err
 		}
 	}
 	if cfg.ASNDB != "" {
-		if p.asn, err = openMMDB(cfg.ASNDB); err != nil {
+		if p.asn, err = openMMDB(cfg.ASNDB, kindASN); err != nil {
 			p.closeDBs()
 			return nil, err
 		}
@@ -135,12 +140,13 @@ func (p *Provider) Start() {
 	go p.pollLoop()
 }
 
-// Close stops the background work and releases the databases.
+// Close stops the background work (cancelling any in-flight feed fetch) and
+// releases the databases.
 func (p *Provider) Close() {
 	if p == nil {
 		return
 	}
-	close(p.stop)
+	p.cancel()
 	p.wg.Wait()
 	p.closeDBs()
 }
@@ -179,12 +185,15 @@ func (p *Provider) refreshLoop(f *feed) {
 	defer timer.Stop()
 	for {
 		select {
-		case <-p.stop:
+		case <-p.ctx.Done():
 			return
 		case <-timer.C:
 		}
 		next := f.cfg.Refresh
-		if err := f.fetch(p.client, p.cacheDir, p.log); err != nil {
+		if err := f.fetch(p.ctx, p.client, p.cacheDir, p.log); err != nil {
+			if p.ctx.Err() != nil {
+				return // shutting down, the error is just the cancellation
+			}
 			msg := err.Error()
 			f.lastErr.Store(&msg)
 			p.log.Warn("feed refresh failed, keeping loaded entries",
@@ -207,7 +216,7 @@ func (p *Provider) pollLoop() {
 	defer t.Stop()
 	for {
 		select {
-		case <-p.stop:
+		case <-p.ctx.Done():
 			return
 		case <-t.C:
 			if p.country != nil {
@@ -324,7 +333,8 @@ func (p *Provider) Status() Status {
 // NewStatic builds a Provider from a fixed geo lookup function and in-memory
 // feeds, for tests that need intel without mmdb fixtures or a network.
 func NewStatic(geoFn func(netip.Addr) Info, feeds ...StaticFeed) *Provider {
-	p := &Provider{geoFn: geoFn, log: slog.Default(), stop: make(chan struct{})}
+	p := &Provider{geoFn: geoFn, log: slog.Default()}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 	for _, sf := range feeds {
 		prefixes, _ := ParseList([]byte(sf.Entries))
 		f := &feed{cfg: FeedConfig{Name: sf.Name, Action: sf.Action}}

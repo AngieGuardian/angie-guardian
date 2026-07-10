@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -148,6 +149,73 @@ func TestMMDBHotReload(t *testing.T) {
 	}
 }
 
+func TestMMDBWrongTypeFailsStartup(t *testing.T) {
+	dir := t.TempDir()
+	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
+	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{"198.51.100.0/24": 64500})
+	if _, err := New(Config{CountryDB: asnDB}, testLogger()); err == nil {
+		t.Fatal("an ASN database as country_db must fail startup")
+	}
+	if _, err := New(Config{ASNDB: countryDB}, testLogger()); err == nil {
+		t.Fatal("a country database as asn_db must fail startup")
+	}
+}
+
+func TestMMDBReloadWrongTypeKeepsPrevious(t *testing.T) {
+	dir := t.TempDir()
+	path := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
+	p, err := New(Config{CountryDB: path}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	// Replace the country file with an ASN database and poll: the reload
+	// must be rejected and the loaded country data kept.
+	next := inteltest.WriteASNDB(t, t.TempDir(), map[string]uint32{"198.51.100.0/24": 64500})
+	if err := os.Rename(next, path); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	p.country.maybeReload(testLogger())
+	if got := p.Lookup(netip.MustParseAddr("198.51.100.7")).Country; got != "NL" {
+		t.Fatalf("want NL from the kept database, got %q", got)
+	}
+}
+
+func TestCloseCancelsInflightFetch(t *testing.T) {
+	var once sync.Once
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		<-r.Context().Done() // stall until the client gives up
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{Feeds: []FeedConfig{
+		{Name: "slow", URL: srv.URL, Refresh: time.Hour, Action: FeedActionDeny},
+	}}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fetch never reached the server")
+	}
+	done := make(chan struct{})
+	go func() { p.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked on the in-flight fetch")
+	}
+}
+
 func TestFileFeedLoadAndReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.list")
@@ -207,7 +275,7 @@ func TestURLFeedFetchAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.feeds[0].fetch(p.client, cacheDir, testLogger()); err != nil {
+	if err := p.feeds[0].fetch(t.Context(), p.client, cacheDir, testLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if name, ok := p.FeedMatch(netip.MustParseAddr("203.0.113.5"), FeedActionChallenge); !ok || name != "remote" {
