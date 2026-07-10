@@ -233,17 +233,44 @@ func blockStatus(t *testing.T, ip string) (blocked bool, reason string) {
 	return out.Blocked, out.Reason
 }
 
-// gatewayIPs are the usual Docker bridge gateway addresses a host request can
-// arrive as. We can't know which network compose picked, so clear them all.
-var gatewayIPs = []string{
-	"172.17.0.1", "172.18.0.1", "172.19.0.1", "172.20.0.1",
-	"172.21.0.1", "172.22.0.1", "172.23.0.1",
+// activeBlocks returns every currently active behavioural block (IP →
+// reason) from the admin API. All host traffic arrives from a single source
+// IP, but its address depends entirely on the Docker daemon's configuration
+// (bridge address pools, userland proxy on/off), so the suite must read the
+// blocked IP back instead of guessing gateway addresses. Best-effort: nil on
+// any error, since it is also used from teardown paths without a *testing.T.
+func activeBlocks() map[string]string {
+	r, err := http.NewRequest(http.MethodGet, admin+"/admin/blocks", nil)
+	if err != nil {
+		return nil
+	}
+	r.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := noRedirect.Do(r)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Blocks []struct {
+			IP     string `json:"ip"`
+			Reason string `json:"reason"`
+		} `json:"blocks"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return nil
+	}
+	blocks := make(map[string]string, len(out.Blocks))
+	for _, b := range out.Blocks {
+		blocks[b.IP] = b.Reason
+	}
+	return blocks
 }
 
-// clearGatewayBlocks lifts any behavioural block on the shared gateway IPs so a
-// WAF `block` from one test cannot poison the next. Best-effort.
+// clearGatewayBlocks lifts every active behavioural block so a WAF `block`
+// from one test cannot poison the next. The suite owns the whole stack (fresh
+// store volume per run), so every block in it is ours to clear. Best-effort.
 func clearGatewayBlocks() {
-	for _, ip := range gatewayIPs {
+	for ip := range activeBlocks() {
 		r, err := http.NewRequest(http.MethodDelete, admin+"/admin/blocks/"+ip, nil)
 		if err != nil {
 			continue
@@ -255,16 +282,14 @@ func clearGatewayBlocks() {
 	}
 }
 
-// findBlockedGateway returns the gateway IP that is currently blocked (there is
-// exactly one source IP for host traffic, but its address depends on which
-// bridge network compose created), or "" if none is blocked. Used by the block
-// tests to read back the block the WAF just placed.
+// findBlockedGateway returns the source IP that is currently blocked (host
+// traffic shares one source IP; see activeBlocks for why its address cannot
+// be assumed), or "" if none is blocked. Used by the block tests to read back
+// the block the WAF just placed.
 func findBlockedGateway(t *testing.T) (ip, reason string) {
 	t.Helper()
-	for _, cand := range gatewayIPs {
-		if blocked, why := blockStatus(t, cand); blocked {
-			return cand, why
-		}
+	for ip, why := range activeBlocks() {
+		return ip, why
 	}
 	return "", ""
 }
