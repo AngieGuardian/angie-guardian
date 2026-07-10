@@ -8,6 +8,23 @@ build, configure, wire into Angie, verify.
 - [Angie](https://angie.software/) serving your site(s).
 - Go (to build from source), or a release tarball with prebuilt binaries.
 
+::: tip Just want to see it work?
+The repo ships a Docker demo stack under `deploy/docker`: Angie in front of
+guardiand in front of a demo backend, with realistic PoW difficulty, WAF rules,
+behavioural blocking and the admin dashboard already wired up.
+
+```sh
+cd deploy/docker
+docker compose up --build -d
+```
+
+Browse `http://127.0.0.1:8080` to hit the interstitial, then open the
+dashboard at `http://127.0.0.1:8072/admin/dashboard#token=harness-admin-token`.
+`docker compose down -v` tears it back down; `deploy/docker/README.md` has the
+details. The sidecar's hot path is intentionally not published on the host,
+mirroring production.
+:::
+
 ## 1. Build
 
 ```sh
@@ -74,8 +91,11 @@ logs, and rate limiting.
 
 ```sh
 ./guardiand -config guardian.yaml
-curl -s localhost:8072/healthz     # -> ok
+curl -s localhost:8071/healthz     # -> ok
 ```
+
+(`8071` is the auth hot path from the config above; the separate admin
+listener, and its own `/healthz`, only exist once you set `admin.listen`.)
 
 Visit your site in a browser: the first request gets a brief interstitial
 while the proof-of-work is solved, then a signed cookie keeps subsequent
