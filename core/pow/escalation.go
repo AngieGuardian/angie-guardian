@@ -37,11 +37,14 @@ func escalationKey(ip string) string { return "chesc:" + ip }
 // challenges could still have been solved) from the first unsolved issuance,
 // and any successful redemption by the IP clears it (see Redeem). The result
 // is unbounded; the caller clamps the final difficulty to the domain ceiling.
-// Errors degrade to no escalation: the store being unhappy must not take the
-// challenge path down with it.
-func (m *Manager) BumpEscalation(ctx context.Context, ip string, window time.Duration) int {
-	n, err := m.store.Incr(ctx, escalationKey(ip), window)
-	if err != nil || n <= escalationFreeIssues {
+//
+// The count goes through the CounterCache, so issuance never blocks on a
+// store write for it: the local count answers, the shared store counter is
+// flushed in the background, and a store failure degrades to per-instance
+// escalation rather than taking the challenge path down.
+func (m *Manager) BumpEscalation(_ context.Context, ip string, window time.Duration) int {
+	n := m.counters.Incr(escalationKey(ip), window)
+	if n <= escalationFreeIssues {
 		return 0
 	}
 	return int(n-escalationFreeIssues) / escalationStep

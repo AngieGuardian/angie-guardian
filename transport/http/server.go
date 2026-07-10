@@ -35,13 +35,14 @@ const PassPath = "/__guardian/pass"
 const issuanceRateLimit = 60
 
 type Server struct {
-	engine  *core.Engine
-	cfg     *core.Config
-	pow     *pow.Manager // nil = PoW unavailable (no signing key configured)
-	store   store.Store
-	metrics *metrics.Metrics // nil = no-op
-	log     *slog.Logger
-	mux     *http.ServeMux
+	engine   *core.Engine
+	cfg      *core.Config
+	pow      *pow.Manager // nil = PoW unavailable (no signing key configured)
+	store    store.Store
+	counters *store.CounterCache // issuance rate limit, off the write hot path
+	metrics  *metrics.Metrics    // nil = no-op
+	log      *slog.Logger
+	mux      *http.ServeMux
 
 	challengeTmpl *template.Template
 	deniedHTML    []byte
@@ -50,6 +51,7 @@ type Server struct {
 func New(engine *core.Engine, cfg *core.Config, mgr *pow.Manager, st store.Store, m *metrics.Metrics, log *slog.Logger) *Server {
 	s := &Server{
 		engine: engine, cfg: cfg, pow: mgr, store: st, metrics: m, log: log,
+		counters:      store.NewCounterCache(st),
 		mux:           http.NewServeMux(),
 		challengeTmpl: template.Must(template.ParseFS(web.FS, "challenge.html.tmpl")),
 	}
@@ -143,9 +145,12 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cheap per-IP issuance rate limit; bucketed per minute.
+	// Cheap per-IP issuance rate limit; bucketed per minute. Counted through
+	// the CounterCache so the request never blocks on a store write round:
+	// the local count enforces immediately (and keeps enforcing if the store
+	// is down), the shared counter syncs in the background.
 	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/60)
-	if n, err := s.store.Incr(r.Context(), rlKey, 2*time.Minute); err == nil && n > issuanceRateLimit {
+	if s.counters.Incr(rlKey, 2*time.Minute) > issuanceRateLimit {
 		s.log.Warn("challenge issuance rate limit", "ip", ip, "host", host)
 		http.Error(w, "too many challenge requests, slow down", http.StatusTooManyRequests)
 		return

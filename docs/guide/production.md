@@ -32,10 +32,22 @@ key) in a pluggable store:
 The rule of thumb from the
 [measured numbers](/guide/what-is-guardian#performance): the backend choice
 hinges on your *new-client* rate, i.e. the clients that trigger a challenge
-write. bbolt sustains ~1.6k challenge issuances/s; redis/valkey ~15x that
-(~25k/s). Verified tokens are cached in-process (~144 ns vs ~43 µs for a full
+write. bbolt sustains ~4.1k challenge issuances/s; redis/valkey ~6x that
+(~26k/s). Verified tokens are cached in-process (~144 ns vs ~43 µs for a full
 Ed25519 verification), so a returning client's request stays on the fast read
 path regardless of backend.
+
+## GC tuning for peak throughput
+
+At tens of thousands of requests per second, guardiand's read paths are
+bound by Go's garbage collector, not the store: a freshly started daemon has
+a small heap, so at high allocation rates the GC runs almost continuously.
+On the [benchmark machine](/guide/load-testing#reference-numbers), starting
+guardiand with `GOGC=800` more than doubled the read-path throughput (allow:
+~78k to ~188k req/s on bbolt), at the price of a larger heap between
+collections. If you chase peak throughput, set `GOGC` (or a `GOMEMLIMIT`
+budget) in the systemd unit's `Environment=` and measure with
+`guardian-loadtest`; at typical production rates the default is fine.
 
 ## Multi-instance (Redis/Valkey)
 

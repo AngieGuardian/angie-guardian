@@ -27,6 +27,9 @@ func testManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 	m := NewManager(key, st)
 	m.NoJSMinDelay = 10 * time.Millisecond
+	// Run counter flushes inline so escalation tests see deterministic
+	// store state instead of racing background goroutines.
+	m.counters.Go = func(f func()) { f() }
 	return m
 }
 

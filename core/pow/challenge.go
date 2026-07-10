@@ -35,6 +35,7 @@ type Manager struct {
 	hmacSecret []byte
 	store      store.Store
 	cache      *tokenCache
+	counters   *store.CounterCache // escalation counts, off the write hot path
 
 	// NoJSMinDelay is the minimum wall-clock wait before a meta-refresh
 	// (no-JS) redemption is accepted. Overridable for tests.
@@ -59,6 +60,7 @@ func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKe
 		hmacSecret:   sum[:],
 		store:        st,
 		cache:        newTokenCache(),
+		counters:     store.NewCounterCache(st),
 		NoJSMinDelay: 5 * time.Second,
 		now:          time.Now,
 	}
@@ -248,7 +250,7 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 
 	// The client just proved it solves what it requests: forget its
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
-	_ = m.store.Delete(ctx, escalationKey(rec.IP))
+	m.counters.Forget(escalationKey(rec.IP))
 
 	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, req.TokenTTL)
 	if err != nil {
