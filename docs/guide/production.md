@@ -10,6 +10,51 @@ sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
 
+## Docker
+
+Every release publishes a prebuilt sidecar image (distroless, nonroot,
+version-stamped) to the project container registry, so you don't have to
+build anything:
+
+```sh
+docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.7.0
+```
+
+A minimal production compose service, with the store and signing key on
+named volumes so blocks and issued tokens survive restarts:
+
+```yaml
+services:
+  guardiand:
+    image: registry.melroy.org/melroy/angie-guardian:0.7.0
+    restart: unless-stopped
+    # Publish the two listeners on the host loopback only: Angie (on the
+    # host or another container) talks to 8071; you talk to 8072.
+    ports:
+      - "127.0.0.1:8071:8071"
+      - "127.0.0.1:8072:8072"
+    volumes:
+      - ./guardian.yaml:/etc/guardian/guardian.yaml:ro
+      - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
+      - guardian-state:/var/lib/guardian
+      - guardian-keys:/etc/guardian/keys
+volumes:
+  guardian-state:
+  guardian-keys:
+```
+
+Inside the container, set `listen: 0.0.0.0:8071` plus `trusted_proxy: true`
+and `admin.listen: 0.0.0.0:8072` in `guardian.yaml` (the loopback-only
+`ports:` binding above is what keeps them off the network), and point the
+signing key at the volume: `signing_key_file: /etc/guardian/keys/ed25519.key`.
+Hot reload works as usual: `docker kill -s HUP <container>` or
+`POST /admin/reload`.
+
+For a complete, runnable example (including Angie and a demo backend) see
+`deploy/docker/compose.yaml` in the repo; it builds the image from source
+because the e2e suite exercises the working tree, but swapping `build:` for
+`image:` gives the production shape above.
+
 ## Choosing a store backend
 
 Guardian keeps its shared state (IP blocks, spent challenges, the signing

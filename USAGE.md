@@ -393,6 +393,11 @@ sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
 
+Prefer containers? Every release publishes a prebuilt image (distroless,
+nonroot): `docker pull registry.melroy.org/melroy/angie-guardian:latest`.
+See the production guide on the docs site for a compose service with
+persistent volumes, or `deploy/docker/` for the full demo stack.
+
 ## 4. Operate it via the admin API
 
 The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),

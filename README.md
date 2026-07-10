@@ -118,6 +118,9 @@ from the default `go test ./...`:
 make e2e                 # or: go test -tags e2e ./test/e2e/...
 ```
 
+CI runs the e2e suite on every push (the `e2e` job), so a merge cannot land
+without the full stack passing.
+
 Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly
 scoring) also carry benchmarks:
 
@@ -202,6 +205,20 @@ scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/
 go build ./cmd/guardiand
 ./guardiand -config guardian.example.yaml
 ```
+
+Or skip the build and use the prebuilt image every release publishes
+(distroless, nonroot):
+
+```sh
+docker run --rm --network host \
+  -v ./guardian.example.yaml:/etc/guardian/guardian.yaml:ro \
+  -v ./deploy/rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro \
+  registry.melroy.org/melroy/angie-guardian:latest
+```
+
+(`--network host` so Angie on the same box reaches the loopback listeners;
+see [the production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production)
+for a proper compose setup with persistent volumes.)
 
 Then include the snippet from `deploy/angie-guardian.conf` in each protected
 `server {}` block of your Angie configuration.

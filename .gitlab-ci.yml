@@ -68,14 +68,37 @@ docs:
     - npm ci
     - npm run build
 
-# NOTE: the end-to-end suite (test/e2e/, `make e2e`) is intentionally NOT a CI
-# job. It boots the real Angie + guardiand + whoami stack via testcontainers-go,
-# which needs a Docker daemon — i.e. a privileged docker:dind service. The
-# shared runners here are not privileged (dind fails with "mount: permission
-# denied" / AppArmor), so the job could only ever fail. The `format` job above
-# still `go vet -tags e2e`s the suite so it can't silently stop compiling. Run
-# the full suite locally with `make e2e`; add a CI job here if a privileged
-# (dind-capable) runner becomes available.
+# End-to-end suite: boots the real Angie + guardiand + whoami compose stack
+# (deploy/docker/compose.yaml) via testcontainers-go and drives traffic
+# through Angie. It needs a real Docker daemon, so it runs on the
+# shell-executor runner (tag `shell`), not the unprivileged shared runners.
+# The suite itself runs in a golang container that shares the host's docker
+# socket and network namespace. Details that matter:
+#   - the repo is mounted at its own host path, so the compose file's
+#     relative bind mounts (resolved by the host daemon) land on the same
+#     files the client sees;
+#   - TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 points the health-check probes
+#     at the loopback, where compose publishes; inside a container
+#     testcontainers would otherwise probe the bridge gateway IP and time out;
+#   - Go module/build caches persist across runs in named volumes on the
+#     runner host (not GitLab's cache, which shell runners handle poorly).
+e2e:
+  stage: test
+  tags:
+    - shell
+  cache: []
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "melroy"
+  script:
+    - docker run --rm --network host
+      -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1
+      -v /var/run/docker.sock:/var/run/docker.sock
+      -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR"
+      -w "$CI_PROJECT_DIR"
+      -v angie-guardian-e2e-gomod:/go/pkg/mod
+      -v angie-guardian-e2e-gocache:/root/.cache
+      golang:1.26-trixie
+      make e2e
 
 build:
   stage: build

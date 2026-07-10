@@ -19,6 +19,10 @@ name: angie-guardian-harness
 
 services:
   guardiand:
+    # The harness builds from the working tree on purpose: the e2e suite must
+    # test YOUR code, not a release. For a real deployment use the prebuilt
+    # image instead (see the production guide):
+    #   image: registry.melroy.org/melroy/angie-guardian:latest
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
