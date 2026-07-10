@@ -121,6 +121,19 @@ make e2e                 # or: go test -tags e2e ./test/e2e/...
 CI runs the e2e suite on every push (the `e2e` job), so a merge cannot land
 without the full stack passing.
 
+Every parser that ingests untrusted or hot-reloaded input (URI percent-decode,
+WAF rules file, `guardian.yaml`, the anomaly model artifact, the PoW redeem
+payload) has a fuzz target. A parser panic in a fail-open WAF silently drops
+protection, so these guard against it. CI fuzzes them nightly; run them locally
+with:
+
+```sh
+make fuzz                 # every target, 30s each (FUZZTIME=2m to dig deeper)
+```
+
+A discovered crasher is written under `testdata/fuzz/`; commit that file to
+turn it into a permanent regression seed.
+
 Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly
 scoring) also carry benchmarks:
 

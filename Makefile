@@ -6,7 +6,11 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e vet fmt clean docs docs-dev
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev
+
+# How long each fuzz target runs in `make fuzz`. CI overrides this
+# (FUZZTIME=2m). Locally, bump it when chasing a specific parser.
+FUZZTIME ?= 30s
 
 # Build the three sidecar binaries into dist/.
 build:
@@ -30,6 +34,20 @@ test:
 # the fast unit `test` target above.
 e2e:
 	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+
+# Run every fuzz target for FUZZTIME each. `go test -fuzz` fuzzes exactly one
+# target per package invocation, so discover them with `-list` and loop. Any
+# crasher is written to testdata/fuzz/ and fails the run. A parser panic in a
+# fail-open WAF silently drops protection, so this guards every untrusted-input
+# parser (URI decode, WAF rules, config, anomaly model, PoW redeem).
+fuzz:
+	@set -e; \
+	for pkg in ./core/stateless ./core/waf ./core ./core/anomaly ./core/pow; do \
+		for fn in $$(go test -list '^Fuzz' $$pkg | grep '^Fuzz'); do \
+			echo "=== fuzz $$pkg $$fn ($(FUZZTIME)) ==="; \
+			go test -run '^$$' -fuzz "^$$fn$$" -fuzztime $(FUZZTIME) $$pkg; \
+		done; \
+	done
 
 vet:
 	go vet ./...
