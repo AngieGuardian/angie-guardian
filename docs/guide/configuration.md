@@ -69,10 +69,15 @@ Which value fires:
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`).
 - **The anomaly scorer:** scales the difficulty across the `[base, max]`
-  range with the score, so a more bot-like client pays more. This is the only
-  path that reaches `max`, and only when `waf.anomaly` is enabled with a
-  trained model. Without a model, `max` is dormant and every client pays
-  `base`.
+  range with the score, so a more bot-like client pays more. Requires
+  `waf.anomaly` enabled with a trained model.
+- **Challenge farming:** an IP that keeps requesting challenges without ever
+  solving one gets escalated on top of whichever value above applied. The
+  first 4 unsolved challenges are free (multiple tabs, reloads), then every 2
+  further abandoned challenges add one bit (2x work), capped at `max`. Any
+  successful solve resets the IP to a clean slate. The counter lives for
+  `challenge_ttl`, and escalated issuances show up in Prometheus as
+  `guardian_challenges_total{outcome="escalated"}`.
 
 ### Measured solve times and recommended values
 
@@ -117,9 +122,12 @@ Recommendations:
   *your* visitors' devices.
 
 ::: tip PoW is not a flood defense
-PoW only taxes clients that solve the puzzle; it is **not** a defense against
-a flood that never solves anything. Put Angie's own rate limiting in front:
-see [Rate limiting](/guide/angie#rate-limiting-volumetric-ddos).
+PoW only taxes clients that solve the puzzle. A client that farms challenges
+without solving them is throttled (60 issuances per IP per minute) and
+escalated (see challenge farming above), but a raw flood that never even
+follows the challenge redirect is **not** PoW's problem. Put Angie's own rate
+limiting in front: see
+[Rate limiting](/guide/angie#rate-limiting-volumetric-ddos).
 :::
 
 ## Loopback and trusted proxies
@@ -141,5 +149,7 @@ accepted for verification until their tokens expire.
 ## Next steps
 
 - Every field, type, and default: [Configuration Options](/reference/configuration)
+- Verified crawlers, GeoIP scoping, and reputation feeds:
+  [Bots, GeoIP & Reputation](/guide/bots-ip-intel)
 - Full annotated example: [Examples](/examples)
 - Suspicion-based challenges: [Train the Anomaly Model](/guide/anomaly)

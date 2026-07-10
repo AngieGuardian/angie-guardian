@@ -242,6 +242,89 @@ than amplifying it into a DNS storm. Watch it via the
 
 DuckDuckBot publishes a static IP list instead of rDNS domains; allowlist it
 with `allowlist.ips`.
+### GeoIP scoping and IP reputation feeds
+
+Guardian can scope traffic by origin (country and ASN) and consume external
+IP reputation feeds. Both are optional and slot into the pipeline in two
+places: **deny** verdicts fire right after the static denylist (a PoW token
+never rides past them; only an rDNS-verified crawler does, so a feed false
+positive can't deindex you), while **challenge** verdicts fire after the PoW token
+check, so a listed client solves once and then browses normally until its
+token expires.
+
+**GeoIP databases.** Point `geoip:` at MaxMind-format `.mmdb` files. Free
+options: MaxMind GeoLite2 (free account + `geoipupdate`) or the DB-IP lite
+downloads. Guardian hot-reloads the files when they are replaced on disk, so
+a weekly `geoipupdate` cron needs no restart.
+
+```yaml
+geoip:
+  country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb   # optional, for asns: selectors
+```
+
+Then scope per domain (or in `defaults`):
+
+```yaml
+defaults:
+  geo:
+    enabled: true
+    deny: { countries: [ KP ] }                    # never served
+    challenge: { countries: [ CN, RU ], asns: [ 4134 ] }  # PoW first
+```
+
+Or invert it and serve only your home market, challenging the rest:
+
+```yaml
+domains:
+  shop.example.nl:
+    geo:
+      enabled: true
+      allow: { countries: [ NL, BE, DE ] }
+      default_action: challenge     # allow | challenge | deny for the rest
+```
+
+Semantics worth knowing:
+
+- Precedence is deny, then challenge, then allow, then `default_action`.
+  Listing the same country/ASN in two selectors is a config error.
+- An IP the database has no record for (private ranges, brand-new
+  allocations) matches no selector and gets `default_action`. Keep internal
+  ranges on the static `allowlist` before tightening `default_action`.
+- Challenge policies need PoW enabled on the domain; on a PoW-less domain
+  they are inert rather than degrading to a deny (a typo should not cut off
+  a whole country). Denies apply everywhere, PoW or not.
+- Config is refused when a selector needs a database you did not configure,
+  so a country block can never be silently inert.
+
+**Reputation feeds.** Feeds are plain-text IP/CIDR lists, one entry per line
+with `#`/`;` comments: the format of the FireHOL netsets, blocklist.de
+exports, and simple hand-maintained files. Define them once at the top
+level; every domain that sets `reputation: { enabled: true }` (typically in
+`defaults`) enforces them.
+
+```yaml
+reputation:
+  cache_dir: /var/lib/guardian/feeds    # survive restarts; recommended
+  feeds:
+    - name: firehol-level1              # reason becomes reputation:firehol-level1
+      url: https://iplists.firehol.org/files/firehol_level1.netset
+      refresh: 12h                      # default 12h
+      action: deny                      # deny (default) | challenge
+    - name: local-badnets
+      file: /etc/guardian/badnets.txt   # hot-reloaded local list
+```
+
+URL feeds are fetched in the background: startup never blocks on a remote,
+a failed refresh keeps the last good list (and retries within 5 minutes),
+and `cache_dir` seeds the list at boot so a restart doesn't open a window.
+A local `file:` feed must exist at startup (fail-fast, like the WAF rules
+files) and is hot-reloaded on change. Matching is a binary search over
+merged ranges, so six-figure feeds are fine on the hot path.
+
+Watch feeds via `guardian_feed_entries` and `guardian_feed_refresh_total`
+in `/metrics`, or `GET /admin/intel` (below). To ask "what would Guardian
+make of this IP?", use `GET /admin/intel/<ip>`.
 
 ## 2. Wire it into Angie
 
@@ -374,6 +457,17 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # See which features are active per domain.
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/config
 
+# IP intelligence status: GeoIP database types and build dates, plus every
+# reputation feed's entry count, last refresh and last error.
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel
+
+# What do we know about an IP? Country, ASN and feed membership, for testing
+# geo rules and answering "why was this client denied".
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel/203.0.113.9
+# {"ip":"203.0.113.9","enabled":true,
+#  "info":{"country":"RU","asn":64500,"as_org":"Example Carrier"},
+#  "feeds":[{"feed":"firehol-level1","action":"deny"}]}
+
 # Prometheus scrape (no token needed).
 curl -s $A/metrics | grep guardian_
 ```
@@ -394,7 +488,9 @@ the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
-status, and headline counters, auto-refreshing every 5 seconds. The page is a
+status, IP intelligence health (loaded GeoIP databases plus each reputation
+feed's entries, refresh age and last error), and headline counters,
+auto-refreshing every 5 seconds. The page is a
 static shell: it stores no secrets and every data call goes to the
 token-guarded `/admin/*` endpoints. It is **internal-only by construction**:
 it lives on the admin listener, which refuses a non-loopback bind without a

@@ -245,6 +245,22 @@ func TestConfigValidation(t *testing.T) {
 		"negative dns_timeout":                   "defaults: { verified_bots: { dns_timeout: -1s } }",
 		"bot also in ua allowlist":               "defaults: { allowlist: { uas: [ Googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } }",
 		"bot overlaps ua allowlist per-domain":   "domains: { a.test: { allowlist: { uas: [ googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } } }",
+		"bad country code":                       "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ Netherlands ] } } }",
+		"country in two selectors":               "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] }, challenge: { countries: [ nl ] } } }",
+		"asn in two selectors":                   "geoip: { asn_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { asns: [ 64500 ] }, allow: { asns: [ 64500 ] } } }",
+		"geo enabled but inert":                  "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true } }",
+		"geo without databases":                  "defaults: { geo: { enabled: true, deny: { countries: [ NL ] } } }",
+		"country rules sans country_db":          "geoip: { asn_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] } } }",
+		"asn rules sans asn_db":                  "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { asns: [ 64500 ] } } }",
+		"bad geo default_action":                 "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, default_action: block, deny: { countries: [ NL ] } } }",
+		"geo on domain without databases":        "domains: { a.test: { geo: { enabled: true, deny: { countries: [ NL ] } } } }",
+		"feed sans source":                       "reputation: { feeds: [ { name: x } ] }",
+		"feed with two sources":                  "reputation: { feeds: [ { name: x, url: \"https://a/b\", file: /a/b } ] }",
+		"feed bad name":                          "reputation: { feeds: [ { name: \"sp aces\", file: /a/b } ] }",
+		"feed dup name":                          "reputation: { feeds: [ { name: x, file: /a }, { name: x, file: /b } ] }",
+		"feed bad action":                        "reputation: { feeds: [ { name: x, file: /a/b, action: block } ] }",
+		"feed bad url scheme":                    "reputation: { feeds: [ { name: x, url: \"ftp://a/b\" } ] }",
+		"feed refresh too low":                   "reputation: { feeds: [ { name: x, url: \"https://a/b\", refresh: 10s } ] }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
@@ -283,5 +299,94 @@ func TestDomainLabel(t *testing.T) {
 		if got := cfg.DomainLabel(host); got != want {
 			t.Errorf("DomainLabel(%q) = %q, want %q", host, got, want)
 		}
+	}
+}
+
+const geoYAML = `
+geoip:
+  country_db: /var/lib/test/country.mmdb
+  asn_db: /var/lib/test/asn.mmdb
+reputation:
+  cache_dir: /var/lib/test/feeds
+  feeds:
+    - name: bad-actors
+      url: https://feeds.test/level1.netset
+    - name: local
+      file: /etc/guardian/local.list
+      action: challenge
+defaults:
+  geo:
+    enabled: true
+    deny: { countries: [ ru ], asns: [ 64500 ] }
+    challenge: { countries: [ CN ] }
+  reputation:
+    enabled: true
+domains:
+  home.test:
+    geo:
+      enabled: true
+      allow: { countries: [ NL ] }
+      deny: { countries: [] }
+      challenge: { countries: [] }
+      default_action: deny
+  open.test:
+    geo: { enabled: false }
+`
+
+func TestGeoConfig(t *testing.T) {
+	cfg := loadTestConfig(t, geoYAML)
+
+	g := &cfg.Defaults.Geo
+	for _, tc := range []struct {
+		country        string
+		asn            uint32
+		action, reason string
+	}{
+		{"RU", 0, "deny", "geo:country:RU"}, // lowercase config entry normalized
+		{"US", 64500, "deny", "geo:asn:64500"},
+		{"CN", 0, "challenge", "geo:country:CN"},
+		{"US", 64501, "", ""},
+		{"", 0, "", ""}, // unknown origin passes under default_action allow
+	} {
+		action, reason := g.Action(tc.country, tc.asn)
+		if action != tc.action || reason != tc.reason {
+			t.Errorf("Action(%q, %d) = (%q, %q), want (%q, %q)",
+				tc.country, tc.asn, action, reason, tc.action, tc.reason)
+		}
+	}
+
+	// Allow-only scoping: home country passes, everything else (including
+	// unknown origins) gets default_action.
+	home := &cfg.DomainFor("home.test").Geo
+	if action, _ := home.Action("NL", 0); action != "" {
+		t.Errorf("home country should pass, got %q", action)
+	}
+	if action, reason := home.Action("DE", 0); action != "deny" || reason != "geo:default" {
+		t.Errorf("unlisted country = (%q, %q), want (deny, geo:default)", action, reason)
+	}
+	if action, _ := home.Action("", 0); action != "deny" {
+		t.Error("unknown origin should get default_action deny")
+	}
+
+	if action, _ := cfg.DomainFor("open.test").Geo.Action("RU", 0); action != "" {
+		t.Error("disabled geo must never act")
+	}
+
+	// Feed defaults and the intel bridge.
+	ic := cfg.IntelConfig()
+	if ic.CountryDB == "" || ic.ASNDB == "" || ic.CacheDir == "" {
+		t.Fatalf("intel config incomplete: %+v", ic)
+	}
+	if len(ic.Feeds) != 2 {
+		t.Fatalf("want 2 feeds, got %d", len(ic.Feeds))
+	}
+	if f := ic.Feeds[0]; f.Action != "deny" || f.Refresh != 12*time.Hour {
+		t.Errorf("feed defaults not applied: %+v", f)
+	}
+	if f := ic.Feeds[1]; f.Action != "challenge" || f.File == "" {
+		t.Errorf("unexpected second feed: %+v", f)
+	}
+	if !cfg.Defaults.Reputation.Enabled || cfg.DomainFor("home.test").Reputation.Enabled != true {
+		t.Error("reputation enablement should inherit from defaults")
 	}
 }

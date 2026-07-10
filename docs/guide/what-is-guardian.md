@@ -17,9 +17,16 @@ pipeline. Everything is per-domain configurable.
 ### 1. The WAF layer, on every request
 
 - Hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
-  construction), matched against the decoded path, query, and User-Agent.
+  construction), matched against the decoded path, query, User-Agent, and
+  any named request header, optionally scoped to HTTP methods.
 - Behavioural IP blocking with exponential backoff, fed by signature hits,
-  PoW failures, and tamper events.
+  PoW failures, tamper events, and bot-spoof attempts.
+- Verified crawler allowlisting: Googlebot and friends are admitted by
+  rDNS + forward-confirmed identity, never by their forgeable User-Agent
+  string (see [Bots, GeoIP & Reputation](/guide/bots-ip-intel)).
+- GeoIP/ASN scoping (deny or challenge by origin country and ASN) and
+  external IP reputation feeds (FireHOL-style lists), refreshed in the
+  background and hot-reloaded, with fail-open semantics throughout.
 - Honeypot trap paths: one hit means an instant block.
 - Tamper-proof signed IDs, HMAC-bound to purpose and host.
 - Statistical anomaly scoring: `guardian-train` learns per-domain baselines
@@ -33,6 +40,9 @@ pipeline. Everything is per-domain configurable.
 - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver (works
   on plain-http origins too); difficulty tunes in 2x quarter steps
   (`base_difficulty: 5.25`) and escalates with suspicion.
+- Per-IP escalation against challenge farming: an IP that keeps requesting
+  challenges without solving them pays one extra bit (2x) per two abandoned
+  challenges, capped at `max_difficulty`; one solve resets it.
 - Ed25519-signed JWT cookie on success; cheap re-validation afterwards.
 - A **persistent shared signing key**, so restarts don't log everyone out,
   and replicas behind a load balancer can share one key.
@@ -75,6 +85,8 @@ core/stateless/  store-free WAF checks + value types (shared by sidecar & WASM)
 core/pow/        challenges, Ed25519 JWTs, token cache, key persistence + rotation
 core/waf/        signature rules, signed IDs
 core/anomaly/    statistical baseline model, online scorer, hot-swap cache
+core/botverify/  rDNS + forward-confirm crawler identity, store-cached
+core/intel/      GeoIP country/ASN lookups + reputation feed sets
 core/store/      TTL'd shared state: memory | bbolt | redis
 core/metrics/    Prometheus instrumentation (private registry)
 transport/http/  auth_request sidecar + admin/metrics

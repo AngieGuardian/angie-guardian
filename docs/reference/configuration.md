@@ -25,6 +25,8 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; they are still accepted for verification until their tokens expire. |
 | `admin` | object | | See [admin](#admin). |
 | `store` | object | | See [store](#store). |
+| `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
+| `reputation` | object | | Global IP reputation feeds; domains opt in via `reputation.enabled`. See [reputation](#reputation). |
 | `defaults` | object | | The base [domain config](#per-domain-options-defaults-and-domains) every domain inherits from. |
 | `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. A host key normalizes case and port (`A.test:443` = `a.test`); two keys that collapse to the same host are rejected. |
 
@@ -47,9 +49,45 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `store.password` | string | `$REDIS_PASSWORD` | Redis/Valkey password. Falls back to the `REDIS_PASSWORD` env var. |
 | `store.db` | int | `0` | Redis database number. |
 
+## geoip
+
+MaxMind-format (`.mmdb`) databases: MaxMind GeoLite2/GeoIP2, DB-IP, or any
+other publisher of the format. The files are hot-reloaded when replaced on
+disk (geoipupdate does this atomically), so scheduled updates need no
+restart. Either may be omitted; a `geo` rule that needs the missing database
+is refused at config load.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `geoip.country_db` | string | | Country database, for `countries:` selectors. |
+| `geoip.asn_db` | string | | ASN database, for `asns:` selectors. |
+
+## reputation
+
+External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
+line, `#`/`;` comments), like the FireHOL netsets or a hand-maintained local
+file. Feeds are defined once here; each domain opts in via
+[`reputation.enabled`](#reputation-per-domain).
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reputation.cache_dir` | string | | Persists the last good copy of every URL feed, so a restart enforces yesterday's list immediately instead of nothing until the first fetch completes. Strongly recommended with URL feeds. |
+| `reputation.feeds` | list | `[]` | The feed definitions, see below. |
+
+Each feed entry:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | **required** | Label in decision reasons (`reputation:<name>`), metrics, and the cache file name. 1..64 chars of `[a-zA-Z0-9._-]`, unique. |
+| `url` | string | | Fetched in the background every `refresh` interval. A slow or down remote never blocks startup; a failed refresh keeps the last good list and retries within 5 minutes. Exactly one of `url`/`file`. |
+| `file` | string | | Local list. Must exist at startup (fail-fast, like the WAF rules files); hot-reloaded on change. |
+| `refresh` | Duration | `12h` | URL feeds only. Minimum `1m`. |
+| `action` | `deny` \| `challenge` | `deny` | `deny` rejects matching IPs outright; `challenge` makes them solve PoW first, one full step (+4 bits = 16x) above base, like a WAF signature hit. |
+
 ## Per-domain options (`defaults` and `domains.<host>`)
 
-Each domain entry has four sections: `waf`, `pow`, `allowlist`, `denylist`.
+Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
+`allowlist`, `denylist`, `verified_bots`.
 
 ### pow
 
@@ -66,6 +104,41 @@ Each domain entry has four sections: `waf`, `pow`, `allowlist`, `denylist`.
 See [base_difficulty and max_difficulty](/guide/configuration#base-difficulty-and-max-difficulty)
 for which value fires when.
 
+### geo
+
+GeoIP scoping by origin country and ASN. Needs the [top-level `geoip`
+databases](#geoip); a selector that references a database you did not
+configure is refused at load, so a country block can never be silently
+inert. Deny verdicts fire right after the static denylist (a PoW token never
+rides past them; an rDNS-verified crawler does); challenge verdicts fire
+after the token check, so a listed client solves once and then browses on
+its token. See [the guide](/guide/bots-ip-intel#geoip-scoping).
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable geo scoping for this domain. Enabled with no deny/challenge selectors and `default_action: allow` is a config error (it would never do anything). |
+| `deny` | selector | | Origins never served. |
+| `challenge` | selector | | Origins that must solve PoW first (inert on a PoW-less domain). |
+| `allow` | selector | | Origins exempt from `default_action`. |
+| `default_action` | `allow` \| `challenge` \| `deny` | `allow` | Applied to origins matching no selector, including IPs the databases have no record for (private ranges). Precedence: deny, challenge, allow, then this. |
+
+Each selector takes `countries` (ISO 3166-1 alpha-2, any case) and/or `asns`
+(plain numbers). Listing the same country or ASN in two selectors is a
+config error.
+
+```yaml
+geo:
+  enabled: true
+  deny: { countries: [ KP ] }
+  challenge: { countries: [ CN, RU ], asns: [ 4134 ] }
+```
+
+### reputation (per domain)
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enforce the [globally configured feeds](#reputation) on this domain. Typically set once in `defaults`. |
+
 ### waf.ip_behaviour
 
 Behavioural IP blocking with exponential backoff.
@@ -75,14 +148,14 @@ Behavioural IP blocking with exponential backoff.
 | `enabled` | bool | `false` | Enable behavioural blocking. |
 | `block_ttl` | Duration | `15m` | First-offense block duration; doubles per repeat offense. |
 | `max_block_ttl` | Duration | `4h` | Backoff cap. Must be >= `block_ttl`. |
-| `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min` | Bad events per window before the IP is blocked, keyed by event type. |
+| `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min`, `bot_spoof: 5/min` | Bad events per window before the IP is blocked, keyed by event type. |
 
 ### waf.keywords
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable keyword/regex threat signatures, matched against the decoded path, query, and User-Agent. |
-| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`). Must exist when enabled (fail-fast); hot-reloaded on change. |
+| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. |
+| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must exist when enabled (fail-fast); hot-reloaded on change. |
 
 ### waf.anomaly
 

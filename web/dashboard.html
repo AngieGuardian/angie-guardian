@@ -189,7 +189,7 @@
       <div class="tablewrap">
         <table>
           <thead><tr><th>Domain</th><th>PoW</th><th>Mode</th><th>Signatures</th>
-                     <th>Behaviour</th></tr></thead>
+                     <th>Behaviour</th><th>Geo</th><th>Feeds</th></tr></thead>
           <tbody id="domains"></tbody>
         </table>
       </div>
@@ -204,6 +204,16 @@
         <div class="empty" id="reasons-empty" hidden>No recent activity.</div>
       </div>
     </div>
+  </div>
+
+  <h2>IP intelligence <span class="meta" id="intel-dbs"></span></h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Feed</th><th>Action</th><th>Entries</th><th>Refreshed</th>
+                 <th>Loaded from</th><th>Last error</th></tr></thead>
+      <tbody id="feeds"></tbody>
+    </table>
+    <div class="empty" id="intel-empty" hidden>No reputation feeds configured.</div>
   </div>
 </main>
 
@@ -276,9 +286,10 @@
   };
 
   const render = async () => {
-    const [stats, blocks, decisions, config] = await Promise.all([
+    const [stats, blocks, decisions, config, intel] = await Promise.all([
       api("/admin/stats"), api("/admin/blocks"),
       api("/admin/decisions?limit=100"), api("/admin/config"),
+      api("/admin/intel"),
     ]);
 
     // KPI tiles.
@@ -331,8 +342,29 @@
       pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
       return row(td("wrap", name), pow, td(null, dc.pow_mode),
         td(null, dc.waf_keywords ? "on" : "off"),
-        td(null, dc.waf_ip_behaviour ? "on" : "off"));
+        td(null, dc.waf_ip_behaviour ? "on" : "off"),
+        td(null, dc.geo ? "on" : "off"),
+        td(null, dc.reputation ? "on" : "off"));
     }));
+
+    // IP intelligence: loaded GeoIP databases in the heading, feeds below.
+    const src = intel.enabled ? intel.intel : {};
+    const dbs = [];
+    for (const db of [src.country_db, src.asn_db]) {
+      if (db) dbs.push(db.type + " built " + new Date(db.built).toLocaleDateString());
+    }
+    $("intel-dbs").textContent = dbs.length ? dbs.join(" | ") : "(no GeoIP databases)";
+    const feeds = src.feeds || [];
+    $("feeds").replaceChildren(...feeds.map((f) => {
+      const act = td(null, "");
+      act.appendChild(el("span", "chip " + f.action, f.action));
+      return row(td("wrap", f.name), act,
+        td("num", f.loaded ? String(f.entries) : "not loaded"),
+        td("time", f.last_refresh ? relTime(f.last_refresh) : "never"),
+        td(null, f.loaded_from || ""),
+        td("wrap", f.last_error || ""));
+    }));
+    $("intel-empty").hidden = feeds.length > 0;
 
     $("refreshed").textContent = "updated " + new Date().toLocaleTimeString();
   };

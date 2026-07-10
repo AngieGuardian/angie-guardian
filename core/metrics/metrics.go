@@ -29,6 +29,8 @@ type Metrics struct {
 	storeOps     *prometheus.CounterVec // by op, status
 	storeLatency *prometheus.HistogramVec
 	evalLatency  prometheus.Histogram
+	feedEntries  *prometheus.GaugeVec   // by feed
+	feedRefresh  *prometheus.CounterVec // by feed, status
 }
 
 func New() *Metrics {
@@ -82,6 +84,14 @@ func New() *Metrics {
 			Help:    "End-to-end Evaluate() latency (the auth hot path).",
 			Buckets: []float64{5e-6, 10e-6, 25e-6, 50e-6, 100e-6, 250e-6, 500e-6, 1e-3, 5e-3},
 		}),
+		feedEntries: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "feed_entries",
+			Help: "Loaded entries per reputation feed.",
+		}, []string{"feed"}),
+		feedRefresh: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "feed_refresh_total",
+			Help: "Reputation feed refresh attempts by feed and status (ok|error).",
+		}, []string{"feed", "status"}),
 	}
 }
 
@@ -140,6 +150,20 @@ func (m *Metrics) StoreOp(op string, seconds float64, err error) {
 	}
 	m.storeOps.WithLabelValues(op, status).Inc()
 	m.storeLatency.WithLabelValues(op).Observe(seconds)
+}
+
+// FeedRefresh records one reputation feed refresh attempt and the resulting
+// entry count. Feed names come from config, so the label set stays bounded.
+func (m *Metrics) FeedRefresh(feed string, entries int, failed bool) {
+	if m == nil {
+		return
+	}
+	status := "ok"
+	if failed {
+		status = "error"
+	}
+	m.feedRefresh.WithLabelValues(feed, status).Inc()
+	m.feedEntries.WithLabelValues(feed).Set(float64(entries))
 }
 
 func (m *Metrics) EvaluateLatency(seconds float64) {
