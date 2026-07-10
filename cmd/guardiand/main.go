@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -66,7 +67,11 @@ func run(configPath string) error {
 		"debug": slog.LevelDebug, "info": slog.LevelInfo,
 		"warn": slog.LevelWarn, "error": slog.LevelError,
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: levels[cfg.LogLevel]}))
+	// The level lives in a LevelVar so a config reload can adjust it without
+	// rebuilding the handler mid-flight.
+	level := new(slog.LevelVar)
+	level.Set(levels[cfg.LogLevel])
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
 
 	var st store.Store
@@ -118,9 +123,27 @@ func run(configPath string) error {
 	engine.SetMetrics(m)
 	defer engine.Close()
 
+	// reload re-reads guardian.yaml and hot-swaps everything derived from it
+	// (domains, lists, thresholds, rule/model/geoip/feed sources, log level).
+	// Triggered by SIGHUP and POST /admin/reload. A config that fails to load
+	// or validate leaves the running config active. Listener addresses, the
+	// store, signing keys and the admin token are fixed at startup.
+	reload := func() error {
+		next, err := core.LoadConfig(configPath)
+		if err != nil {
+			return err
+		}
+		warnStaticChanges(engine.Config(), next, log)
+		if err := engine.Reload(next); err != nil {
+			return err
+		}
+		level.Set(levels[next.LogLevel])
+		return nil
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httptransport.New(engine, cfg, powMgr, st, m, log),
+		Handler:           httptransport.New(engine, powMgr, st, m, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -165,7 +188,7 @@ func run(configPath string) error {
 		admin = &http.Server{
 			Addr: cfg.Admin.Listen,
 			Handler: httptransport.NewAdminServer(engine, cfg, m,
-				cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, log),
+				cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, reload, log),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
@@ -184,12 +207,24 @@ func run(configPath string) error {
 	}
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case err := <-errCh:
-		return err
-	case sig := <-stop:
-		log.Info("shutting down", "signal", sig.String())
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+loop:
+	for {
+		select {
+		case err := <-errCh:
+			return err
+		case sig := <-stop:
+			if sig == syscall.SIGHUP {
+				if err := reload(); err != nil {
+					log.Error("config reload failed, keeping running config", "err", err)
+				} else {
+					log.Info("config reloaded", "config", configPath)
+				}
+				continue
+			}
+			log.Info("shutting down", "signal", sig.String())
+			break loop
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -201,6 +236,31 @@ func run(configPath string) error {
 		return err
 	}
 	return nil
+}
+
+// warnStaticChanges flags reloaded config fields that only apply on restart:
+// listener binds, the store backing the blocks/counters, signing key paths
+// and the admin token setup are all fixed while the process runs. The reload
+// still succeeds; the operator just learns these edits are not live yet.
+// (admin.token itself is not compared: the running value may be one the
+// daemon generated or loaded from token_file, not what the YAML says.)
+func warnStaticChanges(old, next *core.Config, log *slog.Logger) {
+	changed := func(name, was, is string) {
+		if was != is {
+			log.Warn("config change requires a restart to apply", "field", name, "running", was, "new", is)
+		}
+	}
+	changed("listen", old.Listen, next.Listen)
+	changed("trusted_proxy", strconv.FormatBool(old.TrustedProxy), strconv.FormatBool(next.TrustedProxy))
+	changed("signing_key_file", old.SigningKeyFile, next.SigningKeyFile)
+	changed("previous_key_dir", old.PreviousKeyDir, next.PreviousKeyDir)
+	changed("admin.listen", old.Admin.Listen, next.Admin.Listen)
+	changed("admin.token_file", old.Admin.TokenFile, next.Admin.TokenFile)
+	changed("admin.dashboard", strconv.FormatBool(old.Admin.Dashboard), strconv.FormatBool(next.Admin.Dashboard))
+	changed("store.backend", old.Store.Backend, next.Store.Backend)
+	changed("store.path", old.Store.Path, next.Store.Path)
+	changed("store.addr", old.Store.Addr, next.Store.Addr)
+	changed("store.db", strconv.Itoa(old.Store.DB), strconv.Itoa(next.Store.DB))
 }
 
 // displayAddr turns a listen address into one a browser on this box can open:

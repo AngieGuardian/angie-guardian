@@ -24,6 +24,13 @@ guardiand -config /etc/guardian/guardian.yaml
 # config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
 ```
 
+### Signals
+
+| Signal | Effect |
+|---|---|
+| `SIGHUP` | Re-read and apply `guardian.yaml` without a restart (also available as [`POST /admin/reload`](/reference/admin-api#post-admin-reload)). A config that fails validation is rejected and the running config stays active. Listeners, the store, signing keys and the admin token setup stay fixed until restart. |
+| `SIGINT` / `SIGTERM` | Graceful shutdown. |
+
 ### Hot-path endpoints (on `listen`)
 
 These are Angie's side of the integration, wired by

@@ -454,6 +454,11 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
+# Reload guardian.yaml without a restart (same as sending SIGHUP). A config
+# that fails validation is rejected and the running config stays active.
+curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/reload
+# {"reloaded":true}
+
 # See which features are active per domain.
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/config
 

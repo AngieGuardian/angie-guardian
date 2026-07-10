@@ -48,7 +48,7 @@ func reportServer(t *testing.T, yaml string) (*httptest.Server, *core.Engine) {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", slog.Default()))
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", nil, slog.Default()))
 	t.Cleanup(ts.Close)
 	return ts, engine
 }

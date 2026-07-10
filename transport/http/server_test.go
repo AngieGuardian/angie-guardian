@@ -66,7 +66,7 @@ func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts := httptest.NewServer(New(engine, cfg, mgr, st, nil, slog.Default()))
+	ts := httptest.NewServer(New(engine, mgr, st, nil, slog.Default()))
 	t.Cleanup(ts.Close)
 	return ts
 }

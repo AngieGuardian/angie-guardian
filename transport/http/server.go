@@ -36,7 +36,6 @@ const issuanceRateLimit = 60
 
 type Server struct {
 	engine   *core.Engine
-	cfg      *core.Config
 	pow      *pow.Manager // nil = PoW unavailable (no signing key configured)
 	store    store.Store
 	counters *store.CounterCache // issuance rate limit, off the write hot path
@@ -48,9 +47,11 @@ type Server struct {
 	deniedHTML    []byte
 }
 
-func New(engine *core.Engine, cfg *core.Config, mgr *pow.Manager, st store.Store, m *metrics.Metrics, log *slog.Logger) *Server {
+// New builds the auth-path server. Domain config is read through the engine
+// per request (never cached here), so a hot reload takes effect immediately.
+func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metrics, log *slog.Logger) *Server {
 	s := &Server{
-		engine: engine, cfg: cfg, pow: mgr, store: st, metrics: m, log: log,
+		engine: engine, pow: mgr, store: st, metrics: m, log: log,
 		counters:      store.NewCounterCache(st),
 		mux:           http.NewServeMux(),
 		challengeTmpl: template.Must(template.ParseFS(web.FS, "challenge.html.tmpl")),
@@ -135,7 +136,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	host := headerOr(r, "X-Guardian-Host", r.Host)
 	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
 	uri := headerOr(r, "X-Guardian-URI", "/")
-	dcfg := s.cfg.DomainFor(host)
+	dcfg := s.engine.Config().DomainFor(host)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -238,7 +239,7 @@ func (s *Server) handlePassNoJS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemRequest, elapsedMS int64) {
 	host := headerOr(r, "X-Guardian-Host", r.Host)
 	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
-	dcfg := s.cfg.DomainFor(host)
+	dcfg := s.engine.Config().DomainFor(host)
 
 	if s.pow == nil || !dcfg.PoW.Enabled {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "unavailable"})
