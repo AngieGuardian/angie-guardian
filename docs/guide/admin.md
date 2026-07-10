@@ -97,6 +97,8 @@ The token rides the URL **fragment**, which browsers never send over the
 network; the page moves it into the tab's sessionStorage and scrubs it from
 the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
 
+![The Guardian admin dashboard](/dashboard.png)
+
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
