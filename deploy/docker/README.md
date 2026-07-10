@@ -38,6 +38,20 @@ WAF `block` blocks that IP; the harness clears such blocks via the admin API
 (`DELETE /admin/blocks/{ip}`) around block-placing tests so they can't poison the
 rest of the run.
 
+## Prebuilt image
+
+Every release publishes the sidecar image to the project's container registry
+(built by the `docker-release` CI job from this directory's Dockerfile):
+
+```sh
+docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.6.0
+```
+
+The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
+user; mount your config read-only at that path and persist
+`/var/lib/guardian` (bbolt store) and `/etc/guardian/keys` (signing key), as
+`compose.yaml` here does.
+
 ## Manual use
 
 ```sh

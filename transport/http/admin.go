@@ -26,19 +26,23 @@ import (
 // and /healthz do not, so a scraper needs no secret.
 type AdminServer struct {
 	engine  *core.Engine
-	cfg     *core.Config
 	metrics *metrics.Metrics // nil = no metrics endpoint, no challenge stats
 	token   string
 	keyPath string
 	prevDir string
+	reload  func() error // nil = no reload endpoint (owned by main: re-reads guardian.yaml)
 	log     *slog.Logger
 	mux     *http.ServeMux
 }
 
-func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, token, keyPath, prevDir string, log *slog.Logger) *AdminServer {
+// NewAdminServer builds the admin+metrics handler. The cfg parameter only
+// decides construction-time wiring (the dashboard route); request handlers
+// read the live config through the engine so a hot reload is reflected.
+// reload re-reads and applies guardian.yaml (nil disables POST /admin/reload).
+func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, token, keyPath, prevDir string, reload func() error, log *slog.Logger) *AdminServer {
 	s := &AdminServer{
-		engine: engine, cfg: cfg, metrics: m, token: token,
-		keyPath: keyPath, prevDir: prevDir, log: log,
+		engine: engine, metrics: m, token: token,
+		keyPath: keyPath, prevDir: prevDir, reload: reload, log: log,
 		mux: http.NewServeMux(),
 	}
 	if m != nil {
@@ -57,6 +61,7 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/stats", s.auth(s.handleStats))
 	s.mux.HandleFunc("GET /admin/score", s.auth(s.handleScore))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
+	s.mux.HandleFunc("POST /admin/reload", s.auth(s.handleReload))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
 	s.mux.HandleFunc("GET /admin/intel", s.auth(s.handleIntel))
 	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
@@ -289,6 +294,22 @@ func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rotated": true})
 }
 
+// handleReload re-reads guardian.yaml and applies it without a restart, like
+// SIGHUP. Validation failure keeps the running config and reports the error.
+func (s *AdminServer) handleReload(w http.ResponseWriter, _ *http.Request) {
+	if s.reload == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "reload not available"})
+		return
+	}
+	if err := s.reload(); err != nil {
+		s.log.Error("admin config reload failed, keeping running config", "err", err)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"reloaded": false, "error": err.Error()})
+		return
+	}
+	s.log.Info("admin reloaded config")
+	writeJSON(w, http.StatusOK, map[string]any{"reloaded": true})
+}
+
 // handleIntel reports the state of the IP-intelligence sources: which GeoIP
 // databases are loaded (type, build date) and every reputation feed's entry
 // count, last refresh and last error.
@@ -358,12 +379,13 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Geo: dc.Geo.Enabled, Reputation: dc.Reputation.Enabled,
 		}
 	}
+	cfg := s.engine.Config()
 	out := map[string]any{
-		"store":    s.cfg.Store.Backend,
-		"defaults": view(&s.cfg.Defaults),
+		"store":    cfg.Store.Backend,
+		"defaults": view(&cfg.Defaults),
 		"domains":  map[string]domainView{},
 	}
-	for host, dc := range s.cfg.DomainViews() {
+	for host, dc := range cfg.DomainViews() {
 		out["domains"].(map[string]domainView)[host] = view(dc)
 	}
 	writeJSON(w, http.StatusOK, out)

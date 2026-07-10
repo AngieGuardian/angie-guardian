@@ -2,11 +2,14 @@
 # Multi-stage: compile guardiand statically, then copy into a distroless-ish
 # base. Built from the repo root: docker build -f deploy/docker/Dockerfile .
 FROM golang:1.25-bookworm AS build
+# Version string stamped into the binary; the docker-release CI job passes the
+# release tag, a local build defaults to "docker".
+ARG VERSION=docker
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags "-X main.version=docker" -o /out/guardiand ./cmd/guardiand
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/guardiand ./cmd/guardiand
 # Seed empty writable dirs; the final stage COPYs them with --chown so the
 # named volumes mounted over them inherit the nonroot uid (65532) on first
 # mount and the unprivileged daemon can write the bbolt db and signing key.

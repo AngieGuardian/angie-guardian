@@ -146,6 +146,23 @@ rotation never logs anyone out.
 
 The active per-domain configuration: which features are enabled where.
 
+### `POST /admin/reload`
+
+Re-read `guardian.yaml` and apply it without a restart, exactly like sending
+the daemon a `SIGHUP`. Domains, allow/denylists, thresholds, PoW settings,
+rule/model file sets, GeoIP databases, reputation feeds and the log level all
+take effect immediately; behavioural state (active blocks, counters, issued
+tokens) is untouched. A config that fails to load or validate is rejected
+with `422` and the running config stays active.
+
+```json
+{"reloaded":true}
+```
+
+Listener addresses, the store backend, signing key paths and the admin token
+setup are fixed at startup; changing those fields still requires a restart
+(the reload succeeds but logs a warning for each such change).
+
 ## Dashboard
 
 ### `GET /admin/dashboard`

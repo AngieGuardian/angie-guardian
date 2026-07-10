@@ -36,6 +36,12 @@ Or grab a release archive from the
 it contains `guardiand`, `guardian-train`, `guardian-loadtest`, the optional
 `guardian.wasm`, and the deploy snippets.
 
+Running containerized? Each release also publishes a prebuilt sidecar image:
+
+```sh
+docker pull registry.melroy.org/melroy/angie-guardian:latest
+```
+
 ## 2. Configure
 
 Copy `guardian.example.yaml` and adjust it. The minimum viable config is tiny;

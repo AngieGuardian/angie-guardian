@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
@@ -51,13 +52,10 @@ const (
 // Engine runs the ordered decision pipeline. This is THE seam: every
 // transport wraps Evaluate and nothing else.
 type Engine struct {
-	cfg     *Config
+	snap    atomic.Pointer[engineSnapshot]
 	store   store.Store
 	pow     *pow.Manager // nil when no signing key is configured: PoW stages inert
-	rules   *waf.RuleCache
-	models  *anomaly.ModelCache
 	bots    *botverify.Verifier
-	intel   *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
 	board   *Scoreboard
 	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
 	recent  recentRing       // last non-allow decisions, for the admin API
@@ -65,17 +63,36 @@ type Engine struct {
 	log     *slog.Logger
 }
 
+// engineSnapshot bundles the config with the caches derived from it (rules
+// and model files to watch, GeoIP databases, reputation feeds), so a hot
+// reload swaps all of them together in one atomic pointer store and a request
+// never sees a new config paired with old caches or vice versa.
+type engineSnapshot struct {
+	cfg    *Config
+	rules  *waf.RuleCache
+	models *anomaly.ModelCache
+	intel  *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
+}
+
+func (s *engineSnapshot) close() {
+	s.rules.Close()
+	s.models.Close()
+	s.intel.Close()
+}
+
 // SetMetrics attaches a metrics sink. Call once at startup before serving.
 func (e *Engine) SetMetrics(m *metrics.Metrics) {
 	e.metrics = m
-	e.intel.SetMetrics(m)
+	e.snap.Load().intel.SetMetrics(m)
 }
 
 // reloadInterval is how often WAF rules files and anomaly model artifacts
 // are polled for changes.
 const reloadInterval = 10 * time.Second
 
-func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logger) (*Engine, error) {
+// buildSnapshot constructs and starts the config-derived caches. On error
+// nothing is left running.
+func buildSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 	rules, err := waf.NewRuleCache(cfg.RuleFiles(), log)
 	if err != nil {
 		return nil, err
@@ -94,16 +111,20 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 	rules.Start(reloadInterval)
 	models.Start(reloadInterval)
 	itl.Start()
-	return &Engine{
-		cfg:    cfg,
-		store:  st,
-		pow:    powMgr,
-		rules:  rules,
-		models: models,
-		bots:   botverify.New(st, log),
-		intel:  itl,
-		board:  NewScoreboard(st, log),
-		log:    log,
+	return &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl}, nil
+}
+
+func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logger) (*Engine, error) {
+	snap, err := buildSnapshot(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	e := &Engine{
+		store: st,
+		pow:   powMgr,
+		bots:  botverify.New(st, log),
+		board: NewScoreboard(st, log),
+		log:   log,
 		stages: []Stage{
 			// Pipeline order per plan §3; first terminal decision wins.
 			// Signatures run before the token stage so vouched clients keep
@@ -120,14 +141,36 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
 			powChallengeStage{},   // 6. challenge unvouched browsers (mode "always")
 		},
-	}, nil
+	}
+	e.snap.Store(snap)
+	return e, nil
+}
+
+// retireGrace is how long a replaced snapshot keeps its caches alive before
+// closing them. In-flight requests hold the old snapshot for at most one
+// Evaluate (milliseconds, or ~1s when a first-sight bot verification runs a
+// DNS lookup), and closing the intel provider unmaps its mmdb readers, so the
+// old snapshot must outlive every request that could still be reading it.
+const retireGrace = 30 * time.Second
+
+// Reload swaps in a freshly loaded config, rebuilding the caches derived from
+// it (WAF rules files, anomaly models, GeoIP databases, reputation feeds).
+// Behavioural state (blocks, scoreboard, PoW escalation, bot verdicts) lives
+// in the store and is untouched. On error the running config stays active.
+func (e *Engine) Reload(cfg *Config) error {
+	snap, err := buildSnapshot(cfg, e.log)
+	if err != nil {
+		return err
+	}
+	snap.intel.SetMetrics(e.metrics)
+	old := e.snap.Swap(snap)
+	time.AfterFunc(retireGrace, old.close)
+	return nil
 }
 
 // Close stops background work (rules/model/geoip/feed refresh).
 func (e *Engine) Close() {
-	e.rules.Close()
-	e.models.Close()
-	e.intel.Close()
+	e.snap.Load().close()
 }
 
 // Evaluate resolves the domain config for the request's host and runs the
@@ -135,9 +178,10 @@ func (e *Engine) Close() {
 // taking a site down with it.
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
-	dcfg := e.cfg.DomainFor(req.Host)
-	label := e.cfg.DomainLabel(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: e.rules, models: e.models, intel: e.intel, metrics: e.metrics, bots: e.bots}
+	snap := e.snap.Load() // one load: the whole request sees one consistent config+caches
+	dcfg := snap.cfg.DomainFor(req.Host)
+	label := snap.cfg.DomainLabel(req.Host)
+	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -218,7 +262,7 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 // pipeline (failed PoW redemptions, forged IDs). Allowlisted IPs are never
 // scored, so a shared office NAT can't block itself.
 func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail string) {
-	dcfg := e.cfg.DomainFor(host)
+	dcfg := e.Config().DomainFor(host)
 	if evtype == EventTamper && !dcfg.WAF.UUIDTamper.Enabled {
 		return
 	}
@@ -275,11 +319,12 @@ func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
 // domain's model, for admin inspection ("why would this be challenged?").
 // Returns -1 when the domain has no anomaly model loaded.
 func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
-	dcfg := e.cfg.DomainFor(host)
+	snap := e.snap.Load()
+	dcfg := snap.cfg.DomainFor(host)
 	if !dcfg.WAF.Anomaly.Enabled {
 		return -1
 	}
-	m := e.models.Get(dcfg.WAF.Anomaly.Model)
+	m := snap.models.Get(dcfg.WAF.Anomaly.Model)
 	if m == nil {
 		return -1
 	}
@@ -294,7 +339,9 @@ func (e *Engine) BotVerifier() *botverify.Verifier { return e.bots }
 
 // Intel exposes the intel provider for admin inspection (may be nil; its
 // methods are nil-safe).
-func (e *Engine) Intel() *intel.Provider { return e.intel }
+func (e *Engine) Intel() *intel.Provider { return e.snap.Load().intel }
 
-// Config exposes the loaded configuration for admin inspection.
-func (e *Engine) Config() *Config { return e.cfg }
+// Config exposes the currently active configuration. Callers must treat it as
+// a point-in-time snapshot: a hot reload swaps it, so hold the returned
+// pointer for one request, never across requests.
+func (e *Engine) Config() *Config { return e.snap.Load().cfg }

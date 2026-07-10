@@ -11,6 +11,10 @@ Type=simple
 # the site during the restart window).
 ExecStartPre=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml -t
 ExecStart=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml
+# `systemctl reload guardiand` hot-applies config edits via SIGHUP (domains,
+# lists, thresholds, difficulty; not listeners/store/keys). A config that
+# fails validation is rejected and the running config stays active.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2
 

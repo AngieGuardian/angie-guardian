@@ -58,7 +58,7 @@ func adminServer(t *testing.T) (*httptest.Server, string) {
 	}
 	engine.SetMetrics(m)
 	t.Cleanup(engine.Close)
-	admin := NewAdminServer(engine, cfg, m, adminToken, keyPath, filepath.Join(dir, "previous"), slog.Default())
+	admin := NewAdminServer(engine, cfg, m, adminToken, keyPath, filepath.Join(dir, "previous"), nil, slog.Default())
 	ts := httptest.NewServer(admin)
 	t.Cleanup(ts.Close)
 	return ts, keyPath
@@ -122,7 +122,7 @@ func TestAdminStatsChallenges(t *testing.T) {
 	m.SolveTime(1.0)
 	m.SolveTime(3.0)
 
-	ts := httptest.NewServer(NewAdminServer(engine, cfg, m, adminToken, "", "", slog.Default()))
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, m, adminToken, "", "", nil, slog.Default()))
 	t.Cleanup(ts.Close)
 
 	stats := decodeJSON(t, adminReq(t, ts, "GET", "/admin/stats", adminToken, ""))
@@ -155,6 +155,57 @@ func TestAdminAuth(t *testing.T) {
 	// Metrics and healthz need no token.
 	if resp := adminReq(t, ts, "GET", "/healthz", "", ""); resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestAdminReload: POST /admin/reload drives the injected reload func; a
+// failing reload keeps the endpoint returning the error, and the adminServer
+// helper (no reload func) reports the endpoint unavailable.
+func TestAdminReload(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(adminYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+
+	calls := 0
+	var reloadErr error
+	reload := func() error { calls++; return reloadErr }
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", reload, slog.Default()))
+	t.Cleanup(ts.Close)
+
+	if resp := adminReq(t, ts, "POST", "/admin/reload", "", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", resp.StatusCode)
+	}
+	m := decodeJSON(t, adminReq(t, ts, "POST", "/admin/reload", adminToken, ""))
+	if m["reloaded"] != true || calls != 1 {
+		t.Errorf("reload: got %v (calls=%d), want reloaded=true after 1 call", m, calls)
+	}
+
+	reloadErr = fmt.Errorf("config invalid: boom")
+	resp := adminReq(t, ts, "POST", "/admin/reload", adminToken, "")
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("failed reload: status = %d, want 422", resp.StatusCode)
+	}
+	if m := decodeJSON(t, resp); m["reloaded"] != false || m["error"] == "" {
+		t.Errorf("failed reload body: %v", m)
+	}
+
+	// No reload func wired (e.g. embedded without a config path) → 503.
+	tsNil, _ := adminServer(t)
+	if resp := adminReq(t, tsNil, "POST", "/admin/reload", adminToken, ""); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil reload: status = %d, want 503", resp.StatusCode)
 	}
 }
 
@@ -289,7 +340,7 @@ defaults:
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts2 := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", slog.Default()))
+	ts2 := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", nil, slog.Default()))
 	t.Cleanup(ts2.Close)
 
 	m = decodeJSON(t, adminReq(t, ts2, "GET", "/admin/intel", adminToken, ""))

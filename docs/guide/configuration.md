@@ -146,6 +146,35 @@ restarts don't log clients out and replicas can share it. Retired keys (from
 `POST /admin/rotate-key`) are archived in `previous_key_dir` and still
 accepted for verification until their tokens expire.
 
+## Hot reload
+
+Config edits do not need a restart. After changing `guardian.yaml`, either
+signal the daemon or call the admin API:
+
+```bash
+# Validate first, then reload (same pattern as nginx/angie -t && reload).
+guardiand -config /etc/guardian/guardian.yaml -t
+kill -HUP $(pidof guardiand)          # or: systemctl reload guardiand
+
+# Equivalent over the admin API:
+curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8072/admin/reload
+```
+
+Domains, allow/denylists, thresholds, PoW difficulty and TTLs, WAF rules and
+model file sets, GeoIP databases, reputation feeds and `log_level` all apply
+immediately. Behavioural state survives the reload: active blocks, counters
+and issued tokens live in the store, not in the config. A config that fails
+validation is rejected and the running config stays active, so a bad edit
+cannot take the daemon down.
+
+Not reloadable (fixed at startup, logged as a warning when changed):
+`listen`, `admin.listen`, `trusted_proxy`, the `store` block,
+`signing_key_file`, `previous_key_dir` and the admin token setup.
+
+WAF rules files, anomaly model artifacts, `.mmdb` databases and file-based
+reputation feeds are also watched on disk and reload on change by themselves;
+you only need SIGHUP/`/admin/reload` for edits to `guardian.yaml` itself.
+
 ## Next steps
 
 - Every field, type, and default: [Configuration Options](/reference/configuration)
