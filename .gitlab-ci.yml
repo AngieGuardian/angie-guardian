@@ -93,8 +93,14 @@ e2e:
     # --userns=host: the runner daemon uses userns-remap, which forbids
     # --network host unless the container opts back into the host user
     # namespace. A no-op on daemons without remapping.
+    # Ryuk (testcontainers' cleanup reaper) must be disabled here: it mounts
+    # the docker socket inside its own container, which userns-remap forbids,
+    # so it dies before logging "Started" and the suite aborts. The harness
+    # tears its stack down itself (compose down -v in a defer); ryuk would
+    # only matter if the test process were SIGKILLed mid-run.
     - docker run --rm --network host --userns=host
       -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1
+      -e TESTCONTAINERS_RYUK_DISABLED=true
       -v /var/run/docker.sock:/var/run/docker.sock
       -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR"
       -w "$CI_PROJECT_DIR"
