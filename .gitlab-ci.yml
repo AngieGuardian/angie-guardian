@@ -90,7 +90,10 @@ e2e:
   rules:
     - if: $CI_PROJECT_NAMESPACE == "melroy"
   script:
-    - docker run --rm --network host
+    # --userns=host: the runner daemon uses userns-remap, which forbids
+    # --network host unless the container opts back into the host user
+    # namespace. A no-op on daemons without remapping.
+    - docker run --rm --network host --userns=host
       -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1
       -v /var/run/docker.sock:/var/run/docker.sock
       -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR"
