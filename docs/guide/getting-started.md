@@ -5,8 +5,8 @@ build, configure, wire into Angie, verify.
 
 ## Prerequisites
 
-- [Angie](https://angie.software/) serving your site(s).
-- Go (to build from source), or a release tarball with prebuilt binaries.
+- [Angie](https://en.angie.software/) serving your site(s).
+- Go (to build from source), or a [release tarball with prebuilt binaries](https://gitlab.melroy.org/melroy/angie-guardian/-/releases).
 
 ::: tip Just want to see it work?
 The repo ships a Docker demo stack under `deploy/docker`: Angie in front of

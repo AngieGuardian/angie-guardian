@@ -2,6 +2,10 @@
 
 ## systemd
 
+Grab the latest `guardiand` binary from the
+[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
+(under **Assets -> Packages**), then install it as a service:
+
 ```sh
 sudo cp guardiand /usr/local/bin/
 sudo install -Dm600 guardian.yaml /etc/guardian/guardian.yaml

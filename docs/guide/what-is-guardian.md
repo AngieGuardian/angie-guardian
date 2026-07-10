@@ -1,7 +1,7 @@
 # What is Angie Guardian?
 
 Angie Guardian is a Web Application Firewall (WAF) and proof-of-work bot
-firewall for [Angie](https://angie.software/), written in Go.
+firewall for [Angie](https://en.angie.software/), written in Go.
 
 Guardian runs as a sidecar daemon next to Angie and is wired into the request
 path with stock `auth_request` directives, so there is no custom Angie build
