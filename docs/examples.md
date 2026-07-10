@@ -60,6 +60,43 @@ domains:
                  challenge_at: 0.5, deny_at: 0.85 }
 ```
 
+## GeoIP scoping and reputation feeds
+
+Deny or challenge by origin country/ASN, and enforce external blocklists.
+Needs MaxMind-format databases on disk (GeoLite2 or DB-IP); see
+[Bots, GeoIP & Reputation](/guide/bots-ip-intel).
+
+```yaml
+geoip:
+  country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
+
+reputation:
+  cache_dir: /var/lib/guardian/feeds
+  feeds:
+    - name: firehol-level1
+      url: https://iplists.firehol.org/files/firehol_level1.netset
+      refresh: 12h
+      action: deny
+
+defaults:
+  reputation: { enabled: true }   # every domain enforces the feeds
+  geo:
+    enabled: true
+    deny: { countries: [ KP ] }
+    challenge: { countries: [ CN, RU ] }
+
+domains:
+  # Home-market shop: NL/BE/DE browse normally, everyone else proves work.
+  shop.example.nl:
+    geo:
+      enabled: true
+      allow: { countries: [ NL, BE, DE ] }
+      deny: { countries: [] }
+      challenge: { countries: [] }
+      default_action: challenge
+```
+
 ## The full annotated example
 
 The complete `guardian.example.yaml` shipped with the repository:
@@ -116,6 +153,31 @@ store:
   # password: ""              # or the REDIS_PASSWORD env var
   # db: 0
 
+# GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
+# for the per-domain `geo` scoping below. Keep them updated with geoipupdate
+# or a scheduled download; guardiand hot-reloads the files when they are
+# replaced on disk, no restart needed. Omit a database you don't use; config
+# is refused if a geo rule needs one that isn't configured.
+# geoip:
+#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
+
+# External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
+# line, '#'/';' comments), like the FireHOL netsets or a local file you
+# maintain. URL feeds refresh in the background: a slow or down mirror never
+# blocks startup, and the last good list keeps serving. cache_dir persists
+# fetched feeds so a restart enforces yesterday's list immediately. Feeds are
+# defined once here; each domain opts in via `reputation.enabled` below.
+# reputation:
+#   cache_dir: /var/lib/guardian/feeds
+#   feeds:
+#     - name: firehol-level1  # names the reason ("reputation:firehol-level1")
+#       url: https://iplists.firehol.org/files/firehol_level1.netset
+#       refresh: 12h          # default 12h
+#       action: deny          # deny (default) | challenge (= solve PoW first)
+#     - name: local-badnets
+#       file: /etc/guardian/badnets.txt   # hot-reloaded like the rules files
+
 defaults:
   waf:
     ip_behaviour:
@@ -146,16 +208,32 @@ defaults:
                               # suspicion: only challenge anomalous clients (needs waf.anomaly)
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
-    # See "Measured solve times" in the configuration guide before changing.
+    # See "Measured solve times" in the configuration guide.
     base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
     max_difficulty: 6         # ceiling for anomaly-scaled challenges
     token_ttl: 4h
     challenge_ttl: 30m
     noscript_fallback: true
+  geo:
+    enabled: false            # needs the geoip: databases above
+    # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
+    # deny beats challenge; allow exempts an origin from default_action.
+    # Origins with no database record (private ranges) match no selector and
+    # get default_action, so allowlist internal IPs before tightening it.
+    # challenge: { countries: [ CN, RU ], asns: [] }
+    # deny: { countries: [] }
+    # allow: { countries: [] }
+    # default_action: allow   # allow | challenge | deny for unlisted origins
+  reputation:
+    enabled: true             # honour the reputation feeds (no-op until some
+                              # are configured above)
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
-    # No crawler names in uas: a UA string is forgeable. Use verified_bots
-    # below instead (see the configuration reference).
+    # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
+    # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
+    # everything by claiming to be Googlebot. Use verified_bots below instead
+    # (Guardian refuses a config where the two overlap). Reserve uas for
+    # UAs you control, e.g. your own uptime monitor.
     uas: []
     paths:
       - /robots.txt
@@ -163,12 +241,36 @@ defaults:
       - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
   denylist:
     ips: []
-  # Crawlers allowlisted by proven rDNS identity, not by their forgeable
-  # User-Agent string.
+  # Crawlers allowlisted by PROVEN identity, not by their UA string: a client
+  # claiming a listed bot's User-Agent is admitted only if its IP reverse-DNS
+  # resolves under the bot's published domains AND that hostname resolves back
+  # to the same IP (the verification Google/Bing/Apple document). Results are
+  # cached in the store, so DNS is paid once per crawler IP, not per request.
   verified_bots:
     bots:
-      - name: googlebot
-      - name: bingbot
+      - name: googlebot       # built-in presets: googlebot, google-special,
+      - name: bingbot         #   bingbot, applebot, yandexbot, baiduspider
+      # googlebot verifies under googlebot.com ONLY (Google's common-crawler
+      # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
+      # APIs-Google) verify under google.com via the google-special preset;
+      # enable it if you run Google Ads:
+      # - name: google-special
+      # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
+      # preset: third parties can aim them at your site on demand.
+      # Custom bots: give the UA needles and rDNS domains yourself.
+      # - name: mybot
+      #   uas: [ "MyBot/1.0" ]
+      #   domains: [ "crawler.example.net" ]
+    # spoof_action: what happens to a client that claims a listed UA but
+    # definitively fails verification (no PTR, or rDNS owned by someone else):
+    #   deny (default) - reject and score a bot_spoof event (see thresholds)
+    #   continue       - just withhold the allowlist skip; the WAF/PoW
+    #                    pipeline handles the request like any other client
+    spoof_action: deny
+    dns_timeout: 1s           # DNS budget for a first-sight verification
+    cache_ttl: 12h            # confirmed identities
+    negative_ttl: 1h          # proven impostors
+    # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
 
 domains:
   # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
@@ -185,6 +287,14 @@ domains:
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
+
+  # Home-market shop: serve NL/BE/DE normally, make everyone else prove work
+  # first (requires geoip.country_db and pow enabled).
+  # shop.example.nl:
+  #   geo:
+  #     enabled: true
+  #     allow: { countries: [ NL, BE, DE ] }
+  #     default_action: challenge
 ```
 
 ## Angie: full wiring

@@ -37,6 +37,7 @@ export default defineConfig({
           text: 'Setup',
           items: [
             { text: 'Configuration', link: '/guide/configuration' },
+            { text: 'Bots, GeoIP & Reputation', link: '/guide/bots-ip-intel' },
             { text: 'Wire it into Angie', link: '/guide/angie' },
             { text: 'Run it in Production', link: '/guide/production' },
           ],

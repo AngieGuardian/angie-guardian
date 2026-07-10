@@ -61,6 +61,17 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # See which features are active per domain.
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/config
 
+# IP intelligence status: GeoIP database types and build dates, plus every
+# reputation feed's entry count, last refresh and last error.
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel
+
+# What do we know about an IP? Country, ASN and feed membership, for testing
+# geo rules and answering "why was this client denied".
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel/203.0.113.9
+# {"ip":"203.0.113.9","enabled":true,
+#  "info":{"country":"RU","asn":64500,"as_org":"Example Carrier"},
+#  "feeds":[{"feed":"firehol-level1","action":"deny"}]}
+
 # Prometheus scrape (no token needed).
 curl -s $A/metrics | grep guardian_
 ```
@@ -84,7 +95,9 @@ the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
-status, and headline counters, auto-refreshing every 5 seconds.
+status, IP intelligence health (loaded GeoIP databases plus each reputation
+feed's entries, refresh age and last error), and headline counters,
+auto-refreshing every 5 seconds.
 
 The page is a static shell: it stores no secrets and every data call goes to
 the token-guarded `/admin/*` endpoints. It is **internal-only by

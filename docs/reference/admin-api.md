@@ -25,9 +25,10 @@ Liveness probe. Returns `ok`.
 ### `GET /metrics`
 
 Prometheus metrics: decisions by action/reason/domain, challenge lifecycle,
-PoW solve-time and anomaly-score histograms, blocks placed, store op latency,
-and end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json`
-for a ready-made dashboard.
+PoW solve-time and anomaly-score histograms, blocks placed, bot verification
+outcomes, reputation feed entries and refreshes, store op latency, and
+end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json` for
+a ready-made dashboard.
 
 ## Blocks
 
@@ -95,6 +96,37 @@ Query parameters: `host`, `uri`, `ua`.
 
 ```json
 {"host":"shop.example.com","scored":true,"score":0.72}
+```
+
+## IP intelligence
+
+### `GET /admin/intel`
+
+The state of the IP-intelligence sources: which GeoIP databases are loaded
+(type, build date) and every reputation feed's entry count, last refresh,
+and last error. Returns `{"enabled": false}` when neither
+[`geoip`](/reference/configuration#geoip) nor
+[`reputation`](/reference/configuration#reputation) is configured.
+
+```json
+{"enabled":true,"intel":{
+  "country_db":{"path":"/var/lib/GeoIP/GeoLite2-Country.mmdb",
+                "type":"GeoLite2-Country","built":"2026-07-01T00:00:00Z"},
+  "feeds":[{"name":"firehol-level1","action":"deny","loaded":true,
+            "loaded_from":"url","entries":6512,
+            "last_refresh":"2026-07-10T06:00:00Z"}]}}
+```
+
+### `GET /admin/intel/{ip}`
+
+What do we know about this IP? Country, ASN, and the reputation feeds it
+appears in, for testing geo rules and answering "why was this client
+denied".
+
+```json
+{"ip":"203.0.113.9","enabled":true,
+ "info":{"country":"RU","asn":64500,"as_org":"Example Carrier"},
+ "feeds":[{"feed":"firehol-level1","action":"deny"}]}
 ```
 
 ## Keys and config
