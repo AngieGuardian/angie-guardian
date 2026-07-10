@@ -49,6 +49,16 @@ test:
   script:
     - go test -race -count=1 ./...
 
+# Fail the pipeline on any known-vulnerable dependency that our code actually
+# reaches (govulncheck is call-graph aware, so it does not flag unused vulnerable
+# symbols). Fast — seconds — so it runs on every push. The tool version is
+# pinned for reproducibility; bump it deliberately.
+govulncheck:
+  stage: test
+  script:
+    - go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+    - $GOPATH/bin/govulncheck ./...
+
 # Build-check the VitePress documentation site on branches that touch it, so
 # a broken docs change (dead link, bad config) fails the MR instead of the
 # Pages deploy on main. VitePress link checking runs as part of the build.
