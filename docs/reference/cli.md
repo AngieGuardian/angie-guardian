@@ -29,7 +29,12 @@ guardiand -config /etc/guardian/guardian.yaml
 | Signal | Effect |
 |---|---|
 | `SIGHUP` | Re-read and apply `guardian.yaml` without a restart (also available as [`POST /admin/reload`](/reference/admin-api#post-admin-reload)). A config that fails validation is rejected and the running config stays active. Listeners, the store, signing keys and the admin token setup stay fixed until restart. |
-| `SIGINT` / `SIGTERM` | Graceful shutdown. |
+| `SIGINT` / `SIGTERM` | Graceful shutdown (sends `STOPPING=1` under `Type=notify`). |
+
+Under a systemd `Type=notify` unit, guardiand also speaks sd_notify: it signals
+`READY=1` once both listeners answer `/healthz` and keeps a watchdog alive. This
+is optional and off by default; see
+[Readiness and watchdog](/guide/production#readiness-and-watchdog-optional).
 
 ### Hot-path endpoints (on `listen`)
 

@@ -14,6 +14,24 @@ sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
 
+### Readiness and watchdog (optional)
+
+The shipped unit is `Type=simple`, where systemd considers the service started
+the moment the process forks, even if it is still binding or wedged. guardiand
+also speaks [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html)
+with no extra dependency, so you can opt into a stricter contract: it signals
+`READY=1` only once **both** listeners actually answer `/healthz`, and pings a
+watchdog so a hung daemon is killed and restarted instead of sitting there
+looking healthy.
+
+To enable, edit the unit: comment out `Type=simple` and uncomment `Type=notify`
+plus `WatchdogSec=30s`, then `systemctl daemon-reload && systemctl restart
+guardiand`. No rebuild is needed, the daemon auto-detects `$NOTIFY_SOCKET` and
+the notify calls are inert under `Type=simple`. With it on, `systemctl start`
+blocks until the service is genuinely serving, and `systemctl status` reflects
+real readiness. It stays off by default so the plain-`env` and non-systemd
+(e.g. Docker) paths need no thought.
+
 ## Docker
 
 Every release publishes a prebuilt sidecar image (distroless, nonroot,

@@ -206,6 +206,25 @@ func run(configPath string) error {
 		}()
 	}
 
+	// systemd readiness + watchdog (sd_notify). All no-ops unless the unit is
+	// Type=notify and sets $NOTIFY_SOCKET, so this is safe to always run.
+	// Signal READY=1 only once both listeners actually answer /healthz, so
+	// "active" in systemd means "serving", not merely "process started".
+	sd := newNotifier()
+	defer sd.Close()
+	if sd != nil {
+		wdCtx, wdCancel := context.WithCancel(context.Background())
+		defer wdCancel()
+		go func() {
+			if err := waitListening(wdCtx, cfg, 30*time.Second); err != nil {
+				log.Warn("readiness probe did not confirm listeners; signalling ready anyway", "err", err)
+			}
+			sd.Ready()
+			log.Info("systemd notified ready")
+			sd.startWatchdog(wdCtx, log)
+		}()
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 loop:
@@ -223,6 +242,7 @@ loop:
 				continue
 			}
 			log.Info("shutting down", "signal", sig.String())
+			sd.Stopping() // tell systemd a graceful drain is not a hang
 			break loop
 		}
 	}
