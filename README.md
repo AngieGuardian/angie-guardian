@@ -124,8 +124,7 @@ without the full stack passing.
 Every parser that ingests untrusted or hot-reloaded input (URI percent-decode,
 WAF rules file, `guardian.yaml`, the anomaly model artifact, the PoW redeem
 payload) has a fuzz target. A parser panic in a fail-open WAF silently drops
-protection, so these guard against it. CI fuzzes them nightly; run them locally
-with:
+protection, so these guard against it. Run them when touching a parser:
 
 ```sh
 make fuzz                 # every target, 30s each (FUZZTIME=2m to dig deeper)

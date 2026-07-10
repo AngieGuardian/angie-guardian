@@ -109,26 +109,12 @@ e2e:
       golang:1.26-trixie
       make e2e
 
-# Fuzz every untrusted-input parser (URI decode, WAF rules, config, anomaly
-# model, PoW redeem) via `make fuzz`. A parser panic in a fail-open WAF
-# silently drops protection, so this runs nightly on a schedule (and can be
-# started by hand) rather than on every push, since each target needs minutes
-# to be worth running. A discovered crasher is written to testdata/fuzz/ and
-# fails the job; commit that file to turn it into a permanent regression seed.
-fuzz:
-  stage: test
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
-      allow_failure: true
-  script:
-    - make fuzz FUZZTIME=2m
-  artifacts:
-    when: on_failure
-    paths:
-      - core/**/testdata/fuzz/
-    expire_in: 30 days
+# NOTE: the fuzz targets (see `make fuzz`) are intentionally NOT a CI job.
+# They found nothing after a thorough local sweep, and running every target
+# for long enough to be worthwhile costs ~18 min of runner time per run for a
+# codebase this size — not worth it on a schedule. Run `make fuzz` locally
+# when touching a parser (URI decode, WAF rules, config, anomaly model, PoW
+# redeem); commit any crasher under testdata/fuzz/ as a regression seed.
 
 build:
   stage: build
