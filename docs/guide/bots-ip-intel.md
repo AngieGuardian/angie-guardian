@@ -78,8 +78,8 @@ Every field: [verified_bots reference](/reference/configuration#verified-bots).
 ## GeoIP scoping
 
 Guardian can scope traffic by origin country and ASN. Point `geoip:` at
-MaxMind-format `.mmdb` files. Free options: MaxMind GeoLite2 (free account
-plus `geoipupdate`) or the DB-IP lite downloads. Guardian hot-reloads the
+MaxMind-format `.mmdb` files. Free options: [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) (free account
+plus `geoipupdate`) or the [DB-IP lite](https://db-ip.com/db/lite.php) downloads. Guardian hot-reloads the
 files when they are replaced on disk, so a weekly `geoipupdate` cron needs no
 restart.
 
