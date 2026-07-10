@@ -29,6 +29,7 @@ stages:
   - test
   - build
   - deploy
+  - release
 
 format:
   stage: test
@@ -145,6 +146,34 @@ upload_and_release:
       --header "Content-Type: application/json"
       --data "{\"name\":\"Angie Guardian ${CI_COMMIT_TAG} - Linux amd64 (.tar.gz)\",\"url\":\"${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz\",\"link_type\":\"package\"}"
       ${RELEASE_LINKS_URL}'
+
+# --- Container image (tags only) --------------------------------------------
+# Builds the sidecar image from deploy/docker/Dockerfile and pushes it to the
+# project's container registry as $CI_REGISTRY_IMAGE:<tag> plus :latest. Runs
+# on the shell-executor runner (tag `shell`), which has a real Docker daemon,
+# because the shared runners cannot run docker builds (no privileged dind).
+docker-release:
+  stage: release
+  tags:
+    - shell
+  # The shell executor ignores the default golang image; drop the Go module
+  # cache too, this job only drives docker.
+  cache: []
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_TAG
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull
+      -f deploy/docker/Dockerfile
+      --build-arg VERSION=$CI_COMMIT_TAG
+      -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+      -t "$CI_REGISTRY_IMAGE:latest"
+      .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  after_script:
+    - docker logout "$CI_REGISTRY"
 
 # --- Documentation site (GitLab Pages) --------------------------------------
 # Builds the VitePress site from docs/ and publishes it via Pages on every
