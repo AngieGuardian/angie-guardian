@@ -198,7 +198,11 @@ Then include the snippet from `deploy/angie-guardian.conf` in each protected
 ## Documentation
 
 The full documentation (guides, examples, and a complete option/API
-reference) lives in [`docs/`](docs/) as a VitePress site, published via
+reference) is published at:
+
+**<https://angie-guardian-31c118.pages.melroy.org/>**
+
+It lives in [`docs/`](docs/) as a VitePress site, published via
 GitLab Pages on every push to `main`. Browse it locally with
 `make docs-dev`, or build the static site with `make docs`.
 
