@@ -106,10 +106,10 @@ both persistent backends:
 
 | Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
 |---|---|---|
-| allow     | ~76k / 0.55 ms / 3.3 ms  | ~93k / 0.63 ms / 1.5 ms |
-| token     | ~83k / 0.46 ms / 3.4 ms  | ~91k / 0.64 ms / 1.6 ms |
-| deny      | ~130k / 0.37 ms / 2.1 ms | ~183k / 0.12 ms / 1.8 ms |
-| challenge (write) | **~2.4k / 27 ms / 29 ms** | **~36k / 1.7 ms / 3.3 ms** |
+| allow     | ~79k / 0.49 ms / 3.3 ms  | ~92k / 0.64 ms / 1.5 ms |
+| token     | ~71k / 0.55 ms / 3.8 ms  | ~90k / 0.65 ms / 1.5 ms |
+| deny      | ~125k / 0.35 ms / 2.4 ms | ~182k / 0.12 ms / 1.8 ms |
+| challenge (write) | **~1.6k / 40 ms / 42 ms** | **~25k / 2.5 ms / 4.1 ms** |
 
 The one write-heavy path (issuing a fresh challenge) is where the backends
 differ; see [choosing a store backend](/guide/production#choosing-a-store-backend)

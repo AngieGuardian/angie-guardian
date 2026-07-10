@@ -32,8 +32,8 @@ key) in a pluggable store:
 The rule of thumb from the
 [measured numbers](/guide/what-is-guardian#performance): the backend choice
 hinges on your *new-client* rate, i.e. the clients that trigger a challenge
-write. bbolt sustains ~2.4k challenge writes/s; redis/valkey ~15x that
-(~36k/s). Verified tokens are cached in-process (~144 ns vs ~43 µs for a full
+write. bbolt sustains ~1.6k challenge issuances/s; redis/valkey ~15x that
+(~25k/s). Verified tokens are cached in-process (~144 ns vs ~43 µs for a full
 Ed25519 verification), so a returning client's request stays on the fast read
 path regardless of backend.
 
