@@ -1,7 +1,7 @@
 # Angie Guardian sidecar — build + minimal runtime image.
 # Multi-stage: compile guardiand statically, then copy into a distroless-ish
 # base. Built from the repo root: docker build -f deploy/docker/Dockerfile .
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-trixie AS build
 # Version string stamped into the binary; the docker-release CI job passes the
 # release tag, a local build defaults to "docker".
 ARG VERSION=docker
