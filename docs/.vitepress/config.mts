@@ -40,6 +40,7 @@ export default defineConfig({
             { text: 'Bots, GeoIP & Reputation', link: '/guide/bots-ip-intel' },
             { text: 'Wire it into Angie', link: '/guide/angie' },
             { text: 'Run it in Production', link: '/guide/production' },
+            { text: 'Security Model & Limitations', link: '/guide/threat-model' },
           ],
         },
         {
@@ -48,6 +49,7 @@ export default defineConfig({
             { text: 'Admin API & Dashboard', link: '/guide/admin' },
             { text: 'Train the Anomaly Model', link: '/guide/anomaly' },
             { text: 'Load Testing', link: '/guide/load-testing' },
+            { text: 'Troubleshooting', link: '/guide/troubleshooting' },
           ],
         },
         {

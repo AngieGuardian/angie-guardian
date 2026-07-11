@@ -282,6 +282,12 @@ deploy/          Angie snippets, systemd unit, rules, Grafana dashboard
 web/             challenge/denied pages (self-contained HTML + JS solver)
 ```
 
+## Security
+
+Guardian's [security model and limitations](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)
+spell out what it defends against and what it deliberately does not. To report a
+vulnerability, see [SECURITY.md](SECURITY.md) — please do not open a public issue.
+
 ## License
 
 [AGPL-3.0](LICENSE), © Melroy van den Berg
