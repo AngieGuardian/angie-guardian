@@ -65,3 +65,33 @@ limit_conn gconn 20;                       # cap concurrent connections per clie
 limit_req_status  429;
 limit_conn_status 429;
 ```
+
+## Request types and edge cases
+
+Guardian's auth subrequest carries only the request line and headers, never the
+body (`proxy_pass_request_body off`). That keeps the auth hop cheap and means
+these common request shapes work as you'd expect — each is covered by the
+end-to-end suite:
+
+- **Any method (POST, PUT, DELETE…).** The WAF evaluates method, path, query,
+  User-Agent and targeted headers on every request, body or not. A `block`/`deny`
+  rule fires on a POST just as on a GET. Request bodies are never inspected — see
+  the [security model](/guide/threat-model#what-guardian-does-not-defend-against);
+  that's the backend's or a full inline WAF's job.
+- **Large uploads.** The real body streams to your backend unbuffered and
+  intact; the body-less auth hop doesn't touch it. But `auth_request` does **not**
+  change Angie's own `client_max_body_size` (default 1 MiB): a body over that
+  limit is rejected by Angie with `413` before Guardian or the backend see it.
+  If you accept large uploads, raise `client_max_body_size` in Angie as you
+  normally would — it's independent of Guardian.
+- **WebSocket / SSE / long-lived streams.** The upgrade or initial request goes
+  through `auth_request` once, like any request; once allowed, the connection
+  proxies to your backend and Guardian is no longer in the path (it never sees
+  the streamed frames). Ensure your `location` forwards the upgrade headers
+  (`proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection
+  "upgrade";`) for the backend proxy, exactly as you would without Guardian.
+- **HTTP/2 and HTTP/3.** Guardian is oblivious to the client protocol version:
+  it acts on the decoded request Angie hands the subrequest, so an HTTP/2 or
+  HTTP/3 client is handled identically to HTTP/1.1. The sidecar hop itself uses
+  keepalive'd HTTP/1.1 to loopback, which is an internal detail. The token
+  cookie and challenge flow work the same across versions.
