@@ -65,6 +65,7 @@ export default defineConfig({
             { text: 'Admin API', link: '/reference/admin-api' },
             { text: 'Metrics', link: '/reference/metrics' },
             { text: 'CLI Tools', link: '/reference/cli' },
+            { text: 'Compatibility & Versioning', link: '/reference/compatibility' },
           ],
         },
       ],
