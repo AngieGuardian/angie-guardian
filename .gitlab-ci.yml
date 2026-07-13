@@ -105,8 +105,14 @@ e2e:
   tags:
     - shell
   cache: []
+  # The `shell` runners are protected (ref_protected), so they only pick up
+  # jobs on protected refs (the default branch and tags). On an unprotected
+  # feature branch this job would be created but never assigned a runner,
+  # leaving it stuck pending and the whole pipeline hanging. Gate it to
+  # protected refs so it simply is not created on feature branches; it runs on
+  # main (and tags) where a protected shell runner can execute it.
   rules:
-    - if: $CI_PROJECT_NAMESPACE == "melroy"
+    - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_REF_PROTECTED == "true"
   script:
     # --userns=host: the runner daemon uses userns-remap, which forbids
     # --network host unless the container opts back into the host user

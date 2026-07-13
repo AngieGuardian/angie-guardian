@@ -173,11 +173,19 @@ Behavioural IP blocking with exponential backoff.
 | `enabled` | bool | `false` | Enable honeypot trap paths: one hit means an instant block. |
 | `paths` | list | `[]` | Paths no legitimate client visits, e.g. `["/admin-old/"]`. Also `Disallow` them in robots.txt. |
 
-### waf.uuid_tamper
+### waf.signed_id
+
+Reserves the signed-ID feature: opaque HMAC-bound identifiers whose forgery,
+replay or cross-domain reuse is detectable. No flow mints signed IDs yet, so
+this toggle is currently dormant.
+
+This does **not** gate proof-of-work tamper scoring. Forged or replayed PoW
+challenge IDs are always scored via the `waf.ip_behaviour` `tamper` threshold,
+whether or not this is enabled.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Detect forged or replayed signed IDs (tamper events feed `ip_behaviour`). |
+| `enabled` | bool | `false` | Reserve the signed-ID feature (dormant; no minting flow yet). |
 
 ### allowlist / denylist
 

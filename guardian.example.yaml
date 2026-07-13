@@ -97,7 +97,11 @@ defaults:
       enabled: false          # trap paths: one hit = instant block. Add paths no
       paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
                               # Disallow them in robots.txt.
-    uuid_tamper: { enabled: true }
+    # signed_id reserves the signed-ID feature (opaque HMAC-bound identifiers);
+    # no flow mints them yet, so it is dormant. Forged/replayed PoW challenge
+    # IDs are always scored via the ip_behaviour "tamper" threshold, with or
+    # without this toggle.
+    signed_id: { enabled: false }
   pow:
     enabled: true
     mode: always              # always: challenge every unvouched browser

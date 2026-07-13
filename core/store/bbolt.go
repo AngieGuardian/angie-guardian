@@ -44,9 +44,18 @@ func NewBolt(path string) (*Bolt, error) {
 }
 
 func encode(value []byte, ttl time.Duration) []byte {
-	buf := make([]byte, 8+len(value))
+	var deadline int64
 	if ttl > 0 {
-		binary.BigEndian.PutUint64(buf, uint64(time.Now().Add(ttl).UnixNano()))
+		deadline = time.Now().Add(ttl).UnixNano()
+	}
+	return encodeAbs(value, deadline)
+}
+
+// encodeAbs stores value with an absolute unix-nano expiry (0 = no expiry).
+func encodeAbs(value []byte, deadline int64) []byte {
+	buf := make([]byte, 8+len(value))
+	if deadline > 0 {
+		binary.BigEndian.PutUint64(buf, uint64(deadline))
 	}
 	copy(buf[8:], value)
 	return buf
@@ -119,27 +128,57 @@ func (s *Bolt) Delete(_ context.Context, key string) error {
 	})
 }
 
-func (s *Bolt) Incr(_ context.Context, key string, ttl time.Duration) (int64, error) {
+func (s *Bolt) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return s.IncrBy(ctx, key, 1, ttl)
+}
+
+func (s *Bolt) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	var deadline int64
+	if ttl > 0 {
+		deadline = time.Now().Add(ttl).UnixNano()
+	}
+	n, _, err := s.IncrByDeadline(ctx, key, delta, deadline)
+	return n, err
+}
+
+func (s *Bolt) IncrByDeadline(_ context.Context, key string, delta, deadline int64) (int64, bool, error) {
 	var n int64
+	var applied bool
 	err := s.db.Batch(func(tx *bolt.Tx) error {
+		n, applied = 0, false // reset: Batch may retry this fn
 		b := tx.Bucket(boltBucket)
 		k := []byte(key)
+		now := time.Now()
+		// (2) A flush delayed past its window's deadline is a no-op.
+		if deadline != 0 && now.UnixNano() >= deadline {
+			if cur, ok := decode(b.Get(k), now); ok {
+				v, err := strconv.ParseInt(string(cur), 10, 64)
+				if err != nil {
+					return err
+				}
+				n = v
+			}
+			return nil
+		}
 		raw := b.Get(k)
-		if cur, ok := decode(raw, time.Now()); ok {
+		if cur, ok := decode(raw, now); ok {
+			// (4) Existing live key: add delta, keep the original expiry.
 			v, err := strconv.ParseInt(string(cur), 10, 64)
 			if err != nil {
 				return err
 			}
-			n = v + 1
-			// Keep the original expiry so time-bucketed counters stay bucketed.
+			n = v + delta
 			out := make([]byte, 8, 8+20)
 			copy(out, raw[:8])
+			applied = true
 			return b.Put(k, strconv.AppendInt(out, n, 10))
 		}
-		n = 1
-		return b.Put(k, encode([]byte("1"), ttl))
+		// (3) Fresh key: create at delta expiring exactly at the deadline.
+		n = delta
+		applied = true
+		return b.Put(k, encodeAbs(strconv.AppendInt(nil, delta, 10), deadline))
 	})
-	return n, err
+	return n, applied, err
 }
 
 func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {

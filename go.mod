@@ -2,6 +2,12 @@ module github.com/melroy89/angie-guardian
 
 go 1.25.5
 
+// Build with a patched toolchain: govulncheck reports reachable stdlib
+// advisories (html/template XSS classes, net/url memory exhaustion) under
+// 1.25.5, all fixed in 1.26.5. CI and the release Docker image already pin
+// 1.26.5; this makes a plain `go build`/`go test` from source use it too.
+toolchain go1.26.5
+
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/golang-jwt/jwt/v5 v5.3.1

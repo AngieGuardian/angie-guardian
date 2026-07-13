@@ -385,7 +385,13 @@ type WAFConfig struct {
 	Keywords    KeywordsConfig    `yaml:"keywords"`
 	Anomaly     AnomalyConfig     `yaml:"anomaly"` // enforced from P3
 	Honeypot    HoneypotConfig    `yaml:"honeypot"`
-	UUIDTamper  ToggleConfig      `yaml:"uuid_tamper"`
+	// SignedID reserves the signed-ID feature (plan section 4.5): opaque
+	// HMAC-bound identifiers whose forgery, replay or cross-domain reuse is
+	// detectable. The primitive exists in core/waf.Signer; no flow mints signed
+	// IDs yet, so this toggle is dormant. It does NOT gate PoW tamper scoring:
+	// forged or replayed PoW challenge IDs are always scored via the
+	// waf.ip_behaviour "tamper" threshold.
+	SignedID ToggleConfig `yaml:"signed_id"`
 }
 
 // IPBehaviourConfig drives the behavioural scoreboard: how many bad events
@@ -436,6 +442,12 @@ type PoWConfig struct {
 	NoScriptFallback bool     `yaml:"noscript_fallback"`
 }
 
+// maxPoWTTL caps token_ttl and challenge_ttl so a mistyped unit (e.g. a value
+// meant as minutes read as hours, or an accidental huge number) cannot create
+// effectively-permanent store records. A week is far above any legitimate
+// challenge or token lifetime.
+const maxPoWTTL = Duration(7 * 24 * time.Hour)
+
 // BaseBits is the floor difficulty in leading zero bits (what every clean
 // client pays); MaxBits the ceiling reached only via anomaly scaling.
 func (p *PoWConfig) BaseBits() int { return difficultyBits(p.BaseDifficulty) }
@@ -469,6 +481,22 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// decodeStrict decodes a yaml.Node into v with unknown-field checking, which
+// yaml.Node.Decode does not do on its own. It re-marshals the node and runs it
+// through a KnownFields decoder, so a typo inside a per-domain overlay (e.g.
+// waf.keywrods) is a load error rather than a silently ignored field that
+// leaves protection off for one vhost while `guardiand -t` reports success.
+// (Mirrors stateless.decodeStrict for the WASM guest config.)
+func decodeStrict(node *yaml.Node, v any) error {
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+	return dec.Decode(v)
 }
 
 func (c *Config) finalize() error {
@@ -562,7 +590,7 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("copy defaults for %s: %w", host, err)
 		}
 		if node.Kind != 0 && node.Tag != "!!null" {
-			if err := node.Decode(dc); err != nil {
+			if err := decodeStrict(&node, dc); err != nil {
 				return fmt.Errorf("domain %s: %w", host, err)
 			}
 		}
@@ -609,6 +637,27 @@ func (dc *DomainConfig) validate() error {
 	for _, d := range []float64{p.BaseDifficulty, p.MaxDifficulty} {
 		if math.Abs(d*4-math.Round(d*4)) > 1e-9 {
 			return fmt.Errorf("pow difficulty %v is not a multiple of 0.25 (each 0.25 step doubles the work)", d)
+		}
+	}
+	// PoW TTLs must be positive. For store backends a non-positive TTL means no
+	// expiry, so a negative challenge_ttl makes issued and spent challenge
+	// records permanent (unbounded store growth) and breaks the local counter
+	// window, and a non-positive token_ttl yields unusable cookies. A negative
+	// value is never meaningful, so reject it whether or not PoW is enabled;
+	// require strictly positive values once PoW is on. Cap at maxPoWTTL so a
+	// fat-fingered unit can't set an effectively-permanent record.
+	for _, t := range []struct {
+		name string
+		d    Duration
+	}{{"token_ttl", p.TokenTTL}, {"challenge_ttl", p.ChallengeTTL}} {
+		if t.d < 0 {
+			return fmt.Errorf("pow.%s must be > 0, got %v", t.name, t.d.Std())
+		}
+		if p.Enabled && t.d <= 0 {
+			return fmt.Errorf("pow.%s must be > 0 when pow is enabled, got %v", t.name, t.d.Std())
+		}
+		if t.d > maxPoWTTL {
+			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(maxPoWTTL), t.d.Std())
 		}
 	}
 	a := &dc.WAF.Anomaly

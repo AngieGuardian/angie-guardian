@@ -112,6 +112,66 @@ func TestStoreConformance(t *testing.T) {
 				t.Fatalf("incr after expiry = %d, want 1", n)
 			}
 
+			// IncrBy: a fresh key starts at delta with the given TTL; an
+			// existing key adds delta and keeps its original expiry; and it
+			// composes with Incr (delta 1).
+			if n, err := s.IncrBy(ctx, "byctr", 5, time.Hour); err != nil || n != 5 {
+				t.Fatalf("first IncrBy = %d %v, want 5 nil", n, err)
+			}
+			if n, _ := s.IncrBy(ctx, "byctr", 3, time.Hour); n != 8 {
+				t.Fatalf("IncrBy on existing = %d, want 8", n)
+			}
+			if n, _ := s.Incr(ctx, "byctr", time.Hour); n != 9 {
+				t.Fatalf("Incr after IncrBy = %d, want 9", n)
+			}
+			// A fresh short-lived IncrBy counter restarts after its window,
+			// proving the fresh key got the TTL.
+			if n, _ := s.IncrBy(ctx, "byctr2", 4, shortTTL); n != 4 {
+				t.Fatalf("first short IncrBy = %d, want 4", n)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if n, _ := s.IncrBy(ctx, "byctr2", 2, time.Minute); n != 2 {
+				t.Fatalf("IncrBy after expiry = %d, want 2 (window did not reset)", n)
+			}
+
+			// IncrByDeadline: the four atomic properties that keep a delayed
+			// per-window flush from polluting the next window.
+			nowNanos := func() int64 { return time.Now().UnixNano() }
+			// (3) Absent key -> created at delta, applied=true, expiring AT the
+			// deadline: after the window elapses it is gone.
+			dl := nowNanos() + shortTTL.Nanoseconds()
+			if n, applied, err := s.IncrByDeadline(ctx, "dl", 3, dl); err != nil || n != 3 || !applied {
+				t.Fatalf("fresh IncrByDeadline = %d applied=%v err=%v, want 3 true nil", n, applied, err)
+			}
+			// (4) Existing live key -> delta added, applied=true, expiry kept.
+			if n, applied, _ := s.IncrByDeadline(ctx, "dl", 2, nowNanos()+time.Hour.Nanoseconds()); n != 5 || !applied {
+				t.Fatalf("live IncrByDeadline = %d applied=%v, want 5 true", n, applied)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if _, ok, _ := s.Get(ctx, "dl"); ok {
+				t.Fatal("IncrByDeadline fresh key did not expire at its deadline")
+			}
+			// (2) Deadline already in the past -> no write, applied=false, and
+			// the value reflects the (absent) key as 0.
+			past := nowNanos() - time.Minute.Nanoseconds()
+			if n, applied, err := s.IncrByDeadline(ctx, "dlpast", 7, past); err != nil || applied || n != 0 {
+				t.Fatalf("expired IncrByDeadline = %d applied=%v err=%v, want 0 false nil", n, applied, err)
+			}
+			if _, ok, _ := s.Get(ctx, "dlpast"); ok {
+				t.Fatal("expired IncrByDeadline wrote a key; it must skip entirely")
+			}
+			// (2) again, but the key already exists and is live: the past-deadline
+			// call must not mutate it, and must report the current value.
+			if _, _, err := s.IncrByDeadline(ctx, "dllive", 4, nowNanos()+time.Hour.Nanoseconds()); err != nil {
+				t.Fatal(err)
+			}
+			if n, applied, _ := s.IncrByDeadline(ctx, "dllive", 100, past); applied || n != 4 {
+				t.Fatalf("past-deadline on live key = %d applied=%v, want 4 false (no mutation)", n, applied)
+			}
+			if v, _, _ := s.Get(ctx, "dllive"); string(v) != "4" {
+				t.Fatalf("past-deadline mutated a live key: value = %q, want 4", v)
+			}
+
 			// CAS create-only (old == nil).
 			ok, err = s.CompareAndSwap(ctx, "cas", nil, []byte("a"), 0)
 			if err != nil || !ok {
@@ -196,5 +256,41 @@ func TestBoltPersistence(t *testing.T) {
 	v, ok, err := s2.Get(ctx, "durable")
 	if err != nil || !ok || string(v) != "yes" {
 		t.Fatalf("value did not survive reopen: %q %v %v", v, ok, err)
+	}
+}
+
+// TestRedisSubMillisecondTTL is the regression for MR review 9181: a positive
+// sub-millisecond TTL must not truncate to the 0 "no expiry" sentinel and make
+// the counter permanent. IncrBy and CompareAndSwap both go through the TTL-aware
+// Lua scripts, so both must keep a finite expiry for a tiny positive TTL.
+func TestRedisSubMillisecondTTL(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisFromClient(rdb)
+	ctx := context.Background()
+
+	// IncrBy sub-ms: the key must never be permanent. Under the absolute-
+	// deadline path a sub-ms window may either land a ~1ms expiry or be treated
+	// as already elapsed (skipped); both are fine, a permanent key (PTTL == -1)
+	// is not. Whatever it is, it must be gone after the window.
+	if _, err := s.IncrBy(ctx, "ctr", 1, 500*time.Microsecond); err != nil {
+		t.Fatal(err)
+	}
+	// go-redis PTTL: -1ns = key exists but has no expiry (permanent); -2ns = missing.
+	if pttl, _ := rdb.PTTL(ctx, "ctr").Result(); pttl == -1 {
+		t.Fatal("IncrBy sub-ms TTL made the key permanent (PTTL == -1)")
+	}
+	mr.FastForward(2 * time.Millisecond)
+	if _, ok, _ := s.Get(ctx, "ctr"); ok {
+		t.Fatal("sub-ms TTL counter did not expire; it became permanent")
+	}
+
+	// CAS uses a relative TTL floored to >=1ms, so it deterministically keeps a
+	// finite expiry (the original 9181 truncation-to-permanent bug).
+	if ok, err := s.CompareAndSwap(ctx, "cas", nil, []byte("v"), 500*time.Microsecond); err != nil || !ok {
+		t.Fatalf("CAS create = %v %v, want true nil", ok, err)
+	}
+	if pttl := mr.TTL("cas"); pttl <= 0 {
+		t.Fatalf("CAS sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
 	}
 }

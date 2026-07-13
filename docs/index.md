@@ -22,7 +22,7 @@ hero:
 features:
   - icon: 🛡️
     title: WAF layer on every request
-    details: Hot-reloadable keyword/regex threat signatures (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper-proof signed IDs. Per-domain configurable.
+    details: Hot-reloadable keyword/regex threat signatures (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
     details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per IP against challenge farming, Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.

@@ -96,22 +96,51 @@ func (s *Memory) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (s *Memory) Incr(_ context.Context, key string, ttl time.Duration) (int64, error) {
+func (s *Memory) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return s.IncrBy(ctx, key, 1, ttl)
+}
+
+func (s *Memory) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	var deadline int64
+	if ttl > 0 {
+		deadline = time.Now().Add(ttl).UnixNano()
+	}
+	n, _, err := s.IncrByDeadline(ctx, key, delta, deadline)
+	return n, err
+}
+
+func (s *Memory) IncrByDeadline(_ context.Context, key string, delta, deadline int64) (int64, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	// (2) A flush delayed past its window's deadline is a no-op: it must not
+	// create or extend a record for a window that has already ended.
+	if deadline != 0 && now.UnixNano() >= deadline {
+		if e, ok := s.get(key); ok {
+			n, err := strconv.ParseInt(string(e.value), 10, 64)
+			return n, false, err
+		}
+		return 0, false, nil
+	}
 	e, ok := s.get(key)
 	if !ok {
-		s.m[key] = entry{value: []byte("1"), expiresAt: expiry(ttl)}
-		return 1, nil
+		// (3) Fresh key: create at delta expiring exactly at the deadline.
+		var exp time.Time
+		if deadline != 0 {
+			exp = time.Unix(0, deadline)
+		}
+		s.m[key] = entry{value: []byte(strconv.FormatInt(delta, 10)), expiresAt: exp}
+		return delta, true, nil
 	}
+	// (4) Existing live key: add delta, keep the original expiry.
 	n, err := strconv.ParseInt(string(e.value), 10, 64)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	n++
+	n += delta
 	e.value = []byte(strconv.FormatInt(n, 10))
 	s.m[key] = e
-	return n, nil
+	return n, true, nil
 }
 
 func (s *Memory) CompareAndSwap(_ context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
