@@ -220,3 +220,34 @@ func TestBoltPersistence(t *testing.T) {
 		t.Fatalf("value did not survive reopen: %q %v %v", v, ok, err)
 	}
 }
+
+// TestRedisSubMillisecondTTL is the regression for MR review 9181: a positive
+// sub-millisecond TTL must not truncate to the 0 "no expiry" sentinel and make
+// the counter permanent. IncrBy and CompareAndSwap both go through the TTL-aware
+// Lua scripts, so both must keep a finite expiry for a tiny positive TTL.
+func TestRedisSubMillisecondTTL(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisFromClient(rdb)
+	ctx := context.Background()
+
+	if _, err := s.IncrBy(ctx, "ctr", 1, 500*time.Microsecond); err != nil {
+		t.Fatal(err)
+	}
+	if pttl := mr.TTL("ctr"); pttl <= 0 {
+		t.Fatalf("IncrBy sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
+	}
+
+	if ok, err := s.CompareAndSwap(ctx, "cas", nil, []byte("v"), 500*time.Microsecond); err != nil || !ok {
+		t.Fatalf("CAS create = %v %v, want true nil", ok, err)
+	}
+	if pttl := mr.TTL("cas"); pttl <= 0 {
+		t.Fatalf("CAS sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
+	}
+
+	// The key must actually expire after its window, proving it is not permanent.
+	mr.FastForward(2 * time.Millisecond)
+	if _, ok, _ := s.Get(ctx, "ctr"); ok {
+		t.Fatal("sub-ms TTL counter did not expire; it became permanent")
+	}
+}

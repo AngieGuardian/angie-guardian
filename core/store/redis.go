@@ -102,7 +102,21 @@ func (s *Redis) Incr(ctx context.Context, key string, ttl time.Duration) (int64,
 }
 
 func (s *Redis) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
-	return incrByScript.Run(ctx, s.rdb, []string{key}, delta, ttl.Milliseconds()).Int64()
+	return incrByScript.Run(ctx, s.rdb, []string{key}, delta, pexpireArg(ttl)).Int64()
+}
+
+// pexpireArg converts a Go TTL to the millisecond argument the Lua scripts
+// expect, where 0 means "no expiry". A positive TTL below one millisecond would
+// truncate to 0 and make the key permanent, so it is floored to 1ms; a
+// non-positive TTL passes through as the 0 no-expiry sentinel.
+func pexpireArg(ttl time.Duration) int64 {
+	if ttl <= 0 {
+		return 0
+	}
+	if ms := ttl.Milliseconds(); ms > 0 {
+		return ms
+	}
+	return 1
 }
 
 // casScript: atomic compare-and-swap. ARGV[1]=old (or empty marker), ARGV[2]=new,
@@ -133,7 +147,7 @@ func (s *Redis) CompareAndSwap(ctx context.Context, key string, old, new []byte,
 		oldArg = string(old)
 	}
 	n, err := casScript.Run(ctx, s.rdb, []string{key},
-		oldArg, string(new), ttl.Milliseconds(), createOnly).Int64()
+		oldArg, string(new), pexpireArg(ttl), createOnly).Int64()
 	if err != nil {
 		return false, err
 	}

@@ -322,17 +322,148 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 	c.store = seq
 
 	// Land shared=2 first (drives e.n to 2), then a stale shared=1 must not
-	// lower it. flushIncr is the merge seam; call it directly with the values.
+	// lower it. flushIncr is the merge seam; call it directly with the live
+	// window's deadline so the identity check passes.
 	c.Incr("k", time.Minute) // e.n = 1 locally
 	c.Incr("k", time.Minute) // e.n = 2 locally
+	dl := c.windowDeadline("k")
 
 	seq.next.Store(2)
-	c.flushIncr("k", 2, time.Minute) // shared=2 -> e.n stays 2
+	c.flushIncr("k", 2, dl, time.Minute) // shared=2 -> e.n stays 2
 	seq.next.Store(1)
-	c.flushIncr("k", 1, time.Minute) // stale shared=1 -> must NOT lower e.n
+	c.flushIncr("k", 1, dl, time.Minute) // stale shared=1 -> must NOT lower e.n
 
 	if n := c.Incr("k", time.Minute); n != 3 {
 		t.Fatalf("bump after stale flush = %d, want 3 (monotonic merge)", n)
+	}
+}
+
+// TestCounterCacheStaleFlushNotMergedIntoNewWindow is the regression for MR
+// review 9180: a flush that blocks past its window's deadline must not merge its
+// (possibly large) shared total into a fresh window that started meanwhile. The
+// old window's flush is parked in the store; the clock crosses the deadline; a
+// new window opens; the stale flush is then released carrying a big total and
+// must be rejected, leaving the new window at its own count.
+func TestCounterCacheStaleFlushNotMergedIntoNewWindow(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	gs := &gateStore{Store: st, gate: make(chan struct{}), ret: 51}
+	c := NewCounterCache(gs)
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	c.Incr("k", time.Minute) // window1 ends base+1m, local n=1
+	if len(pending) != 1 {
+		t.Fatalf("want 1 drainer, got %d", len(pending))
+	}
+	done := make(chan struct{})
+	go func() { pending[0](); close(done) }()
+	waitFor(t, func() bool { return gs.entered.Load() == 1 }) // parked in IncrBy on window1
+
+	// Cross window1's deadline and open a fresh window.
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if n := c.Incr("k", time.Minute); n != 1 {
+		t.Fatalf("fresh window bump = %d, want 1", n)
+	}
+	close(gs.gate) // release the stale flush carrying shared=51
+	<-done
+
+	if n := c.Incr("k", time.Minute); n != 2 {
+		t.Fatalf("fresh window bump after stale flush = %d, want 2 (stale total must not merge in)", n)
+	}
+}
+
+// TestCounterCacheForgetHeldThroughDelete is the regression for MR review 9182:
+// while a Forget's Delete is in flight, an Incr on the same key must not be
+// flushed concurrently by a second worker, and the fresh increment must survive
+// after the delete completes (the delete is applied first, then the increment).
+func TestCounterCacheForgetHeldThroughDelete(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	gd := &gateDelStore{Store: st, gate: make(chan struct{})}
+	c := NewCounterCache(gd)
+
+	var spawned atomic.Int64
+	c.Go = func(f func()) { spawned.Add(1); go f() }
+
+	c.Forget("k") // drainer parks in Delete
+	waitFor(t, func() bool { return gd.delEntered.Load() == 1 })
+
+	// Bump the same key while the delete is in flight.
+	c.Incr("k", time.Minute)
+	time.Sleep(30 * time.Millisecond) // give a (wrongly) spawned worker time to act
+
+	if got := spawned.Load(); got != 1 {
+		t.Fatalf("spawned %d drainers, want 1 (delete must hold the key)", got)
+	}
+	if got := gd.incrEntered.Load(); got != 0 {
+		t.Fatalf("%d concurrent IncrBy while delete in flight, want 0", got)
+	}
+
+	// Release the delete; the held increment is then applied as a follow-up.
+	close(gd.gate)
+	waitFor(t, func() bool {
+		v, ok, _ := st.Get(context.Background(), "k")
+		return ok && string(v) == "1"
+	})
+	v, ok, _ := st.Get(context.Background(), "k")
+	if !ok || string(v) != "1" {
+		t.Fatalf("after delete+incr, shared store k = %q ok=%v, want 1 (fresh incr must survive)", v, ok)
+	}
+}
+
+// windowDeadline reads the current window's absolute deadline (expires) for a
+// key, so a test can call flushIncr with a matching deadline.
+func (c *CounterCache) windowDeadline(key string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.m[key].expires
+}
+
+// TestCounterCacheIncrsAfterForget: increments arriving after a Forget (its
+// delete still pending) are not lost or under-counted. The delete runs first,
+// then the two fresh increments land, so the shared store ends at 2.
+func TestCounterCacheIncrsAfterForget(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+
+	// Seed a shared value so the delete is observable.
+	if _, err := st.Incr(context.Background(), "k", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture drainers so the Forget and both Incrs fold into one entry before
+	// any flush runs.
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	c.Forget("k")            // del=true, delta=0; schedules one drainer
+	c.Incr("k", time.Minute) // fresh window, delta=1 (del still pending)
+	c.Incr("k", time.Minute) // delta=2
+	if len(pending) != 1 {
+		t.Fatalf("scheduled %d drainers, want 1 (all ops fold into one entry)", len(pending))
+	}
+	pending[0]() // delete first, then push delta=2
+
+	v, ok, _ := st.Get(context.Background(), "k")
+	if !ok || string(v) != "2" {
+		t.Fatalf("shared store after Forget+2 Incrs = %q ok=%v, want 2", v, ok)
+	}
+}
+
+// waitFor spins until cond holds or a short deadline elapses.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !cond() {
+		t.Fatal("condition not met within deadline")
 	}
 }
 
@@ -345,4 +476,43 @@ type seqIncrStore struct {
 
 func (s *seqIncrStore) IncrBy(context.Context, string, int64, time.Duration) (int64, error) {
 	return s.next.Load(), nil
+}
+
+// gateStore blocks the FIRST IncrBy until released, returning a fixed (large)
+// shared total to model a stale flush that outlived its window. Subsequent
+// calls behave like the embedded real store, so a legitimate follow-up flush of
+// a fresh window reports that window's true count.
+type gateStore struct {
+	Store
+	gate    chan struct{}
+	ret     int64
+	entered atomic.Int64
+}
+
+func (g *gateStore) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	if g.entered.Add(1) == 1 {
+		<-g.gate
+		return g.ret, nil
+	}
+	return g.Store.IncrBy(ctx, key, delta, ttl)
+}
+
+// gateDelStore blocks inside Delete until released and counts IncrBy entries, so
+// a test can prove the key is held (no concurrent IncrBy) during a slow delete.
+type gateDelStore struct {
+	Store
+	gate        chan struct{}
+	delEntered  atomic.Int64
+	incrEntered atomic.Int64
+}
+
+func (g *gateDelStore) Delete(ctx context.Context, key string) error {
+	g.delEntered.Add(1)
+	<-g.gate
+	return g.Store.Delete(ctx, key)
+}
+
+func (g *gateDelStore) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	g.incrEntered.Add(1)
+	return g.Store.IncrBy(ctx, key, delta, ttl)
 }

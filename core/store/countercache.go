@@ -65,13 +65,19 @@ type counterEntry struct {
 // dirtyEntry is the unpushed shared-store work for a key. delta is the number
 // of local increments not yet pushed; a flush pushes exactly delta via IncrBy
 // and clears it. deadline is the absolute end of the counter's window (unix
-// nanos), so a flush uses the remaining TTL and skips an expired window. del
-// marks a pending Forget (a Delete that supersedes any accumulated delta).
+// nanos): a flush uses the remaining TTL, skips an expired window, and merges
+// the shared total back only into that same window. del marks a pending Forget
+// (a Delete that supersedes any accumulated delta).
 //
-// A single drainer owns a key from the moment it is dequeued until its delta
-// drains to zero: the entry stays in c.dirty (so it is never re-enqueued), and
-// bumps arriving mid-flush raise delta in place and are pushed by the owning
-// drainer's follow-up round. This is the per-key singleflight guarantee.
+// A key has a single owning drainer for the whole time it has pending work. The
+// ownership invariant: a key is in c.dirty from the first op until its work
+// fully drains, and it is in c.queue only while waiting to be picked up. A
+// drainer removes it from the queue when it claims it, and markDirtyLocked never
+// re-enqueues a key already in c.dirty, so at most one drainer ever holds it.
+// Ops arriving while it is owned fold into the entry (a bump raises delta; a
+// Forget sets del) and are handled by the owner's follow-up round. This is the
+// per-key singleflight guarantee, and it holds across both increment and delete
+// store rounds.
 type dirtyEntry struct {
 	delta    int64
 	deadline int64
@@ -151,25 +157,20 @@ func (c *CounterCache) Forget(key string) {
 
 // markDirtyLocked records one unit of pending shared-store work for key (a
 // counted increment, or a delete when del is true) and ensures a drainer will
-// pick it up. It coalesces losslessly: a key already dirty accumulates its
-// delta in place rather than enqueuing again, so N bumps become one store round
-// carrying delta N. It returns true when the caller should start a new drainer
-// (below the worker cap); otherwise a running drainer will reach the key. When
-// the queue is saturated a brand-new key's work stays local (dropped from the
-// shared push) but an already-dirty key keeps accumulating. c.mu must be held;
-// the caller starts the drainer after unlocking so the inline test seam cannot
-// re-enter the lock.
+// pick it up. It coalesces losslessly: a key already dirty folds its work into
+// the existing entry rather than enqueuing again, so N bumps become one store
+// round carrying delta N. It returns true when the caller should start a new
+// drainer (below the worker cap); otherwise a running drainer will reach the
+// key. When the queue is saturated a brand-new key's work stays local (dropped
+// from the shared push) but an already-dirty key keeps accumulating. c.mu must
+// be held; the caller starts the drainer after unlocking so the inline test
+// seam cannot re-enter the lock.
 func (c *CounterCache) markDirtyLocked(key string, deadline int64, del bool) (spawn bool) {
 	if d, ok := c.dirty[key]; ok {
-		if del {
-			d.del = true // a Forget supersedes accumulated increments
-			d.delta = 0
-		} else if !d.del {
-			d.delta++
-			d.deadline = deadline
-		}
-		// If the key is mid-flush it is not in the queue; the owning drainer
-		// re-checks it after the store round, so no new drainer is needed.
+		c.foldOpLocked(d, deadline, del)
+		// A key already dirty is either queued or owned by a flushing drainer.
+		// Either way no new drainer is needed: the queued key will be drained,
+		// and the flushing owner re-checks the entry after its store round.
 		return false
 	}
 	if len(c.queue) >= maxFlushQueue {
@@ -188,11 +189,28 @@ func (c *CounterCache) markDirtyLocked(key string, deadline int64, del bool) (sp
 	return false
 }
 
+// foldOpLocked folds one new op into an existing dirty entry. A Forget
+// supersedes any accumulated increments: the local counter was reset, so the
+// shared one must be deleted, and the delta is cleared. An increment always
+// raises the delta and adopts the current window's deadline; if a Forget is
+// still pending (del set), del stays set so the delete runs first and these
+// increments are applied as the owning drainer's follow-up round, leaving the
+// store reflecting the fresh window. c.mu held.
+func (c *CounterCache) foldOpLocked(d *dirtyEntry, deadline int64, del bool) {
+	if del {
+		d.del = true
+		d.delta = 0
+		return
+	}
+	d.delta++
+	d.deadline = deadline
+}
+
 // drain flushes dirty keys until the queue is empty, then exits. Multiple
-// drainers run concurrently up to maxFlushWorkers; each owns one key at a time
-// and holds it (flushing=true) across the store round so no other drainer
-// touches it. Bumps arriving mid-flush accumulate into the same entry and are
-// pushed by a follow-up round before the key is released.
+// drainers run concurrently up to maxFlushWorkers; each claims one key at a time
+// and owns it (flushing set) across every store round for that key, so no other
+// drainer touches it. Ops arriving mid-flush fold into the same entry and are
+// handled by a follow-up round before the key is released.
 func (c *CounterCache) drain() {
 	for {
 		c.mu.Lock()
@@ -209,62 +227,111 @@ func (c *CounterCache) drain() {
 	}
 }
 
-// flushKey pushes a key's accumulated work to the store, looping until no new
-// work arrived while the previous round was in flight (at most one extra round
-// per burst in practice, since bumps coalesce). It owns the key across each
-// store round via the dirty entry, so no other drainer touches it. It releases
-// the key (deletes the entry) when nothing is left to push, when the window has
-// expired, or when a store round fails (the local count keeps enforcing, as it
-// does whenever the store is unreachable).
+// flushKey drains all pending work for a key it owns, looping until nothing is
+// left, then releases the key. It holds the key (flushing set) across every
+// store round via its dirty entry, so no other drainer touches it and any op
+// arriving meanwhile folds into the entry and is handled here. A pending delete
+// runs first (a Forget reset the local counter, so the shared one must go),
+// then any follow-up increment for a fresh window is pushed. On a store error
+// it releases the key and stops: the delta is not pushed, matching the
+// documented degrade to per-instance enforcement when the store is unreachable.
 func (c *CounterCache) flushKey(key string) {
 	for {
 		c.mu.Lock()
 		d := c.dirty[key]
-		switch {
-		case d == nil:
-			c.mu.Unlock()
-			return
-		case d.del:
-			delete(c.dirty, key)
-			c.mu.Unlock()
-			c.flushDelete(key)
-			return
-		case d.delta == 0:
-			delete(c.dirty, key) // nothing left to push: release the key
+		if d == nil {
 			c.mu.Unlock()
 			return
 		}
+
+		// Delete first: it supersedes any earlier increments.
+		if d.del {
+			d.del = false // consumed; a follow-up Incr may have set delta already
+			c.mu.Unlock()
+			if !c.flushDelete(key) {
+				c.release(key)
+				return
+			}
+			continue
+		}
+
+		if d.delta == 0 {
+			spawn := c.releaseLocked(key) // nothing left: release the key
+			c.mu.Unlock()
+			if spawn {
+				c.Go(c.drain)
+			}
+			return
+		}
+
 		now := c.now().UnixNano()
 		if d.deadline != 0 && now >= d.deadline {
-			delete(c.dirty, key) // window expired: drop the delta, do not extend
+			// Window expired before we could push: drop the delta and do not
+			// start a fresh store window. The next loop iteration releases the
+			// key (or handles a delete / fresh delta that folded in meanwhile).
+			d.delta = 0
 			c.mu.Unlock()
-			return
+			continue
 		}
-		// Claim the pending delta; bumps during the store round below re-raise
-		// d.delta and loop us again.
+
+		// Claim the delta and this window's identity; ops arriving during the
+		// store round below re-raise d.delta and loop us again.
 		delta := d.delta
+		deadline := d.deadline
 		d.delta = 0
 		remaining := time.Duration(0)
-		if d.deadline != 0 {
-			remaining = time.Duration(d.deadline - now)
+		if deadline != 0 {
+			remaining = time.Duration(deadline - now)
 		}
 		c.mu.Unlock()
 
-		if !c.flushIncr(key, delta, remaining) {
-			// Store round failed: release the key and stop. The delta is not
-			// pushed to the shared counter, matching the documented degrade to
-			// per-instance enforcement when the store is unreachable.
-			c.mu.Lock()
-			delete(c.dirty, key)
-			c.mu.Unlock()
+		if !c.flushIncr(key, delta, deadline, remaining) {
+			c.release(key)
 			return
 		}
 	}
 }
 
-// flushIncr pushes delta increments for a live window and merges the shared
-// total back monotonically. Reports whether the store round succeeded.
-func (c *CounterCache) flushIncr(key string, delta int64, remaining time.Duration) bool {
+// release relinquishes ownership of key: it deletes the dirty entry if it has
+// no pending work, or re-queues it (spawning a drainer if needed) if an op
+// landed after the owner decided to stop, so the key is never stranded. c.mu
+// must NOT be held.
+func (c *CounterCache) release(key string) {
+	c.mu.Lock()
+	spawn := c.releaseLocked(key)
+	c.mu.Unlock()
+	if spawn {
+		c.Go(c.drain)
+	}
+}
+
+// releaseLocked is release with c.mu held; it returns whether the caller should
+// start a drainer after unlocking (never calls c.Go itself, so the inline test
+// seam cannot re-enter the lock).
+func (c *CounterCache) releaseLocked(key string) (spawn bool) {
+	d := c.dirty[key]
+	if d == nil {
+		return false
+	}
+	if d.delta == 0 && !d.del {
+		delete(c.dirty, key)
+		return false
+	}
+	// Work landed after we gave up (e.g. a store error path): re-queue the key.
+	c.queue = append(c.queue, key)
+	if c.workers < maxFlushWorkers {
+		c.workers++
+		return true
+	}
+	return false
+}
+
+// flushIncr pushes delta increments for a window and merges the shared total
+// back, but only into that same live window. Carrying the window's absolute
+// deadline is what stops a slow flush from bleeding its (possibly large) shared
+// total into a fresh window that started while it was blocked. Reports whether
+// the store round succeeded.
+func (c *CounterCache) flushIncr(key string, delta, deadline int64, remaining time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
 	shared, err := c.store.IncrBy(ctx, key, delta, remaining)
@@ -272,9 +339,10 @@ func (c *CounterCache) flushIncr(key string, delta int64, remaining time.Duratio
 		return false
 	}
 	c.mu.Lock()
-	// Merge monotonically within the live TTL window: an out-of-order or stale
-	// flush must never lower the local count.
-	if e, ok := c.m[key]; ok && c.now().UnixNano() < e.expires && shared > e.n {
+	// Merge monotonically, and only into the same window this delta belonged to:
+	// e.expires must still equal the deadline we flushed. A new window has a
+	// different expires, so a stale flush that outlived its window is rejected.
+	if e, ok := c.m[key]; ok && e.expires == deadline && c.now().UnixNano() < e.expires && shared > e.n {
 		e.n = shared
 		c.m[key] = e
 	}
@@ -282,8 +350,9 @@ func (c *CounterCache) flushIncr(key string, delta int64, remaining time.Duratio
 	return true
 }
 
-func (c *CounterCache) flushDelete(key string) {
+// flushDelete removes the shared counter. Reports whether it succeeded.
+func (c *CounterCache) flushDelete(key string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
-	_ = c.store.Delete(ctx, key)
+	return c.store.Delete(ctx, key) == nil
 }
