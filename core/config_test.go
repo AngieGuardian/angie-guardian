@@ -234,6 +234,8 @@ func TestConfigValidation(t *testing.T) {
 		"bad cidr":                               "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
 		"bad rate":                               "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
 		"unknown field":                          "listne: 1.2.3.4:80",
+		"unknown field in domain overlay":        "domains: { a.test: { waf: { keywrods: { enabled: true } } } }",
+		"unknown nested field in domain overlay":  "domains: { a.test: { pow: { enabeld: true } } }",
 		"duplicate host":                         "domains: { a.test: , \"A.test:443\": }",
 		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",

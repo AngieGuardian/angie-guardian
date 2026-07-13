@@ -471,6 +471,22 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// decodeStrict decodes a yaml.Node into v with unknown-field checking, which
+// yaml.Node.Decode does not do on its own. It re-marshals the node and runs it
+// through a KnownFields decoder, so a typo inside a per-domain overlay (e.g.
+// waf.keywrods) is a load error rather than a silently ignored field that
+// leaves protection off for one vhost while `guardiand -t` reports success.
+// (Mirrors stateless.decodeStrict for the WASM guest config.)
+func decodeStrict(node *yaml.Node, v any) error {
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+	return dec.Decode(v)
+}
+
 func (c *Config) finalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8071"
@@ -562,7 +578,7 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("copy defaults for %s: %w", host, err)
 		}
 		if node.Kind != 0 && node.Tag != "!!null" {
-			if err := node.Decode(dc); err != nil {
+			if err := decodeStrict(&node, dc); err != nil {
 				return fmt.Errorf("domain %s: %w", host, err)
 			}
 		}
