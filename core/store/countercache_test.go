@@ -7,7 +7,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -138,4 +140,156 @@ func TestCounterCacheConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+// blockingStore lets a flush park inside Store.Incr until released, so a test
+// can hold flush workers busy and observe how many the cache spawns.
+type blockingStore struct {
+	Store
+	release chan struct{}
+	incrs   atomic.Int64
+}
+
+func (b *blockingStore) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	b.incrs.Add(1)
+	<-b.release
+	return b.Store.Incr(ctx, key, ttl)
+}
+
+// TestCounterCacheFlushWorkersBounded: a flood of distinct keys must not spawn
+// an unbounded number of flush goroutines. With every flush parked in the
+// store, live drain goroutines are capped at maxFlushWorkers regardless of how
+// many keys are dirtied.
+func TestCounterCacheFlushWorkersBounded(t *testing.T) {
+	bs := &blockingStore{Store: NewMemory(), release: make(chan struct{})}
+	t.Cleanup(func() { close(bs.release); bs.Store.Close() })
+	c := NewCounterCache(bs)
+
+	var spawned atomic.Int64
+	c.Go = func(f func()) {
+		spawned.Add(1)
+		go f()
+	}
+
+	// Dirty far more distinct keys than the worker cap; each flush blocks.
+	for i := range 1000 {
+		c.Incr(fmt.Sprintf("ip-%d", i), time.Minute)
+	}
+
+	// Wait for the drain goroutines to reach the parked store call, so the
+	// in-flight count has settled at its ceiling before we assert.
+	deadline := time.Now().Add(2 * time.Second)
+	for bs.incrs.Load() < maxFlushWorkers && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	// The number of drain goroutines ever started must stay within the cap:
+	// workers loop over the queue, they are not one-per-key. This is the
+	// guarantee that a distinct-key flood cannot fan out unboundedly.
+	if got := spawned.Load(); got > maxFlushWorkers {
+		t.Fatalf("spawned %d drain goroutines, want <= %d (unbounded fan-out)", got, maxFlushWorkers)
+	}
+	// And at most maxFlushWorkers store calls are in flight at once; the rest
+	// of the 1000 keys wait in the queue.
+	if got := bs.incrs.Load(); got > maxFlushWorkers {
+		t.Fatalf("%d concurrent store Incrs, want <= %d", got, maxFlushWorkers)
+	}
+	if got := bs.incrs.Load(); got != maxFlushWorkers {
+		t.Fatalf("store Incrs in flight = %d, want exactly %d workers busy", got, maxFlushWorkers)
+	}
+}
+
+// TestCounterCacheCoalesces: many rapid bumps of one key do not each spawn
+// their own store round. With flushes parked, the store calls for one hot key
+// are bounded by the worker cap, not by the number of bumps: the 50 bumps here
+// collapse to at most maxFlushWorkers in-flight rounds, and inline (below) to a
+// single round while a flush holds the key.
+func TestCounterCacheCoalesces(t *testing.T) {
+	bs := &blockingStore{Store: NewMemory(), release: make(chan struct{})}
+	t.Cleanup(func() { close(bs.release); bs.Store.Close() })
+	c := NewCounterCache(bs)
+
+	for range 50 {
+		c.Incr("k", time.Minute)
+	}
+	deadline := time.Now().Add(time.Second)
+	for bs.incrs.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := bs.incrs.Load(); got > maxFlushWorkers {
+		t.Fatalf("store Incrs for one hot key = %d, want <= %d (bumps must coalesce)", got, maxFlushWorkers)
+	}
+}
+
+// TestCounterCacheCoalescesInline: with the queue drained synchronously between
+// bumps, a key already dirty-and-queued must not enqueue twice. Two bumps that
+// both land while a flush is pending collapse to one store round.
+func TestCounterCacheCoalescesInline(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+
+	// Capture drainers rather than run them, so both bumps happen while "k" is
+	// still queued (not yet picked up by a drainer).
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	c.Incr("k", time.Minute) // queues "k", schedules one drainer
+	c.Incr("k", time.Minute) // "k" already queued -> coalesced, no new drainer
+
+	if len(pending) != 1 {
+		t.Fatalf("scheduled %d drainers for coalesced bumps, want 1", len(pending))
+	}
+}
+
+// TestCounterCacheMonotonicMerge: an out-of-order flush carrying a stale
+// (smaller) shared total must never roll the local count backward. Two local
+// bumps return 1 then 2; landing shared=2 then a late shared=1 must leave the
+// next bump at 3, not 2.
+func TestCounterCacheMonotonicMerge(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+
+	// Capture flush drainers instead of running them, so we control completion
+	// order. Each captured func drains one queued key against the seqStore.
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	seq := &seqIncrStore{Store: st}
+	c.store = seq
+
+	if n := c.Incr("k", time.Minute); n != 1 {
+		t.Fatalf("bump1 = %d, want 1", n)
+	}
+	if n := c.Incr("k", time.Minute); n != 2 {
+		t.Fatalf("bump2 = %d, want 2", n)
+	}
+
+	// Land a stale shared=1 after a fresh shared=2. seqIncrStore returns an
+	// increasing sequence, so we force the order by choosing what each drain
+	// sees: run the drainer that will read 2, then inject a stale 1.
+	if len(pending) == 0 {
+		t.Fatal("no drainer scheduled")
+	}
+	seq.next.Store(2)
+	pending[0]() // reads shared=2 -> e.n=2
+	// Now a straggler flush from an earlier bump completes carrying shared=1.
+	seq.next.Store(1)
+	c.flush("k", dirtyEntry{ttl: time.Minute}) // reads shared=1, must NOT lower e.n
+
+	if n := c.Incr("k", time.Minute); n != 3 {
+		t.Fatalf("bump after stale flush = %d, want 3 (monotonic merge)", n)
+	}
+}
+
+// seqIncrStore returns a caller-controlled value from Incr, modeling
+// out-of-order flush completion carrying arbitrary shared totals.
+type seqIncrStore struct {
+	Store
+	next atomic.Int64
+}
+
+func (s *seqIncrStore) Incr(context.Context, string, time.Duration) (int64, error) {
+	return s.next.Load(), nil
 }
