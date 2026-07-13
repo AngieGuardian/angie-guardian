@@ -134,6 +134,44 @@ func TestStoreConformance(t *testing.T) {
 				t.Fatalf("IncrBy after expiry = %d, want 2 (window did not reset)", n)
 			}
 
+			// IncrByDeadline: the four atomic properties that keep a delayed
+			// per-window flush from polluting the next window.
+			nowNanos := func() int64 { return time.Now().UnixNano() }
+			// (3) Absent key -> created at delta, applied=true, expiring AT the
+			// deadline: after the window elapses it is gone.
+			dl := nowNanos() + shortTTL.Nanoseconds()
+			if n, applied, err := s.IncrByDeadline(ctx, "dl", 3, dl); err != nil || n != 3 || !applied {
+				t.Fatalf("fresh IncrByDeadline = %d applied=%v err=%v, want 3 true nil", n, applied, err)
+			}
+			// (4) Existing live key -> delta added, applied=true, expiry kept.
+			if n, applied, _ := s.IncrByDeadline(ctx, "dl", 2, nowNanos()+time.Hour.Nanoseconds()); n != 5 || !applied {
+				t.Fatalf("live IncrByDeadline = %d applied=%v, want 5 true", n, applied)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if _, ok, _ := s.Get(ctx, "dl"); ok {
+				t.Fatal("IncrByDeadline fresh key did not expire at its deadline")
+			}
+			// (2) Deadline already in the past -> no write, applied=false, and
+			// the value reflects the (absent) key as 0.
+			past := nowNanos() - time.Minute.Nanoseconds()
+			if n, applied, err := s.IncrByDeadline(ctx, "dlpast", 7, past); err != nil || applied || n != 0 {
+				t.Fatalf("expired IncrByDeadline = %d applied=%v err=%v, want 0 false nil", n, applied, err)
+			}
+			if _, ok, _ := s.Get(ctx, "dlpast"); ok {
+				t.Fatal("expired IncrByDeadline wrote a key; it must skip entirely")
+			}
+			// (2) again, but the key already exists and is live: the past-deadline
+			// call must not mutate it, and must report the current value.
+			if _, _, err := s.IncrByDeadline(ctx, "dllive", 4, nowNanos()+time.Hour.Nanoseconds()); err != nil {
+				t.Fatal(err)
+			}
+			if n, applied, _ := s.IncrByDeadline(ctx, "dllive", 100, past); applied || n != 4 {
+				t.Fatalf("past-deadline on live key = %d applied=%v, want 4 false (no mutation)", n, applied)
+			}
+			if v, _, _ := s.Get(ctx, "dllive"); string(v) != "4" {
+				t.Fatalf("past-deadline mutated a live key: value = %q, want 4", v)
+			}
+
 			// CAS create-only (old == nil).
 			ok, err = s.CompareAndSwap(ctx, "cas", nil, []byte("a"), 0)
 			if err != nil || !ok {
@@ -231,23 +269,28 @@ func TestRedisSubMillisecondTTL(t *testing.T) {
 	s := NewRedisFromClient(rdb)
 	ctx := context.Background()
 
+	// IncrBy sub-ms: the key must never be permanent. Under the absolute-
+	// deadline path a sub-ms window may either land a ~1ms expiry or be treated
+	// as already elapsed (skipped); both are fine, a permanent key (PTTL == -1)
+	// is not. Whatever it is, it must be gone after the window.
 	if _, err := s.IncrBy(ctx, "ctr", 1, 500*time.Microsecond); err != nil {
 		t.Fatal(err)
 	}
-	if pttl := mr.TTL("ctr"); pttl <= 0 {
-		t.Fatalf("IncrBy sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
+	// go-redis PTTL: -1ns = key exists but has no expiry (permanent); -2ns = missing.
+	if pttl, _ := rdb.PTTL(ctx, "ctr").Result(); pttl == -1 {
+		t.Fatal("IncrBy sub-ms TTL made the key permanent (PTTL == -1)")
+	}
+	mr.FastForward(2 * time.Millisecond)
+	if _, ok, _ := s.Get(ctx, "ctr"); ok {
+		t.Fatal("sub-ms TTL counter did not expire; it became permanent")
 	}
 
+	// CAS uses a relative TTL floored to >=1ms, so it deterministically keeps a
+	// finite expiry (the original 9181 truncation-to-permanent bug).
 	if ok, err := s.CompareAndSwap(ctx, "cas", nil, []byte("v"), 500*time.Microsecond); err != nil || !ok {
 		t.Fatalf("CAS create = %v %v, want true nil", ok, err)
 	}
 	if pttl := mr.TTL("cas"); pttl <= 0 {
 		t.Fatalf("CAS sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
-	}
-
-	// The key must actually expire after its window, proving it is not permanent.
-	mr.FastForward(2 * time.Millisecond)
-	if _, ok, _ := s.Get(ctx, "ctr"); ok {
-		t.Fatal("sub-ms TTL counter did not expire; it became permanent")
 	}
 }

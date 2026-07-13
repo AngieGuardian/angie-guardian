@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -82,19 +83,33 @@ func (s *Redis) Delete(ctx context.Context, key string) error {
 	return s.rdb.Del(ctx, key).Err()
 }
 
-// incrByScript: INCRBY delta, and set the TTL only when the key did not exist
-// before, so an existing time-bucketed counter keeps its original expiry,
-// matching the memory/bbolt IncrBy contract. Existence is checked before the
-// increment (rather than inferring it from the result) so a delta that happens
-// to equal the pre-existing value cannot be mistaken for a fresh key. ARGV[1]
-// is the delta, ARGV[2] the TTL in milliseconds (0 = none).
-var incrByScript = redis.NewScript(`
+// incrByDeadlineScript: INCRBY delta against an absolute deadline (ARGV[2],
+// unix milliseconds; 0 = no expiry), enforced atomically on the server clock in
+// a single script. It returns {value, applied} where applied is 1 when the
+// write happened and 0 when it was skipped. If the deadline has passed the op
+// is skipped and the current value is returned (0 if absent), so a flush
+// delayed past its window cannot pollute the next one. A fresh key is created
+// expiring exactly at the deadline via PEXPIREAT, so a late create cannot
+// outlive its window. Existence is checked before the increment (rather than
+// inferring it from the result) so a delta that happens to equal the
+// pre-existing value cannot be mistaken for a fresh key. ARGV[1] is the delta.
+var incrByDeadlineScript = redis.NewScript(`
+local deadline = tonumber(ARGV[2])
+if deadline > 0 then
+  local t = redis.call('TIME')
+  local nowms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+  if nowms >= deadline then
+    local cur = redis.call('GET', KEYS[1])
+    if cur then return {tonumber(cur), 0} end
+    return {0, 0}
+  end
+end
 local fresh = redis.call('EXISTS', KEYS[1]) == 0
 local v = redis.call('INCRBY', KEYS[1], ARGV[1])
-if fresh and tonumber(ARGV[2]) > 0 then
-  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+if fresh and deadline > 0 then
+  redis.call('PEXPIREAT', KEYS[1], deadline)
 end
-return v
+return {v, 1}
 `)
 
 func (s *Redis) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
@@ -102,13 +117,51 @@ func (s *Redis) Incr(ctx context.Context, key string, ttl time.Duration) (int64,
 }
 
 func (s *Redis) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
-	return incrByScript.Run(ctx, s.rdb, []string{key}, delta, pexpireArg(ttl)).Int64()
+	var deadline int64
+	if ttl > 0 {
+		deadline = time.Now().Add(ttl).UnixNano()
+	}
+	n, _, err := s.IncrByDeadline(ctx, key, delta, deadline)
+	return n, err
 }
 
-// pexpireArg converts a Go TTL to the millisecond argument the Lua scripts
-// expect, where 0 means "no expiry". A positive TTL below one millisecond would
-// truncate to 0 and make the key permanent, so it is floored to 1ms; a
-// non-positive TTL passes through as the 0 no-expiry sentinel.
+func (s *Redis) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
+	res, err := incrByDeadlineScript.Run(ctx, s.rdb, []string{key}, delta, deadlineMillis(deadline)).Slice()
+	if err != nil {
+		return 0, false, err
+	}
+	// The script returns {value, applied}; redis integers arrive as int64.
+	if len(res) != 2 {
+		return 0, false, fmt.Errorf("incrByDeadline: unexpected script result %v", res)
+	}
+	value, ok1 := res[0].(int64)
+	applied, ok2 := res[1].(int64)
+	if !ok1 || !ok2 {
+		return 0, false, fmt.Errorf("incrByDeadline: non-integer script result %v", res)
+	}
+	return value, applied == 1, nil
+}
+
+// deadlineMillis converts an absolute unix-nano deadline to the unix-millis the
+// Lua script expects, where 0 means "no expiry". It rounds UP to the next whole
+// millisecond: redis expiry is millisecond-granular, so truncating a deadline
+// down could land it in the current (or a past) millisecond and expire the key
+// immediately, while a positive TTL must always yield a genuine future expiry.
+func deadlineMillis(deadline int64) int64 {
+	if deadline <= 0 {
+		return 0
+	}
+	ms := (deadline + int64(time.Millisecond) - 1) / int64(time.Millisecond) // ceil
+	if ms > 0 {
+		return ms
+	}
+	return 1
+}
+
+// pexpireArg converts a relative Go TTL to the millisecond argument the CAS
+// script expects, where 0 means "no expiry". A positive TTL below one
+// millisecond would truncate to 0 and make the key permanent, so it is floored
+// to 1ms; a non-positive TTL passes through as the 0 no-expiry sentinel.
 func pexpireArg(ttl time.Duration) int64 {
 	if ttl <= 0 {
 		return 0

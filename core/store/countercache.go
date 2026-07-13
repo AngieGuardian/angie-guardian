@@ -279,13 +279,9 @@ func (c *CounterCache) flushKey(key string) {
 		delta := d.delta
 		deadline := d.deadline
 		d.delta = 0
-		remaining := time.Duration(0)
-		if deadline != 0 {
-			remaining = time.Duration(deadline - now)
-		}
 		c.mu.Unlock()
 
-		if !c.flushIncr(key, delta, deadline, remaining) {
+		if !c.flushIncr(key, delta, deadline) {
 			c.release(key)
 			return
 		}
@@ -326,22 +322,27 @@ func (c *CounterCache) releaseLocked(key string) (spawn bool) {
 	return false
 }
 
-// flushIncr pushes delta increments for a window and merges the shared total
-// back, but only into that same live window. Carrying the window's absolute
-// deadline is what stops a slow flush from bleeding its (possibly large) shared
-// total into a fresh window that started while it was blocked. Reports whether
-// the store round succeeded.
-func (c *CounterCache) flushIncr(key string, delta, deadline int64, remaining time.Duration) bool {
+// flushIncr pushes delta increments for a window through the store's atomic
+// deadline-aware op and merges the shared total back into that same window.
+// Two things stop a slow flush from bleeding a stale total into a fresh window:
+// the store skips the write entirely once the deadline has passed (so a delayed
+// call cannot even create the next window's record), and the local merge is
+// gated on the same window's identity (e.expires must still equal the deadline
+// flushed). Reports whether the store round succeeded.
+func (c *CounterCache) flushIncr(key string, delta, deadline int64) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
-	shared, err := c.store.IncrBy(ctx, key, delta, remaining)
+	shared, applied, err := c.store.IncrByDeadline(ctx, key, delta, deadline)
 	if err != nil {
 		return false
 	}
+	if !applied {
+		// The store skipped the write because the window had already ended: the
+		// delta is legitimately discarded, and there is nothing to merge (a fresh
+		// window, if one exists, is a separate entry the loop handles next).
+		return true
+	}
 	c.mu.Lock()
-	// Merge monotonically, and only into the same window this delta belonged to:
-	// e.expires must still equal the deadline we flushed. A new window has a
-	// different expires, so a stale flush that outlived its window is rejected.
 	if e, ok := c.m[key]; ok && e.expires == deadline && c.now().UnixNano() < e.expires && shared > e.n {
 		e.n = shared
 		c.m[key] = e

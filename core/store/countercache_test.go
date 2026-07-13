@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,9 @@ func (failingStore) Incr(context.Context, string, time.Duration) (int64, error) 
 func (failingStore) IncrBy(context.Context, string, int64, time.Duration) (int64, error) {
 	return 0, errStoreDown
 }
+func (failingStore) IncrByDeadline(context.Context, string, int64, int64) (int64, bool, error) {
+	return 0, false, errStoreDown
+}
 func (failingStore) Delete(context.Context, string) error { return errStoreDown }
 
 // TestCounterCacheStoreDown: a broken store degrades to per-instance
@@ -145,6 +149,77 @@ func TestCounterCacheConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// quiesced reports whether the cache has no pending work: nothing dirty, an
+// empty queue, and no live drain workers. Used to wait for all background
+// flushes to land before asserting the shared store total.
+func (c *CounterCache) quiesced() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.dirty) == 0 && len(c.queue) == 0 && c.workers == 0
+}
+
+// TestCounterCachePropertyLossless is the anti-regression property test for the
+// coalescing/flush machinery reworked across MR !11. Many goroutines hammer a
+// small set of hot keys, each with a long (non-expiring) window; once all
+// background flushes have drained, every event a client counted must be present
+// in the shared store: the store total for each key equals the number of Incr
+// calls against it. This is the invariant the earlier coalescing violated (N
+// events collapsing to 1 in the shared store).
+//
+// Note it does NOT assert cross-goroutine monotonicity of the values Incr
+// returns: a flush that merges the shared total raises the local count, so a
+// concurrent Incr operating on the pre-merge value can legitimately return a
+// smaller number. The counter is not linearizable across goroutines and never
+// claimed to be; the local merge's own non-regression is covered by
+// TestCounterCacheMonotonicMerge.
+func TestCounterCachePropertyLossless(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+
+	const (
+		goroutines   = 12
+		perGoroutine = 500
+		keys         = 4
+	)
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Go(func() {
+			for i := range perGoroutine {
+				c.Incr(fmt.Sprintf("k%d", (g+i)%keys), time.Hour) // long window: no expiry mid-test
+			}
+		})
+	}
+	wg.Wait()
+
+	// Wait for every background flush to land.
+	waitFor(t, c.quiesced)
+
+	// Exactly goroutines*perGoroutine increments happened, distributed across
+	// the keys. Recompute the per-key expected counts and compare to the store.
+	expected := make(map[string]int64)
+	for g := range goroutines {
+		for i := range perGoroutine {
+			expected[fmt.Sprintf("k%d", (g+i)%keys)]++
+		}
+	}
+	var total int64
+	for key, want := range expected {
+		v, ok, err := st.Get(context.Background(), key)
+		if err != nil || !ok {
+			t.Fatalf("store missing hot key %s: ok=%v err=%v", key, ok, err)
+		}
+		got, _ := strconv.ParseInt(string(v), 10, 64)
+		if got != want {
+			t.Errorf("store total for %s = %d, want %d (events lost or double-counted)", key, got, want)
+		}
+		total += got
+	}
+	if total != goroutines*perGoroutine {
+		t.Fatalf("store grand total = %d, want %d", total, int64(goroutines*perGoroutine))
+	}
+}
+
 // blockingStore lets a flush park inside Store.IncrBy until released, so a test
 // can hold flush workers busy and observe how many the cache spawns and what
 // delta each push carries.
@@ -155,12 +230,12 @@ type blockingStore struct {
 	gate    bool         // when true, block on release; else pass through
 }
 
-func (b *blockingStore) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+func (b *blockingStore) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
 	b.incrs.Add(1)
 	if b.gate {
 		<-b.release
 	}
-	return b.Store.IncrBy(ctx, key, delta, ttl)
+	return b.Store.IncrByDeadline(ctx, key, delta, deadline)
 }
 
 // TestCounterCacheFlushWorkersBounded: a flood of distinct keys must not spawn
@@ -329,9 +404,9 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 	dl := c.windowDeadline("k")
 
 	seq.next.Store(2)
-	c.flushIncr("k", 2, dl, time.Minute) // shared=2 -> e.n stays 2
+	c.flushIncr("k", 2, dl) // shared=2 -> e.n stays 2
 	seq.next.Store(1)
-	c.flushIncr("k", 1, dl, time.Minute) // stale shared=1 -> must NOT lower e.n
+	c.flushIncr("k", 1, dl) // stale shared=1 -> must NOT lower e.n
 
 	if n := c.Incr("k", time.Minute); n != 3 {
 		t.Fatalf("bump after stale flush = %d, want 3 (monotonic merge)", n)
@@ -339,40 +414,38 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 }
 
 // TestCounterCacheStaleFlushNotMergedIntoNewWindow is the regression for MR
-// review 9180: a flush that blocks past its window's deadline must not merge its
-// (possibly large) shared total into a fresh window that started meanwhile. The
-// old window's flush is parked in the store; the clock crosses the deadline; a
-// new window opens; the stale flush is then released carrying a big total and
-// must be rejected, leaving the new window at its own count.
+// review 9180/9193: a flush that blocks past its window's deadline must not
+// pollute a fresh window that started meanwhile, neither by merging its return
+// value nor by leaving a stale record in the store for the follow-up flush to
+// pick up. The first flush is parked in the store; a real 20ms window elapses;
+// a fresh 1s window opens; the stale flush is released and (because it delegates
+// to the real backend) must be made a no-op by the store's deadline check,
+// leaving the fresh window at its own count.
+//
+// This uses real time, not a fake clock, because the store enforces the
+// deadline against its own clock: the cache and store must agree on "now".
 func TestCounterCacheStaleFlushNotMergedIntoNewWindow(t *testing.T) {
 	st := NewMemory()
 	t.Cleanup(func() { st.Close() })
-	gs := &gateStore{Store: st, gate: make(chan struct{}), ret: 51}
+	gs := &gateStore{Store: st, gate: make(chan struct{})}
 	c := NewCounterCache(gs)
-	base := time.Now()
-	c.now = func() time.Time { return base }
 
-	var pending []func()
-	c.Go = func(f func()) { pending = append(pending, f) }
+	c.Incr("k", 20*time.Millisecond) // window1, local n=1; drainer parks in the store
+	waitFor(t, func() bool { return gs.entered.Load() == 1 })
 
-	c.Incr("k", time.Minute) // window1 ends base+1m, local n=1
-	if len(pending) != 1 {
-		t.Fatalf("want 1 drainer, got %d", len(pending))
-	}
-	done := make(chan struct{})
-	go func() { pending[0](); close(done) }()
-	waitFor(t, func() bool { return gs.entered.Load() == 1 }) // parked in IncrBy on window1
-
-	// Cross window1's deadline and open a fresh window.
-	c.now = func() time.Time { return base.Add(2 * time.Minute) }
-	if n := c.Incr("k", time.Minute); n != 1 {
+	time.Sleep(40 * time.Millisecond) // let window1's deadline pass
+	if n := c.Incr("k", time.Second); n != 1 {
 		t.Fatalf("fresh window bump = %d, want 1", n)
 	}
-	close(gs.gate) // release the stale flush carrying shared=51
-	<-done
+	close(gs.gate) // release the stale flush: it delegates and must be a no-op
 
-	if n := c.Incr("k", time.Minute); n != 2 {
-		t.Fatalf("fresh window bump after stale flush = %d, want 2 (stale total must not merge in)", n)
+	// Give the drainer time to complete the stale round and any follow-up.
+	waitFor(t, func() bool {
+		v, ok, _ := st.Get(context.Background(), "k")
+		return ok && string(v) == "1"
+	})
+	if n := c.Incr("k", time.Second); n != 2 {
+		t.Fatalf("fresh window bump after stale flush = %d, want 2 (stale write must not leak in)", n)
 	}
 }
 
@@ -474,31 +547,31 @@ type seqIncrStore struct {
 	next atomic.Int64
 }
 
-func (s *seqIncrStore) IncrBy(context.Context, string, int64, time.Duration) (int64, error) {
-	return s.next.Load(), nil
+func (s *seqIncrStore) IncrByDeadline(context.Context, string, int64, int64) (int64, bool, error) {
+	return s.next.Load(), true, nil
 }
 
-// gateStore blocks the FIRST IncrBy until released, returning a fixed (large)
-// shared total to model a stale flush that outlived its window. Subsequent
-// calls behave like the embedded real store, so a legitimate follow-up flush of
-// a fresh window reports that window's true count.
+// gateStore blocks the FIRST IncrByDeadline until released, then delegates it
+// (and all later calls) to the embedded real store. Blocking the first call
+// past its deadline and then letting it delegate is exactly the stale-flush
+// scenario: the real store must make that delayed write a no-op, and the
+// fresh-window follow-up must not pick up any leaked total.
 type gateStore struct {
 	Store
 	gate    chan struct{}
-	ret     int64
 	entered atomic.Int64
 }
 
-func (g *gateStore) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+func (g *gateStore) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
 	if g.entered.Add(1) == 1 {
 		<-g.gate
-		return g.ret, nil
 	}
-	return g.Store.IncrBy(ctx, key, delta, ttl)
+	return g.Store.IncrByDeadline(ctx, key, delta, deadline)
 }
 
-// gateDelStore blocks inside Delete until released and counts IncrBy entries, so
-// a test can prove the key is held (no concurrent IncrBy) during a slow delete.
+// gateDelStore blocks inside Delete until released and counts IncrByDeadline
+// entries, so a test can prove the key is held (no concurrent flush) during a
+// slow delete.
 type gateDelStore struct {
 	Store
 	gate        chan struct{}
@@ -512,7 +585,7 @@ func (g *gateDelStore) Delete(ctx context.Context, key string) error {
 	return g.Store.Delete(ctx, key)
 }
 
-func (g *gateDelStore) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+func (g *gateDelStore) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
 	g.incrEntered.Add(1)
-	return g.Store.IncrBy(ctx, key, delta, ttl)
+	return g.Store.IncrByDeadline(ctx, key, delta, deadline)
 }

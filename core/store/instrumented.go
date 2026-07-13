@@ -69,6 +69,13 @@ func (s *Instrumented) IncrBy(ctx context.Context, key string, delta int64, ttl 
 	return n, err
 }
 
+func (s *Instrumented) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
+	start := time.Now()
+	n, applied, err := s.inner.IncrByDeadline(ctx, key, delta, deadline)
+	s.observe("incr", start, err)
+	return n, applied, err
+}
+
 func (s *Instrumented) CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
 	start := time.Now()
 	ok, err := s.inner.CompareAndSwap(ctx, key, old, new, ttl)
