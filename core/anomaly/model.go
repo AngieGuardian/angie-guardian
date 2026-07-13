@@ -187,7 +187,85 @@ func ParseModel(raw []byte, path string) (*Model, error) {
 	if m.Kind != "statistical-baseline" {
 		return nil, fmt.Errorf("model %s: unknown kind %q", path, m.Kind)
 	}
+	if err := m.validate(); err != nil {
+		return nil, fmt.Errorf("model %s: %w", path, err)
+	}
 	return m, nil
+}
+
+// validate rejects a structurally-valid-but-semantically-broken model at load
+// time, so a bad artifact fails the reload instead of panicking or corrupting
+// scores on every request. In particular a domain mapped to JSON null decodes
+// to a nil *Baseline, which Score would nil-dereference; under the shipped
+// fail-open Angie config that turns every auth request for the host into an
+// error and can bypass Guardian for it (issue #21, finding 4). Keys are
+// normalized to match how Score looks them up (strings.ToLower), so a model
+// key can never silently fail to match.
+func (m *Model) validate() error {
+	normalized := make(map[string]*Baseline, len(m.Domains))
+	for host, b := range m.Domains {
+		if b == nil {
+			return fmt.Errorf("domain %q: null baseline", host)
+		}
+		if b.Requests < 0 {
+			return fmt.Errorf("domain %q: negative requests %d", host, b.Requests)
+		}
+		for name, s := range map[string]Stat{
+			"path_depth": b.PathDepth, "path_len": b.PathLen,
+			"path_entropy": b.PathEntropy, "query_params": b.QueryParams,
+		} {
+			if err := s.validate(); err != nil {
+				return fmt.Errorf("domain %q %s: %w", host, name, err)
+			}
+		}
+		if err := validateFreq(host, "ua_freq", b.UAFreq); err != nil {
+			return err
+		}
+		if err := validateFreq(host, "path_prefix_freq", b.PathPrefixFreq); err != nil {
+			return err
+		}
+		key := strings.ToLower(host)
+		if _, dup := normalized[key]; dup {
+			return fmt.Errorf("domain %q: duplicate after case-folding", host)
+		}
+		normalized[key] = b
+	}
+	m.Domains = normalized
+	return nil
+}
+
+// validate rejects non-finite or negative distribution parameters. A negative
+// or NaN std would corrupt every z-score computed against it.
+func (s Stat) validate() error {
+	if err := checkFinite("mean", s.Mean); err != nil {
+		return err
+	}
+	if err := checkFinite("std", s.Std); err != nil {
+		return err
+	}
+	if s.Std < 0 {
+		return fmt.Errorf("negative std %v", s.Std)
+	}
+	return nil
+}
+
+func validateFreq(host, field string, freq map[string]float64) error {
+	for k, v := range freq {
+		if err := checkFinite(field, v); err != nil {
+			return fmt.Errorf("domain %q %s[%q]: %w", host, field, k, err)
+		}
+		if v < 0 {
+			return fmt.Errorf("domain %q %s[%q]: negative frequency %v", host, field, k, v)
+		}
+	}
+	return nil
+}
+
+func checkFinite(name string, v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("%s is not finite (%v)", name, v)
+	}
+	return nil
 }
 
 func (m *Model) Save(path string) error {

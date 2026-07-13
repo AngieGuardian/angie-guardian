@@ -6,6 +6,7 @@ package anomaly
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -114,6 +115,73 @@ func TestModelRoundTripAndVersionCheck(t *testing.T) {
 	if _, err := Load(path); err == nil {
 		t.Fatal("future model version must be refused")
 	}
+}
+
+// TestParseModelRejectsBrokenBaselines: a structurally valid artifact whose
+// baselines are semantically broken must fail to parse, not panic on the first
+// request it scores (issue #21, finding 4).
+func TestParseModelRejectsBrokenBaselines(t *testing.T) {
+	for name, raw := range map[string]string{
+		"null baseline":     `{"version":1,"kind":"statistical-baseline","domains":{"example.com":null}}`,
+		"negative std":      `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"path_len":{"mean":5,"std":-2}}}}`,
+		"negative requests": `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"requests":-1}}}`,
+		"negative freq":     `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"ua_freq":{"curl":-0.5}}}}`,
+	} {
+		if _, err := ParseModel([]byte(raw), name); err == nil {
+			t.Errorf("%s: expected ParseModel to reject, got nil", name)
+		}
+	}
+}
+
+// JSON cannot carry NaN/Inf, so a corrupt-but-parsed model can only reach the
+// non-finite guard if the struct is built another way; validate() must still
+// reject it. This exercises the finite checks directly.
+func TestValidateRejectsNonFiniteStats(t *testing.T) {
+	nan := math.NaN()
+	inf := math.Inf(1)
+	for name, m := range map[string]*Model{
+		"nan mean": {Version: 1, Kind: "statistical-baseline",
+			Domains: map[string]*Baseline{"x": {PathLen: Stat{Mean: nan, Std: 1}}}},
+		"inf std": {Version: 1, Kind: "statistical-baseline",
+			Domains: map[string]*Baseline{"x": {PathLen: Stat{Mean: 1, Std: inf}}}},
+		"inf freq": {Version: 1, Kind: "statistical-baseline",
+			Domains: map[string]*Baseline{"x": {UAFreq: map[string]float64{"curl": inf}}}},
+	} {
+		if err := m.validate(); err == nil {
+			t.Errorf("%s: expected validate to reject non-finite value, got nil", name)
+		}
+	}
+}
+
+// The null-baseline model previously parsed and then nil-dereferenced in
+// Score. Confirm the load-time rejection is what stops it: a rejected model is
+// never handed to Score.
+func TestNullBaselineRejectedNotScored(t *testing.T) {
+	raw := `{"version":1,"kind":"statistical-baseline","domains":{"example.com":null}}`
+	if _, err := ParseModel([]byte(raw), "probe"); err == nil {
+		t.Fatal("null baseline must be rejected at parse time")
+	}
+}
+
+// TestParseModelNormalizesDomainKeys: a mixed-case domain key must survive
+// parsing folded to lower case, matching how Score looks it up.
+func TestParseModelNormalizesDomainKeys(t *testing.T) {
+	raw := `{"version":1,"kind":"statistical-baseline","domains":{"Example.COM":{"requests":100,"ua_freq":{"curl":1}}}}`
+	m, err := ParseModel([]byte(raw), "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Domains["example.com"]; !ok {
+		t.Fatalf("domain key not normalized: %v", keysOf(m.Domains))
+	}
+}
+
+func keysOf(m map[string]*Baseline) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }
 
 func BenchmarkScore(b *testing.B) {
