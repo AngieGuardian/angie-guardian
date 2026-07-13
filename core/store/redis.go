@@ -82,19 +82,27 @@ func (s *Redis) Delete(ctx context.Context, key string) error {
 	return s.rdb.Del(ctx, key).Err()
 }
 
-// incrScript: INCR, and set the TTL only when the key was just created (v==1),
-// so an existing time-bucketed counter keeps its original expiry, matching
-// the memory/bbolt Incr contract. ARGV[1] is the TTL in milliseconds (0 = none).
-var incrScript = redis.NewScript(`
-local v = redis.call('INCR', KEYS[1])
-if v == 1 and tonumber(ARGV[1]) > 0 then
-  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+// incrByScript: INCRBY delta, and set the TTL only when the key did not exist
+// before, so an existing time-bucketed counter keeps its original expiry,
+// matching the memory/bbolt IncrBy contract. Existence is checked before the
+// increment (rather than inferring it from the result) so a delta that happens
+// to equal the pre-existing value cannot be mistaken for a fresh key. ARGV[1]
+// is the delta, ARGV[2] the TTL in milliseconds (0 = none).
+var incrByScript = redis.NewScript(`
+local fresh = redis.call('EXISTS', KEYS[1]) == 0
+local v = redis.call('INCRBY', KEYS[1], ARGV[1])
+if fresh and tonumber(ARGV[2]) > 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
 end
 return v
 `)
 
 func (s *Redis) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	return incrScript.Run(ctx, s.rdb, []string{key}, ttl.Milliseconds()).Int64()
+	return s.IncrBy(ctx, key, 1, ttl)
+}
+
+func (s *Redis) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	return incrByScript.Run(ctx, s.rdb, []string{key}, delta, ttl.Milliseconds()).Int64()
 }
 
 // casScript: atomic compare-and-swap. ARGV[1]=old (or empty marker), ARGV[2]=new,

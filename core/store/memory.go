@@ -96,19 +96,23 @@ func (s *Memory) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (s *Memory) Incr(_ context.Context, key string, ttl time.Duration) (int64, error) {
+func (s *Memory) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return s.IncrBy(ctx, key, 1, ttl)
+}
+
+func (s *Memory) IncrBy(_ context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.get(key)
 	if !ok {
-		s.m[key] = entry{value: []byte("1"), expiresAt: expiry(ttl)}
-		return 1, nil
+		s.m[key] = entry{value: []byte(strconv.FormatInt(delta, 10)), expiresAt: expiry(ttl)}
+		return delta, nil
 	}
 	n, err := strconv.ParseInt(string(e.value), 10, 64)
 	if err != nil {
 		return 0, err
 	}
-	n++
+	n += delta
 	e.value = []byte(strconv.FormatInt(n, 10))
 	s.m[key] = e
 	return n, nil

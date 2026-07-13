@@ -62,6 +62,13 @@ func (s *Instrumented) Incr(ctx context.Context, key string, ttl time.Duration) 
 	return n, err
 }
 
+func (s *Instrumented) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	start := time.Now()
+	n, err := s.inner.IncrBy(ctx, key, delta, ttl)
+	s.observe("incr", start, err)
+	return n, err
+}
+
 func (s *Instrumented) CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
 	start := time.Now()
 	ok, err := s.inner.CompareAndSwap(ctx, key, old, new, ttl)

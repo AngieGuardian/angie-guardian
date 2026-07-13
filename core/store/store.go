@@ -37,6 +37,15 @@ type Store interface {
 	// cheap sliding-window counters.
 	Incr(ctx context.Context, key string, ttl time.Duration) (int64, error)
 
+	// IncrBy atomically adds delta to the decimal counter at key and returns
+	// the new value. Semantics match Incr with delta 1: a missing or expired
+	// key starts at delta with the given TTL; an existing key keeps its
+	// original expiry. It lets a caller that coalesced several events flush
+	// the whole batch in one round instead of losing all but one. delta may be
+	// zero (a no-op that still reports the current value) but should not be
+	// negative for the counter use cases here.
+	IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error)
+
 	// CompareAndSwap atomically replaces the current value with new if it
 	// equals old. old == nil requires the key to be absent (create-only).
 	// This is what makes spent-challenge marking replay-safe.

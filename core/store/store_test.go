@@ -112,6 +112,28 @@ func TestStoreConformance(t *testing.T) {
 				t.Fatalf("incr after expiry = %d, want 1", n)
 			}
 
+			// IncrBy: a fresh key starts at delta with the given TTL; an
+			// existing key adds delta and keeps its original expiry; and it
+			// composes with Incr (delta 1).
+			if n, err := s.IncrBy(ctx, "byctr", 5, time.Hour); err != nil || n != 5 {
+				t.Fatalf("first IncrBy = %d %v, want 5 nil", n, err)
+			}
+			if n, _ := s.IncrBy(ctx, "byctr", 3, time.Hour); n != 8 {
+				t.Fatalf("IncrBy on existing = %d, want 8", n)
+			}
+			if n, _ := s.Incr(ctx, "byctr", time.Hour); n != 9 {
+				t.Fatalf("Incr after IncrBy = %d, want 9", n)
+			}
+			// A fresh short-lived IncrBy counter restarts after its window,
+			// proving the fresh key got the TTL.
+			if n, _ := s.IncrBy(ctx, "byctr2", 4, shortTTL); n != 4 {
+				t.Fatalf("first short IncrBy = %d, want 4", n)
+			}
+			advance(shortTTL + 200*time.Millisecond)
+			if n, _ := s.IncrBy(ctx, "byctr2", 2, time.Minute); n != 2 {
+				t.Fatalf("IncrBy after expiry = %d, want 2 (window did not reset)", n)
+			}
+
 			// CAS create-only (old == nil).
 			ok, err = s.CompareAndSwap(ctx, "cas", nil, []byte("a"), 0)
 			if err != nil || !ok {

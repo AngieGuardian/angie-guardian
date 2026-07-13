@@ -119,7 +119,11 @@ func (s *Bolt) Delete(_ context.Context, key string) error {
 	})
 }
 
-func (s *Bolt) Incr(_ context.Context, key string, ttl time.Duration) (int64, error) {
+func (s *Bolt) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	return s.IncrBy(ctx, key, 1, ttl)
+}
+
+func (s *Bolt) IncrBy(_ context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
 	var n int64
 	err := s.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(boltBucket)
@@ -130,14 +134,14 @@ func (s *Bolt) Incr(_ context.Context, key string, ttl time.Duration) (int64, er
 			if err != nil {
 				return err
 			}
-			n = v + 1
+			n = v + delta
 			// Keep the original expiry so time-bucketed counters stay bucketed.
 			out := make([]byte, 8, 8+20)
 			copy(out, raw[:8])
 			return b.Put(k, strconv.AppendInt(out, n, 10))
 		}
-		n = 1
-		return b.Put(k, encode([]byte("1"), ttl))
+		n = delta
+		return b.Put(k, encode(strconv.AppendInt(nil, delta, 10), ttl))
 	})
 	return n, err
 }
