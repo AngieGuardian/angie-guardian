@@ -37,7 +37,7 @@ never verifies, its rDNS may not match the configured domains — see
 [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
 **Everyone is challenged too aggressively.** If `pow.mode: always`, every
-unvouched browser is challenged once per `token_ttl`. Lower `base_difficulty`
+unvouched request is challenged once per `token_ttl`. Lower `base_difficulty`
 or switch to `pow.mode: suspicion` (only anomaly-flagged clients are
 challenged) — see [Configuration](/guide/configuration).
 
@@ -97,4 +97,7 @@ Multi-instance replicas must share the signing key (`signing_key_file`) and
 restart, the key is never regenerated, so restarts don't log clients out —
 unless the key file moved or its directory isn't persisted (check a container's
 volume mounts). Clock skew between replicas larger than a token's validity
-window can also reject otherwise-valid tokens; keep them NTP-synced.
+window can also reject otherwise-valid tokens; keep them NTP-synced. Live
+replicas refresh shared key files automatically after rotation. If rejection
+continues, verify both paths really refer to the same shared filesystem and
+that every replica can read the archive and acquire the key's rotation lock.

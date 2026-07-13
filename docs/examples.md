@@ -208,7 +208,7 @@ defaults:
     signed_id: { enabled: false }
   pow:
     enabled: true
-    mode: always              # always: challenge every unvouched browser
+    mode: always              # always: challenge every unvouched request
                               # suspicion: only challenge anomalous clients (needs waf.anomaly)
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).

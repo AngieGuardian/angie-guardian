@@ -30,9 +30,9 @@ pipeline. Everything is per-domain configurable.
      cross-domain challenge ID is rejected and scored as a tamper event
    - statistical anomaly scoring: `guardian-train` learns per-domain
      baselines from Angie JSON access logs offline; the online scorer rates
-     every request in ~260ns and drives challenge/deny + difficulty
-     escalation (model artifact is versioned and hot-swapped, so an ML
-     implementation can slot in behind the same seam later)
+     each unvouched request that reaches it in ~260ns and drives challenge/
+     deny + difficulty escalation (valid PoW tokens short-circuit this stage,
+     after signature checks)
 
 2. **Proof-of-Work challenge layer**, only for suspicious or new clients:
    - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver
@@ -82,9 +82,10 @@ signature checks, so a stolen token can't ride past the WAF.
   admin token is auto-generated, see `admin.token_file`). It shows active
   blocks with one-click block/unblock, the filterable recent decisions feed,
   challenge/solve counters, and per-domain status. See USAGE.md § 4.
-- **Key rotation**: `POST /admin/rotate-key` archives the current Ed25519
-  key and generates a new one; tokens signed by the old key keep verifying
-  until they expire, so rotation never logs anyone out.
+- **Key rotation**: `POST /admin/rotate-key` atomically archives the current
+  Ed25519 key and generates a new one; `previous_key_dir` is required. Live
+  replicas sharing both paths refresh automatically, while old tokens keep
+  verifying until they expire.
 - **Hot reload**: `SIGHUP` (or `POST /admin/reload`) re-reads `guardian.yaml`
   and applies it without a restart: domains, lists, thresholds, difficulty,
   GeoIP/feed sources, log level. Active blocks and issued tokens survive; a
@@ -156,7 +157,7 @@ write-heavy path):
 | `allow` | plain request, full pipeline, ends in "default allow" | 1 read (block lookup) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | 1 read |
 | `deny` | denylisted client IP (deny + decision logging path) | 1 read |
-| `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); the per-IP rate-limit and escalation counters are counted in-process and flushed to the store in the background |
+| `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); the issuance-rate and host+IP escalation counters are counted in-process and flushed to the store in the background |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
 same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the
@@ -178,7 +179,7 @@ counted in-process and synced to the shared store in the background. So the
 backend choice hinges on your *new-client* rate, i.e. the clients that
 trigger a challenge write:
 
-- With `pow.mode: always`, every unvouched browser is challenged, so a burst of
+- With `pow.mode: always`, every unvouched request is challenged, so a burst of
   fresh visitors is bounded by the write path. If that burst can exceed a few
   thousand per second, use the **redis** backend (Redis or
   [Valkey](https://valkey.io/), a drop-in replacement), or set

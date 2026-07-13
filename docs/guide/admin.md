@@ -53,8 +53,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
      "$A/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
 # {"host":"shop.example.com","scored":true,"score":0.72}
 
-# Rotate the Ed25519 signing key. Old tokens keep verifying until they
-# expire, so nobody is logged out.
+# Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
+# replicas refresh automatically and old tokens remain valid.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 

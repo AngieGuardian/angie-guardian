@@ -427,7 +427,7 @@ type ToggleConfig struct {
 
 type PoWConfig struct {
 	Enabled bool `yaml:"enabled"`
-	// Mode "always" challenges every unvouched browser; "suspicion" only
+	// Mode "always" challenges every unvouched request; "suspicion" only
 	// challenges clients the anomaly scorer flags (requires waf.anomaly).
 	Mode string `yaml:"mode"`
 	// Difficulty is configured on the historical hex-digit scale (1..8, one

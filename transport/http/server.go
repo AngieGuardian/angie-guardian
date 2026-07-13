@@ -173,8 +173,8 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// them: within the rate limit above, a challenge farmer would otherwise
 	// pay base difficulty forever. Each unsolved issuance past a small
 	// allowance raises the work, capped at the domain ceiling; a successful
-	// redemption resets the counter (core/pow/escalation.go).
-	if extra := s.pow.BumpEscalation(r.Context(), ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+	// redemption resets this host+IP counter (core/pow/escalation.go).
+	if extra := s.pow.BumpEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
 		difficulty = min(difficulty+extra, dcfg.PoW.MaxBits())
 		s.metrics.Challenge("escalated")
 		s.log.Info("challenge difficulty escalated",

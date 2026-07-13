@@ -379,12 +379,9 @@ func scaleDifficulty(base, maxDiff int, score, challengeAt float64) int {
 }
 
 // powChallengeStage — pipeline stage 6. In mode "always" every unvouched
-// browser-shaped request on a PoW-enabled domain is challenged at base
-// difficulty. In mode "suspicion" the anomaly stage owns all challenge
-// decisions, so ordinary-looking new clients browse without interstitials.
-// "browser-shaped" means a Mozilla User-Agent: the scrapers worth taxing
-// impersonate browsers, while honest tools (curl, feed readers, package
-// managers) pass through to the WAF-only path.
+// request on a PoW-enabled domain is challenged at base difficulty. In mode
+// "suspicion" the anomaly stage owns all challenge decisions, so ordinary-
+// looking new clients browse without interstitials.
 type powChallengeStage struct{}
 
 func (powChallengeStage) Name() string { return "pow_challenge" }
@@ -394,12 +391,6 @@ func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *s
 		return nil, nil
 	}
 	if env.domain.PoW.Mode == "suspicion" && env.domain.WAF.Anomaly.Enabled {
-		return nil, nil
-	}
-	if req.Method != "GET" && req.Method != "HEAD" {
-		return nil, nil
-	}
-	if !strings.Contains(strings.ToLower(req.UserAgent), "mozilla") {
 		return nil, nil
 	}
 	return &Decision{

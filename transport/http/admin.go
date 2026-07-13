@@ -286,6 +286,10 @@ func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "no signing_key_file configured; cannot rotate"})
 		return
 	}
+	if strings.TrimSpace(s.prevDir) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "no previous_key_dir configured; safe rotation requires an archive directory"})
+		return
+	}
 	if err := mgr.Rotate(s.keyPath, s.prevDir); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

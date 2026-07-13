@@ -69,6 +69,20 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 	if m.cache.get(cacheKey, now) {
 		return nil
 	}
+	claims, err := m.verifyTokenOnce(token, host, ip, userAgent)
+	if err != nil {
+		if refreshed, _ := m.refreshKeys(true); refreshed {
+			claims, err = m.verifyTokenOnce(token, host, ip, userAgent)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	m.cache.put(cacheKey, claims.ExpiresAt.Time, now)
+	return nil
+}
+
+func (m *Manager) verifyTokenOnce(token, host, ip, userAgent string) (*TokenClaims, error) {
 	claims := &TokenClaims{}
 	_, err := jwt.ParseWithClaims(token, claims,
 		func(*jwt.Token) (any, error) { return m.verifyKeys(), nil },
@@ -77,16 +91,15 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 		jwt.WithTimeFunc(m.now),
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !strings.EqualFold(claims.Host, host) {
-		return fmt.Errorf("token bound to host %q, presented on %q", claims.Host, host)
+		return nil, fmt.Errorf("token bound to host %q, presented on %q", claims.Host, host)
 	}
 	if claims.Subject != Fingerprint(ip, userAgent) {
-		return fmt.Errorf("token fingerprint mismatch")
+		return nil, fmt.Errorf("token fingerprint mismatch")
 	}
-	m.cache.put(cacheKey, claims.ExpiresAt.Time, now)
-	return nil
+	return claims, nil
 }
 
 // Fingerprint identifies a client for token binding without storing any PII:

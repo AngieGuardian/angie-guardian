@@ -134,9 +134,10 @@ denied".
 
 ### `POST /admin/rotate-key`
 
-Archive the current Ed25519 signing key into `previous_key_dir` and generate
-a new one. Tokens signed by the old key keep verifying until they expire, so
-rotation never logs anyone out.
+Atomically archive the current Ed25519 signing key into `previous_key_dir` and
+generate a new one. `previous_key_dir` must be configured. Live replicas that
+share both key paths refresh automatically, and tokens signed by retired keys
+keep verifying until they expire.
 
 ```json
 {"rotated":true}

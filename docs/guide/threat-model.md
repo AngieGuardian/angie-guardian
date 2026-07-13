@@ -6,16 +6,18 @@ sound protection and a false sense of one. This page is the honest map.
 
 ## What Guardian defends against
 
-- **Automated scraping and bulk abuse.** The proof-of-work interstitial makes
-  every unvouched client pay a small computation before its first request is
-  served, then rides a signed, short-lived token. A human barely notices; a
-  scraper hitting thousands of URLs pays the cost thousands of times.
+- **Automated scraping and bulk abuse.** On domains using `pow.mode: always`,
+  the proof-of-work interstitial makes every unvouched client pay a small
+  computation before its first request is served, then rides a signed,
+  short-lived token. In `suspicion` mode only clients flagged by policy pay.
 - **Scanner and probe traffic.** WAF signature rules (keywords + RE2 regexes,
   on the path, query, User-Agent and named headers) deny known-bad requests:
   dotfile probes, admin-panel scans, injection payloads. Repeat offenders earn
   a behavioural IP block with backoff.
 - **Credential stuffing and login abuse**, to the extent it comes from
-  unvouched automation: the same PoW tax and behavioural scoring apply.
+  unvouched automation: `always` mode taxes the initial login request, while
+  `suspicion` mode taxes only requests flagged by its configured policies;
+  behavioural scoring still applies.
 - **Forged / spoofed bot identity.** A client claiming to be Googlebot in its
   User-Agent is only allowlisted if its IP reverse-DNS *and* forward-confirms
   to the crawler's published domains. A proven impostor is denied and scored.

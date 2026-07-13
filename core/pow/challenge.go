@@ -37,6 +37,12 @@ type Manager struct {
 	cache      *tokenCache
 	counters   *store.CounterCache // escalation counts, off the write hot path
 
+	reloadMu           sync.Mutex
+	keyPath            string
+	prevDir            string
+	lastRefresh        time.Time
+	lastFailureRefresh time.Time
+
 	// NoJSMinDelay is the minimum wall-clock wait before a meta-refresh
 	// (no-JS) redemption is accepted. Overridable for tests.
 	NoJSMinDelay time.Duration
@@ -46,6 +52,26 @@ type Manager struct {
 
 func NewManager(key ed25519.PrivateKey, st store.Store) *Manager {
 	return NewManagerWithKeys(key, nil, st)
+}
+
+// NewManagerFromFiles creates a manager that can notice rotations performed
+// by another Guardian process sharing the same key files. The current key is
+// refreshed periodically before signing and immediately (rate limited) when
+// verification misses the in-memory key set.
+func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, error) {
+	key, err := LoadOrCreateKey(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	previous, err := LoadPreviousKeys(prevDir)
+	if err != nil {
+		return nil, err
+	}
+	m := NewManagerWithKeys(key, previous, st)
+	m.keyPath = keyPath
+	m.prevDir = prevDir
+	m.lastRefresh = m.now()
+	return m, nil
 }
 
 // NewManagerWithKeys builds a Manager that signs with current and also
@@ -77,6 +103,7 @@ func (m *Manager) SetKeys(current ed25519.PrivateKey, previous []ed25519.Private
 }
 
 func (m *Manager) signingKey() ed25519.PrivateKey {
+	_, _ = m.refreshKeys(false)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.keys[0]
@@ -87,16 +114,68 @@ func (m *Manager) signingKey() ed25519.PrivateKey {
 // verifies live tokens. keyPath/prevDir are the same paths guardiand loaded
 // from, so a restart (or a peer instance's reload) reconstructs the same set.
 func (m *Manager) Rotate(keyPath, prevDir string) error {
-	newKey, err := RotateKey(keyPath, prevDir, m.now().Unix())
+	_, err := RotateKey(keyPath, prevDir, m.now().Unix())
 	if err != nil {
 		return err
 	}
-	previous, err := LoadPreviousKeys(prevDir)
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	m.keyPath, m.prevDir = keyPath, prevDir
+	return m.reloadKeysLocked()
+}
+
+const keyRefreshInterval = 250 * time.Millisecond
+
+// ReloadKeys immediately reloads the current and retired keys from the files
+// configured by NewManagerFromFiles or the last successful Rotate call.
+func (m *Manager) ReloadKeys() error {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if m.keyPath == "" {
+		return errors.New("manager has no signing key files configured")
+	}
+	return m.reloadKeysLocked()
+}
+
+func (m *Manager) reloadKeysLocked() error {
+	current, err := loadKey(m.keyPath)
 	if err != nil {
 		return err
 	}
-	m.SetKeys(newKey, previous)
+	previous, err := LoadPreviousKeys(m.prevDir)
+	if err != nil {
+		return err
+	}
+	m.SetKeys(current, previous)
+	m.lastRefresh = m.now()
 	return nil
+}
+
+// refreshKeys performs a throttled file refresh. A verification failure uses
+// its own throttle so a newly rotated peer key is noticed immediately even if
+// a routine signing refresh happened moments earlier.
+func (m *Manager) refreshKeys(afterVerificationFailure bool) (bool, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if m.keyPath == "" {
+		return false, nil
+	}
+	now := m.now()
+	if afterVerificationFailure {
+		if !m.lastFailureRefresh.IsZero() && now.Sub(m.lastFailureRefresh) < keyRefreshInterval {
+			return false, nil
+		}
+		m.lastFailureRefresh = now
+	} else {
+		if !m.lastRefresh.IsZero() && now.Sub(m.lastRefresh) < keyRefreshInterval {
+			return false, nil
+		}
+		m.lastRefresh = now // throttle repeated read failures too
+	}
+	if err := m.reloadKeysLocked(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Challenge is what the interstitial page needs to render and solve.
@@ -250,7 +329,7 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 
 	// The client just proved it solves what it requests: forget its
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
-	m.counters.Forget(escalationKey(rec.IP))
+	m.counters.Forget(escalationKey(rec.Host, rec.IP))
 
 	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, req.TokenTTL)
 	if err != nil {

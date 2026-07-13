@@ -39,7 +39,7 @@ defaults:
       block_ttl: 15m
       thresholds: { signature: 3/min, pow_fail: 3/min, tamper: 3/min }
     keywords: { enabled: true, rules_file: %q }
-    honeypot: { enabled: true, paths: [ "/wp-login.php" ] }
+    honeypot: { enabled: true, paths: [ "/wp-login.php", "/admin-old/" ] }
   allowlist:
     ips: [ "10.0.0.0/8" ]
 domains:
@@ -133,6 +133,21 @@ func TestHoneypotTrap(t *testing.T) {
 	d = e.Evaluate(ctx, req("plain.test", ip, "/", "Mozilla/5.0"))
 	if d.Action != ActionDeny || d.Reason != "behaviour_block:honeypot:path" {
 		t.Fatalf("after trap: got %s/%s, want instant block", d.Action, d.Reason)
+	}
+}
+
+func TestEncodedHoneypotTrapBlocksIP(t *testing.T) {
+	ctx := context.Background()
+	e, _ := wafEngine(t)
+	ip := "198.51.100.24"
+
+	d := e.Evaluate(ctx, req("plain.test", ip, "/%61dmin-old/secret", "Mozilla/5.0"))
+	if d.Action != ActionDeny || d.Reason != "honeypot:path" {
+		t.Fatalf("encoded trap hit: got %s/%s", d.Action, d.Reason)
+	}
+	d = e.Evaluate(ctx, req("plain.test", ip, "/clean", "Mozilla/5.0"))
+	if d.Action != ActionDeny || d.Reason != "behaviour_block:honeypot:path" {
+		t.Fatalf("after encoded trap: got %s/%s, want instant block", d.Action, d.Reason)
 	}
 }
 

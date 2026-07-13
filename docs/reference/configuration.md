@@ -22,7 +22,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `log_level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `trusted_proxy` | bool | `false` | Allow a non-loopback `listen`. The hot path trusts the `X-Guardian-*` client-identity headers from its caller, so only set this when the listener is isolated to Angie (private network, firewall, or mTLS). |
 | `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Generated on first run if missing; never regenerated on restart. |
-| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; they are still accepted for verification until their tokens expire. |
+| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; required for rotation. Replicas must share it with `signing_key_file`; retired keys remain accepted until their tokens expire. |
 | `admin` | object | | See [admin](#admin). |
 | `store` | object | | See [store](#store). |
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
@@ -94,7 +94,7 @@ Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. |
-| `pow.mode` | string | `always` | `always`: challenge every unvouched browser. `suspicion`: only challenge clients the anomaly scorer flags (requires `waf.anomaly.enabled`). |
+| `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: only challenge clients the anomaly scorer flags (requires `waf.anomaly.enabled`). |
 | `pow.base_difficulty` | float | `5` | The floor every clean client pays. Range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
 | `pow.max_difficulty` | float | `6` | The ceiling, reached only via anomaly-scaled difficulty. Range `base_difficulty`..8, quarter steps. |
 | `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. |

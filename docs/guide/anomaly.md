@@ -1,9 +1,11 @@
 # Train the Anomaly Model
 
-The statistical anomaly scorer rates every request against a per-domain
-baseline learned from your own traffic. With a trained model in place,
-Guardian can challenge or deny bot-shaped requests that no static signature
-would catch, and scale the PoW difficulty with the suspicion score.
+The statistical anomaly scorer rates each unvouched request that reaches its
+pipeline stage against a per-domain baseline learned from your own traffic.
+Valid PoW tokens short-circuit the scorer (after the always-on signature
+checks). With a trained model in place, Guardian can challenge or deny
+bot-shaped requests that no static signature would catch, and scale the PoW
+difficulty with the suspicion score.
 
 ## 1. Collect JSON access logs
 

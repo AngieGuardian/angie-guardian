@@ -27,7 +27,7 @@ func TestAllowlistedPathReachesBackend(t *testing.T) {
 	}
 }
 
-// TestBrowserGetIsChallenged confirms a browser-shaped GET on a PoW-always host
+// TestBrowserGetIsChallenged confirms an unvouched GET on a PoW-always host
 // is diverted to the interstitial (Angie turns the 401 into 200 HTML) and that
 // the page carries the embedded challenge JSON.
 func TestBrowserGetIsChallenged(t *testing.T) {
@@ -41,16 +41,30 @@ func TestBrowserGetIsChallenged(t *testing.T) {
 	}
 }
 
-// TestNonBrowserUAPassesWAF confirms a non-browser User-Agent (curl) is NOT
-// taxed with a PoW challenge on a PoW-always host: it passes the WAF straight
-// to the backend, so honest tools are not blocked by the interstitial.
-func TestNonBrowserUAPassesWAF(t *testing.T) {
+// TestNonBrowserUAIsChallenged confirms command-line clients cannot bypass
+// pow.mode=always by omitting a browser-shaped User-Agent.
+func TestNonBrowserUAIsChallenged(t *testing.T) {
 	resp := get(t, "/api-ish", powHost, "curl/8.0", nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("curl UA: status %d, want 200 (reach backend)", resp.StatusCode)
+		t.Fatalf("curl UA: status %d, want 200 interstitial", resp.StatusCode)
 	}
-	if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
-		t.Fatalf("curl UA did not reach backend; body:\n%s", body)
+	if body := bodyOf(t, resp); !strings.Contains(body, "guardian-data") {
+		t.Fatalf("curl UA did not receive the PoW interstitial; body:\n%s", body)
+	}
+}
+
+// TestPostIsDivertedToChallenge proves non-idempotent methods cannot bypass
+// pow.mode=always. Angie internally fetches the interstitial with GET and does
+// not forward the original request body to Guardian or the backend.
+func TestPostIsDivertedToChallenge(t *testing.T) {
+	resp := req(t, http.MethodPost, site+"/submit", map[string]string{
+		"Host": powHost, "User-Agent": browserUA, "Content-Type": "application/json",
+	}, strings.NewReader(`{"secret":"must-not-reach-backend"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST challenge: status %d, want 200 interstitial", resp.StatusCode)
+	}
+	if body := bodyOf(t, resp); !strings.Contains(body, "guardian-data") {
+		t.Fatalf("POST did not receive the PoW interstitial; body:\n%s", body)
 	}
 }
 

@@ -29,7 +29,7 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 		clearGatewayBlocks()
 	})
 
-	// Sanity: with guardiand up, a browser-shaped GET is challenged (proof the
+	// Sanity: with guardiand up, an unvouched GET is challenged (proof the
 	// sidecar is actually in the path before we stop it).
 	if r := get(t, "/pre-check", powHost, browserUA, nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("pre-check (guardiand up): status %d, want 200 interstitial", r.StatusCode)

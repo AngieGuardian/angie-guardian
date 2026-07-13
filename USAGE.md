@@ -100,6 +100,11 @@ POST payloads. That is a deliberate design boundary, not a missing feature:
 inspecting bodies would mean buffering every upload through the sidecar.
 Body-borne attacks are for your backend's input validation or a full inline
 WAF; Guardian's job is keeping bots and scanners from reaching it at all.
+In `pow.mode: always`, an unvouched POST/PUT/DELETE is diverted before its body
+reaches the backend. Angie fetches the interstitial internally with GET;
+Guardian never stores or replays the body, so the browser/client must retry or
+confirm resubmission after solving. Machine APIs that cannot do that should
+disable PoW or use `mode: suspicion` with an appropriate policy.
 
 ### base_difficulty and max_difficulty
 
@@ -115,19 +120,20 @@ steps. Values off the quarter grid (like `4.3`) are rejected at load.
 
 Which value fires:
 
-- **`mode: always` (the default):** every unvouched browser-shaped request pays
-  exactly `base_difficulty`, once, then rides a `token_ttl` cookie.
+- **`mode: always` (the default):** every unvouched request, regardless of HTTP
+  method or User-Agent, pays exactly `base_difficulty`, once, then rides a
+  `token_ttl` cookie.
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits =
   16x, capped at `max`).
 - **The anomaly scorer:** scales the difficulty across the `[base, max]` range
   with the score, so a more bot-like client pays more. Requires `waf.anomaly`
   enabled with a trained model.
-- **Challenge farming:** an IP that keeps requesting challenges without ever
-  solving one gets escalated on top of whichever value above applied. The
-  first 4 unsolved challenges are free (multiple tabs, reloads), then every 2
-  further abandoned challenges add one bit (2x work), capped at `max`. Any
-  successful solve resets the IP to a clean slate. The counter lives for
-  `challenge_ttl`, and escalated issuances show up in Prometheus as
+- **Challenge farming:** a host+IP pair that keeps requesting challenges
+  without ever solving one gets escalated on top of whichever value above
+  applied. The first 4 unsolved challenges are free (multiple tabs, reloads),
+  then every 2 further abandoned challenges add one bit (2x work), capped at
+  `max`. Any successful solve resets only that domain's counter. The counter
+  lives for `challenge_ttl`, and escalated issuances show up in Prometheus as
   `guardian_challenges_total{outcome="escalated"}`.
 
 #### Measured solve times and recommended values
@@ -454,8 +460,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
      "$A/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
 # {"host":"shop.example.com","scored":true,"score":0.72}
 
-# Rotate the Ed25519 signing key. Old tokens keep verifying until they
-# expire, so nobody is logged out.
+# Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
+# replicas refresh automatically and old tokens remain valid.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
@@ -573,6 +579,8 @@ where bbolt's single embedded writer trails redis/valkey. See
 To run replicas behind a load balancer, point every instance at one shared
 Redis or Valkey instance and share the signing key + `previous_key_dir` across
 them, so any instance verifies any other's tokens and sees any other's blocks.
+Live replicas notice rotations automatically; the archive directory is
+required before `POST /admin/rotate-key` is allowed.
 Valkey is a fully compatible drop-in replacement for Redis; the configuration
 is identical for both.
 

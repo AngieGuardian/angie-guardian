@@ -100,15 +100,14 @@ func run(configPath string) error {
 
 	var powMgr *pow.Manager
 	if cfg.SigningKeyFile != "" {
-		key, err := pow.LoadOrCreateKey(cfg.SigningKeyFile)
+		powMgr, err = pow.NewManagerFromFiles(cfg.SigningKeyFile, cfg.PreviousKeyDir, st)
 		if err != nil {
-			return fmt.Errorf("signing key %s: %w", cfg.SigningKeyFile, err)
+			return fmt.Errorf("signing keys: %w", err)
 		}
 		previous, err := pow.LoadPreviousKeys(cfg.PreviousKeyDir)
 		if err != nil {
 			return fmt.Errorf("previous keys %s: %w", cfg.PreviousKeyDir, err)
 		}
-		powMgr = pow.NewManagerWithKeys(key, previous, st)
 		if len(previous) > 0 {
 			log.Info("loaded retired signing keys for verification", "count", len(previous))
 		}

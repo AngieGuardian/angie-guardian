@@ -256,6 +256,38 @@ func TestAdminRotateKey(t *testing.T) {
 	}
 }
 
+func TestAdminRotateKeyRequiresPreviousDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(adminYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	keyPath := filepath.Join(dir, "ed25519.key")
+	key, err := pow.LoadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := core.NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, metrics.New(), adminToken, keyPath, "", nil, slog.Default()))
+	t.Cleanup(ts.Close)
+
+	resp := adminReq(t, ts, "POST", "/admin/rotate-key", adminToken, "")
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("rotate without previous_key_dir: status = %d body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestAdminMetricsExposed(t *testing.T) {
 	ts, _ := adminServer(t)
 	// Place a block so at least one guardian metric has a value.

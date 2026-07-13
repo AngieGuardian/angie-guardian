@@ -23,7 +23,7 @@ domains:
       ips: [ "198.51.100.66" ]
     honeypot:
       enabled: true
-      paths: [ "/wp-login.php" ]
+      paths: [ "/wp-login.php", "/admin-old/" ]
     rules:
       - id: dotfile
         action: block
@@ -66,6 +66,8 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		{"denylist ip", req("site.test", "198.51.100.66", "/page", "curl"), ActionDeny, "denylist:ip"},
 		{"allowlist beats denylist", req("site.test", "10.9.9.9", "/page", "curl"), ActionAllow, "allowlist:ip"},
 		{"honeypot", req("site.test", "192.0.2.8", "/wp-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
+		{"honeypot url-encoded", req("site.test", "192.0.2.8", "/%77p-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
+		{"honeypot url-encoded prefix", req("site.test", "192.0.2.8", "/%61dmin-old/secret", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"signature keyword (block->deny)", req("site.test", "192.0.2.9", "/app/.env", "curl"), ActionDeny, "waf:dotfile"},
 		{"signature url-encoded", req("site.test", "192.0.2.9", "/%2e%65nv", "curl"), ActionDeny, "waf:dotfile"},
 		{"signature challenge degrades to deny", req("site.test", "192.0.2.9", "/x?q=union+all+select+1", "curl"), ActionDeny, "waf:sqli"},
