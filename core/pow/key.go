@@ -9,8 +9,10 @@
 package pow
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -25,15 +27,23 @@ import (
 // and persisting one (0600) only if the file does not exist yet. It is never
 // regenerated on restart — that is the whole point (plan §7).
 func LoadOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	raw, err := os.ReadFile(path)
+	key, err := loadKey(path)
 	switch {
 	case err == nil:
-		return parseKey(raw, path)
+		return key, nil
 	case errors.Is(err, os.ErrNotExist):
 		return generateKey(path)
 	default:
 		return nil, err
 	}
+}
+
+func loadKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseKey(raw, path)
 }
 
 func parseKey(raw []byte, path string) (ed25519.PrivateKey, error) {
@@ -53,18 +63,13 @@ func parseKey(raw []byte, path string) (ed25519.PrivateKey, error) {
 }
 
 func generateKey(path string) (ed25519.PrivateKey, error) {
-	_, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
+	key, buf, err := newKeyPEM()
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	buf := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 	// O_EXCL: if two instances race on first start, exactly one wins and the
 	// other loads the winner's key instead of silently overwriting it.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -83,6 +88,18 @@ func generateKey(path string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	return key, nil
+}
+
+func newKeyPEM() (ed25519.PrivateKey, []byte, error) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
 // LoadPreviousKeys loads retired signing keys from a directory, for the
@@ -123,25 +140,120 @@ func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
 }
 
 // RotateKey generates a fresh Ed25519 key, archives the current key file into
-// prevDir (timestamped) and writes the new key to keyPath. Returns the new
-// current key. All Guardian instances sharing keyPath + prevDir pick it up on
-// their next reload; tokens signed with the old key stay valid until exp.
+// prevDir, and atomically replaces keyPath. Rotations sharing keyPath are
+// serialized across processes; archive names contain both the timestamp and
+// old-key fingerprint so same-second rotations cannot overwrite each other.
 func RotateKey(keyPath, prevDir string, nowUnix int64) (ed25519.PrivateKey, error) {
+	if strings.TrimSpace(prevDir) == "" {
+		return nil, errors.New("previous_key_dir is required for safe key rotation")
+	}
+	unlock, err := lockRotation(keyPath + ".rotate.lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock key rotation: %w", err)
+	}
+	defer unlock()
+
 	current, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read current key: %w", err)
 	}
-	if prevDir != "" {
-		if err := os.MkdirAll(prevDir, 0o700); err != nil {
-			return nil, err
-		}
-		archive := filepath.Join(prevDir, fmt.Sprintf("%d.key", nowUnix))
-		if err := os.WriteFile(archive, current, 0o600); err != nil {
-			return nil, fmt.Errorf("archive current key: %w", err)
-		}
-	}
-	if err := os.Remove(keyPath); err != nil {
+	if _, err := parseKey(current, keyPath); err != nil {
 		return nil, err
 	}
-	return generateKey(keyPath)
+	if err := os.MkdirAll(prevDir, 0o700); err != nil {
+		return nil, err
+	}
+	fingerprint := sha256.Sum256(current)
+	archive := filepath.Join(prevDir, fmt.Sprintf("%d-%x.key", nowUnix, fingerprint[:8]))
+	if err := archiveKey(archive, current); err != nil {
+		return nil, fmt.Errorf("archive current key: %w", err)
+	}
+
+	key, buf, err := newKeyPEM()
+	if err != nil {
+		return nil, err
+	}
+	if err := atomicReplaceKey(keyPath, buf); err != nil {
+		return nil, fmt.Errorf("replace current key: %w", err)
+	}
+	return key, nil
+}
+
+func archiveKey(path string, contents []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		existing, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if bytes.Equal(existing, contents) {
+			return nil // retry after an interrupted replacement
+		}
+		return fmt.Errorf("archive collision at %s", path)
+	}
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(contents); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return syncDir(filepath.Dir(path))
+}
+
+func atomicReplaceKey(path string, contents []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".rotate-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(contents); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	// Some shared/network filesystems do not implement directory fsync. The
+	// files themselves were fsynced before this best-effort durability step.
+	_ = d.Sync()
+	return nil
 }

@@ -139,7 +139,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			powTokenStage{},       // 3. valid PoW token → allow
 			intelChallengeStage{}, //    geo scoping + reputation feeds (challenge half)
 			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
-			powChallengeStage{},   // 6. challenge unvouched browsers (mode "always")
+			powChallengeStage{},   // 6. challenge unvouched requests (mode "always")
 		},
 	}
 	e.snap.Store(snap)

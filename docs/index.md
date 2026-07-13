@@ -25,13 +25,13 @@ features:
     details: Hot-reloadable keyword/regex threat signatures (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
-    details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per IP against challenge farming, Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.
+    details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per host and IP against challenge farming, Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.
   - icon: 🌍
     title: Origin intelligence
     details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
   - icon: 📈
     title: Statistical anomaly scoring
-    details: guardian-train learns per-domain baselines from Angie JSON access logs offline; the online scorer rates every request in about 260 ns and drives challenge, deny, and difficulty escalation.
+    details: guardian-train learns per-domain baselines from Angie JSON access logs offline; the online scorer rates unvouched requests that reach it in about 260 ns and drives challenge, deny, and difficulty escalation.
   - icon: 🚫
     title: Behavioural IP blocking
     details: Signature hits, PoW failures, and tamper events feed per-IP scoreboards with exponential backoff. One honeypot hit means an instant block.

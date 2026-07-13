@@ -64,19 +64,20 @@ steps. Values off the quarter grid (like `4.3`) are rejected at load.
 
 Which value fires:
 
-- **`mode: always` (the default):** every unvouched browser-shaped request
+- **`mode: always` (the default):** every unvouched request, regardless of
+  HTTP method or User-Agent,
   pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie.
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`).
 - **The anomaly scorer:** scales the difficulty across the `[base, max]`
   range with the score, so a more bot-like client pays more. Requires
   `waf.anomaly` enabled with a trained model.
-- **Challenge farming:** an IP that keeps requesting challenges without ever
-  solving one gets escalated on top of whichever value above applied. The
-  first 4 unsolved challenges are free (multiple tabs, reloads), then every 2
-  further abandoned challenges add one bit (2x work), capped at `max`. Any
-  successful solve resets the IP to a clean slate. The counter lives for
-  `challenge_ttl`, and escalated issuances show up in Prometheus as
+- **Challenge farming:** a host+IP pair that keeps requesting challenges
+  without ever solving one gets escalated on top of whichever value above
+  applied. The first 4 unsolved challenges are free (multiple tabs, reloads),
+  then every 2 further abandoned challenges add one bit (2x work), capped at
+  `max`. Any successful solve resets only that domain's counter. The counter
+  lives for `challenge_ttl`, and escalated issuances show up in Prometheus as
   `guardian_challenges_total{outcome="escalated"}`.
 
 ### Measured solve times and recommended values
@@ -144,7 +145,9 @@ set `trusted_proxy: true`, otherwise `guardiand` refuses to start.
 generated on first run if missing and **never** regenerated on restart, so
 restarts don't log clients out and replicas can share it. Retired keys (from
 `POST /admin/rotate-key`) are archived in `previous_key_dir` and still
-accepted for verification until their tokens expire.
+accepted for verification until their tokens expire. Rotation requires a
+non-empty `previous_key_dir`; replicas must share both paths and automatically
+refresh their verification set when another replica rotates.
 
 ## Hot reload
 

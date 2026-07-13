@@ -249,7 +249,7 @@ func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) (Decision, bool) {
 	if !hp.Enabled || len(hp.Paths) == 0 {
 		return Decision{}, false
 	}
-	if MatchPathList(hp.Paths, RequestPath(req.URI)) {
+	if MatchPathList(hp.Paths, DecodePath(RequestPath(req.URI))) {
 		return Decision{
 			Action: ActionDeny,
 			Reason: "honeypot:path",

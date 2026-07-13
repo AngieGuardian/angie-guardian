@@ -78,7 +78,7 @@ func TestAnomalyStage(t *testing.T) {
 		t.Fatalf("normal request in suspicion mode: got %s/%s, want allow/default", d.Action, d.Reason)
 	}
 
-	// Mode always still challenges ordinary unvouched browsers.
+	// Mode always still challenges ordinary unvouched requests.
 	d = e.Evaluate(ctx, req("always.test", "198.51.100.41", "/blog/post-7", commonUA))
 	if d.Action != ActionChallenge || d.Reason != "pow:no_token" {
 		t.Fatalf("normal request in always mode: got %s/%s, want challenge/pow:no_token", d.Action, d.Reason)

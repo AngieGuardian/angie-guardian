@@ -348,7 +348,7 @@ type challengeData struct {
 func fetchChallenge(t *testing.T, path, host, ua string) challengeData {
 	t.Helper()
 	// Angie only serves /challenge on a 401 (auth_request diverts there). A
-	// browser-shaped GET on a PoW-always host yields the interstitial with a
+	// GET on a PoW-always host yields the interstitial with a
 	// 200 (Angie's error_page 401 = @guardian_challenge returns 200 HTML).
 	resp := get(t, path, host, ua, nil)
 	page := bodyOf(t, resp)

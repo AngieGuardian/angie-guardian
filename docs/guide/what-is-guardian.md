@@ -32,8 +32,10 @@ pipeline. Everything is per-domain configurable.
   single-spend and bound to `{host, purpose}`, so a forged, replayed or
   cross-domain challenge ID is rejected and scored as a tamper event.
 - Statistical anomaly scoring: `guardian-train` learns per-domain baselines
-  from Angie JSON access logs offline; the online scorer rates every request
-  in about 260 ns and drives challenge/deny plus difficulty escalation. The
+  from Angie JSON access logs offline; the online scorer rates each unvouched
+  request that reaches it in about 260 ns and drives challenge/deny plus
+  difficulty escalation. Valid PoW tokens short-circuit this stage after the
+  signature checks. The
   model artifact is versioned and hot-swapped, so an ML implementation can
   slot in behind the same seam later.
 
@@ -42,9 +44,10 @@ pipeline. Everything is per-domain configurable.
 - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver (works
   on plain-http origins too); difficulty tunes in 2x quarter steps
   (`base_difficulty: 5.25`) and escalates with suspicion.
-- Per-IP escalation against challenge farming: an IP that keeps requesting
-  challenges without solving them pays one extra bit (2x) per two abandoned
-  challenges, capped at `max_difficulty`; one solve resets it.
+- Per-host-and-IP escalation against challenge farming: a client that keeps
+  requesting challenges without solving them pays one extra bit (2x) per two
+  abandoned challenges, capped at `max_difficulty`; a solve resets only that
+  domain's counter.
 - Ed25519-signed JWT cookie on success; cheap re-validation afterwards.
 - A **persistent shared signing key**, so restarts don't log everyone out,
   and replicas behind a load balancer can share one key.

@@ -77,7 +77,12 @@ end-to-end suite:
   User-Agent and targeted headers on every request, body or not. A `block`/`deny`
   rule fires on a POST just as on a GET. Request bodies are never inspected — see
   the [security model](/guide/threat-model#what-guardian-does-not-defend-against);
-  that's the backend's or a full inline WAF's job.
+  that's the backend's or a full inline WAF's job. In `pow.mode: always`, an
+  unvouched non-idempotent request is diverted before its body reaches the
+  backend. Angie fetches the interstitial internally with GET and Guardian
+  never stores or replays the body; after solving, the browser/client must
+  retry or confirm resubmission. For machine APIs where that interaction is
+  unsuitable, disable PoW or use `mode: suspicion` with an appropriate policy.
 - **Large uploads.** The real body streams to your backend unbuffered and
   intact; the body-less auth hop doesn't touch it. But `auth_request` does **not**
   change Angie's own `client_max_body_size` (default 1 MiB): a body over that

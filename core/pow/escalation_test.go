@@ -33,19 +33,26 @@ func unsolve(t *testing.T, challenge string, difficulty int) string {
 func TestBumpEscalation(t *testing.T) {
 	ctx := context.Background()
 	m := testManager(t)
+	host := "example.com"
 	ip := "198.51.100.40"
 
 	// issuance number → expected extra bits, with free=4 and step=2.
 	want := []int{0, 0, 0, 0, 0, 1, 1, 2, 2, 3}
 	for i, w := range want {
-		if got := m.BumpEscalation(ctx, ip, time.Minute); got != w {
+		if got := m.BumpEscalation(ctx, host, ip, time.Minute); got != w {
 			t.Fatalf("issuance %d: extra bits = %d, want %d", i+1, got, w)
 		}
 	}
 
 	// A different IP is unaffected.
-	if got := m.BumpEscalation(ctx, "198.51.100.41", time.Minute); got != 0 {
+	if got := m.BumpEscalation(ctx, host, "198.51.100.41", time.Minute); got != 0 {
 		t.Fatalf("fresh ip: extra bits = %d, want 0", got)
+	}
+	if got := m.BumpEscalation(ctx, "other.example", ip, time.Minute); got != 0 {
+		t.Fatalf("fresh host: extra bits = %d, want 0", got)
+	}
+	if got := m.BumpEscalation(ctx, "EXAMPLE.com:443", ip, time.Minute); got == 0 {
+		t.Fatal("equivalent host with case and port started a separate counter")
 	}
 }
 
@@ -57,9 +64,9 @@ func TestEscalationResetsOnRedeem(t *testing.T) {
 	ip := "198.51.100.42"
 
 	for range escalationFreeIssues + 2*escalationStep {
-		m.BumpEscalation(ctx, ip, time.Minute)
+		m.BumpEscalation(ctx, "example.com", ip, time.Minute)
 	}
-	if got := m.BumpEscalation(ctx, ip, time.Minute); got == 0 {
+	if got := m.BumpEscalation(ctx, "example.com", ip, time.Minute); got == 0 {
 		t.Fatal("counter should have escalated before the redemption")
 	}
 
@@ -76,7 +83,7 @@ func TestEscalationResetsOnRedeem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := m.BumpEscalation(ctx, ip, time.Minute); got != 0 {
+	if got := m.BumpEscalation(ctx, "example.com", ip, time.Minute); got != 0 {
 		t.Fatalf("extra bits after successful redemption = %d, want 0 (counter reset)", got)
 	}
 }
@@ -90,7 +97,7 @@ func TestEscalationSurvivesFailedRedeem(t *testing.T) {
 
 	var last int
 	for range escalationFreeIssues + escalationStep {
-		last = m.BumpEscalation(ctx, ip, time.Minute)
+		last = m.BumpEscalation(ctx, "example.com", ip, time.Minute)
 	}
 	if last == 0 {
 		t.Fatal("counter should have escalated")
@@ -109,7 +116,41 @@ func TestEscalationSurvivesFailedRedeem(t *testing.T) {
 		t.Fatalf("bad nonce: err = %v, want ErrBadSolution", err)
 	}
 
-	if got := m.BumpEscalation(ctx, ip, time.Minute); got < last {
+	if got := m.BumpEscalation(ctx, "example.com", ip, time.Minute); got < last {
 		t.Fatalf("extra bits after failed redemption = %d, want >= %d (no reset)", got, last)
+	}
+}
+
+func TestEscalationResetIsScopedToChallengeHost(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	ip := "198.51.100.44"
+	strictHost, cheapHost := "strict.example", "cheap.example"
+	strictWindow, cheapWindow := 30*time.Minute, time.Minute
+
+	var strictExtra int
+	for range escalationFreeIssues + 2*escalationStep {
+		strictExtra = m.BumpEscalation(ctx, strictHost, ip, strictWindow)
+	}
+	if strictExtra == 0 {
+		t.Fatal("strict host counter should have escalated")
+	}
+
+	ch, err := m.Issue(ctx, cheapHost, ip, "/", 0, cheapWindow, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: "0", Host: cheapHost, IP: ip, UserAgent: "UA",
+		TokenTTL: time.Minute, ChallengeTTL: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := m.BumpEscalation(ctx, strictHost, ip, strictWindow); got < strictExtra {
+		t.Fatalf("strict host escalation was reset by another host: got %d, want >= %d", got, strictExtra)
+	}
+	if got := m.BumpEscalation(ctx, cheapHost, ip, cheapWindow); got != 0 {
+		t.Fatalf("solved host escalation = %d, want 0", got)
 	}
 }

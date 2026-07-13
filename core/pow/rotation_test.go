@@ -6,12 +6,31 @@ package pow
 
 import (
 	"context"
+	"crypto/ed25519"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
+
+func mintRotationToken(t *testing.T, m *Manager, host, ip, ua string) string {
+	t.Helper()
+	ch, err := m.Issue(context.Background(), host, ip, "/", 0, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: "0", Host: host, IP: ip, UserAgent: ua,
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.Token
+}
 
 func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	ctx := context.Background()
@@ -90,4 +109,184 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	if err := peer.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA"); err != nil {
 		t.Fatalf("peer with archived key must accept old token: %v", err)
 	}
+}
+
+func TestLivePeerRefreshesAfterRotation(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+
+	a, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, ip, ua := "example.com", "198.51.100.8", "UA"
+	oldToken := mintRotationToken(t, b, host, ip, ua)
+
+	if err := a.Rotate(keyPath, prevDir); err != nil {
+		t.Fatal(err)
+	}
+	newToken := mintRotationToken(t, a, host, ip, ua)
+	for name, tc := range map[string]struct {
+		manager *Manager
+		token   string
+	}{
+		"rotating peer accepts old token":   {a, oldToken},
+		"live peer accepts old token":       {b, oldToken},
+		"rotating peer accepts new token":   {a, newToken},
+		"live peer refreshes for new token": {b, newToken},
+	} {
+		if err := tc.manager.VerifyToken(tc.token, host, ip, ua); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestRotateRequiresArchiveDirectory(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "ed25519.key")
+	if _, err := LoadOrCreateKey(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RotateKey(keyPath, "", time.Now().Unix()); err == nil {
+		t.Fatal("rotation without previous_key_dir must fail")
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed rotation changed the current key")
+	}
+}
+
+func TestSameSecondRotationsPreserveAllKeys(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	k0, err := LoadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	k1, err := RotateKey(keyPath, prevDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := RotateKey(keyPath, prevDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := LoadPreviousKeys(prevDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previous) != 2 {
+		t.Fatalf("archived keys = %d, want 2", len(previous))
+	}
+	for _, want := range []ed25519.PrivateKey{k0, k1} {
+		if !containsKey(previous, want) {
+			t.Fatal("a pre-rotation key was lost from the archive")
+		}
+	}
+	current, err := loadKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Equal(k2) {
+		t.Fatal("current key does not match the last rotation")
+	}
+}
+
+func TestConcurrentRotationsAreAtomicAndPreserveKeys(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	original, err := LoadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const rotations = 8
+	results := make(chan ed25519.PrivateKey, rotations)
+	errs := make(chan error, rotations)
+	stopReader := make(chan struct{})
+	readerErr := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stopReader:
+				readerErr <- nil
+				return
+			default:
+				if _, err := loadKey(keyPath); err != nil {
+					readerErr <- err
+					return
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for range rotations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key, err := RotateKey(keyPath, prevDir, time.Now().Unix())
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- key
+		}()
+	}
+	wg.Wait()
+	close(stopReader)
+	if err := <-readerErr; err != nil {
+		t.Fatalf("reader observed a missing or malformed current key: %v", err)
+	}
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	close(results)
+
+	previous, err := LoadPreviousKeys(prevDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previous) != rotations {
+		t.Fatalf("archived keys = %d, want %d", len(previous), rotations)
+	}
+	current, err := loadKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append([]ed25519.PrivateKey{current}, previous...)
+	if !containsKey(all, original) {
+		t.Fatal("original key was not preserved")
+	}
+	for generated := range results {
+		if !containsKey(all, generated) {
+			t.Fatal("a concurrently generated key was lost")
+		}
+	}
+}
+
+func containsKey(keys []ed25519.PrivateKey, want ed25519.PrivateKey) bool {
+	for _, key := range keys {
+		if key.Equal(want) {
+			return true
+		}
+	}
+	return false
 }

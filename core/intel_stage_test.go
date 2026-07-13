@@ -121,8 +121,7 @@ func TestIntelStages(t *testing.T) {
 		// Per-domain opt-out.
 		{"intel disabled domain ignores deny feed and geo",
 			req("nointel.test", "100.64.7.1", "/", ua), ActionChallenge, "pow:no_token", 4},
-		// Deny-listed geo even applies to non-browser clients (unlike the PoW
-		// interstitial, which only taxes browser-shaped traffic).
+		// Deny-listed geo also applies to non-browser clients.
 		{"geo deny hits curl too",
 			req("x.test", "203.0.113.5", "/", "curl/8.0"), ActionDeny, "geo:country:RU", 0},
 	}

@@ -176,5 +176,7 @@ enable the built-in reporting page: see
 ## Key rotation
 
 `POST /admin/rotate-key` archives the current Ed25519 key into
-`previous_key_dir` and generates a new one. Tokens signed by the old key keep
-verifying until they expire, so rotation never logs anyone out.
+`previous_key_dir` and atomically installs a new one. A non-empty shared
+`previous_key_dir` is required. Rotations are serialized on the shared key
+path, archive names cannot collide, and live replicas refresh the key set
+automatically; tokens signed by retired keys keep verifying until they expire.
