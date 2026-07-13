@@ -40,7 +40,6 @@ defaults:
       thresholds: { signature: 3/min, pow_fail: 3/min, tamper: 3/min }
     keywords: { enabled: true, rules_file: %q }
     honeypot: { enabled: true, paths: [ "/wp-login.php" ] }
-    uuid_tamper: { enabled: true }
   allowlist:
     ips: [ "10.0.0.0/8" ]
 domains:
@@ -186,6 +185,19 @@ func TestReportEvent(t *testing.T) {
 	d := e.Evaluate(ctx, req("pow.test", ip, "/", "curl"))
 	if d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:pow_fail" {
 		t.Fatalf("after pow_fail reports: got %s/%s", d.Action, d.Reason)
+	}
+
+	// Tamper events (forged/replayed challenge IDs) are scored out of the box,
+	// with no separate feature toggle: the tamper threshold is 3/min, so the
+	// third report blocks. This is the behaviour that finding 6 fixed; the old
+	// uuid_tamper gate dropped these by default.
+	tamperIP := "198.51.100.77"
+	for i := 0; i < 3; i++ {
+		e.ReportEvent(ctx, "pow.test", tamperIP, EventTamper, "unknown challenge id")
+	}
+	d = e.Evaluate(ctx, req("pow.test", tamperIP, "/", "curl"))
+	if d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:tamper" {
+		t.Fatalf("after tamper reports: got %s/%s, want deny on tamper threshold", d.Action, d.Reason)
 	}
 
 	// Allowlisted IPs are never scored.

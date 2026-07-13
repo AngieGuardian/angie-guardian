@@ -259,13 +259,14 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 }
 
 // ReportEvent lets transports feed behaviour events observed outside the
-// pipeline (failed PoW redemptions, forged IDs). Allowlisted IPs are never
-// scored, so a shared office NAT can't block itself.
+// pipeline (failed PoW redemptions, forged/replayed challenge IDs).
+// Allowlisted IPs are never scored, so a shared office NAT can't block itself.
+// The event is recorded only if its type has a configured threshold in
+// waf.ip_behaviour.thresholds (tamper and pow_fail are on by default), so PoW
+// redemption tampering is scored out of the box rather than gated behind a
+// separate feature toggle.
 func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail string) {
 	dcfg := e.Config().DomainFor(host)
-	if evtype == EventTamper && !dcfg.WAF.UUIDTamper.Enabled {
-		return
-	}
 	if addr, err := netip.ParseAddr(ip); err == nil && dcfg.Allowlist.MatchIP(addr) {
 		return
 	}

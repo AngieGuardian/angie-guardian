@@ -25,7 +25,9 @@ pipeline. Everything is per-domain configurable.
      admitted by reverse-DNS + forward-confirmed identity with store-backed
      caching, never by their forgeable User-Agent string; proven impostors
      are denied and scored
-   - tamper-proof signed IDs (HMAC-bound to purpose + host)
+   - tamper detection on proof-of-work challenge IDs: each challenge is
+     single-spend and bound to `{host, purpose}`, so a forged, replayed or
+     cross-domain challenge ID is rejected and scored as a tamper event
    - statistical anomaly scoring: `guardian-train` learns per-domain
      baselines from Angie JSON access logs offline; the online scorer rates
      every request in ~260ns and drives challenge/deny + difficulty

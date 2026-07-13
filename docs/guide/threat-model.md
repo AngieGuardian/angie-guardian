@@ -24,9 +24,12 @@ sound protection and a false sense of one. This page is the honest map.
   known-bad address ranges.
 - **Tampering and replay** of Guardian's own tokens and IDs: tokens are EdDSA
   JWTs bound to `{host, client fingerprint}` with a short expiry; challenges are
-  single-spend (an atomic compare-and-swap marks them redeemed); opaque IDs
-  carry an HMAC bound to purpose and host. Any modification, forgery or
-  cross-domain replay fails verification and can be scored as a tamper event.
+  single-spend (an atomic compare-and-swap marks them redeemed) and the stored
+  record binds each challenge to the host and client it was issued to. A
+  redemption that presents an unknown, already-spent, or wrong-client challenge
+  ID fails verification and is scored as a tamper event against the source IP,
+  feeding the behavioural scoreboard. This scoring is on by default; it is not
+  gated behind a feature toggle.
 
 ## What Guardian does NOT defend against
 

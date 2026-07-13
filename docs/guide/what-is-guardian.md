@@ -28,7 +28,9 @@ pipeline. Everything is per-domain configurable.
   external IP reputation feeds (FireHOL-style lists), refreshed in the
   background and hot-reloaded, with fail-open semantics throughout.
 - Honeypot trap paths: one hit means an instant block.
-- Tamper-proof signed IDs, HMAC-bound to purpose and host.
+- Tamper detection on proof-of-work challenge IDs: each challenge is
+  single-spend and bound to `{host, purpose}`, so a forged, replayed or
+  cross-domain challenge ID is rejected and scored as a tamper event.
 - Statistical anomaly scoring: `guardian-train` learns per-domain baselines
   from Angie JSON access logs offline; the online scorer rates every request
   in about 260 ns and drives challenge/deny plus difficulty escalation. The
