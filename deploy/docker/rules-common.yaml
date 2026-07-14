@@ -9,10 +9,10 @@
 #   targets:     any of [path, query, ua, "header:<name>"]; default [path, query]
 #   methods:     restrict the rule to these HTTP methods; a rule with methods
 #                but no keywords/regexes fires on the method alone
-#   keywords:    case-insensitive literal substrings, matched against the
-#                URL-decoded request (targeted header values are percent-decoded
-#                too, so encoding cannot hide a payload in a Referer)
-#   regexes:     Go RE2 syntax — linear-time by construction, no ReDoS risk
+#   keywords:    non-empty case-insensitive literal substrings, matched against
+#                the URL-decoded request (every targeted header value is
+#                percent-decoded, so duplicates/encoding cannot hide a payload)
+#   regexes:     non-empty Go RE2 syntax — linear-time, no ReDoS risk
 #
 # Request bodies are never inspected: Angie's auth_request subrequest carries
 # only the request line and headers, by design. Body-borne payloads are the

@@ -40,7 +40,9 @@ domains:
 
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
 loads and validates the file (YAML syntax, unknown fields, and semantic
-checks), then exits: `0` and `ok` when valid, `1` and the reason when not.
+checks) plus every startup-required local artifact: WAF rules, anomaly models,
+GeoIP databases, and file-based reputation feeds. It then exits: `0` and `ok`
+when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
 
 ```sh
 ./guardiand -config guardian.yaml -t

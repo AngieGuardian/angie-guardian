@@ -13,7 +13,7 @@ guardiand -config /etc/guardian/guardian.yaml
 | Flag | Description |
 |---|---|
 | `-config <path>` | Path to `guardian.yaml` (required). |
-| `-t` | Test the config: load and validate it, then exit. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
+| `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
 | `-version` | Print version and exit. |
 
 ```sh

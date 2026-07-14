@@ -141,7 +141,7 @@ admin:
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
 # missing; NEVER regenerated on restart, so restarts don't log clients out
 # and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
-# archived here and still accepted for verification until their tokens expire.
+# archived here and accept only pre-rotation tokens with lifetimes up to 7 days.
 signing_key_file: /etc/guardian/ed25519.key
 previous_key_dir: /etc/guardian/keys.d
 
@@ -229,8 +229,8 @@ defaults:
     # allow: { countries: [] }
     # default_action: allow   # allow | challenge | deny for unlisted origins
   reputation:
-    enabled: true             # honour the reputation feeds (no-op until some
-                              # are configured above)
+    enabled: true             # honour the reputation feeds; config is rejected
+                              # unless at least one feed is configured above
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent

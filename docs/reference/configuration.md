@@ -1,8 +1,9 @@
 # Configuration Options
 
-Every field of `guardian.yaml`, with types and defaults. Unknown fields are
-rejected (the config is parsed with strict field checking), and semantic
-errors fail at startup or under `guardiand -t`.
+Every field of `guardian.yaml`, with types and defaults. Unknown fields and
+trailing YAML documents are rejected, and semantic errors fail at startup or
+under `guardiand -t`. Preflight also opens every startup-required local rules,
+model, GeoIP, and reputation-feed artifact.
 
 See the [Configuration guide](/guide/configuration) for the concepts and the
 [Examples page](/examples) for complete files.
@@ -21,8 +22,8 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `listen` | string | `127.0.0.1:8071` | The auth hot path (Angie's `auth_request` target). Must be loopback unless `trusted_proxy` is set. |
 | `log_level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `trusted_proxy` | bool | `false` | Allow a non-loopback `listen`. The hot path trusts the `X-Guardian-*` client-identity headers from its caller, so only set this when the listener is isolated to Angie (private network, firewall, or mTLS). |
-| `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Generated on first run if missing; never regenerated on restart. |
-| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; required for rotation. Replicas must share it with `signing_key_file`; retired keys remain accepted until their tokens expire. |
+| `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Required when any effective domain enables PoW. Generated on first run if missing; never regenerated on restart. |
+| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; required for rotation. Replicas must share it with `signing_key_file`. Retired keys accept only pre-rotation tokens with lifetimes up to seven days. |
 | `admin` | object | | See [admin](#admin). |
 | `store` | object | | See [store](#store). |
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
@@ -93,10 +94,10 @@ Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. |
+| `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. Requires top-level `signing_key_file`. |
 | `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: only challenge clients the anomaly scorer flags (requires `waf.anomaly.enabled`). |
-| `pow.base_difficulty` | float | `5` | The floor every clean client pays. Range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
-| `pow.max_difficulty` | float | `6` | The ceiling, reached only via anomaly-scaled difficulty. Range `base_difficulty`..8, quarter steps. |
+| `pow.base_difficulty` | float | `5` | The floor every clean client pays. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
+| `pow.max_difficulty` | float | `6` | The ceiling, reached only via anomaly-scaled difficulty. Must be finite and in range `base_difficulty`..8, in quarter steps. |
 | `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. |
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. |
 | `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. |
@@ -137,7 +138,7 @@ geo:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enforce the [globally configured feeds](#reputation) on this domain. Typically set once in `defaults`. |
+| `enabled` | bool | `false` | Enforce the [globally configured feeds](#reputation) on this domain. Enabling it requires at least one top-level `reputation.feeds` entry. Typically set once in `defaults`. |
 
 ### waf.ip_behaviour
 
@@ -154,16 +155,16 @@ Behavioural IP blocking with exponential backoff.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. |
+| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; every physical value of a duplicate header is inspected. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. Empty or whitespace-only keywords and regexes are rejected. |
 | `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must exist when enabled (fail-fast); hot-reloaded on change. |
 
 ### waf.anomaly
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable statistical anomaly scoring. Requires a model trained from your own logs; see [Train the Anomaly Model](/guide/anomaly). |
-| `model` | string | | Path to the model artifact from `guardian-train`. Hot-swapped when the file changes. |
-| `challenge_at` | float | | Score at or above this triggers a PoW challenge, with difficulty scaled by the score. Must satisfy `0 < challenge_at < deny_at <= 1`. |
+| `enabled` | bool | `false` | Enable statistical anomaly scoring. Requires a non-empty `model` trained from your own logs; see [Train the Anomaly Model](/guide/anomaly). |
+| `model` | string | | Path to the model artifact from `guardian-train`. Required when enabled; hot-swapped when the file changes. |
+| `challenge_at` | float | | Score at or above this triggers a PoW challenge, with difficulty scaled by the score. Both thresholds must be finite and satisfy `0 < challenge_at < deny_at <= 1`. |
 | `deny_at` | float | | Score at or above this denies outright. |
 
 ### waf.honeypot
@@ -194,7 +195,7 @@ Static lists, evaluated before everything else. Matching rules:
 | Option | Type | Matching |
 |---|---|---|
 | `ips` | list | CIDRs or bare IPv4/IPv6 addresses. |
-| `uas` | list | Case-insensitive substring match on User-Agent. |
+| `uas` | list | Case-insensitive substring match on User-Agent. Empty or whitespace-only entries are rejected. |
 | `paths` | list | Exact match, or prefix match when the entry ends with `/`. |
 
 `uas` is a plain substring match on a client-controlled, freely forgeable
@@ -227,7 +228,7 @@ the shared store, so DNS runs once per crawler IP, not per request.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `bots` | list | `[]` | Bots to verify. Each entry needs `name`, plus `uas` and `domains` unless `name` is a built-in preset. |
+| `bots` | list | `[]` | Bots to verify. Each entry needs `name`, plus non-empty `uas` and `domains` unless `name` is a built-in preset. Empty or whitespace-only UA needles are rejected. |
 | `dns_timeout` | duration | `1s` | DNS budget for one first-sight verification. |
 | `cache_ttl` | duration | `12h` | How long a confirmed identity is cached. |
 | `negative_ttl` | duration | `1h` | How long a proven impostor is cached. |

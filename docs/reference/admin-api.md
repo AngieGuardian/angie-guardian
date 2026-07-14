@@ -138,8 +138,8 @@ denied".
 
 Atomically archive the current Ed25519 signing key into `previous_key_dir` and
 generate a new one. `previous_key_dir` must be configured. Live replicas that
-share both key paths refresh automatically, and tokens signed by retired keys
-keep verifying until they expire.
+share both key paths refresh automatically. Retired keys accept only tokens
+issued before rotation, with a maximum token lifetime of seven days.
 
 ```json
 {"rotated":true}

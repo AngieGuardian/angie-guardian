@@ -179,4 +179,5 @@ enable the built-in reporting page: see
 `previous_key_dir` and atomically installs a new one. A non-empty shared
 `previous_key_dir` is required. Rotations are serialized on the shared key
 path, archive names cannot collide, and live replicas refresh the key set
-automatically; tokens signed by retired keys keep verifying until they expire.
+automatically. Retired keys accept only tokens issued before rotation, and no
+accepted token may have a lifetime longer than seven days.
