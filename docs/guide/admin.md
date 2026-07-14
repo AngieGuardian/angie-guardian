@@ -39,7 +39,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 # average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
-# Block an IP for two hours (reason + ttl optional; default 15m).
+# Block an IP for two hours (reason + ttl optional; default 15m, max 8760h).
+# Equivalent IPv6 spellings are canonicalized to one block.
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
      $A/admin/blocks/203.0.113.9
@@ -54,7 +55,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # {"host":"shop.example.com","scored":true,"score":0.72}
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
-# replicas refresh automatically and old tokens remain valid.
+# replicas refresh automatically and pre-rotation tokens remain valid for at
+# most seven days. Older archive files are ignored in memory, not auto-deleted.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 

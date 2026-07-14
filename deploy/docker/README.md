@@ -50,7 +50,9 @@ docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. 
 The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist
 `/var/lib/guardian` (bbolt store) and `/etc/guardian/keys` (signing key), as
-`compose.yaml` here does.
+`compose.yaml` here does. Its distroless-safe healthcheck runs the built-in
+`-healthcheck` probe and requires both configured `/healthz` listeners before
+Compose marks Guardian healthy or starts Angie.
 
 ## Manual use
 

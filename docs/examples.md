@@ -345,6 +345,8 @@ store:
   # password: ""            # or the REDIS_PASSWORD env var
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
 previous_key_dir: /etc/guardian/keys.d        # shared, e.g. NFS or synced
+# Retired archives verify pre-rotation tokens for at most 7 days; older files
+# may be retained on disk but are ignored by the active verifier.
 ```
 
 ## WASM guest config

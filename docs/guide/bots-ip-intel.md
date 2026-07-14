@@ -64,7 +64,8 @@ Googlebot nor admit a scraper.
 
 Verification costs two DNS lookups (budget: `dns_timeout`, default 1s) the
 first time an IP claims a bot UA. The result is cached in the shared store
-(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors), so
+(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors; both
+accept at most one year / `8760h`), so
 the hot path stays DNS-free; in-flight lookups are deduplicated per IP and
 capped process-wide, degrading to "unverified" under a spoof flood rather
 than amplifying it into a DNS storm. Watch it via the

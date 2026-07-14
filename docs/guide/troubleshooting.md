@@ -100,3 +100,5 @@ window can also reject otherwise-valid tokens; keep them NTP-synced. Live
 replicas refresh shared key files automatically after rotation. If rejection
 continues, verify both paths really refer to the same shared filesystem and
 that every replica can read the archive and acquire the key's rotation lock.
+Retired archives stop participating in verification after the seven-day token
+horizon even if the files are retained on disk.

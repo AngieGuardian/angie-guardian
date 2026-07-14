@@ -29,7 +29,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
 | `reputation` | object | | Global IP reputation feeds; domains opt in via `reputation.enabled`. See [reputation](#reputation). |
 | `defaults` | object | | The base [domain config](#per-domain-options-defaults-and-domains) every domain inherits from. |
-| `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. A host key normalizes case and port (`A.test:443` = `a.test`); two keys that collapse to the same host are rejected. |
+| `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. Host keys and anomaly-model lookups share one normalization for case, ports, trailing dots, and bracketed IPv6 (`A.test.:443` = `a.test`); two keys that collapse to the same host are rejected. |
 
 ## admin
 

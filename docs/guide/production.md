@@ -72,6 +72,10 @@ volumes:
   guardian-keys:
 ```
 
+The built-in probe loads the mounted config and requires both configured
+listeners to answer `/healthz`; merely being able to launch the binary is not
+considered healthy.
+
 Inside the container, set `listen: 0.0.0.0:8071` plus `trusted_proxy: true`
 and `admin.listen: 0.0.0.0:8072` in `guardian.yaml` (the loopback-only
 `ports:` binding above is what keeps them off the network), and point the

@@ -2,8 +2,11 @@
 
 The statistical anomaly scorer rates each unvouched request that reaches its
 pipeline stage against a per-domain baseline learned from your own traffic.
-Valid PoW tokens short-circuit the scorer (after the always-on signature
-checks). With a trained model in place, Guardian can challenge or deny
+Training and scoring normalize host case, ports, trailing dots, and bracketed
+IPv6 the same way domain config lookup does, so equivalent host spellings use
+one baseline. Valid PoW tokens short-circuit the scorer after signature checks:
+`deny` and `block` still apply, while `challenge` is already satisfied. With a
+trained model in place, Guardian can challenge or deny
 bot-shaped requests that no static signature would catch, and scale the PoW
 difficulty with the suspicion score.
 

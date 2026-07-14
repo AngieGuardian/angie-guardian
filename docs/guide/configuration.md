@@ -152,9 +152,9 @@ restarts don't log clients out and replicas can share it. Retired keys (from
 accepted only for bounded, pre-rotation token lifetimes (at most seven days).
 Expired archives may remain on disk, but they are omitted from the active
 verification set after that horizon.
-Rotation requires a
-non-empty `previous_key_dir`; replicas must share both paths and automatically
-refresh their verification set when another replica rotates.
+Rotation requires a non-empty `previous_key_dir`; replicas must share both
+paths and automatically refresh their verification set when another replica
+rotates.
 
 ## Hot reload
 
