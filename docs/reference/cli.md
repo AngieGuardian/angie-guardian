@@ -63,7 +63,7 @@ guardian-train -out /etc/guardian/model.json -min-requests 5000 \
 | Flag | Default | Description |
 |---|---|---|
 | `-out <path>` | `model.json` | Output model artifact path. |
-| `-min-requests <n>` | `1000` | Drop domains with fewer log lines (a thin baseline misclassifies). |
+| `-min-requests <n>` | `1000` | Drop domains with fewer usable successful records (entries without a host and responses with status >= 400 are excluded). |
 | `-version` | | Print version and exit. |
 
 Positional arguments are the JSON access log files to read; pass `-` to read

@@ -385,8 +385,9 @@ access_log /var/log/angie/example.com.access.json guardian_json;
 ### Rate limiting (volumetric DDoS)
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a raw
-flood. Every request still costs an `auth_request` subrequest and a store lookup
-whether or not the client ever solves anything, and a client that follows the
+flood. Every request still costs an `auth_request` subrequest; requests not
+terminated by early static allow/deny policy also reach the shared-state lookup.
+A client that follows the
 challenge redirect also makes the sidecar issue and persist a challenge. Under
 enough load the sidecar saturates and fail-open (the default) sends the flood
 straight to your backend. Volumetric DDoS is Angie's job, in front of the
@@ -561,8 +562,9 @@ zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.jso
 ```
 
 Re-run it from cron; `guardiand` picks up each new model within seconds.
-Domains below `-min-requests` are dropped (a thin baseline misclassifies
-everything). Training and scoring normalize host case, ports, trailing dots,
+Records without a host and responses with status >= 400 are excluded, so
+scanner/error traffic does not become the normal baseline. Domains below
+`-min-requests` usable successful records are dropped. Training and scoring normalize host case, ports, trailing dots,
 and bracketed IPv6 exactly like domain lookup, so equivalent host spellings use
 one baseline.
 

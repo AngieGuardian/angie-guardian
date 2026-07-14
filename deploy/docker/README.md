@@ -51,7 +51,7 @@ The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist
 `/var/lib/guardian` (bbolt store) and `/etc/guardian/keys` (signing key), as
 `compose.yaml` here does. Its distroless-safe healthcheck runs the built-in
-`-healthcheck` probe and requires both configured `/healthz` listeners before
+`-healthcheck` probe and requires every configured `/healthz` listener before
 Compose marks Guardian healthy or starts Angie.
 
 ## Manual use

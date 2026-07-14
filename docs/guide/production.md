@@ -22,8 +22,8 @@ curl -s localhost:8072/healthz         # -> ok
 
 The shipped unit is `Type=notify`: guardiand speaks
 [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html)
-with no extra dependency, signalling `READY=1` only once **both** listeners
-actually answer `/healthz`. So `systemctl start` blocks until the service is
+with no extra dependency, signalling `READY=1` only once every configured
+listener answers `/healthz`. So `systemctl start` blocks until the service is
 genuinely serving, and `systemctl status` reflects real readiness rather than
 "the process forked". This matters because Guardian fails open: a daemon wedged
 before it binds would otherwise look active while every request sails through

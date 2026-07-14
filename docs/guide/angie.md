@@ -45,8 +45,9 @@ See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 ## Rate limiting (volumetric DDoS)
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
-raw flood. Every request still costs an `auth_request` subrequest and a store
-lookup whether or not the client ever solves anything, and a client that
+raw flood. Every request still costs an `auth_request` subrequest; requests not
+terminated by the early static allow/deny policy also reach the shared-state
+lookup. A client that
 follows the challenge redirect also makes the sidecar issue and persist a
 challenge. Under enough load the sidecar saturates and fail-open (the default)
 sends the flood straight to your backend.

@@ -35,8 +35,10 @@ zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.jso
 ```
 
 Re-run it from cron; `guardiand` picks up each new model within seconds.
-Domains below `-min-requests` are dropped (a thin baseline misclassifies
-everything).
+Records without a host and responses with status >= 400 are excluded, so
+scanner/error traffic does not become the normal baseline. Domains below
+`-min-requests` usable successful records are dropped (a thin baseline
+misclassifies everything).
 
 ## 3. Enable scoring
 

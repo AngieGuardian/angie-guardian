@@ -52,7 +52,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_store_ops_total` | counter | `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; the pipeline fails open. |
+| `guardian_store_ops_total` | counter | `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
 | `guardian_store_op_seconds` | histogram | `op` | Store operation latency. On bbolt, watch `set` and `cas`: they pay an fsync. |
 
 ## Useful queries
