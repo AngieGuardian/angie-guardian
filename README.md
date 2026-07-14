@@ -16,19 +16,20 @@ pipeline. Everything is per-domain configurable.
 
 1. **WAF layer**, runs on every request:
    - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
-     construction), matched against the decoded path, query, User-Agent
-     and any named request header, with optional HTTP-method filters;
+     construction), matched against the decoded path and query, the
+     User-Agent, and any named request header, with optional HTTP-method filters;
      valid bound PoW tokens satisfy challenge-only matches, while deny/block
      matches remain terminal
    - behavioural IP blocking with exponential backoff (signature hits,
      PoW failures, tamper events)
-   - honeypot trap paths: one hit = instant block
+   - honeypot trap paths: one hit = instant deny and, when behavioural
+     scoring is enabled, a persistent IP block
    - verified-bot allowlisting: search crawlers (Googlebot, bingbot, ...) are
      admitted by reverse-DNS + forward-confirmed identity with store-backed
      caching, never by their forgeable User-Agent string; proven impostors
      are denied and scored
    - tamper detection on proof-of-work challenge IDs: each challenge is
-     single-spend and bound to `{host, purpose}`, so a forged, replayed or
+     single-spend and bound to `{host, client IP}`, so a forged, replayed or
      cross-domain challenge ID is rejected and scored as a tamper event
    - statistical anomaly scoring: `guardian-train` learns per-domain
      baselines from Angie JSON access logs offline; the online scorer rates
@@ -44,7 +45,8 @@ pipeline. Everything is per-domain configurable.
    - **persistent shared signing key**, so restarts don't log everyone out,
      and replicas behind a load balancer can share one key
    - spent-challenge tracking from day 1 (no mint-twice replay)
-   - no-JS meta-refresh fallback
+   - optional no-JS meta-refresh fallback (a five-second wait instead of hash
+     work, so weaker than the normal proof-of-work path)
 
 ## Integration paths
 
@@ -61,9 +63,12 @@ Guardian offers two ways to run, sharing one decision core:
   anomaly scoring and verified-bot DNS checks need the sidecar. Build it with `make wasm`; see the
   "WASM module" section of [USAGE.md](USAGE.md).
 
-Both paths call the same store-free evaluator, so the WAF decisions are
-identical; a vouched PoW token (sidecar only) never exempts a client from the
-signature checks, so a stolen token can't ride past the WAF.
+Both paths share the same store-free matching logic. Their stateful outcomes
+differ: in the sidecar, `challenge` can be satisfied by a bound PoW token and
+`block`/honeypot hits persist an IP block; the stateless WASM guest returns a
+plain deny for any of those matches. A vouched PoW token never exempts a
+sidecar client from `deny` or `block` signature checks, so a stolen token can't
+ride past the WAF.
 
 ## Operations
 
@@ -161,7 +166,7 @@ write-heavy path):
 |---|---|---|
 | `allow` | plain request, full pipeline, ends in "default allow" | 1 read (block lookup) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | 1 read |
-| `deny` | denylisted client IP (deny + decision logging path) | 1 read |
+| `deny` | denylisted client IP (deny + decision logging path) | no store I/O |
 | `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); the issuance-rate and host+IP escalation counters are counted in-process and flushed to the store in the background |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
@@ -188,8 +193,8 @@ trigger a challenge write:
   fresh visitors is bounded by the write path. If that burst can exceed a few
   thousand per second, use the **redis** backend (Redis or
   [Valkey](https://valkey.io/), a drop-in replacement), or set
-  `pow.mode: suspicion` so only anomalous clients are challenged and the vast
-  majority of traffic does no write.
+  `pow.mode: suspicion` so there is no catch-all challenge; only anomaly or
+  explicit WAF/GeoIP/reputation challenge policies then cause writes.
 - Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
   verification), so a returning client's request stays on the fast read path
   regardless of backend.
@@ -201,11 +206,16 @@ trigger a challenge write:
 
 ```sh
 go build ./cmd/guardiand ./cmd/guardian-loadtest
+mkdir -p .guardian
+sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
+    -e 's#/etc/guardian/#.guardian/#g' \
+    -e 's#/var/lib/guardian/#.guardian/#g' \
+    guardian.example.yaml > guardian.local.yaml
 
 # 1. Start guardiand with your store backend (bbolt shown; for redis set
 #    store.backend: redis and store.addr in the config). PoW must be enabled
 #    for the token/challenge scenarios.
-./guardiand -config guardian.example.yaml &
+./guardiand -config guardian.local.yaml &
 
 # 2. Run each scenario (8s, 64 connections). Use a distinct -ip per read run so
 #    a behavioural block from one run doesn't bleed into the next; the
@@ -223,7 +233,12 @@ scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/
 
 ```sh
 go build ./cmd/guardiand
-./guardiand -config guardian.example.yaml
+mkdir -p .guardian
+sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
+    -e 's#/etc/guardian/#.guardian/#g' \
+    -e 's#/var/lib/guardian/#.guardian/#g' \
+    guardian.example.yaml > guardian.local.yaml
+./guardiand -config guardian.local.yaml
 ```
 
 Or skip the build and use the prebuilt image every release publishes
@@ -240,8 +255,9 @@ docker run --rm --network host \
 see [the production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production)
 for a proper compose setup with persistent volumes.)
 
-Then include the snippet from `deploy/angie-guardian.conf` in each protected
-`server {}` block of your Angie configuration.
+Then copy/adapt `deploy/angie-guardian.conf` for each protected vhost: replace
+both `http://your_backend` placeholders and merge its Guardian directives into
+an existing `location /` instead of declaring a duplicate.
 
 ## Documentation
 

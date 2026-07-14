@@ -17,8 +17,8 @@ pipeline. Everything is per-domain configurable.
 ### 1. The WAF layer, on every request
 
 - Hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
-  construction), matched against the decoded path, query, User-Agent, and
-  any named request header, optionally scoped to HTTP methods.
+  construction), matched against the decoded path and query, the User-Agent,
+  and any named request header, optionally scoped to HTTP methods.
 - Behavioural IP blocking with exponential backoff, fed by signature hits,
   PoW failures, tamper events, and bot-spoof attempts.
 - Verified crawler allowlisting: Googlebot and friends are admitted by
@@ -27,9 +27,10 @@ pipeline. Everything is per-domain configurable.
 - GeoIP/ASN scoping (deny or challenge by origin country and ASN) and
   external IP reputation feeds (FireHOL-style lists), refreshed in the
   background and hot-reloaded, with fail-open semantics throughout.
-- Honeypot trap paths: one hit means an instant block.
+- Honeypot trap paths: one hit denies immediately and, when behavioural
+  scoring is enabled, places a persistent IP block.
 - Tamper detection on proof-of-work challenge IDs: each challenge is
-  single-spend and bound to `{host, purpose}`, so a forged, replayed or
+  single-spend and bound to `{host, client IP}`, so a forged, replayed or
   cross-domain challenge ID is rejected and scored as a tamper event.
 - Statistical anomaly scoring: `guardian-train` learns per-domain baselines
   from Angie JSON access logs offline; the online scorer rates each unvouched
@@ -52,7 +53,8 @@ pipeline. Everything is per-domain configurable.
 - A **persistent shared signing key**, so restarts don't log everyone out,
   and replicas behind a load balancer can share one key.
 - Spent-challenge tracking from day one (no mint-twice replay).
-- A no-JS meta-refresh fallback.
+- An optional no-JS meta-refresh fallback: a five-second minimum wait instead
+  of hash work, so it has a weaker, more parallelizable cost model.
 
 ## Integration paths
 
@@ -67,9 +69,12 @@ Guardian offers two ways to run, sharing one decision core:
   in-process inside Angie via its WASM support. It is stateless WAF-only. See
   the [WASM module guide](/guide/wasm).
 
-Both paths call the same store-free evaluator, so the WAF decisions are
-identical; a vouched PoW token (sidecar only) never exempts a client from the
-signature checks, so a stolen token can't ride past the WAF.
+Both paths share the same store-free matching logic. Their stateful outcomes
+differ: in the sidecar, `challenge` can be satisfied by a bound PoW token and
+`block`/honeypot hits persist an IP block; the stateless WASM guest returns a
+plain deny for any of those matches. A vouched PoW token never exempts a
+sidecar client from `deny` or `block` signature checks, so a stolen token can't
+ride past the WAF.
 
 ## Architecture
 

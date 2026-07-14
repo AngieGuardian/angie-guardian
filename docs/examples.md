@@ -1,7 +1,9 @@
 # Examples
 
-Complete, copy-paste-ready configurations for common setups. Every example
-inherits anything it doesn't mention from `defaults`; see the
+Configuration examples for common setups. Blocks explicitly described as
+fragments must be merged into a complete file; the minimum and full annotated
+examples are standalone. Every domain inherits anything it doesn't mention
+from `defaults`; see the
 [Configuration Options reference](/reference/configuration) for each field.
 
 ## Minimum viable config
@@ -47,9 +49,10 @@ domains:
 
 ## Suspicion-only challenges (anomaly model)
 
-Ordinary visitors never see an interstitial; only clients the anomaly scorer
-flags are challenged, with difficulty scaled by the score. Requires a
-[trained model](/guide/anomaly).
+This fragment disables the catch-all and defines only an anomaly challenge
+policy, so ordinary visitors never see an interstitial. Explicit WAF, GeoIP,
+or reputation challenge policies would still apply. Requires a [trained
+model](/guide/anomaly) and a top-level signing key.
 
 ```yaml
 domains:
@@ -67,6 +70,16 @@ Needs MaxMind-format databases on disk (GeoLite2 or DB-IP); see
 [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
 ```yaml
+signing_key_file: /etc/guardian/ed25519.key
+
+defaults:
+  pow: { enabled: true }
+  reputation: { enabled: true }   # every domain enforces the feeds
+  geo:
+    enabled: true
+    deny: { countries: [ KP ] }
+    challenge: { countries: [ CN, RU ] }
+
 geoip:
   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
@@ -78,13 +91,6 @@ reputation:
       url: https://iplists.firehol.org/files/firehol_level1.netset
       refresh: 12h
       action: deny
-
-defaults:
-  reputation: { enabled: true }   # every domain enforces the feeds
-  geo:
-    enabled: true
-    deny: { countries: [ KP ] }
-    challenge: { countries: [ CN, RU ] }
 
 domains:
   # Home-market shop: NL/BE/DE browse normally, everyone else proves work.
@@ -118,8 +124,8 @@ log_level: info
 # trusted_proxy: true
 
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
-# /metrics and /healthz are open (a scraper needs no secret); every /admin
-# route requires the bearer token. Binding to a non-loopback address without
+# /metrics, /healthz, and the optional static dashboard shell are open; every
+# JSON/data /admin route requires the bearer token. A non-loopback bind without
 # a configured token is refused at startup. Leave admin.listen empty to
 # disable it.
 admin:
@@ -199,26 +205,28 @@ defaults:
       challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
       deny_at: 0.9            # score >= this -> deny outright
     honeypot:
-      enabled: false          # trap paths: one hit = instant block. Add paths no
+      enabled: false          # trap paths deny immediately and persist a block
+                              # when ip_behaviour is enabled. Add paths no
       paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
                               # Disallow them in robots.txt.
     # signed_id reserves the signed-ID feature (opaque HMAC-bound identifiers);
     # no flow mints them yet, so it is dormant. Forged/replayed PoW challenge
-    # IDs are always scored via the ip_behaviour "tamper" threshold, with or
-    # without this toggle.
+    # IDs always emit a tamper event, with or without this toggle; the
+    # ip_behaviour threshold counts it only when behaviour is enabled.
     signed_id: { enabled: false }
   pow:
     enabled: true
     mode: always              # always: challenge every unvouched request
-                              # suspicion: only challenge anomalous clients (needs waf.anomaly)
+                              # suspicion: no catch-all; explicit anomaly/WAF/
+                              # geo/reputation challenge policies still apply
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
-    # See "Measured solve times" in the configuration guide.
+    # See docs/guide/configuration.md, "Measured solve times", before changing these.
     base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
-    max_difficulty: 6         # ceiling for anomaly-scaled challenges
+    max_difficulty: 6         # ceiling for all challenge escalation
     token_ttl: 4h             # 1s minimum, 7d maximum
-    challenge_ttl: 30m
-    noscript_fallback: true
+    challenge_ttl: 30m         # must be positive; 7d maximum
+    noscript_fallback: true   # 5s wait instead of hash work; weaker than PoW
   geo:
     enabled: false            # needs the geoip: databases above
     # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
@@ -324,15 +332,14 @@ server {
     limit_req_status  429;
     limit_conn_status 429;
 
-    # Guardian: auth_request wiring + challenge/pass/denied routes.
+    # Guardian: auth_request wiring + challenge/pass/denied routes. Adapt the
+    # file's two http://your_backend placeholders before including it; it
+    # already declares location /, so do not add another root location here.
     include /etc/angie/angie-guardian.conf;
 
     # JSON access log feeding guardian-train (format from deploy/angie-json-log.conf).
     access_log /var/log/angie/example.com.access.json guardian_json;
 
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-    }
 }
 ```
 

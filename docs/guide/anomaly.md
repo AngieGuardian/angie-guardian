@@ -52,10 +52,11 @@ domains:
         deny_at: 0.85         # score >= this -> deny outright
 ```
 
-With `pow.mode: suspicion`, only clients the scorer flags see an
-interstitial; ordinary visitors never do. The difficulty scales across
-`[base_difficulty, max_difficulty]` with the score, so a more bot-like client
-pays more.
+With `pow.mode: suspicion`, the catch-all challenge is disabled. In this
+example the anomaly scorer is the only challenge policy, so ordinary visitors
+never see an interstitial; explicit WAF, GeoIP, or reputation challenge rules
+would still apply. Difficulty scales across `[base_difficulty, max_difficulty]`
+with the score, so a more bot-like client pays more.
 
 ## Tune the thresholds
 

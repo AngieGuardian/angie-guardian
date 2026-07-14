@@ -59,8 +59,8 @@ domains:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
 
-  # Only challenge clients the anomaly scorer flags; ordinary visitors
-  # never see an interstitial. Requires a trained model (see below).
+  # Disable the catch-all challenge; this fragment defines only an anomaly
+  # challenge policy. Requires a trained model (see below).
   shop.example.com:
     pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
@@ -88,10 +88,13 @@ GeoIP, and file-feed artifact. Remote URL feeds are not fetched. It then exits:
 `deploy/rules-common.yaml`, which documents every field). Rules are keyword
 and RE2-regex signatures with an `action` of `deny`, `challenge` or `block`,
 hot-reloaded on change. Empty keyword/regex entries and trailing YAML documents
-are rejected. A valid bound PoW token satisfies `challenge`; `deny` and `block`
-remain terminal. A rule matches against the targets it names:
+are rejected. The first matching rule in file order wins. With PoW enabled, a
+valid bound token satisfies `challenge`; without PoW, `challenge` denies.
+`deny` remains terminal, while `block` persists an IP block only when
+`waf.ip_behaviour.enabled`. A rule matches against the targets it names:
 
-- `path`, `query` (the default pair) and `ua`, all URL-decoded and lowercased;
+- `path`, `query` (the default pair) and `ua`, all lowercased; paths and queries
+  are URL-decoded, while the User-Agent is not percent-decoded;
 - `header:<name>` for any request header, e.g. `header:referer` to catch
   Log4Shell-style payloads hiding in URL-shaped headers (values are
   percent-decoded too, so encoding is no escape hatch); every physical value
@@ -112,13 +115,14 @@ confirm resubmission after solving. Machine APIs that cannot do that should
 disable PoW or use `mode: suspicion` with an appropriate policy.
 
 Honeypot traps use the same URL-decoded path identity: encoded equivalents of
-an exact or prefix trap still trigger the instant block.
+an exact or prefix trap still deny immediately and, when behavioural scoring
+is enabled, persist an IP block.
 
 ### base_difficulty and max_difficulty
 
-`base_difficulty` is the **floor** every clean client pays; `max_difficulty` is
-the **ceiling**. They are not a choice between two modes: a request's suspicion
-score decides where in `[base, max]` it lands.
+`base_difficulty` is the baseline for an issued challenge; `max_difficulty` is
+the ceiling. Anomaly score, WAF/reputation policy, and challenge-farming
+escalation decide where in `[base, max]` a request lands.
 
 A difficulty of `N` requires `4 * N` leading zero **bits** in the SHA-256, so a
 full step (+1) is 16x the work, and the scale takes **quarter steps**: each
@@ -346,8 +350,10 @@ make of this IP?", use `GET /admin/intel/<ip>`.
 
 ## 2. Wire it into Angie
 
-Add the keepalive upstream once in the `http {}` context, then include the
-per-server snippet in each protected `server {}` block:
+Add the keepalive upstream once in the `http {}` context. Copy/adapt the
+per-server snippet, replace both `proxy_pass http://your_backend` placeholders,
+and merge its Guardian directives into an existing `location /` rather than
+declaring a second one:
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -404,9 +410,13 @@ limit_conn_status 429;
 ## 3. Run it (systemd)
 
 ```sh
-sudo cp guardiand /usr/local/bin/
-sudo install -Dm600 guardian.yaml /etc/guardian/guardian.yaml
-sudo cp deploy/guardiand.service /etc/systemd/system/
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
+getent group guardian >/dev/null || sudo groupadd --system guardian
+id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
+  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
+sudo install -D -o guardian -g guardian -m600 guardian.yaml /etc/guardian/guardian.yaml
+sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
+sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
@@ -424,9 +434,10 @@ persistent volumes, or `deploy/docker/` for the full demo stack.
 ## 4. Operate it via the admin API
 
 The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
-separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs an `Authorization: Bearer <token>` header with that exact
-scheme prefix.
+separate from the auth hot path. `/metrics`, `/healthz`, and the optional static
+dashboard shell are open; every JSON/data `/admin/*` route needs an
+`Authorization: Bearer <token>` header with that exact scheme prefix. The
+dashboard authenticates every API call.
 
 You never have to invent that token yourself. It resolves in this order:
 
@@ -529,10 +540,10 @@ challenge lifecycle counters with the average solve time, per-domain feature
 status, IP intelligence health (loaded GeoIP databases plus each reputation
 feed's entries, refresh age and last error), and headline counters,
 auto-refreshing every 5 seconds. The page is a
-static shell: it stores no secrets and every data call goes to the
-token-guarded `/admin/*` endpoints. It is **internal-only by construction**:
-it lives on the admin listener, which refuses a non-loopback bind without a
-configured token, and stays off unless enabled.
+static shell: it stores no secrets, stays off unless enabled, and every data
+call goes to the token-guarded `/admin/*` endpoints. The shell can still be
+publicly reachable on an external admin bind, so keep this listener on
+loopback or a firewalled management network.
 
 ## 5. Train the anomaly model
 
@@ -567,17 +578,17 @@ guardian-loadtest -url http://127.0.0.1:8071 -scenario allow -host example.com -
 # Production common path: solve one real challenge, then hammer with the cookie.
 guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
-# Worst case: a denylisted client (exercises the deny + logging path).
+# Static deny path; the IP must appear in this host's denylist.
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
 
-# Write path: issue a fresh PoW challenge per request (a store CAS write each).
-# This is what separates the store backends; see the Performance table in the
-# README. The scenario rotates the client IP itself to avoid the issuance limit.
+# Write path (requires PoW enabled): one synchronous challenge CAS per request,
+# plus coalesced background counter increments. This separates the store
+# backends; the scenario rotates client IPs to avoid the issuance limit.
 guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
 ```
 
-The `allow`, `token` and `deny` scenarios are read-dominated (one block lookup
-each) and behave the same on any backend; `challenge` is write-heavy and is
+The `allow` and `token` scenarios do one block lookup; a static `deny` match
+does no store I/O. `challenge` is write-heavy and is
 where bbolt's single embedded writer trails redis/valkey. See
 [Choosing a store backend](#choosing-a-store-backend).
 
@@ -592,8 +603,8 @@ where bbolt's single embedded writer trails redis/valkey. See
   (each of which triggers a challenge write in `pow.mode: always`), the single
   writer becomes the ceiling. Load-test with `guardian-loadtest` at your
   expected new-client rate before relying on it near 50k req/s; if the writer
-  saturates, switch to the `redis` backend or set `pow.mode: suspicion` (only
-  anomalous clients are challenged, so most requests do no write).
+  saturates, switch to the `redis` backend or set `pow.mode: suspicion` (no
+  catch-all challenge, so only explicit policies cause challenge writes).
 - **redis**: multi-instance and the highest write throughput. Works with both
   Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which is
   a drop-in replacement (same wire protocol, same `backend: redis` value). See
@@ -673,6 +684,6 @@ host after normalization: `a.test` vs `A.test:443`) the guest denies **every
 request on every host** with `500 Guardian WASM misconfigured`, and the only
 signal is one line in Angie's error log. Unlike the sidecar, which refuses to
 start on a bad `guardian.yaml`, a bad guest config only surfaces at request
-time, so validate before reloading production Angie: exercise a request
-against a staging instance first, or run the same blob through the sidecar's
-loader.
+time. The guest schema uses inline `rules` and is not accepted by
+`guardiand -t`, so exercise a request against a staging WASM instance before
+reloading production Angie.

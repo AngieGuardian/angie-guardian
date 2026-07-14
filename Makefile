@@ -8,8 +8,8 @@ LDFLAGS := -X main.version=$(VERSION)
 
 .PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev
 
-# How long each fuzz target runs in `make fuzz`. CI overrides this
-# (FUZZTIME=2m). Locally, bump it when chasing a specific parser.
+# How long each fuzz target runs in `make fuzz`. Override it locally when
+# chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
 FUZZTIME ?= 30s
 
 # Build the three sidecar binaries into dist/.

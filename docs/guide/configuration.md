@@ -27,8 +27,8 @@ domains:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
 
-  # Only challenge clients the anomaly scorer flags; ordinary visitors
-  # never see an interstitial. Requires a trained model.
+  # Disable the catch-all challenge; this fragment has only an anomaly policy,
+  # so ordinary visitors do not see an interstitial. Requires a trained model.
   shop.example.com:
     pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
@@ -54,9 +54,9 @@ when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
 
 ## base_difficulty and max_difficulty
 
-`base_difficulty` is the **floor** every clean client pays; `max_difficulty`
-is the **ceiling**. They are not a choice between two modes: a request's
-suspicion score decides where in `[base, max]` it lands.
+`base_difficulty` is the baseline for an issued challenge;
+`max_difficulty` is the ceiling. Anomaly score, WAF/reputation policy, and
+challenge-farming escalation can raise work within `[base, max]`.
 
 A difficulty of `N` requires `4 * N` leading zero **bits** in the SHA-256, so
 a full step (+1) is 16x the work, and the scale takes **quarter steps**: each
@@ -119,7 +119,7 @@ Recommendations:
   seconds on phones.
 - **`4`-`4.5`** only when the interstitial itself (not the work) is the
   deterrent you want; the computation is near instant everywhere.
-- **`max_difficulty: 6`** (the default) for anomaly escalation. `6.5` and up
+- **`max_difficulty: 6`** (the default) for all escalation. `6.5` and up
   is effectively a soft deny: a minute of hashing on a phone. Values above 7
   mostly punish real visitors on slow devices.
 - Watch `guardian_challenge_solve_seconds` in Prometheus (or the average on
@@ -172,14 +172,15 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8072/admin/reloa
 
 Domains, allow/denylists, thresholds, PoW difficulty and TTLs, WAF rules and
 model file sets, GeoIP databases, reputation feeds and `log_level` all apply
-immediately. Behavioural state survives the reload: active blocks, counters
-and issued tokens live in the store, not in the config. A config that fails
+immediately. Behavioural state survives the reload: active blocks, counters,
+issued/spent challenge records, and bot verdicts live in the store; signed
+tokens remain client cookies. A config that fails
 validation is rejected and the running config stays active, so a bad edit
 cannot take the daemon down.
 
 Not reloadable (fixed at startup; a reload that changes one is rejected):
 `listen`, `admin.listen`, `trusted_proxy`, the `store` block,
-`signing_key_file`, `previous_key_dir` and the admin token setup.
+`signing_key_file`, `previous_key_dir`, and the admin token/dashboard setup.
 
 WAF rules files, anomaly model artifacts, `.mmdb` databases and file-based
 reputation feeds are also watched on disk and reload on change by themselves;

@@ -1,13 +1,15 @@
 # Admin API
 
 The admin API lives on `admin.listen` (e.g. `127.0.0.1:8072`), separate from
-the auth hot path. Every `/admin/*` route requires the bearer token:
+the auth hot path. Every JSON/data `/admin/*` route requires the bearer token:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The authorization scheme must be the exact `Bearer ` prefix; another scheme
+The optional static `/admin/dashboard` shell is the sole exception; it contains
+no data and uses the token for every API call. The authorization scheme for
+protected routes must use the exact `Bearer ` prefix; another scheme
 followed by the same secret is rejected.
 
 The token comes from `admin.token` (or `ADMIN_TOKEN`), the auto-generated

@@ -55,9 +55,9 @@ denylist entry is the one thing that outranks a verified bot.
 
 A client that claims a listed UA but **definitively** fails verification,
 meaning its IP has no PTR record or its rDNS belongs to someone else, is an
-impostor: with `spoof_action: deny` (the default) it is rejected and scored
-as a `bot_spoof` behaviour event (5/min blocks the IP, tune under
-`waf.ip_behaviour.thresholds`); with `continue` it is simply not allowlisted
+impostor: with `spoof_action: deny` (the default) it is rejected and emits
+a `bot_spoof` event. When `waf.ip_behaviour.enabled`, 5/min blocks the IP
+(tune under `waf.ip_behaviour.thresholds`); with `continue` it is simply not allowlisted
 and the normal WAF/PoW pipeline applies. Transient DNS failures prove nothing
 and just fall through unverified, so a flaky resolver can neither block
 Googlebot nor admit a scraper.
@@ -160,7 +160,8 @@ merged ranges, so six-figure feeds are fine on the hot path.
 
 An `action: deny` feed rejects matching IPs outright; `action: challenge`
 makes them prove work first, one full difficulty step (+4 bits = 16x) above
-base, like a WAF signature hit.
+base, like a WAF signature hit. Challenge feeds are inert on PoW-disabled
+domains.
 
 ## Watching it run
 

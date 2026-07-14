@@ -38,8 +38,9 @@ never verifies, its rDNS may not match the configured domains — see
 
 **Everyone is challenged too aggressively.** If `pow.mode: always`, every
 unvouched request is challenged once per `token_ttl`. Lower `base_difficulty`
-or switch to `pow.mode: suspicion` (only anomaly-flagged clients are
-challenged) — see [Configuration](/guide/configuration).
+or switch to `pow.mode: suspicion` (disables the catch-all; explicit anomaly,
+WAF, GeoIP, and reputation challenge policies still apply) — see
+[Configuration](/guide/configuration).
 
 ## "Guardian is down but the site still works"
 
@@ -74,7 +75,8 @@ says. Check the startup log line `admin token loaded`/`generated`.
 Most of `guardian.yaml` hot-reloads on `SIGHUP` / `POST /admin/reload`
 (domains, lists, thresholds, difficulty, rules/model/geoip/feed sources,
 `log_level`). A handful of fields are fixed at startup — `listen`,
-`admin.listen`, `trusted_proxy`, the `store` block, signing key paths — and a
+`admin.listen`, `trusted_proxy`, the `store` block, signing key paths, and the
+admin token/token-file/dashboard setup — and a
 reload that changes one is rejected. If you changed one of those, restart the
 daemon. The running config stays active after any rejected reload and the error
 is logged (or returned `422` from the admin endpoint). Validate the config and

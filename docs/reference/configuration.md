@@ -13,7 +13,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | Type | Format | Examples |
 |---|---|---|
 | Duration | Go duration string | `"30s"`, `"15m"`, `"4h"` |
-| Rate | `<count>/<unit>` with unit `s`, `min`, or `h` | `"10/min"`, `"5/s"`, `"100/h"` |
+| Rate | `<count>/<unit>` with unit `s`/`sec`/`second`, `m`/`min`/`minute`, or `h`/`hour` | `"10/min"`, `"5/s"`, `"100/h"` |
 
 ## Top level
 
@@ -35,7 +35,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `admin.listen` | string | (empty = disabled) | Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics` and `/healthz` are open; every `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is refused at startup. |
+| `admin.listen` | string | (empty = disabled) | Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics`, `/healthz`, and the optional static dashboard shell are open; every JSON/data `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is refused at startup. |
 | `admin.token` | string | `$ADMIN_TOKEN` | Bearer token for `/admin/*` routes. Falls back to the `ADMIN_TOKEN` env var when empty. |
 | `admin.token_file` | string | | Persists an auto-generated bearer token (created 0600 on first start, never regenerated, like the signing key). Used when `token` and `ADMIN_TOKEN` are unset. With neither `token` nor `token_file`, a loopback listener gets a fresh ephemeral token per start, printed in the startup log. |
 | `admin.dashboard` | bool | `false` | Serve the built-in reporting page at `GET /admin/dashboard`. On startup guardiand logs a ready-to-open login URL carrying the token in the URL fragment. |
@@ -83,7 +83,7 @@ Each feed entry:
 | `url` | string | | Fetched in the background every `refresh` interval. A slow or down remote never blocks startup; a failed refresh keeps the last good list and retries within 5 minutes. Exactly one of `url`/`file`. |
 | `file` | string | | Local list. Must exist at startup (fail-fast, like the WAF rules files); hot-reloaded on change. |
 | `refresh` | Duration | `12h` | URL feeds only. Minimum `1m`. |
-| `action` | `deny` \| `challenge` | `deny` | `deny` rejects matching IPs outright; `challenge` makes them solve PoW first, one full step (+4 bits = 16x) above base, like a WAF signature hit. |
+| `action` | `deny` \| `challenge` | `deny` | `deny` rejects matching IPs outright; `challenge` makes them solve PoW first, one full step (+4 bits = 16x) above base, like a WAF signature hit. Challenge feeds are inert on a PoW-disabled domain. |
 
 ## Per-domain options (`defaults` and `domains.<host>`)
 
@@ -95,12 +95,12 @@ Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. Requires top-level `signing_key_file`. |
-| `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: only challenge clients the anomaly scorer flags (requires `waf.anomaly.enabled`). |
-| `pow.base_difficulty` | float | `5` | The floor every clean client pays. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
-| `pow.max_difficulty` | float | `6` | The ceiling, reached only via anomaly-scaled difficulty. Must be finite and in range `base_difficulty`..8, in quarter steps. |
+| `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: disable that catch-all and let anomaly or explicit WAF/GeoIP/reputation challenge policies select requests (requires `waf.anomaly.enabled`). |
+| `pow.base_difficulty` | float | `5` | Baseline for an issued challenge. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
+| `pow.max_difficulty` | float | `6` | Ceiling for anomaly, WAF/reputation, and challenge-farming escalation. Must be finite and in range `base_difficulty`..8, in quarter steps. |
 | `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. Must be between `1s` and seven days when PoW is enabled. |
-| `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. |
-| `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. |
+| `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. Must be greater than zero when PoW is enabled and no more than seven days. |
+| `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. It substitutes a minimum five-second wait for hash work, so it is weaker and more parallelizable than PoW. |
 
 See [base_difficulty and max_difficulty](/guide/configuration#base-difficulty-and-max-difficulty)
 for which value fires when.
@@ -146,7 +146,7 @@ Behavioural IP blocking with exponential backoff.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable behavioural blocking. |
+| `enabled` | bool | `false` | Enable event counting and automatic/persistent blocks from signatures, honeypots, failed PoW, tamper, and bot spoofing. Existing and manually placed blocks are still enforced when disabled. |
 | `block_ttl` | Duration | `15m` | First-offense block duration; doubles per repeat offense. Maximum one year (`8760h`). |
 | `max_block_ttl` | Duration | `4h` | Backoff cap. Must be >= `block_ttl`; maximum one year (`8760h`). |
 | `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min`, `bot_spoof: 5/min` | Bad events per window before the IP is blocked, keyed by event type. |
@@ -155,7 +155,7 @@ Behavioural IP blocking with exponential backoff.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; every physical value of a duplicate header is inspected. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. A valid bound PoW token satisfies an `action: challenge` match, while `deny` and `block` remain terminal. Empty or whitespace-only keywords and regexes are rejected. |
+| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`). All inputs are lowercased; paths, queries, and targeted header values are also percent-decoded, while User-Agent values are not decoded. Every physical value of a duplicate header is inspected, and the first matching rule in file order wins. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. In the sidecar, a valid bound PoW token satisfies an `action: challenge` match; without PoW that action denies. `deny` always terminates, while `block` persists only when `waf.ip_behaviour.enabled`. The stateless WASM guest has no challenge or block state, so all three matching actions return a deny. Empty or whitespace-only keywords and regexes are rejected. |
 | `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must contain exactly one YAML document and exist when enabled (fail-fast); hot-reloaded on change. |
 
 ### waf.anomaly
@@ -164,14 +164,14 @@ Behavioural IP blocking with exponential backoff.
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable statistical anomaly scoring. Requires a non-empty `model` trained from your own logs; see [Train the Anomaly Model](/guide/anomaly). |
 | `model` | string | | Path to the model artifact from `guardian-train`. Required when enabled; hot-swapped when the file changes. |
-| `challenge_at` | float | | Score at or above this triggers a PoW challenge, with difficulty scaled by the score. Both thresholds must be finite and satisfy `0 < challenge_at < deny_at <= 1`. |
+| `challenge_at` | float | | Score at or above this triggers a PoW challenge when PoW is enabled, with difficulty scaled by the score; otherwise it falls through until `deny_at`. Both thresholds must be finite and satisfy `0 < challenge_at < deny_at <= 1`. |
 | `deny_at` | float | | Score at or above this denies outright. |
 
 ### waf.honeypot
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable honeypot trap paths: one hit means an instant block. |
+| `enabled` | bool | `false` | Enable honeypot trap paths: one hit denies immediately and, when `waf.ip_behaviour.enabled`, places a persistent IP block. |
 | `paths` | list | `[]` | URL-decoded exact paths or prefixes no legitimate client visits, e.g. `["/admin-old/"]`. Percent-encoded equivalents match the same trap. Also `Disallow` them in robots.txt. |
 
 ### waf.signed_id
@@ -180,9 +180,9 @@ Reserves the signed-ID feature: opaque HMAC-bound identifiers whose forgery,
 replay or cross-domain reuse is detectable. No flow mints signed IDs yet, so
 this toggle is currently dormant.
 
-This does **not** gate proof-of-work tamper scoring. Forged or replayed PoW
-challenge IDs are always scored via the `waf.ip_behaviour` `tamper` threshold,
-whether or not this is enabled.
+This does **not** gate proof-of-work tamper detection. Forged or replayed PoW
+challenge IDs always emit a tamper event, whether or not this is enabled; the
+`waf.ip_behaviour` scoreboard counts it only when behavioural scoring is enabled.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -190,13 +190,17 @@ whether or not this is enabled.
 
 ### allowlist / denylist
 
-Static lists, evaluated before everything else. Matching rules:
+Static lists, evaluated before everything else. The allowlist supports:
 
 | Option | Type | Matching |
 |---|---|---|
 | `ips` | list | CIDRs or bare IPv4/IPv6 addresses. |
 | `uas` | list | Case-insensitive substring match on User-Agent. Empty or whitespace-only entries are rejected. |
 | `paths` | list | Exact match, or prefix match when the entry ends with `/`. |
+
+The denylist evaluates only `ips` (CIDRs or bare IPv4/IPv6 addresses).
+Although `uas` and `paths` are accepted by the shared list schema, they are
+not deny conditions; do not configure them under `denylist`.
 
 `uas` is a plain substring match on a client-controlled, freely forgeable
 header. Reserve it for UAs you control (an internal uptime monitor, say).

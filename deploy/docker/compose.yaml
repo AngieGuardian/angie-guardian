@@ -12,9 +12,8 @@
 #
 # Networking note: guardiand's port is deliberately NOT published to the host
 # (no `ports:`). It is reachable only on the internal compose network, mirroring
-# production where the sidecar must not be directly reachable. The `guardian-exposed`
-# profile (see bottom) opts into publishing it, to reproduce the direct-reach
-# header-spoofing finding.
+# production where the sidecar must not be directly reachable. To debug it
+# manually, temporarily add a loopback-only port mapping yourself.
 name: angie-guardian-harness
 
 services:

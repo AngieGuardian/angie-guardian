@@ -1,9 +1,10 @@
 # Admin API & Dashboard
 
 The admin API and `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
-separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs an `Authorization: Bearer <token>` header with that
-exact scheme prefix.
+separate from the auth hot path. `/metrics`, `/healthz`, and the optional static
+`/admin/dashboard` shell are open; every JSON/data `/admin/*` route needs an
+`Authorization: Bearer <token>` header with that exact scheme prefix. The
+dashboard contains no data itself and authenticates every API call.
 
 You never have to invent that token yourself. It resolves in this order:
 
@@ -109,7 +110,7 @@ status, IP intelligence health (loaded GeoIP databases plus each reputation
 feed's entries, refresh age and last error), and headline counters,
 auto-refreshing every 5 seconds.
 
-The page is a static shell: it stores no secrets and every data call goes to
-the token-guarded `/admin/*` endpoints. It is **internal-only by
-construction**: it lives on the admin listener, which refuses a non-loopback
-bind without a configured token, and stays off unless enabled.
+The page is a static shell: it stores no secrets, stays off unless enabled,
+and every data call goes to the token-guarded `/admin/*` endpoints. The shell
+can still be publicly reachable on an external admin bind, so keep this
+listener on loopback or a firewalled management network.

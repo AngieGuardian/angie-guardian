@@ -7,9 +7,13 @@ Grab the latest `guardiand` binary from the
 (under **Assets -> Packages**), then install it as a service:
 
 ```sh
-sudo cp guardiand /usr/local/bin/
-sudo install -Dm600 guardian.yaml /etc/guardian/guardian.yaml
-sudo cp deploy/guardiand.service /etc/systemd/system/
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
+getent group guardian >/dev/null || sudo groupadd --system guardian
+id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
+  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
+sudo install -D -o guardian -g guardian -m600 guardian.yaml /etc/guardian/guardian.yaml
+sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
+sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
@@ -79,7 +83,10 @@ considered healthy.
 Inside the container, set `listen: 0.0.0.0:8071` plus `trusted_proxy: true`
 and `admin.listen: 0.0.0.0:8072` in `guardian.yaml` (the loopback-only
 `ports:` binding above is what keeps them off the network), and point the
-signing key at the volume: `signing_key_file: /etc/guardian/keys/ed25519.key`.
+signing key and generated admin token at the persistent key volume:
+`signing_key_file: /etc/guardian/keys/ed25519.key` and
+`admin.token_file: /etc/guardian/keys/admin.token`. Otherwise a token file
+outside a volume is regenerated when the container is replaced.
 Hot reload works as usual: `docker kill -s HUP <container>` or
 `POST /admin/reload`.
 
@@ -90,8 +97,9 @@ because the e2e suite exercises the working tree, but swapping `build:` for
 
 ## Choosing a store backend
 
-Guardian keeps its shared state (IP blocks, spent challenges, the signing
-key) in a pluggable store:
+Guardian keeps TTL state (IP blocks, counters, spent challenges, and bot
+verdicts) in a pluggable store. Signing keys remain in
+`signing_key_file`/`previous_key_dir` and replicas share those files separately:
 
 - **memory**: single instance, state lost on restart. Fine for dev or a small
   site that can re-learn blocks after a restart.
@@ -101,8 +109,8 @@ key) in a pluggable store:
   triggers a challenge write in `pow.mode: always`), the single writer becomes
   the ceiling. Load-test with `guardian-loadtest` at your expected new-client
   rate before relying on it near 50k req/s; if the writer saturates, switch to
-  the `redis` backend or set `pow.mode: suspicion` (only anomalous clients are
-  challenged, so most requests do no write).
+  the `redis` backend or set `pow.mode: suspicion` (no catch-all challenge;
+  only explicit anomaly/WAF/GeoIP/reputation policies cause challenge writes).
 - **redis**: multi-instance and the highest write throughput. Works with both
   Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which
   is a drop-in replacement (same wire protocol, same `backend: redis` value).

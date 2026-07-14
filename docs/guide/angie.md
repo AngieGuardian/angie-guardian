@@ -6,8 +6,11 @@ every request to a protected `server {}` block.
 
 ## The two snippets
 
-Add the keepalive upstream once in the `http {}` context, then include the
-per-server snippet in each protected `server {}` block:
+Add the keepalive upstream once in the `http {}` context. Then copy/adapt the
+per-server snippet for each protected vhost: replace both
+`proxy_pass http://your_backend` placeholders. The shipped file already
+declares `location /`; if your vhost has one, merge its Guardian directives
+into that location instead of creating a duplicate.
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -16,7 +19,7 @@ upstream guardian {
     keepalive 64;
 }
 
-# each protected server {} block:
+# each protected server {} block, after adapting backend placeholders:
 include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
 ```
 
