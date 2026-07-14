@@ -230,8 +230,8 @@ defaults:
     # allow: { countries: [] }
     # default_action: allow   # allow | challenge | deny for unlisted origins
   reputation:
-    enabled: true             # honour the reputation feeds; config is rejected
-                              # unless at least one feed is configured above
+    enabled: false            # set true after configuring at least one feed
+                              # above; enabled-without-feeds is rejected
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent

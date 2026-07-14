@@ -163,8 +163,8 @@ func TestNullBaselineRejectedNotScored(t *testing.T) {
 	}
 }
 
-// TestParseModelNormalizesDomainKeys: a mixed-case domain key must survive
-// parsing folded to lower case, matching how Score looks it up.
+// TestParseModelNormalizesDomainKeys: an equivalent domain spelling must
+// survive parsing in canonical form, matching how Score looks it up.
 func TestParseModelNormalizesDomainKeys(t *testing.T) {
 	raw := `{"version":1,"kind":"statistical-baseline","domains":{"Example.COM.:443":{"requests":100,"ua_freq":{"curl":1}}}}`
 	m, err := ParseModel([]byte(raw), "probe")

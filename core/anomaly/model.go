@@ -228,7 +228,7 @@ func (m *Model) validate() error {
 		}
 		key := stateless.NormalizeHost(host)
 		if _, dup := normalized[key]; dup {
-			return fmt.Errorf("domain %q: duplicate after case-folding", host)
+			return fmt.Errorf("domain %q: duplicate after host normalization", host)
 		}
 		normalized[key] = b
 	}

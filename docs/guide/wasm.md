@@ -54,11 +54,11 @@ config change).
 ## A config error fails closed
 
 ::: danger Validate before reloading production Angie
-If the `config=` blob does not parse (a typo'd field, an invalid CIDR, or two
-domain keys that collapse to the same host after normalization: `a.test` vs
-`A.test:443`) the guest denies **every request on every host** with
-`500 Guardian WASM misconfigured`, and the only signal is one line in Angie's
-error log.
+If the `config=` blob does not parse (a typo'd field, a trailing YAML document,
+an invalid CIDR, or two domain keys that collapse to the same host after
+normalization: `a.test` vs `A.test:443`) the guest denies **every request on
+every host** with `500 Guardian WASM misconfigured`, and the only signal is one
+line in Angie's error log.
 :::
 
 Unlike the sidecar, which refuses to start on a bad `guardian.yaml`, a bad

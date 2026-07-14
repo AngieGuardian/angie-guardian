@@ -7,6 +7,9 @@ the auth hot path. Every `/admin/*` route requires the bearer token:
 Authorization: Bearer <token>
 ```
 
+The authorization scheme must be the exact `Bearer ` prefix; another scheme
+followed by the same secret is rejected.
+
 The token comes from `admin.token` (or `ADMIN_TOKEN`), the auto-generated
 `admin.token_file`, or, on a loopback listener with neither set, a fresh
 per-start token printed in the startup log; see
@@ -33,6 +36,9 @@ for a ready-made dashboard.
 
 ## Blocks
 
+Every `{ip}` member route requires a valid IP address and canonicalizes
+equivalent spellings (including expanded or uppercase IPv6) to the same block.
+
 ### `GET /admin/blocks`
 
 List every currently active block, with reasons and expiry.
@@ -53,10 +59,9 @@ Is this IP currently blocked, and why?
 ### `PUT /admin/blocks/{ip}`
 
 Place a manual block. Body fields `reason` and `ttl` are optional; the
-default TTL is `15m`. The path must contain a valid IP address; equivalent IPv6
-spellings are canonicalized. An explicit TTL must be greater than zero and at
-most one year (`8760h`). Malformed or unknown JSON fields return `400` without
-changing block state.
+default TTL is `15m`. An explicit TTL must be greater than zero and at most one
+year (`8760h`). Malformed or unknown JSON fields return `400` without changing
+block state.
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \

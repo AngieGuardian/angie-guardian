@@ -69,8 +69,10 @@ domains:
 ```
 
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
-loads and validates the file (YAML syntax, unknown fields, and semantic checks),
-then exits: `0` and `ok` when valid, `1` and the reason when not.
+loads and validates the file (YAML syntax, trailing documents, unknown fields,
+and semantic checks) plus every startup-required local rules, anomaly-model,
+GeoIP, and file-feed artifact. Remote URL feeds are not fetched. It then exits:
+`0` and `ok` when valid, `1` and the reason when not.
 
 ```sh
 ./guardiand -config guardian.yaml -t
@@ -85,12 +87,15 @@ then exits: `0` and `ok` when valid, `1` and the reason when not.
 `waf.keywords.rules_file` points at a YAML rules file (start from
 `deploy/rules-common.yaml`, which documents every field). Rules are keyword
 and RE2-regex signatures with an `action` of `deny`, `challenge` or `block`,
-hot-reloaded on change. A rule matches against the targets it names:
+hot-reloaded on change. Empty keyword/regex entries and trailing YAML documents
+are rejected. A valid bound PoW token satisfies `challenge`; `deny` and `block`
+remain terminal. A rule matches against the targets it names:
 
 - `path`, `query` (the default pair) and `ua`, all URL-decoded and lowercased;
 - `header:<name>` for any request header, e.g. `header:referer` to catch
   Log4Shell-style payloads hiding in URL-shaped headers (values are
-  percent-decoded too, so encoding is no escape hatch);
+  percent-decoded too, so encoding is no escape hatch); every physical value
+  of a duplicate header is inspected;
 - `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods, and a
   rule with only `methods` fires on the method alone.
 
@@ -105,6 +110,9 @@ reaches the backend. Angie fetches the interstitial internally with GET;
 Guardian never stores or replays the body, so the browser/client must retry or
 confirm resubmission after solving. Machine APIs that cannot do that should
 disable PoW or use `mode: suspicion` with an appropriate policy.
+
+Honeypot traps use the same URL-decoded path identity: encoded equivalents of
+an exact or prefix trap still trigger the instant block.
 
 ### base_difficulty and max_difficulty
 
@@ -122,9 +130,11 @@ Which value fires:
 
 - **`mode: always` (the default):** every unvouched request, regardless of HTTP
   method or User-Agent, pays exactly `base_difficulty`, once, then rides a
-  `token_ttl` cookie.
+  `token_ttl` cookie. The token lifetime must be at least one second and at
+  most seven days.
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits =
-  16x, capped at `max`).
+  16x, capped at `max`). A valid bound token satisfies challenge-only rules;
+  deny/block rules still apply.
 - **The anomaly scorer:** scales the difficulty across the `[base, max]` range
   with the score, so a more bot-like client pays more. Requires `waf.anomaly`
   enabled with a trained model.
@@ -240,7 +250,8 @@ resolver can neither block Googlebot nor admit a scraper.
 
 Verification costs two DNS lookups (budget: `dns_timeout`, default 1s) the
 first time an IP claims a bot UA. The result is cached in the shared store
-(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors), so
+(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors; both
+accept at most one year / `8760h`), so
 the hot path stays DNS-free; in-flight lookups are deduplicated per IP and
 capped process-wide, degrading to "unverified" under a spoof flood rather
 than amplifying it into a DNS storm. Watch it via the
@@ -307,7 +318,8 @@ Semantics worth knowing:
 with `#`/`;` comments: the format of the FireHOL netsets, blocklist.de
 exports, and simple hand-maintained files. Define them once at the top
 level; every domain that sets `reputation: { enabled: true }` (typically in
-`defaults`) enforces them.
+`defaults`) enforces them. Enabling reputation without at least one global feed
+is rejected instead of silently disabling the policy.
 
 ```yaml
 reputation:
@@ -399,6 +411,11 @@ sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
 
+The shipped `Type=notify` unit reports `READY=1` only after every configured
+listener answers `/healthz`, then services the systemd watchdog. The distroless
+Compose deployment uses `guardiand -healthcheck` for the same readiness
+contract.
+
 Prefer containers? Every release publishes a prebuilt image (distroless,
 nonroot): `docker pull registry.melroy.org/melroy/angie-guardian:latest`.
 See the production guide on the docs site for a compose service with
@@ -408,7 +425,8 @@ persistent volumes, or `deploy/docker/` for the full demo stack.
 
 The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
 separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs a bearer token.
+`/admin/*` route needs an `Authorization: Bearer <token>` header with that exact
+scheme prefix.
 
 You never have to invent that token yourself. It resolves in this order:
 
@@ -442,7 +460,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 # average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
-# Block an IP for two hours (reason + ttl optional; default 15m).
+# Block an IP for two hours (reason + ttl optional; default 15m, max 8760h).
+# All block member routes validate the IP and canonicalize equivalent IPv6
+# spellings to one key.
 # NOTE: a crawler that passes verified_bots outranks these blocks (so a
 # behavioural mishap can never knock Googlebot offline). To hard-block an
 # IP even against a verified crawler, use the static denylist, which runs
@@ -461,12 +481,14 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # {"host":"shop.example.com","scored":true,"score":0.72}
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
-# replicas refresh automatically and old tokens remain valid.
+# replicas refresh automatically. Pre-rotation tokens remain valid for at most
+# seven days; older archive files are ignored in memory, not auto-deleted.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
 # Reload guardian.yaml without a restart (same as sending SIGHUP). A config
-# that fails validation is rejected and the running config stays active.
+# that fails validation, or changes a startup-only listener/store/key/admin
+# field, is rejected and the running config stays active.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/reload
 # {"reloaded":true}
 
@@ -529,7 +551,9 @@ zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.jso
 
 Re-run it from cron; `guardiand` picks up each new model within seconds.
 Domains below `-min-requests` are dropped (a thin baseline misclassifies
-everything).
+everything). Training and scoring normalize host case, ports, trailing dots,
+and bracketed IPv6 exactly like domain lookup, so equivalent host spellings use
+one baseline.
 
 ## 6. Load-test your deployment
 
@@ -561,7 +585,8 @@ where bbolt's single embedded writer trails redis/valkey. See
 
 - **memory**: single instance, state lost on restart. Fine for dev or a small
   site that can re-learn blocks after a restart.
-- **bbolt**: single instance, persistent. The default. Writes are coalesced
+- **bbolt**: single instance, persistent. The recommended single-box production
+  choice (the configuration default is `memory`). Writes are coalesced
   (`db.Batch`) so concurrent challenge/event writes share fsyncs, but it is
   still one embedded writer: under a very high sustained rate of *new* clients
   (each of which triggers a challenge write in `pow.mode: always`), the single
@@ -580,7 +605,9 @@ To run replicas behind a load balancer, point every instance at one shared
 Redis or Valkey instance and share the signing key + `previous_key_dir` across
 them, so any instance verifies any other's tokens and sees any other's blocks.
 Live replicas notice rotations automatically; the archive directory is
-required before `POST /admin/rotate-key` is allowed.
+required before `POST /admin/rotate-key` is allowed. Retired archives verify
+pre-rotation tokens for at most seven days; older files may remain on disk but
+are ignored by the active verifier.
 Valkey is a fully compatible drop-in replacement for Redis; the configuration
 is identical for both.
 

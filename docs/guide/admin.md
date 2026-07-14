@@ -2,7 +2,8 @@
 
 The admin API and `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
 separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs a bearer token.
+`/admin/*` route needs an `Authorization: Bearer <token>` header with that
+exact scheme prefix.
 
 You never have to invent that token yourself. It resolves in this order:
 

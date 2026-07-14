@@ -17,7 +17,9 @@ pipeline. Everything is per-domain configurable.
 1. **WAF layer**, runs on every request:
    - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
      construction), matched against the decoded path, query, User-Agent
-     and any named request header, with optional HTTP-method filters
+     and any named request header, with optional HTTP-method filters;
+     valid bound PoW tokens satisfy challenge-only matches, while deny/block
+     matches remain terminal
    - behavioural IP blocking with exponential backoff (signature hits,
      PoW failures, tamper events)
    - honeypot trap paths: one hit = instant block
@@ -123,8 +125,9 @@ from the default `go test ./...`:
 make e2e                 # or: go test -tags e2e ./test/e2e/...
 ```
 
-CI runs the e2e suite on every push (the `e2e` job), so a merge cannot land
-without the full stack passing.
+CI runs the e2e suite on protected refs (`main` and release tags), where the
+protected Docker runner is available. Run it on feature branches with
+`make e2e` before merging changes that affect the real stack.
 
 Every parser that ingests untrusted or hot-reloaded input (URI percent-decode,
 WAF rules file, `guardian.yaml`, the anomaly model artifact, the PoW redeem

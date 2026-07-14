@@ -300,6 +300,12 @@ func TestMinimumPoWTokenTTLIsAccepted(t *testing.T) {
 	}
 }
 
+func TestGuardianExampleConfigLoads(t *testing.T) {
+	if _, err := LoadConfig("../guardian.example.yaml"); err != nil {
+		t.Fatalf("guardian.example.yaml must remain a valid starting config: %v", err)
+	}
+}
+
 func TestConfigRejectsTrailingYAMLDocument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:8071\n---\nlisten: 127.0.0.1:9999\n"), 0o600); err != nil {

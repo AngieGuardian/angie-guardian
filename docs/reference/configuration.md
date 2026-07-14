@@ -156,7 +156,7 @@ Behavioural IP blocking with exponential backoff.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; every physical value of a duplicate header is inspected. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. A valid bound PoW token satisfies an `action: challenge` match, while `deny` and `block` remain terminal. Empty or whitespace-only keywords and regexes are rejected. |
-| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must exist when enabled (fail-fast); hot-reloaded on change. |
+| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must contain exactly one YAML document and exist when enabled (fail-fast); hot-reloaded on change. |
 
 ### waf.anomaly
 
@@ -172,7 +172,7 @@ Behavioural IP blocking with exponential backoff.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable honeypot trap paths: one hit means an instant block. |
-| `paths` | list | `[]` | Paths no legitimate client visits, e.g. `["/admin-old/"]`. Also `Disallow` them in robots.txt. |
+| `paths` | list | `[]` | URL-decoded exact paths or prefixes no legitimate client visits, e.g. `["/admin-old/"]`. Percent-encoded equivalents match the same trap. Also `Disallow` them in robots.txt. |
 
 ### waf.signed_id
 

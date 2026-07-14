@@ -105,7 +105,7 @@ defaults:
     signed_id: { enabled: false }
   pow:
     enabled: true
-    mode: always              # always: challenge every unvouched browser
+    mode: always              # always: challenge every unvouched request
                               # suspicion: only challenge anomalous clients (needs waf.anomaly)
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
@@ -126,8 +126,8 @@ defaults:
     # allow: { countries: [] }
     # default_action: allow   # allow | challenge | deny for unlisted origins
   reputation:
-    enabled: true             # honour the reputation feeds (no-op until some
-                              # are configured above)
+    enabled: false            # set true after configuring at least one feed
+                              # above; enabled-without-feeds is rejected
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent

@@ -136,8 +136,10 @@ remote OOM). The client-keyed structures and their caps:
 - **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
   full, entries repopulate cheaply on the next verify.
 - **Counter cache** (issuance rate limit + farming escalation): at most 2^17
-  entries, same reset behaviour; a reset costs one under-counted request per
-  hot key, not the counter state (which lives in the store).
+  entries. At capacity it reclaims only clean cached totals; entries carrying
+  unapplied store work are retained. If every entry is protected, unseen keys
+  remain uncached until a drainer makes room, rather than erasing pending
+  reconciliation state.
 - **Recent-decisions ring** (admin/dashboard feed): fixed 512 entries
   (~100 KiB), overwrite-oldest. Holds raw host/URI/UA but never grows.
 - **Bot-verification in-flight map**: bounded by concurrent lookups, not
