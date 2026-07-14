@@ -32,6 +32,7 @@ rules:
 
 const wafYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   waf:
     ip_behaviour:

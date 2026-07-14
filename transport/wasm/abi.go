@@ -8,6 +8,7 @@ package main
 
 import (
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -91,12 +92,11 @@ func getMethod() string     { return readString(hostGetMethod) }
 func getURI() string        { return readString(hostGetURI) }
 func getSourceAddr() string { return readString(hostGetSourceAddr) }
 
-// getHeader returns the first value of a request header, or "". The ABI packs
-// count in the high 32 bits and byte-length in the low 32 bits of the return;
-// when several values are present they are NUL-separated, and we take the
-// first. It uses the same grow-and-retry protocol as readInto, keeping both
-// the name and value buffers referenced across each host call.
-func getHeader(name string) string {
+// getHeaders returns every value of a request header. The ABI packs count in
+// the high 32 bits and byte-length in the low 32 bits of the return; values are
+// NUL-separated. It uses the same grow-and-retry protocol as readInto, keeping
+// both the name and value buffers referenced across each host call.
+func getHeaders(name string) []string {
 	nb := []byte(name)
 	read := func(buf uint32, bufLimit uint32) uint32 {
 		cl := hostGetHeaderValues(kindRequest, ptr(nb), uint32(len(nb)), buf, bufLimit)
@@ -106,12 +106,22 @@ func getHeader(name string) string {
 		return uint32(cl)
 	}
 	values := readInto(read)
-	for i, c := range values {
-		if c == 0 {
-			return string(values[:i])
-		}
+	if len(values) == 0 {
+		return nil
 	}
-	return string(values)
+	parts := strings.Split(string(values), "\x00")
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
+}
+
+func getHeader(name string) string {
+	values := getHeaders(name)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 // getConfig returns the module's configuration blob (JSON/YAML) set on the

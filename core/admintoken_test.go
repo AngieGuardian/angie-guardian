@@ -7,6 +7,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -32,6 +33,43 @@ func TestAdminTokenPersistence(t *testing.T) {
 	}
 	if tok1 != tok2 {
 		t.Fatalf("token regenerated on reload: %q vs %q", tok1, tok2)
+	}
+}
+
+func TestAdminTokenConcurrentFirstStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin.token")
+	const workers = 128
+	start := make(chan struct{})
+	tokens := make(chan string, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			token, err := LoadOrCreateAdminToken(path)
+			tokens <- token
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(tokens)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := ""
+	for token := range tokens {
+		if want == "" {
+			want = token
+		}
+		if token != want {
+			t.Fatalf("concurrent creators observed different tokens: %q and %q", want, token)
+		}
 	}
 }
 

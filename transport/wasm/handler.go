@@ -68,7 +68,7 @@ func handleRequest() uint64 {
 		URI:        getURI(),
 		RemoteAddr: stateless.ClientIP(getSourceAddr()),
 		UserAgent:  getHeader("User-Agent"),
-		Header:     getHeader,
+		Header:     getHeaders,
 	}
 	if config.NeedsMethod() {
 		req.Method = getMethod()

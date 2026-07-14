@@ -75,11 +75,10 @@ Most of `guardian.yaml` hot-reloads on `SIGHUP` / `POST /admin/reload`
 (domains, lists, thresholds, difficulty, rules/model/geoip/feed sources,
 `log_level`). A handful of fields are fixed at startup — `listen`,
 `admin.listen`, `trusted_proxy`, the `store` block, signing key paths — and a
-reload logs a `requires a restart to apply` warning for each. If you changed one
-of those, restart the daemon. If a reload was rejected entirely, the config
-failed validation; the running config stays active and the error is logged (or
-returned `422` from the admin endpoint). Validate before reloading with
-`guardiand -config … -t`.
+reload that changes one is rejected. If you changed one of those, restart the
+daemon. The running config stays active after any rejected reload and the error
+is logged (or returned `422` from the admin endpoint). Validate the config and
+its startup-required local artifacts before reloading with `guardiand -config … -t`.
 
 ## Challenge issuance is slow / bbolt can't keep up
 

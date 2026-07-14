@@ -16,7 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,7 +45,11 @@ func main() {
 		os.Exit(2)
 	}
 	if *testConfig {
-		if _, err := core.LoadConfig(*configPath); err != nil {
+		cfg, err := core.LoadConfig(*configPath)
+		if err == nil {
+			err = core.ValidateConfigArtifacts(cfg, slog.Default())
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "config %s: FAILED\n%v\n", *configPath, err)
 			os.Exit(1)
 		}
@@ -62,6 +67,7 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
+	runningStatic := staticConfigFrom(cfg)
 
 	levels := map[string]slog.Level{
 		"debug": slog.LevelDebug, "info": slog.LevelInfo,
@@ -132,7 +138,9 @@ func run(configPath string) error {
 		if err != nil {
 			return err
 		}
-		warnStaticChanges(engine.Config(), next, log)
+		if changed := staticConfigChanges(runningStatic, next); len(changed) > 0 {
+			return fmt.Errorf("config changes require a restart: %s", strings.Join(changed, ", "))
+		}
 		if err := engine.Reload(next); err != nil {
 			return err
 		}
@@ -215,10 +223,10 @@ func run(configPath string) error {
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
 		go func() {
-			if err := waitListening(wdCtx, cfg, 30*time.Second); err != nil {
-				log.Warn("readiness probe did not confirm listeners; signalling ready anyway", "err", err)
+			if err := signalReadyWhenListening(wdCtx, cfg, 30*time.Second, sd.Ready); err != nil {
+				log.Error("readiness probe did not confirm listeners; not signalling ready", "err", err)
+				return
 			}
-			sd.Ready()
 			log.Info("systemd notified ready")
 			sd.startWatchdog(wdCtx, log)
 		}()
@@ -257,29 +265,46 @@ loop:
 	return nil
 }
 
-// warnStaticChanges flags reloaded config fields that only apply on restart:
-// listener binds, the store backing the blocks/counters, signing key paths
-// and the admin token setup are all fixed while the process runs. The reload
-// still succeeds; the operator just learns these edits are not live yet.
-// (admin.token itself is not compared: the running value may be one the
-// daemon generated or loaded from token_file, not what the YAML says.)
-func warnStaticChanges(old, next *core.Config, log *slog.Logger) {
-	changed := func(name, was, is string) {
-		if was != is {
-			log.Warn("config change requires a restart to apply", "field", name, "running", was, "new", is)
+type staticConfig struct {
+	listen, signingKeyFile, previousKeyDir string
+	trustedProxy                           bool
+	admin                                  core.AdminConfig
+	store                                  core.StoreConfig
+}
+
+func staticConfigFrom(cfg *core.Config) staticConfig {
+	return staticConfig{
+		listen: cfg.Listen, trustedProxy: cfg.TrustedProxy,
+		signingKeyFile: cfg.SigningKeyFile, previousKeyDir: cfg.PreviousKeyDir,
+		admin: cfg.Admin, store: cfg.Store,
+	}
+}
+
+// staticConfigChanges reports reload edits that cannot be applied to the
+// already-open listeners, store, key manager or admin server. Rejecting the
+// reload keeps Engine.Config an honest view of the running process.
+func staticConfigChanges(running staticConfig, next *core.Config) []string {
+	var changed []string
+	add := func(name string, different bool) {
+		if different {
+			changed = append(changed, name)
 		}
 	}
-	changed("listen", old.Listen, next.Listen)
-	changed("trusted_proxy", strconv.FormatBool(old.TrustedProxy), strconv.FormatBool(next.TrustedProxy))
-	changed("signing_key_file", old.SigningKeyFile, next.SigningKeyFile)
-	changed("previous_key_dir", old.PreviousKeyDir, next.PreviousKeyDir)
-	changed("admin.listen", old.Admin.Listen, next.Admin.Listen)
-	changed("admin.token_file", old.Admin.TokenFile, next.Admin.TokenFile)
-	changed("admin.dashboard", strconv.FormatBool(old.Admin.Dashboard), strconv.FormatBool(next.Admin.Dashboard))
-	changed("store.backend", old.Store.Backend, next.Store.Backend)
-	changed("store.path", old.Store.Path, next.Store.Path)
-	changed("store.addr", old.Store.Addr, next.Store.Addr)
-	changed("store.db", strconv.Itoa(old.Store.DB), strconv.Itoa(next.Store.DB))
+	add("listen", running.listen != next.Listen)
+	add("trusted_proxy", running.trustedProxy != next.TrustedProxy)
+	add("signing_key_file", running.signingKeyFile != next.SigningKeyFile)
+	add("previous_key_dir", running.previousKeyDir != next.PreviousKeyDir)
+	add("admin.listen", running.admin.Listen != next.Admin.Listen)
+	add("admin.token", running.admin.Token != next.Admin.Token)
+	add("admin.token_file", running.admin.TokenFile != next.Admin.TokenFile)
+	add("admin.dashboard", running.admin.Dashboard != next.Admin.Dashboard)
+	add("store.backend", running.store.Backend != next.Store.Backend)
+	add("store.path", running.store.Path != next.Store.Path)
+	add("store.addr", running.store.Addr != next.Store.Addr)
+	add("store.password", running.store.Password != next.Store.Password)
+	add("store.db", running.store.DB != next.Store.DB)
+	slices.Sort(changed)
+	return changed
 }
 
 // displayAddr turns a listen address into one a browser on this box can open:

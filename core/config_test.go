@@ -5,6 +5,7 @@
 package core
 
 import (
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 const testYAML = `
 listen: 127.0.0.1:9999
+signing_key_file: test-signing.key
 store:
   backend: memory
 defaults:
@@ -125,6 +127,7 @@ func TestBuiltinDifficultyDefaults(t *testing.T) {
 func TestFractionalDifficulty(t *testing.T) {
 	cfg := loadTestConfig(t, `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   pow: { enabled: true, base_difficulty: 4.25, max_difficulty: 5.75 }
 `)
@@ -267,6 +270,15 @@ func TestConfigValidation(t *testing.T) {
 		"feed bad action":                        "reputation: { feeds: [ { name: x, file: /a/b, action: block } ] }",
 		"feed bad url scheme":                    "reputation: { feeds: [ { name: x, url: \"ftp://a/b\" } ] }",
 		"feed refresh too low":                   "reputation: { feeds: [ { name: x, url: \"https://a/b\", refresh: 10s } ] }",
+		"bot empty ua":                           "defaults: { verified_bots: { bots: [ { name: mybot, uas: [\"  \"], domains: [x.test] } ] } }",
+		"empty allowlist ua":                     "defaults: { allowlist: { uas: [\"  \"] } }",
+		"pow without signing key":                "defaults: { pow: { enabled: true } }",
+		"anomaly without model":                  "defaults: { anomaly: { enabled: true, challenge_threshold: 0.8, deny_threshold: 0.9 } }",
+		"keywords without rules":                 "defaults: { waf: { keywords: { enabled: true } } }",
+		"reputation without feeds":               "defaults: { reputation: { enabled: true } }",
+		"nan difficulty":                         "defaults: { pow: { base_difficulty: .nan } }",
+		"infinite max difficulty":                "defaults: { pow: { max_difficulty: .inf } }",
+		"nan anomaly threshold":                  "defaults: { anomaly: { model: model.json, challenge_threshold: .nan } }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
@@ -275,6 +287,30 @@ func TestConfigValidation(t *testing.T) {
 		if _, err := LoadConfig(path); err == nil {
 			t.Errorf("%s: expected validation error, got nil", name)
 		}
+	}
+}
+
+func TestConfigRejectsTrailingYAMLDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guardian.yaml")
+	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:8071\n---\nlisten: 127.0.0.1:9999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("second YAML document must be rejected")
+	}
+}
+
+func TestValidateConfigArtifactsLoadsRules(t *testing.T) {
+	cfg := loadTestConfig(t, `
+signing_key_file: test-signing.key
+defaults:
+  waf:
+    keywords:
+      enabled: true
+      rules_file: /definitely/missing/rules.yaml
+`)
+	if err := ValidateConfigArtifacts(cfg, slog.Default()); err == nil {
+		t.Fatal("missing rules artifact must fail preflight validation")
 	}
 }
 

@@ -53,7 +53,9 @@ Is this IP currently blocked, and why?
 ### `PUT /admin/blocks/{ip}`
 
 Place a manual block. Body fields `reason` and `ttl` are optional; the
-default TTL is `15m`.
+default TTL is `15m`. The path must contain a valid IP address and an explicit
+TTL must be greater than zero. Malformed or unknown JSON fields return `400`
+without changing block state.
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
@@ -136,8 +138,8 @@ denied".
 
 Atomically archive the current Ed25519 signing key into `previous_key_dir` and
 generate a new one. `previous_key_dir` must be configured. Live replicas that
-share both key paths refresh automatically, and tokens signed by retired keys
-keep verifying until they expire.
+share both key paths refresh automatically. Retired keys accept only tokens
+issued before rotation, with a maximum token lifetime of seven days.
 
 ```json
 {"rotated":true}
@@ -162,7 +164,7 @@ with `422` and the running config stays active.
 
 Listener addresses, the store backend, signing key paths and the admin token
 setup are fixed at startup; changing those fields still requires a restart
-(the reload succeeds but logs a warning for each such change).
+(the reload is rejected with `422`, leaving the active config unchanged).
 
 ## Dashboard
 

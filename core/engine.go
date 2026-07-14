@@ -90,9 +90,9 @@ func (e *Engine) SetMetrics(m *metrics.Metrics) {
 // are polled for changes.
 const reloadInterval = 10 * time.Second
 
-// buildSnapshot constructs and starts the config-derived caches. On error
-// nothing is left running.
-func buildSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
+// loadSnapshot constructs the config-derived caches without starting their
+// background watchers. On error nothing is left open or running.
+func loadSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 	rules, err := waf.NewRuleCache(cfg.RuleFiles(), log)
 	if err != nil {
 		return nil, err
@@ -108,10 +108,33 @@ func buildSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 		models.Close()
 		return nil, err
 	}
-	rules.Start(reloadInterval)
-	models.Start(reloadInterval)
-	itl.Start()
 	return &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl}, nil
+}
+
+// buildSnapshot loads and starts the caches used by a live engine.
+func buildSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
+	snap, err := loadSnapshot(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	snap.rules.Start(reloadInterval)
+	snap.models.Start(reloadInterval)
+	snap.intel.Start()
+	return snap, nil
+}
+
+// ValidateConfigArtifacts eagerly loads every local artifact required to
+// construct an engine (rules, anomaly models, GeoIP databases and file-based
+// reputation feeds), then immediately releases it. It is the artifact half of
+// `guardiand -t`: no listeners or stores are opened and URL feeds are not
+// fetched, but anything that would make engine startup fail is reported.
+func ValidateConfigArtifacts(cfg *Config, log *slog.Logger) error {
+	snap, err := loadSnapshot(cfg, log)
+	if err != nil {
+		return err
+	}
+	snap.close()
+	return nil
 }
 
 func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logger) (*Engine, error) {

@@ -84,12 +84,13 @@ signature checks, so a stolen token can't ride past the WAF.
   challenge/solve counters, and per-domain status. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` atomically archives the current
   Ed25519 key and generates a new one; `previous_key_dir` is required. Live
-  replicas sharing both paths refresh automatically, while old tokens keep
-  verifying until they expire.
+  replicas sharing both paths refresh automatically. Retired keys accept only
+  tokens issued before rotation, with a maximum lifetime of seven days.
 - **Hot reload**: `SIGHUP` (or `POST /admin/reload`) re-reads `guardian.yaml`
   and applies it without a restart: domains, lists, thresholds, difficulty,
   GeoIP/feed sources, log level. Active blocks and issued tokens survive; a
-  config that fails validation is rejected and the running config stays live.
+  config that fails validation, or changes a startup-only listener/store/key/
+  admin field, is rejected and the running config stays live.
 - **Stores**: `memory` (dev), `bbolt` (single box), or `redis`/`valkey`
   (multi-instance replicas behind a load balancer, sharing blocks + spent
   challenges + the signing key).

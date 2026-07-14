@@ -86,7 +86,7 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 		Cookie:     headerOr(r, "X-Guardian-Cookie", r.Header.Get("Cookie")),
 		// The auth subrequest inherits the client's request headers, so
 		// header-targeting WAF rules read them straight off the subrequest.
-		Header: r.Header.Get,
+		Header: r.Header.Values,
 	}
 }
 
