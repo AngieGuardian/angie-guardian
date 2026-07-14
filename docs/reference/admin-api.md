@@ -1,11 +1,16 @@
 # Admin API
 
 The admin API lives on `admin.listen` (e.g. `127.0.0.1:8072`), separate from
-the auth hot path. Every `/admin/*` route requires the bearer token:
+the auth hot path. Every JSON/data `/admin/*` route requires the bearer token:
 
 ```
 Authorization: Bearer <token>
 ```
+
+The optional static `/admin/dashboard` shell is the sole exception; it contains
+no data and uses the token for every API call. The authorization scheme for
+protected routes must use the exact `Bearer ` prefix; another scheme
+followed by the same secret is rejected.
 
 The token comes from `admin.token` (or `ADMIN_TOKEN`), the auto-generated
 `admin.token_file`, or, on a loopback listener with neither set, a fresh
@@ -33,6 +38,9 @@ for a ready-made dashboard.
 
 ## Blocks
 
+Every `{ip}` member route requires a valid IP address and canonicalizes
+equivalent spellings (including expanded or uppercase IPv6) to the same block.
+
 ### `GET /admin/blocks`
 
 List every currently active block, with reasons and expiry.
@@ -53,9 +61,9 @@ Is this IP currently blocked, and why?
 ### `PUT /admin/blocks/{ip}`
 
 Place a manual block. Body fields `reason` and `ttl` are optional; the
-default TTL is `15m`. The path must contain a valid IP address and an explicit
-TTL must be greater than zero. Malformed or unknown JSON fields return `400`
-without changing block state.
+default TTL is `15m`. An explicit TTL must be greater than zero and at most one
+year (`8760h`). Malformed or unknown JSON fields return `400` without changing
+block state.
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
@@ -140,6 +148,8 @@ Atomically archive the current Ed25519 signing key into `previous_key_dir` and
 generate a new one. `previous_key_dir` must be configured. Live replicas that
 share both key paths refresh automatically. Retired keys accept only tokens
 issued before rotation, with a maximum token lifetime of seven days.
+Archives older than that verification horizon are ignored in memory (they are
+not automatically deleted from disk).
 
 ```json
 {"rotated":true}

@@ -460,6 +460,84 @@ func TestCounterCacheExpiredWindowNotFlushed(t *testing.T) {
 	}
 }
 
+// A queued old-window delta must not be relabelled with the deadline of the
+// first bump in a fresh window. Only that fresh bump reaches the store.
+func TestCounterCacheQueuedDeltaDoesNotCrossWindow(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+	if n := c.Incr("k", 20*time.Millisecond); n != 1 {
+		t.Fatalf("old-window count = %d, want 1", n)
+	}
+	c.now = func() time.Time { return base.Add(40 * time.Millisecond) }
+	if n := c.Incr("k", time.Minute); n != 1 {
+		t.Fatalf("fresh-window count = %d, want 1", n)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("scheduled %d drainers, want 1", len(pending))
+	}
+	pending[0]()
+	v, ok, err := st.Get(context.Background(), "k")
+	if err != nil || !ok || string(v) != "1" {
+		t.Fatalf("shared fresh-window count = %q ok=%v err=%v, want 1", v, ok, err)
+	}
+}
+
+// Reaching the local map cap may evict clean cached totals, but it must retain
+// a queue-overflowed hot key whose pending delta exists nowhere else.
+func TestCounterCacheCapacityPreservesOverflowPending(t *testing.T) {
+	st := NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := NewCounterCache(st)
+	base := time.Now()
+	c.now = func() time.Time { return base }
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	c.mu.Lock()
+	c.queue = make([]string, maxFlushQueue)
+	c.workers = maxFlushWorkers
+	c.mu.Unlock()
+	for range 5 {
+		c.Incr("hot", time.Minute)
+	}
+
+	// Fill the remaining cache with clean entries, then insert one more key to
+	// exercise the capacity path. Only clean entries may be reclaimed.
+	c.mu.Lock()
+	for i := len(c.m); i < maxCounterEntries; i++ {
+		c.m[fmt.Sprintf("clean-%d", i)] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano()}
+	}
+	c.mu.Unlock()
+	c.Incr("trigger", time.Minute)
+	if n := c.Incr("hot", time.Minute); n != 6 {
+		t.Fatalf("hot count after capacity trim = %d, want 6", n)
+	}
+
+	c.mu.Lock()
+	c.queue = nil
+	c.workers = 0
+	c.mu.Unlock()
+	if n := c.Incr("hot", time.Minute); n != 7 {
+		t.Fatalf("hot count while retrying = %d, want 7", n)
+	}
+	if len(pending) == 0 {
+		t.Fatal("pending hot delta did not schedule a recovery drainer")
+	}
+	for _, f := range pending {
+		f()
+	}
+	v, ok, err := st.Get(context.Background(), "hot")
+	if err != nil || !ok || string(v) != "7" {
+		t.Fatalf("shared hot count = %q ok=%v err=%v, want 7", v, ok, err)
+	}
+}
+
 // TestCounterCacheMonotonicMerge: an out-of-order flush carrying a stale
 // (smaller) shared total must never roll the local count backward. Two local
 // bumps return 1 then 2; landing shared=2 then a late shared=1 must leave the

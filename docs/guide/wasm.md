@@ -7,8 +7,11 @@ signatures); proof-of-work, behavioural IP blocking, and anomaly scoring need
 the shared store and remain sidecar-only.
 
 Use it when you want the WASM integration and the stateless WAF subset is
-enough, or alongside a backend that handles the rest. Both paths call the same
-store-free evaluator, so the WAF decisions are identical to the sidecar's.
+enough, or alongside a backend that handles the rest. Both paths share the
+same parsing and matching logic. The guest has no store or PoW manager, so a
+matching `deny`, `challenge`, or `block` rule returns the same `403`, and a
+honeypot hit denies only that request; only the sidecar can issue a challenge
+or persist an IP block.
 
 ## Build
 
@@ -54,13 +57,14 @@ config change).
 ## A config error fails closed
 
 ::: danger Validate before reloading production Angie
-If the `config=` blob does not parse (a typo'd field, an invalid CIDR, or two
-domain keys that collapse to the same host after normalization: `a.test` vs
-`A.test:443`) the guest denies **every request on every host** with
-`500 Guardian WASM misconfigured`, and the only signal is one line in Angie's
-error log.
+If the `config=` blob does not parse (a typo'd field, a trailing YAML document,
+an invalid CIDR, or two domain keys that collapse to the same host after
+normalization: `a.test` vs `A.test:443`) the guest denies **every request on
+every host** with `500 Guardian WASM misconfigured`, and the only signal is one
+line in Angie's error log.
 :::
 
 Unlike the sidecar, which refuses to start on a bad `guardian.yaml`, a bad
-guest config only surfaces at request time. Exercise a request against a
-staging instance first, or run the same blob through the sidecar's loader.
+guest config only surfaces at request time. The guest schema uses inline
+`rules` and is not accepted by `guardiand -t`, so exercise a request against a
+staging WASM instance before reloading production Angie.

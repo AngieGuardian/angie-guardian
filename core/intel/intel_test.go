@@ -149,6 +149,41 @@ func TestMMDBHotReload(t *testing.T) {
 	}
 }
 
+func TestMMDBHotReloadDetectsSameSizeAndMtimeReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
+	original, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(Config{CountryDB: path}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	next := inteltest.WriteCountryDB(t, t.TempDir(), map[string]string{"198.51.100.0/24": "BE"})
+	replacement, err := os.Stat(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Size() != original.Size() {
+		t.Fatalf("fixture sizes differ: original=%d replacement=%d", original.Size(), replacement.Size())
+	}
+	if err := os.Chtimes(next, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, path); err != nil {
+		t.Fatal(err)
+	}
+
+	p.country.maybeReload(testLogger())
+	addr := netip.MustParseAddr("198.51.100.7")
+	if got := p.Lookup(addr).Country; got != "BE" {
+		t.Fatalf("same-size, same-mtime replacement was missed: got %q, want BE", got)
+	}
+}
+
 func TestMMDBWrongTypeFailsStartup(t *testing.T) {
 	dir := t.TempDir()
 	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})

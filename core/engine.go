@@ -6,9 +6,11 @@ package core
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +63,7 @@ type Engine struct {
 	recent  recentRing       // last non-allow decisions, for the admin API
 	stages  []Stage
 	log     *slog.Logger
+	lifeMu  sync.Mutex // serializes Reload and Close
 }
 
 // engineSnapshot bundles the config with the caches derived from it (rules
@@ -72,12 +75,27 @@ type engineSnapshot struct {
 	rules  *waf.RuleCache
 	models *anomaly.ModelCache
 	intel  *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
+	refs   atomic.Int64    // engine ownership + in-flight evaluators
 }
 
-func (s *engineSnapshot) close() {
-	s.rules.Close()
-	s.models.Close()
-	s.intel.Close()
+func (s *engineSnapshot) acquire() bool {
+	for {
+		n := s.refs.Load()
+		if n <= 0 {
+			return false
+		}
+		if s.refs.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+func (s *engineSnapshot) release() {
+	if s.refs.Add(-1) == 0 {
+		s.rules.Close()
+		s.models.Close()
+		s.intel.Close()
+	}
 }
 
 // SetMetrics attaches a metrics sink. Call once at startup before serving.
@@ -108,7 +126,9 @@ func loadSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 		models.Close()
 		return nil, err
 	}
-	return &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl}, nil
+	snap := &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl}
+	snap.refs.Store(1) // ownership held by the engine or validation caller
+	return snap, nil
 }
 
 // buildSnapshot loads and starts the caches used by a live engine.
@@ -133,7 +153,7 @@ func ValidateConfigArtifacts(cfg *Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	snap.close()
+	snap.release()
 	return nil
 }
 
@@ -169,31 +189,45 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 	return e, nil
 }
 
-// retireGrace is how long a replaced snapshot keeps its caches alive before
-// closing them. In-flight requests hold the old snapshot for at most one
-// Evaluate (milliseconds, or ~1s when a first-sight bot verification runs a
-// DNS lookup), and closing the intel provider unmaps its mmdb readers, so the
-// old snapshot must outlive every request that could still be reading it.
-const retireGrace = 30 * time.Second
-
 // Reload swaps in a freshly loaded config, rebuilding the caches derived from
 // it (WAF rules files, anomaly models, GeoIP databases, reputation feeds).
 // Behavioural state (blocks, scoreboard, PoW escalation, bot verdicts) lives
 // in the store and is untouched. On error the running config stays active.
 func (e *Engine) Reload(cfg *Config) error {
+	e.lifeMu.Lock()
+	defer e.lifeMu.Unlock()
+	if e.snap.Load() == nil {
+		return errors.New("engine is closed")
+	}
 	snap, err := buildSnapshot(cfg, e.log)
 	if err != nil {
 		return err
 	}
 	snap.intel.SetMetrics(e.metrics)
 	old := e.snap.Swap(snap)
-	time.AfterFunc(retireGrace, old.close)
+	old.release() // resources close after the final in-flight evaluator releases
 	return nil
 }
 
 // Close stops background work (rules/model/geoip/feed refresh).
 func (e *Engine) Close() {
-	e.snap.Load().close()
+	e.lifeMu.Lock()
+	defer e.lifeMu.Unlock()
+	if snap := e.snap.Swap(nil); snap != nil {
+		snap.release()
+	}
+}
+
+func (e *Engine) acquireSnapshot() *engineSnapshot {
+	for {
+		snap := e.snap.Load()
+		if snap == nil {
+			return nil
+		}
+		if snap.acquire() {
+			return snap
+		}
+	}
 }
 
 // Evaluate resolves the domain config for the request's host and runs the
@@ -201,7 +235,11 @@ func (e *Engine) Close() {
 // taking a site down with it.
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
-	snap := e.snap.Load() // one load: the whole request sees one consistent config+caches
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return Decision{Action: ActionAllow, Reason: "engine:closed"}
+	}
+	defer snap.release()
 	dcfg := snap.cfg.DomainFor(req.Host)
 	label := snap.cfg.DomainLabel(req.Host)
 	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots}
@@ -343,7 +381,11 @@ func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
 // domain's model, for admin inspection ("why would this be challenged?").
 // Returns -1 when the domain has no anomaly model loaded.
 func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
-	snap := e.snap.Load()
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return -1
+	}
+	defer snap.release()
 	dcfg := snap.cfg.DomainFor(host)
 	if !dcfg.WAF.Anomaly.Enabled {
 		return -1

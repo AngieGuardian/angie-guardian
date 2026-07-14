@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
@@ -19,7 +20,12 @@ const blockKeyPrefix = "block:"
 
 // BlockKey is the store key holding an active behavioural block for an IP.
 // Written by the scoreboard, read by the behaviour-block pipeline stage.
-func BlockKey(ip string) string { return blockKeyPrefix + ip }
+func BlockKey(ip string) string {
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		ip = addr.Unmap().String()
+	}
+	return blockKeyPrefix + ip
+}
 
 func blockCountKey(ip string) string { return "blkct:" + ip }
 

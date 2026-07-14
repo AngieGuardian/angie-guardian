@@ -48,8 +48,8 @@ defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 15m
-      max_block_ttl: 4h
+      block_ttl: 15m          # maximum 8760h
+      max_block_ttl: 4h       # maximum 8760h
       thresholds:
         signature: 10/min
         pow_fail: 10/min
@@ -70,8 +70,8 @@ defaults:
     # with a lower value instead.
     base_difficulty: 5.5
     max_difficulty: 6
-    token_ttl: 4h
-    challenge_ttl: 30m
+    token_ttl: 4h             # 1s minimum, 7d maximum
+    challenge_ttl: 30m         # must be positive; 7d maximum
     noscript_fallback: true
   allowlist:
     ips: [ "127.0.0.1", "::1" ]

@@ -13,6 +13,7 @@ guardiand -config /etc/guardian/guardian.yaml
 | Flag | Description |
 |---|---|
 | `-config <path>` | Path to `guardian.yaml` (required). |
+| `-healthcheck` | Load the config and require every configured listener to answer `/healthz`, then exit. Used by the distroless Compose image. |
 | `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
 | `-version` | Print version and exit. |
 
@@ -62,7 +63,7 @@ guardian-train -out /etc/guardian/model.json -min-requests 5000 \
 | Flag | Default | Description |
 |---|---|---|
 | `-out <path>` | `model.json` | Output model artifact path. |
-| `-min-requests <n>` | `1000` | Drop domains with fewer log lines (a thin baseline misclassifies). |
+| `-min-requests <n>` | `1000` | Drop domains with fewer usable successful records (entries without a host and responses with status >= 400 are excluded). |
 | `-version` | | Print version and exit. |
 
 Positional arguments are the JSON access log files to read; pass `-` to read

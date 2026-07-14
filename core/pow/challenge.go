@@ -68,7 +68,7 @@ func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, err
 	if err != nil {
 		return nil, err
 	}
-	previous, err := LoadRetiredKeys(prevDir)
+	previous, err := loadRetiredKeysAt(prevDir, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,6 @@ func (m *Manager) setRetiredKeys(current ed25519.PrivateKey, previous []RetiredK
 }
 
 func (m *Manager) signingKey() ed25519.PrivateKey {
-	_, _ = m.refreshKeys(false)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.keys[0].private
@@ -175,7 +174,7 @@ func (m *Manager) reloadKeysLocked() error {
 	if err != nil {
 		return err
 	}
-	previous, err := LoadRetiredKeys(m.prevDir)
+	previous, err := loadRetiredKeysAt(m.prevDir, m.now())
 	if err != nil {
 		return err
 	}

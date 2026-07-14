@@ -12,9 +12,8 @@
 #
 # Networking note: guardiand's port is deliberately NOT published to the host
 # (no `ports:`). It is reachable only on the internal compose network, mirroring
-# production where the sidecar must not be directly reachable. The `guardian-exposed`
-# profile (see bottom) opts into publishing it, to reproduce the direct-reach
-# header-spoofing finding.
+# production where the sidecar must not be directly reachable. To debug it
+# manually, temporarily add a loopback-only port mapping yourself.
 name: angie-guardian-harness
 
 services:
@@ -47,9 +46,9 @@ services:
     healthcheck:
       # The distroless image has no shell; guardiand serves /healthz on both
       # listeners. Angie depends on this being healthy before it starts.
-      test: ["CMD", "/usr/local/bin/guardiand", "-version"]
+      test: ["CMD", "/usr/local/bin/guardiand", "-config", "/etc/guardian/guardian.yaml", "-healthcheck"]
       interval: 5s
-      timeout: 2s
+      timeout: 3s
       retries: 5
 
   backend:

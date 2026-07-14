@@ -96,6 +96,7 @@ type mmdbFile struct {
 	// Last-seen stat, touched only by the poll goroutine.
 	mtime time.Time
 	size  int64
+	info  os.FileInfo // retains file identity across atomic rename replacements
 }
 
 func openMMDB(path string, kind mmdbKind) (*mmdbFile, error) {
@@ -110,7 +111,7 @@ func openMMDB(path string, kind mmdbKind) (*mmdbFile, error) {
 	f := &mmdbFile{path: path, kind: kind}
 	f.reader.Store(newMMDBReader(r))
 	if st, err := os.Stat(path); err == nil {
-		f.mtime, f.size = st.ModTime(), st.Size()
+		f.mtime, f.size, f.info = st.ModTime(), st.Size(), st
 	}
 	return f, nil
 }
@@ -130,19 +131,19 @@ func (f *mmdbFile) acquire() *mmdbReader {
 	}
 }
 
-// maybeReload swaps in the file's current contents when its stat changed.
-// A failed open records the stat anyway so a broken file does not log every
-// poll; any later change re-triggers the load.
+// maybeReload swaps in the file's current contents when its identity or stat
+// changed. A failed open records the observed file so a broken replacement
+// does not log every poll; any later replacement or metadata change retries.
 func (f *mmdbFile) maybeReload(log *slog.Logger) {
 	st, err := os.Stat(f.path)
 	if err != nil {
 		log.Warn("geoip database unreadable, keeping loaded data", "file", f.path, "err", err)
 		return
 	}
-	if st.ModTime().Equal(f.mtime) && st.Size() == f.size {
+	if f.info != nil && os.SameFile(st, f.info) && st.ModTime().Equal(f.mtime) && st.Size() == f.size {
 		return
 	}
-	f.mtime, f.size = st.ModTime(), st.Size()
+	f.mtime, f.size, f.info = st.ModTime(), st.Size(), st
 	r, err := maxminddb.Open(f.path)
 	if err != nil {
 		log.Error("geoip database reload failed, keeping previous data", "file", f.path, "err", err)

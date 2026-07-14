@@ -53,6 +53,11 @@ type CounterCache struct {
 	dirty   map[string]*dirtyEntry // keys with unpushed work
 	queue   []string               // FIFO of dirty keys awaiting a drainer
 	workers int                    // live drain goroutines, capped at maxFlushWorkers
+	// capacityProtected means the last attempt to make room found that every
+	// entry carried unpushed work. New, previously unseen keys are then left
+	// uncached until a drainer releases an entry; existing hot keys keep their
+	// exact local count and reconciliation state.
+	capacityProtected bool
 
 	now func() time.Time
 }
@@ -85,10 +90,10 @@ type dirtyEntry struct {
 	del      bool
 }
 
-// maxCounterEntries bounds memory the same way tokenCache does: when full,
-// the map is wholesale-reset. Live counters repopulate from the store total
-// on their next bump's flush, so a reset costs one under-counted request per
-// hot key, not the counter state itself.
+// maxCounterEntries bounds the local counter map. At capacity, clean cached
+// totals are reclaimed in bulk; entries with unapplied work are never evicted.
+// If every slot is protected, previously unseen keys are left uncached until
+// a drainer makes room.
 const maxCounterEntries = 1 << 17
 
 // maxFlushWorkers caps how many drain goroutines flush the shared store
@@ -127,8 +132,18 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 	c.mu.Lock()
 	e, ok := c.m[key]
 	if !ok || now >= e.expires {
-		if len(c.m) >= maxCounterEntries {
-			clear(c.m)
+		if ok {
+			// Reuse the expired key's slot. Its pending delta belongs to the old
+			// window and is deliberately discarded here.
+			delete(c.m, key)
+			c.capacityProtected = false
+		} else if !c.makeCounterRoomLocked() {
+			// Every cached entry owns unpushed work. Evicting any of them would
+			// lose reconciliation state, so shed only this previously unseen key.
+			// It returns the first-event count but is not allowed to erase a hot
+			// key's exact local enforcement state.
+			c.mu.Unlock()
+			return 1
 		}
 		e = counterEntry{expires: now + ttl.Nanoseconds()}
 	}
@@ -149,10 +164,36 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 	return n
 }
 
+// makeCounterRoomLocked preserves every entry that still owns unpushed work
+// (either queued/in-flight in dirty, or retained in counterEntry.pending after
+// queue saturation) and bulk-evicts only clean cache entries. Bulk eviction
+// makes the O(n) scan rare instead of paying it for every new key at capacity.
+// If all entries are protected, new keys are shed until releaseLocked marks
+// that capacity may be reclaimed again. c.mu must be held.
+func (c *CounterCache) makeCounterRoomLocked() bool {
+	if len(c.m) < maxCounterEntries {
+		return true
+	}
+	if c.capacityProtected {
+		return false
+	}
+	for key, e := range c.m {
+		if e.pending == 0 && c.dirty[key] == nil {
+			delete(c.m, key)
+		}
+	}
+	if len(c.m) < maxCounterEntries {
+		return true
+	}
+	c.capacityProtected = true
+	return false
+}
+
 // Forget clears the counter locally and, in the background, in the store.
 func (c *CounterCache) Forget(key string) {
 	c.mu.Lock()
 	delete(c.m, key)
+	c.capacityProtected = false
 	spawn := c.markDirtyLocked(key, 0, true)
 	c.mu.Unlock()
 
@@ -211,8 +252,15 @@ func (c *CounterCache) foldOpLocked(d *dirtyEntry, deadline int64, del bool) {
 		d.delta = 0
 		return
 	}
+	if d.deadline != deadline {
+		// A new local window opened while the old one was still queued or in
+		// flight. Any unclaimed delta belongs exclusively to the expired window;
+		// replace it rather than relabeling it with the fresh deadline.
+		d.delta = 1
+		d.deadline = deadline
+		return
+	}
 	d.delta++
-	d.deadline = deadline
 }
 
 // drain flushes dirty keys until the queue is empty, then exits. Multiple
@@ -354,6 +402,7 @@ func (c *CounterCache) releaseLocked(key string) (spawn bool) {
 	}
 	if d.delta == 0 && !d.del {
 		delete(c.dirty, key)
+		c.capacityProtected = false
 		return false
 	}
 	// Work landed after we gave up (e.g. a store error path): re-queue the key.

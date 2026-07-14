@@ -29,9 +29,9 @@ sound protection and a false sense of one. This page is the honest map.
   single-spend (an atomic compare-and-swap marks them redeemed) and the stored
   record binds each challenge to the host and client it was issued to. A
   redemption that presents an unknown, already-spent, or wrong-client challenge
-  ID fails verification and is scored as a tamper event against the source IP,
-  feeding the behavioural scoreboard. This scoring is on by default; it is not
-  gated behind a feature toggle.
+  ID fails verification and emits a tamper event against the source IP. It feeds
+  the behavioural scoreboard when `waf.ip_behaviour.enabled` is on; that scoring
+  toggle is off by default.
 
 ## What Guardian does NOT defend against
 
@@ -48,8 +48,8 @@ tools that own these problems.
   request line and headers, by design. Body-borne payloads (SQL in a POST form,
   file-upload exploits) are the backend's input validation to handle, or a full
   inline WAF's. Guardian never sees the body.
-- **Attacks from inside a trusted range.** Anything on the static allowlist, a
-  verified crawler, or a trusted-proxy source is admitted with reduced scrutiny.
+- **Attacks from inside a trusted range.** Anything on the static allowlist or
+  a verified crawler is admitted with reduced scrutiny.
   Allowlist deliberately; an allowlisted attacker is an allowlisted attacker.
 - **A native solver outpacing browsers.** Proof-of-work is a *cost* mechanism,
   not a bypass-proof gate. A determined attacker with native SHA-256 hardware
@@ -81,10 +81,11 @@ wrong and the protections above weaken or invert:
 
 ## Fail-open by design
 
-If Guardian is unreachable or a stage errors, it degrades to **allow** rather
-than taking the site down. This is a deliberate availability choice: a WAF that
-fails closed is a single point of failure for the whole site. The trade-off is
-that a Guardian outage is a *protection* outage — the site keeps serving, but
+If Guardian is unreachable, Angie bypasses it and serves the request. If one
+internal stage errors, that stage abstains and later stages still run; only
+when none returns a terminal decision does the request default to allow. This
+availability choice avoids making the WAF a single point of failure. A full
+Guardian outage is a *protection* outage — the site keeps serving, but
 unfiltered. Monitor for it: the systemd unit is `Type=notify` with a watchdog,
 `/metrics` exposes store health, and "up but degraded to fail-open" is exactly
 the condition to alert on. See [Run it in Production](/guide/production).

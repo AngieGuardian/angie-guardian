@@ -40,7 +40,7 @@ var version = "dev" // set via -ldflags "-X main.version=..."
 
 func main() {
 	baseURL := flag.String("url", "http://127.0.0.1:8071", "guardiand base URL")
-	scenario := flag.String("scenario", "allow", "allow | deny | token")
+	scenario := flag.String("scenario", "allow", "allow | deny | token | challenge")
 	host := flag.String("host", "plain.test", "X-Guardian-Host to send")
 	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send")
 	concurrency := flag.Int("c", 64, "concurrent connections")

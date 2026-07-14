@@ -5,14 +5,20 @@
 #
 # Rule fields:
 #   id:          unique name, shows up in logs as waf:<id>
-#   action:      deny (default) | challenge (force PoW) | block (deny + block IP)
+#   action:      deny (default) | challenge (a valid bound token satisfies it;
+#                without PoW it denies) | block (deny + persist the IP only
+#                when waf.ip_behaviour is enabled)
 #   targets:     any of [path, query, ua, "header:<name>"]; default [path, query]
 #   methods:     restrict the rule to these HTTP methods; a rule with methods
 #                but no keywords/regexes fires on the method alone
-#   keywords:    non-empty case-insensitive literal substrings, matched against
-#                the URL-decoded request (every targeted header value is
-#                percent-decoded, so duplicates/encoding cannot hide a payload)
-#   regexes:     non-empty Go RE2 syntax — linear-time, no ReDoS risk
+#   keywords:    non-empty case-insensitive literal substrings. All targets are
+#                lowercased; path/query and every targeted header value are
+#                percent-decoded, while User-Agent is not decoded. Every
+#                duplicate header value is inspected.
+#   regexes:     non-empty Go RE2 syntax — linear-time, no ReDoS risk. Inputs
+#                are lowercased; use lowercase patterns or an explicit (?i).
+# Rules are evaluated in file order and the first match wins. Put narrow or
+# terminal rules before broad challenge rules.
 #
 # Request bodies are never inspected: Angie's auth_request subrequest carries
 # only the request line and headers, by design. Body-borne payloads are the

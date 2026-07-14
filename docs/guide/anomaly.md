@@ -2,8 +2,11 @@
 
 The statistical anomaly scorer rates each unvouched request that reaches its
 pipeline stage against a per-domain baseline learned from your own traffic.
-Valid PoW tokens short-circuit the scorer (after the always-on signature
-checks). With a trained model in place, Guardian can challenge or deny
+Training and scoring normalize host case, ports, trailing dots, and bracketed
+IPv6 the same way domain config lookup does, so equivalent host spellings use
+one baseline. Valid PoW tokens short-circuit the scorer after signature checks:
+`deny` and `block` still apply, while `challenge` is already satisfied. With a
+trained model in place, Guardian can challenge or deny
 bot-shaped requests that no static signature would catch, and scale the PoW
 difficulty with the suspicion score.
 
@@ -32,8 +35,10 @@ zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.jso
 ```
 
 Re-run it from cron; `guardiand` picks up each new model within seconds.
-Domains below `-min-requests` are dropped (a thin baseline misclassifies
-everything).
+Records without a host and responses with status >= 400 are excluded, so
+scanner/error traffic does not become the normal baseline. Domains below
+`-min-requests` usable successful records are dropped (a thin baseline
+misclassifies everything).
 
 ## 3. Enable scoring
 
@@ -49,10 +54,11 @@ domains:
         deny_at: 0.85         # score >= this -> deny outright
 ```
 
-With `pow.mode: suspicion`, only clients the scorer flags see an
-interstitial; ordinary visitors never do. The difficulty scales across
-`[base_difficulty, max_difficulty]` with the score, so a more bot-like client
-pays more.
+With `pow.mode: suspicion`, the catch-all challenge is disabled. In this
+example the anomaly scorer is the only challenge policy, so ordinary visitors
+never see an interstitial; explicit WAF, GeoIP, or reputation challenge rules
+would still apply. Difficulty scales across `[base_difficulty, max_difficulty]`
+with the score, so a more bot-like client pays more.
 
 ## Tune the thresholds
 

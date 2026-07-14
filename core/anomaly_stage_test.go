@@ -91,6 +91,12 @@ func TestAnomalyStage(t *testing.T) {
 	if d.Action != ActionChallenge || d.Reason != "anomaly:challenge" {
 		t.Fatalf("weird path: got %s/%s, want challenge/anomaly:challenge", d.Action, d.Reason)
 	}
+	for _, host := range []string{"ANOM.test:443", "anom.test."} {
+		d = e.Evaluate(ctx, req(host, "198.51.100.44", scannerPath, commonUA))
+		if d.Action != ActionChallenge || d.Reason != "anomaly:challenge" {
+			t.Errorf("equivalent host %q: got %s/%s, want challenge/anomaly:challenge", host, d.Action, d.Reason)
+		}
+	}
 	if d.Difficulty <= 8 || d.Difficulty > 24 {
 		t.Fatalf("escalated difficulty = %d bits, want in (8..24]", d.Difficulty)
 	}

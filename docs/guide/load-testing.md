@@ -6,16 +6,16 @@ before relying on a deployment near its throughput budget.
 
 ## Scenarios
 
-The first three are read-dominated (one block lookup each) and behave the same
-on any backend; `challenge` is the one write-heavy path and is where bbolt's
+`allow` and `token` are read-dominated (one block lookup each); a static
+denylist match terminates before the store. `challenge` is the write-heavy path where bbolt's
 single embedded writer trails redis/valkey.
 
 | Scenario | What it does | Store I/O per request |
 |---|---|---|
 | `allow` | plain request, full pipeline, ends in "default allow" | 1 read (block lookup) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | 1 read |
-| `deny` | denylisted client IP (deny + decision logging path) | 1 read |
-| `challenge` | issue a fresh PoW challenge per request | 1 **write** (CAS) |
+| `deny` | denylisted client IP (deny + decision logging path) | none |
+| `challenge` | issue a fresh PoW challenge per request | 1 synchronous **write** (CAS), plus coalesced background counter increments |
 
 ## Run it
 
@@ -26,11 +26,11 @@ guardian-loadtest -url http://127.0.0.1:8071 -scenario allow -host example.com -
 # Production common path: solve one real challenge, then hammer with the cookie.
 guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
-# Worst case: a denylisted client (exercises the deny + logging path).
+# Static deny path; the IP must appear in this host's denylist.
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
 
-# Write path: issue a fresh PoW challenge per request (one store CAS write
-# each; the per-IP counters are counted in-process, off the write path).
+# Write path (requires PoW enabled): one synchronous challenge CAS per request;
+# per-IP counters are counted in-process and flushed to the store in background.
 guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
 ```
 

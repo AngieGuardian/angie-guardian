@@ -1,8 +1,10 @@
 # Admin API & Dashboard
 
 The admin API and `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
-separate from the auth hot path. `/metrics` and `/healthz` are open; every
-`/admin/*` route needs a bearer token.
+separate from the auth hot path. `/metrics`, `/healthz`, and the optional static
+`/admin/dashboard` shell are open; every JSON/data `/admin/*` route needs an
+`Authorization: Bearer <token>` header with that exact scheme prefix. The
+dashboard contains no data itself and authenticates every API call.
 
 You never have to invent that token yourself. It resolves in this order:
 
@@ -39,7 +41,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 # average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
-# Block an IP for two hours (reason + ttl optional; default 15m).
+# Block an IP for two hours (reason + ttl optional; default 15m, max 8760h).
+# Equivalent IPv6 spellings are canonicalized to one block.
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
      $A/admin/blocks/203.0.113.9
@@ -54,7 +57,8 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # {"host":"shop.example.com","scored":true,"score":0.72}
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
-# replicas refresh automatically and old tokens remain valid.
+# replicas refresh automatically and pre-rotation tokens remain valid for at
+# most seven days. Older archive files are ignored in memory, not auto-deleted.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
@@ -106,7 +110,7 @@ status, IP intelligence health (loaded GeoIP databases plus each reputation
 feed's entries, refresh age and last error), and headline counters,
 auto-refreshing every 5 seconds.
 
-The page is a static shell: it stores no secrets and every data call goes to
-the token-guarded `/admin/*` endpoints. It is **internal-only by
-construction**: it lives on the admin listener, which refuses a non-loopback
-bind without a configured token, and stays off unless enabled.
+The page is a static shell: it stores no secrets, stays off unless enabled,
+and every data call goes to the token-guarded `/admin/*` endpoints. The shell
+can still be publicly reachable on an external admin bind, so keep this
+listener on loopback or a firewalled management network.

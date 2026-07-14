@@ -150,6 +150,32 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMinimumTokenTTLIsImmediatelyValid(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	now := time.Date(2030, time.January, 2, 3, 4, 5, 900_000_000, time.UTC)
+	m.now = func() time.Time { return now }
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 4, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 4),
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Second, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TokenTTL != time.Second {
+		t.Fatalf("redeemed token TTL = %v, want 1s", res.TokenTTL)
+	}
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA"); err != nil {
+		t.Fatalf("new token at minimum accepted TTL is not immediately valid: %v", err)
+	}
+}
+
 func TestRedeemRejections(t *testing.T) {
 	ctx := context.Background()
 	m := testManager(t)

@@ -49,10 +49,10 @@ everything else inherits from `defaults`:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
-signing_key_file: /etc/guardian/ed25519.key
+signing_key_file: .guardian/ed25519.key
 store:
   backend: bbolt
-  path: /var/lib/guardian/guardian.db
+  path: .guardian/guardian.db
 
 defaults:
   pow: { enabled: true, base_difficulty: 5 }
@@ -66,6 +66,7 @@ domains:
 Validate it without starting the daemon (like `angie -t`):
 
 ```sh
+mkdir -p .guardian
 ./guardiand -config guardian.yaml -t
 # config guardian.yaml: ok
 ```
@@ -76,8 +77,10 @@ and difficulty tuning, and the
 
 ## 3. Wire it into Angie
 
-Add the keepalive upstream once in the `http {}` context, then include the
-per-server snippet in each protected `server {}` block:
+Add the keepalive upstream once in the `http {}` context. Copy/adapt the
+per-server snippet, replace both `proxy_pass http://your_backend` placeholders,
+and merge its Guardian directives into an existing `location /` rather than
+declaring a second one:
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -96,6 +99,7 @@ logs, and rate limiting.
 ## 4. Run and verify
 
 ```sh
+mkdir -p .guardian
 ./guardiand -config guardian.yaml
 curl -s localhost:8071/healthz     # -> ok
 ```

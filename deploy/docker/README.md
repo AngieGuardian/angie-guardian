@@ -19,7 +19,7 @@ The automated e2e tests live in `test/e2e/` (Go, `//go:build e2e`) and boot
 **this** compose stack with [testcontainers-go](https://golang.testcontainers.org/),
 drive traffic **through Angie**, and assert on the guardian's decisions and its
 report surface (Prometheus `/metrics` + the admin API). Run them from the repo
-root (Docker is the only prerequisite):
+root (Go and make are required; Docker is the only external service):
 
 ```sh
 make e2e                              # or: go test -tags e2e ./test/e2e/...
@@ -44,13 +44,15 @@ Every release publishes the sidecar image to the project's container registry
 (built by the `docker-release` CI job from this directory's Dockerfile):
 
 ```sh
-docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.6.0
+docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.7.0
 ```
 
 The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist
 `/var/lib/guardian` (bbolt store) and `/etc/guardian/keys` (signing key), as
-`compose.yaml` here does.
+`compose.yaml` here does. Its distroless-safe healthcheck runs the built-in
+`-healthcheck` probe and requires every configured `/healthz` listener before
+Compose marks Guardian healthy or starts Angie.
 
 ## Manual use
 
@@ -82,12 +84,12 @@ assertions depend on those exact values.
 
 ## Reproducing review findings
 
-- **Metrics label cardinality (unbounded `domain` label):**
+- **Metrics label cardinality regression check:**
   ```sh
   for h in a.evil b.evil c.evil; do curl -s -o /dev/null -H "Host: $h" http://127.0.0.1:8080/; done
   curl -s http://127.0.0.1:8072/metrics | grep '^guardian_decisions_total' | grep -o 'domain="[^"]*"' | sort -u
   ```
-  Each spoofed Host becomes its own series → unbounded growth under a Host flood.
+  All unconfigured Host values must collapse to one `domain="default"` series.
 
 - **Direct-reach header spoofing:** add `ports: ["127.0.0.1:8071:8071"]` to the
   guardiand service, then `curl -H 'X-Guardian-IP: 9.9.9.9' http://127.0.0.1:8071/auth`
@@ -99,7 +101,6 @@ assertions depend on those exact values.
 
 ## Notes on the configs here vs `deploy/`
 
-`angie.docker.conf` uses `rewrite ^ /challenge break; proxy_pass http://guardian;`
-in the named `@guardian_challenge` / `@guardian_denied` locations. A named
-location cannot carry a URI part on `proxy_pass` (Angie rejects it at config
-test), so the top-level `deploy/angie-guardian.conf` needs the same treatment.
+Both `angie.docker.conf` and the top-level `deploy/angie-guardian.conf` use a
+rewrite plus a pathless `proxy_pass` in named locations, because Angie rejects
+a URI part on `proxy_pass` there.

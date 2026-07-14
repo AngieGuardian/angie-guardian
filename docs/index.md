@@ -34,7 +34,7 @@ features:
     details: guardian-train learns per-domain baselines from Angie JSON access logs offline; the online scorer rates unvouched requests that reach it in about 260 ns and drives challenge, deny, and difficulty escalation.
   - icon: 🚫
     title: Behavioural IP blocking
-    details: Signature hits, PoW failures, and tamper events feed per-IP scoreboards with exponential backoff. One honeypot hit means an instant block.
+    details: When enabled, signature hits, PoW failures, and tamper events feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
   - icon: ⚡
     title: Built for the hot path
     details: Read paths clear 75k+ req/s on a single node. Verified tokens are cached in-process (about 144 ns), so returning clients never leave the fast path.
@@ -43,7 +43,7 @@ features:
     details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard, and a ready-made Grafana dashboard.
   - icon: 🗄️
     title: Pluggable state stores
-    details: memory for dev, embedded bbolt for a single box, Redis/Valkey for replicas behind a load balancer sharing blocks, spent challenges, and the signing key.
+    details: memory for dev, embedded bbolt for a single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.
   - icon: 🕸️
     title: Optional WASM module
     details: The store-free WAF checks compiled to WebAssembly and run in-process inside Angie, for operators who prefer that integration path.
@@ -51,11 +51,13 @@ features:
 
 ## Quick start
 
-Build the daemon, point it at a config, and include one snippet per protected `server {}` block:
+Build the daemon and use the local-path configuration from the
+[Getting Started guide](/guide/getting-started):
 
 ```sh
 go build ./cmd/guardiand
-./guardiand -config guardian.example.yaml
+mkdir -p .guardian
+./guardiand -config guardian.yaml
 ```
 
 ```nginx
@@ -65,7 +67,8 @@ upstream guardian {
     keepalive 64;
 }
 
-# each protected server {} block:
+# each protected server {} block, after replacing both your_backend placeholders
+# and merging Guardian directives into any existing location /:
 include /etc/angie/angie-guardian.conf;
 ```
 

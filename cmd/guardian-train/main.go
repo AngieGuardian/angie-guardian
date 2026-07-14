@@ -26,7 +26,7 @@ var version = "dev" // set via -ldflags "-X main.version=..."
 
 func main() {
 	out := flag.String("out", "model.json", "output model artifact path")
-	minRequests := flag.Int64("min-requests", 1000, "drop domains with fewer log lines (a thin baseline misclassifies)")
+	minRequests := flag.Int64("min-requests", 1000, "drop domains with fewer usable successful records (a thin baseline misclassifies)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 

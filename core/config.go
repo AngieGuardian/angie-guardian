@@ -247,6 +247,9 @@ func (vb *VerifiedBotsConfig) compile() error {
 	if vb.DNSTimeout < 0 || vb.CacheTTL < 0 || vb.NegativeTTL < 0 {
 		return fmt.Errorf("verified_bots: dns_timeout, cache_ttl and negative_ttl must be >= 0")
 	}
+	if vb.CacheTTL.Std() > MaxStateTTL || vb.NegativeTTL.Std() > MaxStateTTL {
+		return fmt.Errorf("verified_bots: cache_ttl and negative_ttl must be <= %v", MaxStateTTL)
+	}
 	for i := range vb.Bots {
 		b := &vb.Bots[i]
 		if b.Name == "" {
@@ -453,6 +456,12 @@ type PoWConfig struct {
 // effectively-permanent store records. A week is far above any legitimate
 // challenge or token lifetime.
 const maxPoWTTL = Duration(7 * 24 * time.Hour)
+
+// MaxStateTTL is the longest operator-configurable lifetime for blocks and
+// identity-cache records. It prevents unit typos from creating effectively
+// permanent state while leaving ample room for long-lived administrative
+// policy. PoW has its stricter seven-day cap above.
+const MaxStateTTL = 365 * 24 * time.Hour
 
 // BaseBits is the floor difficulty in leading zero bits (what every clean
 // client pays); MaxBits the ceiling reached only via anomaly scaling.
@@ -709,6 +718,9 @@ func (dc *DomainConfig) validate() error {
 		if p.Enabled && t.d <= 0 {
 			return fmt.Errorf("pow.%s must be > 0 when pow is enabled, got %v", t.name, t.d.Std())
 		}
+		if t.name == "token_ttl" && p.Enabled && t.d < Duration(time.Second) {
+			return fmt.Errorf("pow.token_ttl must be at least 1s when pow is enabled, got %v", t.d.Std())
+		}
 		if t.d > maxPoWTTL {
 			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(maxPoWTTL), t.d.Std())
 		}
@@ -725,6 +737,9 @@ func (dc *DomainConfig) validate() error {
 	}
 	if b.MaxBlockTTL > 0 && b.BlockTTL > 0 && b.MaxBlockTTL < b.BlockTTL {
 		return fmt.Errorf("waf.ip_behaviour: max_block_ttl (%v) must be >= block_ttl (%v)", b.MaxBlockTTL.Std(), b.BlockTTL.Std())
+	}
+	if b.BlockTTL.Std() > MaxStateTTL || b.MaxBlockTTL.Std() > MaxStateTTL {
+		return fmt.Errorf("waf.ip_behaviour: block_ttl and max_block_ttl must be <= %v", MaxStateTTL)
 	}
 	g := &dc.Geo
 	switch g.DefaultAction {
