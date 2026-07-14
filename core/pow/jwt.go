@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -44,18 +45,13 @@ func (m *Manager) mintToken(host, fingerprint, challengeID string, difficulty in
 	return jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(m.signingKey())
 }
 
-// verifyKeys returns the current + previous public keys as a
-// jwt.VerificationKeySet, so the parser accepts a token signed by any of
-// them — this is what makes key rotation non-disruptive.
-func (m *Manager) verifyKeys() jwt.VerificationKeySet {
+func (m *Manager) verificationKeys() []managerKey {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	keys := make([]jwt.VerificationKey, len(m.keys))
-	for i, k := range m.keys {
-		keys[i] = k.Public().(ed25519.PublicKey)
-	}
-	return jwt.VerificationKeySet{Keys: keys}
+	return append([]managerKey(nil), m.keys...)
 }
+
+const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 
 // VerifyToken checks signature, exp/nbf and the host + fingerprint binding.
 // Results are cached briefly so repeat requests from a vouched client don't
@@ -83,23 +79,43 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 }
 
 func (m *Manager) verifyTokenOnce(token, host, ip, userAgent string) (*TokenClaims, error) {
-	claims := &TokenClaims{}
-	_, err := jwt.ParseWithClaims(token, claims,
-		func(*jwt.Token) (any, error) { return m.verifyKeys(), nil },
-		jwt.WithValidMethods([]string{"EdDSA"}),
-		jwt.WithExpirationRequired(),
-		jwt.WithTimeFunc(m.now),
-	)
-	if err != nil {
-		return nil, err
+	var errs []error
+	for _, key := range m.verificationKeys() {
+		claims := &TokenClaims{}
+		_, err := jwt.ParseWithClaims(token, claims,
+			func(*jwt.Token) (any, error) { return key.private.Public().(ed25519.PublicKey), nil },
+			jwt.WithValidMethods([]string{"EdDSA"}),
+			jwt.WithExpirationRequired(),
+			jwt.WithTimeFunc(m.now),
+		)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if claims.IssuedAt == nil || claims.ExpiresAt == nil {
+			return nil, errors.New("token requires issued-at and expiration claims")
+		}
+		if !claims.ExpiresAt.Time.After(claims.IssuedAt.Time) ||
+			claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > maxAcceptedTokenLifetime {
+			return nil, fmt.Errorf("token lifetime exceeds %v", maxAcceptedTokenLifetime)
+		}
+		if !key.retiredAt.IsZero() {
+			if claims.IssuedAt.Time.After(key.retiredAt) {
+				return nil, errors.New("token was issued after its signing key was retired")
+			}
+			if claims.ExpiresAt.Time.After(key.retiredAt.Add(maxAcceptedTokenLifetime)) {
+				return nil, errors.New("token outlives the retired-key acceptance horizon")
+			}
+		}
+		if !strings.EqualFold(claims.Host, host) {
+			return nil, fmt.Errorf("token bound to host %q, presented on %q", claims.Host, host)
+		}
+		if claims.Subject != Fingerprint(ip, userAgent) {
+			return nil, fmt.Errorf("token fingerprint mismatch")
+		}
+		return claims, nil
 	}
-	if !strings.EqualFold(claims.Host, host) {
-		return nil, fmt.Errorf("token bound to host %q, presented on %q", claims.Host, host)
-	}
-	if claims.Subject != Fingerprint(ip, userAgent) {
-		return nil, fmt.Errorf("token fingerprint mismatch")
-	}
-	return claims, nil
+	return nil, errors.Join(errs...)
 }
 
 // Fingerprint identifies a client for token binding without storing any PII:

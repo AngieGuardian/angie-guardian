@@ -7,12 +7,14 @@ package pow
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
@@ -111,6 +113,55 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	}
 }
 
+func TestRetiredKeyCannotMintPostRetirementOrOverlongTokens(t *testing.T) {
+	_, retired, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, current, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	retiredAt := time.Unix(1_800_000_000, 0).UTC()
+	now := retiredAt.Add(2 * time.Hour)
+	m := newManagerWithRetiredKeys(current, []RetiredKey{{Key: retired, RetiredAt: retiredAt}}, st)
+	m.now = func() time.Time { return now }
+
+	const host, ip, ua = "example.com", "198.51.100.7", "Mozilla/5.0"
+	sign := func(issued, expires time.Time) string {
+		t.Helper()
+		claims := &TokenClaims{
+			Host: host,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   Fingerprint(ip, ua),
+				IssuedAt:  jwt.NewNumericDate(issued),
+				NotBefore: jwt.NewNumericDate(issued),
+				ExpiresAt: jwt.NewNumericDate(expires),
+			},
+		}
+		token, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(retired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+
+	legitimate := sign(retiredAt.Add(-time.Minute), retiredAt.Add(3*time.Hour))
+	if err := m.VerifyToken(legitimate, host, ip, ua); err != nil {
+		t.Fatalf("bounded pre-retirement token rejected: %v", err)
+	}
+	overlong := sign(retiredAt.Add(-time.Minute), retiredAt.Add(10*365*24*time.Hour))
+	if err := m.VerifyToken(overlong, host, ip, ua); err == nil {
+		t.Fatal("overlong token signed by retired key was accepted")
+	}
+	postRetirement := sign(retiredAt.Add(time.Hour), retiredAt.Add(3*time.Hour))
+	if err := m.VerifyToken(postRetirement, host, ip, ua); err == nil {
+		t.Fatal("token minted after key retirement was accepted")
+	}
+}
+
 func TestLivePeerRefreshesAfterRotation(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "ed25519.key")
@@ -192,6 +243,15 @@ func TestSameSecondRotationsPreserveAllKeys(t *testing.T) {
 	}
 	if len(previous) != 2 {
 		t.Fatalf("archived keys = %d, want 2", len(previous))
+	}
+	retired, err := LoadRetiredKeys(prevDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range retired {
+		if key.RetiredAt.Unix() != now {
+			t.Fatalf("retirement timestamp = %v, want unix %d", key.RetiredAt, now)
+		}
 	}
 	for _, want := range []ed25519.PrivateKey{k0, k1} {
 		if !containsKey(previous, want) {

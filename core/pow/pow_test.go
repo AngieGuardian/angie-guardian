@@ -6,11 +6,13 @@ package pow
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +33,43 @@ func testManager(t *testing.T) *Manager {
 	// store state instead of racing background goroutines.
 	m.counters.Go = func(f func()) { f() }
 	return m
+}
+
+func TestLoadOrCreateKeyConcurrentFirstStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ed25519.key")
+	const workers = 64
+	start := make(chan struct{})
+	keys := make(chan ed25519.PrivateKey, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			key, err := LoadOrCreateKey(path)
+			keys <- key
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(keys)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want ed25519.PrivateKey
+	for key := range keys {
+		if want == nil {
+			want = key
+		}
+		if !want.Equal(key) {
+			t.Fatal("concurrent creators observed different signing keys")
+		}
+	}
 }
 
 // solve brute-forces a nonce for the given challenge — the Go equivalent of

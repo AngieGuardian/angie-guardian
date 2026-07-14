@@ -43,35 +43,8 @@ func main() {
 	trainer := &anomaly.Trainer{}
 	var lines, badLines int64
 	for _, path := range flag.Args() {
-		var r io.Reader
-		if path == "-" {
-			r = os.Stdin
-		} else {
-			f, err := os.Open(path)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				os.Exit(1)
-			}
-			defer f.Close()
-			r = f
-		}
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for sc.Scan() {
-			line := sc.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			lines++
-			var rec anomaly.LogRecord
-			if err := json.Unmarshal(line, &rec); err != nil {
-				badLines++
-				continue
-			}
-			trainer.Add(&rec)
-		}
-		if err := sc.Err(); err != nil {
-			fmt.Fprintf(os.Stderr, "error reading %s: %v\n", path, err)
+		if err := addTrainingInput(path, trainer, &lines, &badLines); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 	}
@@ -98,4 +71,42 @@ func main() {
 		fmt.Printf("  %-40s %8d requests, %3d UA prefixes, %3d path prefixes\n",
 			h, b.Requests, len(b.UAFreq), len(b.PathPrefixFreq))
 	}
+}
+
+func addTrainingInput(path string, trainer *anomaly.Trainer, lines, badLines *int64) error {
+	if path == "-" {
+		return scanTrainingInput(path, os.Stdin, trainer, lines, badLines)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	scanErr := scanTrainingInput(path, f, trainer, lines, badLines)
+	closeErr := f.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+	return closeErr
+}
+
+func scanTrainingInput(path string, r io.Reader, trainer *anomaly.Trainer, lines, badLines *int64) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		*lines++
+		var rec anomaly.LogRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			*badLines++
+			continue
+		}
+		trainer.Add(&rec)
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	return nil
 }

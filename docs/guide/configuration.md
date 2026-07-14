@@ -145,7 +145,8 @@ set `trusted_proxy: true`, otherwise `guardiand` refuses to start.
 generated on first run if missing and **never** regenerated on restart, so
 restarts don't log clients out and replicas can share it. Retired keys (from
 `POST /admin/rotate-key`) are archived in `previous_key_dir` and still
-accepted for verification until their tokens expire. Rotation requires a
+accepted only for bounded, pre-rotation token lifetimes (at most seven days).
+Rotation requires a
 non-empty `previous_key_dir`; replicas must share both paths and automatically
 refresh their verification set when another replica rotates.
 
@@ -155,7 +156,7 @@ Config edits do not need a restart. After changing `guardian.yaml`, either
 signal the daemon or call the admin API:
 
 ```bash
-# Validate first, then reload (same pattern as nginx/angie -t && reload).
+# Validate config and all startup-required local artifacts first, then reload.
 guardiand -config /etc/guardian/guardian.yaml -t
 kill -HUP $(pidof guardiand)          # or: systemctl reload guardiand
 
@@ -170,7 +171,7 @@ and issued tokens live in the store, not in the config. A config that fails
 validation is rejected and the running config stays active, so a bad edit
 cannot take the daemon down.
 
-Not reloadable (fixed at startup, logged as a warning when changed):
+Not reloadable (fixed at startup; a reload that changes one is rejected):
 `listen`, `admin.listen`, `trusted_proxy`, the `store` block,
 `signing_key_file`, `previous_key_dir` and the admin token setup.
 

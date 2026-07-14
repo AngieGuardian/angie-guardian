@@ -85,11 +85,11 @@ rules:
 			URI:        uri + "?" + rawQuery,
 			RemoteAddr: "203.0.113.7",
 			UserAgent:  ua,
-			Header: func(name string) string {
+			Header: func(name string) []string {
 				if strings.EqualFold(name, "referer") {
-					return referer
+					return []string{referer}
 				}
-				return ""
+				return nil
 			},
 		}
 		in := BuildMatchInput(req, rs)

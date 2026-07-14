@@ -28,7 +28,7 @@ guardiand -config /etc/guardian/guardian.yaml
 
 | Signal | Effect |
 |---|---|
-| `SIGHUP` | Re-read and apply `guardian.yaml` without a restart (also available as [`POST /admin/reload`](/reference/admin-api#post-admin-reload)). A config that fails validation is rejected and the running config stays active. Listeners, the store, signing keys and the admin token setup stay fixed until restart. |
+| `SIGHUP` | Re-read and apply `guardian.yaml` without a restart (also available as [`POST /admin/reload`](/reference/admin-api#post-admin-reload)). Invalid config and changes to startup-only listeners, store, signing keys or admin setup are rejected; the running config stays active. |
 | `SIGINT` / `SIGTERM` | Graceful shutdown (sends `STOPPING=1` under systemd). |
 
 Under systemd (the shipped unit is `Type=notify`), guardiand speaks sd_notify:

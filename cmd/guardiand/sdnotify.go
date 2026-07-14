@@ -62,6 +62,17 @@ func waitListening(ctx context.Context, cfg *core.Config, timeout time.Duration)
 	return nil
 }
 
+// signalReadyWhenListening calls ready only after every configured listener
+// answers its health probe. Keeping the callback separate makes the failure
+// contract testable without a live systemd notification socket.
+func signalReadyWhenListening(ctx context.Context, cfg *core.Config, timeout time.Duration, ready func()) error {
+	if err := waitListening(ctx, cfg, timeout); err != nil {
+		return err
+	}
+	ready()
+	return nil
+}
+
 // notifier sends sd_notify messages to $NOTIFY_SOCKET. A nil *notifier (env
 // var unset) makes every method a no-op, so callers never branch.
 type notifier struct {

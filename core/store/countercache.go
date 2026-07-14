@@ -60,6 +60,7 @@ type CounterCache struct {
 type counterEntry struct {
 	n       int64
 	expires int64 // unix nanoseconds
+	pending int64 // increments retained locally while no dirty slot is available
 }
 
 // dirtyEntry is the unpushed shared-store work for a key. delta is the number
@@ -133,6 +134,11 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 	}
 	e.n++
 	n := e.n
+	if _, dirty := c.dirty[key]; !dirty {
+		// A queue-overflowed key has no dirty entry. Keep its complete unpushed
+		// delta in the bounded local counter until a later bump can enqueue it.
+		e.pending++
+	}
 	c.m[key] = e
 	spawn := c.markDirtyLocked(key, e.expires, false)
 	c.mu.Unlock()
@@ -178,7 +184,10 @@ func (c *CounterCache) markDirtyLocked(key string, deadline int64, del bool) (sp
 	}
 	d := &dirtyEntry{del: del, deadline: deadline}
 	if !del {
-		d.delta = 1
+		e := c.m[key]
+		d.delta = e.pending
+		e.pending = 0
+		c.m[key] = e
 	}
 	c.dirty[key] = d
 	c.queue = append(c.queue, key)
@@ -233,8 +242,8 @@ func (c *CounterCache) drain() {
 // arriving meanwhile folds into the entry and is handled here. A pending delete
 // runs first (a Forget reset the local counter, so the shared one must go),
 // then any follow-up increment for a fresh window is pushed. On a store error
-// it releases the key and stops: the delta is not pushed, matching the
-// documented degrade to per-instance enforcement when the store is unreachable.
+// it moves the failed work back to the local pending delta and stops; a later
+// bump retries the whole batch.
 func (c *CounterCache) flushKey(key string) {
 	for {
 		c.mu.Lock()
@@ -282,10 +291,44 @@ func (c *CounterCache) flushKey(key string) {
 		c.mu.Unlock()
 
 		if !c.flushIncr(key, delta, deadline) {
-			c.release(key)
+			c.preserveFailedIncr(key, delta, deadline)
 			return
 		}
 	}
+}
+
+// preserveFailedIncr moves a failed claimed batch (plus increments that
+// arrived during the store round) back into the local counter's pending
+// delta. The dirty entry is released without an immediate retry loop; the
+// next bump re-enqueues the complete pending amount. If a Forget arrived
+// during the failed round it supersedes the increments, so its delete remains
+// dirty and is re-queued through the normal release path.
+func (c *CounterCache) preserveFailedIncr(key string, claimed, deadline int64) {
+	c.mu.Lock()
+	d := c.dirty[key]
+	if d == nil {
+		c.mu.Unlock()
+		return
+	}
+	if d.del {
+		spawn := c.releaseLocked(key)
+		c.mu.Unlock()
+		if spawn {
+			c.Go(c.drain)
+		}
+		return
+	}
+	if e, ok := c.m[key]; ok {
+		if e.expires == deadline {
+			e.pending += claimed
+		}
+		if d.delta > 0 && e.expires == d.deadline {
+			e.pending += d.delta
+		}
+		c.m[key] = e
+	}
+	delete(c.dirty, key)
+	c.mu.Unlock()
 }
 
 // release relinquishes ownership of key: it deletes the dirty entry if it has

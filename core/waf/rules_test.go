@@ -73,8 +73,8 @@ func TestRuleMatching(t *testing.T) {
 		{"default action is deny", MatchInput{Path: "/boot.ini"}, "default-targets", ActionDeny},
 		{"clean request", MatchInput{Path: "/blog/post", Query: "page=2", UA: "mozilla/5.0"}, "", ""},
 		{"ua rule must not match path", MatchInput{Path: "/nikto"}, "", ""},
-		{"header keyword, name lowered at compile", MatchInput{Headers: map[string]string{"referer": "http://evil/${jndi:ldap://x}"}}, "log4shell-header", ActionBlock},
-		{"second header target", MatchInput{Headers: map[string]string{"x-forwarded-for": "${jndi:dns://x}"}}, "log4shell-header", ActionBlock},
+		{"header keyword, name lowered at compile", MatchInput{Headers: map[string][]string{"referer": {"http://evil/${jndi:ldap://x}"}}}, "log4shell-header", ActionBlock},
+		{"second header target", MatchInput{Headers: map[string][]string{"x-forwarded-for": {"${jndi:dns://x}"}}}, "log4shell-header", ActionBlock},
 		{"header rule must not match path", MatchInput{Path: "/${jndi:x"}, "", ""},
 		{"methods-only rule, method uppercased at compile", MatchInput{Method: "TRACE", Path: "/"}, "trace-method", ActionDeny},
 		{"methods-only rule ignores clean fields", MatchInput{Method: "TRACK", Path: "/blog", UA: "mozilla/5.0"}, "trace-method", ActionDeny},
@@ -131,10 +131,19 @@ func TestRuleValidation(t *testing.T) {
 		"empty header name":        "rules: [ { id: a, targets: [ 'header:' ], keywords: [x] } ]",
 		"empty method":             "rules: [ { id: a, methods: [ '' ] } ]",
 		"targets without patterns": "rules: [ { id: a, methods: [ GET ], targets: [ path ] } ]",
+		"empty keyword":            "rules: [ { id: a, keywords: [ '' ] } ]",
+		"empty regex":              "rules: [ { id: a, regexes: [ '' ] } ]",
 	} {
 		if _, err := compileRules([]byte(body), "test"); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
+	}
+}
+
+func TestRulesRejectTrailingYAMLDocument(t *testing.T) {
+	body := "rules: [ { id: first, keywords: [x] } ]\n---\nrules: [ { id: hidden, keywords: [y] } ]\n"
+	if _, err := compileRules([]byte(body), "test"); err == nil {
+		t.Fatal("second YAML document must be rejected")
 	}
 }
 

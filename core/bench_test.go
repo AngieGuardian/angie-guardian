@@ -19,6 +19,7 @@ import (
 
 const benchYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   waf:
     ip_behaviour: { enabled: true, block_ttl: 15m }

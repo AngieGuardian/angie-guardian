@@ -7,6 +7,8 @@ package httptransport
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -104,11 +106,30 @@ func (s *AdminServer) handleBlockStatus(w http.ResponseWriter, r *http.Request) 
 
 func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
+	if _, err := netip.ParseAddr(ip); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ip: " + err.Error()})
+		return
+	}
 	var body struct {
 		Reason string `json:"reason"`
 		TTL    string `json:"ttl"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
+		return
+	} else if err == nil {
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			if err == nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: trailing JSON value"})
+			} else {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
+			}
+			return
+		}
+	}
 	ttl := 15 * time.Minute
 	if body.TTL != "" {
 		d, err := time.ParseDuration(body.TTL)
@@ -117,6 +138,10 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ttl = d
+	}
+	if ttl <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ttl must be greater than zero"})
+		return
 	}
 	if body.Reason == "" {
 		body.Reason = "admin"

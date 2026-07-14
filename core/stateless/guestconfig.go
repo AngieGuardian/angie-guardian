@@ -6,6 +6,7 @@ package stateless
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -54,6 +55,13 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(gc); err != nil {
 		return nil, fmt.Errorf("parse guest config: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse guest config: multiple YAML documents are not supported")
+		}
+		return nil, fmt.Errorf("parse guest config trailing document: %w", err)
 	}
 
 	// Serialize the defaults once; each domain starts as a copy of them.

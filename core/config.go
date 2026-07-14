@@ -9,9 +9,11 @@ package core
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -265,6 +267,10 @@ func (vb *VerifiedBotsConfig) compile() error {
 		}
 		b.uasLower = b.uasLower[:0]
 		for _, ua := range b.UAs {
+			ua = strings.TrimSpace(ua)
+			if ua == "" {
+				return fmt.Errorf("verified_bots bot %q: empty user-agent entry", b.Name)
+			}
 			b.uasLower = append(b.uasLower, strings.ToLower(ua))
 		}
 		b.domainsLower = b.domainsLower[:0]
@@ -477,6 +483,13 @@ func LoadConfig(path string) (*Config, error) {
 	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse %s: multiple YAML documents are not supported", path)
+		}
+		return nil, fmt.Errorf("parse %s trailing document: %w", path, err)
+	}
 	if err := cfg.finalize(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -612,6 +625,46 @@ func (c *Config) finalize() error {
 	if err := c.checkGeoRefs(&c.Defaults); err != nil {
 		return fmt.Errorf("defaults: %w", err)
 	}
+	if err := c.validateFeatureDependencies(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateFeatureDependencies rejects configurations that say a feature is
+// enabled while omitting the global or per-domain resource that makes it run.
+// Run after domain inheritance has been resolved so every effective config is
+// checked, including Defaults (which applies to unknown hosts).
+func (c *Config) validateFeatureDependencies() error {
+	check := func(label string, dc *DomainConfig) error {
+		if dc.PoW.Enabled && strings.TrimSpace(c.SigningKeyFile) == "" {
+			return fmt.Errorf("%s: pow is enabled but signing_key_file is not configured", label)
+		}
+		if dc.WAF.Anomaly.Enabled && strings.TrimSpace(dc.WAF.Anomaly.Model) == "" {
+			return fmt.Errorf("%s: waf.anomaly is enabled but model is not configured", label)
+		}
+		if dc.WAF.Keywords.Enabled && strings.TrimSpace(dc.WAF.Keywords.RulesFile) == "" {
+			return fmt.Errorf("%s: waf.keywords is enabled but rules_file is not configured", label)
+		}
+		if dc.Reputation.Enabled && len(c.Reputation.Feeds) == 0 {
+			return fmt.Errorf("%s: reputation is enabled but no reputation.feeds are configured", label)
+		}
+		return nil
+	}
+	if err := check("defaults", &c.Defaults); err != nil {
+		return err
+	}
+	hosts := make([]string, 0, len(c.resolved))
+	for host := range c.resolved {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	for _, host := range hosts {
+		dc := c.resolved[host]
+		if err := check("domain "+host, dc); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -628,10 +681,10 @@ func (dc *DomainConfig) validate() error {
 	default:
 		return fmt.Errorf("pow.mode must be always or suspicion, got %q", p.Mode)
 	}
-	if p.BaseDifficulty < 1 || p.BaseDifficulty > 8 {
+	if math.IsNaN(p.BaseDifficulty) || math.IsInf(p.BaseDifficulty, 0) || p.BaseDifficulty < 1 || p.BaseDifficulty > 8 {
 		return fmt.Errorf("pow.base_difficulty must be 1..8, got %v", p.BaseDifficulty)
 	}
-	if p.MaxDifficulty < p.BaseDifficulty || p.MaxDifficulty > 8 {
+	if math.IsNaN(p.MaxDifficulty) || math.IsInf(p.MaxDifficulty, 0) || p.MaxDifficulty < p.BaseDifficulty || p.MaxDifficulty > 8 {
 		return fmt.Errorf("pow.max_difficulty must be %v..8, got %v", p.BaseDifficulty, p.MaxDifficulty)
 	}
 	for _, d := range []float64{p.BaseDifficulty, p.MaxDifficulty} {
@@ -661,7 +714,9 @@ func (dc *DomainConfig) validate() error {
 		}
 	}
 	a := &dc.WAF.Anomaly
-	if a.Enabled && (a.ChallengeAt <= 0 || a.DenyAt <= a.ChallengeAt || a.DenyAt > 1) {
+	if a.Enabled && (math.IsNaN(a.ChallengeAt) || math.IsInf(a.ChallengeAt, 0) ||
+		math.IsNaN(a.DenyAt) || math.IsInf(a.DenyAt, 0) ||
+		a.ChallengeAt <= 0 || a.DenyAt <= a.ChallengeAt || a.DenyAt > 1) {
 		return fmt.Errorf("waf.anomaly: need 0 < challenge_at < deny_at <= 1, got %v / %v", a.ChallengeAt, a.DenyAt)
 	}
 	b := &dc.WAF.IPBehaviour

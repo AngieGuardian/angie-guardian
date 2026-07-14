@@ -50,21 +50,42 @@ func generateAdminToken(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	// O_EXCL: if two instances race on first start, exactly one wins and the
-	// other loads the winner's token instead of silently overwriting it.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return LoadOrCreateAdminToken(path)
-	}
+	// Write and sync a private temporary file first, then publish it with a
+	// hard link. Link is create-if-absent and atomic: a concurrent loser can
+	// only observe the winner's complete file, never an empty final path.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".create-*")
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.Write([]byte(token + "\n")); err != nil {
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
 		return "", err
+	}
+	if _, err := f.Write([]byte(token + "\n")); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmp, path); errors.Is(err, os.ErrExist) {
+		return LoadOrCreateAdminToken(path)
+	} else if err != nil {
+		return "", err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return token, nil
 }

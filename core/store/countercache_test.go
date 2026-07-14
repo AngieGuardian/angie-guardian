@@ -130,6 +130,82 @@ func TestCounterCacheStoreDown(t *testing.T) {
 	}
 }
 
+type failOnceStore struct {
+	Store
+	failed atomic.Bool
+}
+
+func (s *failOnceStore) IncrByDeadline(ctx context.Context, key string, delta, deadline int64) (int64, bool, error) {
+	if s.failed.CompareAndSwap(false, true) {
+		return 0, false, errStoreDown
+	}
+	return s.Store.IncrByDeadline(ctx, key, delta, deadline)
+}
+
+func TestCounterCacheRetriesCompleteDeltaAfterStoreRecovery(t *testing.T) {
+	mem := NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	c := NewCounterCache(&failOnceStore{Store: mem})
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	for range 5 {
+		c.Incr("k", time.Minute)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("scheduled %d drainers, want 1", len(pending))
+	}
+	pending[0]() // first store round fails; all five increments stay pending
+
+	pending = nil
+	c.Incr("k", time.Minute)
+	if len(pending) != 1 {
+		t.Fatalf("recovery scheduled %d drainers, want 1", len(pending))
+	}
+	pending[0]()
+	v, ok, err := mem.Get(context.Background(), "k")
+	if err != nil || !ok || string(v) != "6" {
+		t.Fatalf("store total after recovery = %q (ok=%v err=%v), want 6", v, ok, err)
+	}
+}
+
+func TestCounterCacheQueueOverflowDeltaIsRecovered(t *testing.T) {
+	mem := NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	c := NewCounterCache(mem)
+	var pending []func()
+	c.Go = func(f func()) { pending = append(pending, f) }
+
+	// Simulate a saturated backlog without creating thousands of unrelated
+	// store records. The key cannot enter dirty yet, so its delta must remain
+	// attached to the local counter.
+	c.mu.Lock()
+	c.queue = make([]string, maxFlushQueue)
+	c.workers = maxFlushWorkers
+	c.mu.Unlock()
+	for range 5 {
+		c.Incr("overflow", time.Minute)
+	}
+	c.mu.Lock()
+	if got := c.m["overflow"].pending; got != 5 {
+		c.mu.Unlock()
+		t.Fatalf("overflow pending delta = %d, want 5", got)
+	}
+	c.queue = nil
+	c.workers = 0
+	c.mu.Unlock()
+
+	c.Incr("overflow", time.Minute)
+	if len(pending) != 1 {
+		t.Fatalf("recovery scheduled %d drainers, want 1", len(pending))
+	}
+	pending[0]()
+	v, ok, err := mem.Get(context.Background(), "overflow")
+	if err != nil || !ok || string(v) != "6" {
+		t.Fatalf("store total after queue recovery = %q (ok=%v err=%v), want 6", v, ok, err)
+	}
+}
+
 // TestCounterCacheConcurrent exercises the mutex paths under the race
 // detector with real background flushes.
 func TestCounterCacheConcurrent(t *testing.T) {

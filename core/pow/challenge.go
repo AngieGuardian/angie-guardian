@@ -31,7 +31,7 @@ import (
 // with so challenges issued around a rotation remain redeemable.
 type Manager struct {
 	mu         sync.RWMutex
-	keys       []ed25519.PrivateKey // keys[0] signs; all verify
+	keys       []managerKey // keys[0] signs; all verify
 	hmacSecret []byte
 	store      store.Store
 	cache      *tokenCache
@@ -50,6 +50,11 @@ type Manager struct {
 	now func() time.Time
 }
 
+type managerKey struct {
+	private   ed25519.PrivateKey
+	retiredAt time.Time // zero for the current signing key
+}
+
 func NewManager(key ed25519.PrivateKey, st store.Store) *Manager {
 	return NewManagerWithKeys(key, nil, st)
 }
@@ -63,11 +68,11 @@ func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, err
 	if err != nil {
 		return nil, err
 	}
-	previous, err := LoadPreviousKeys(prevDir)
+	previous, err := LoadRetiredKeys(prevDir)
 	if err != nil {
 		return nil, err
 	}
-	m := NewManagerWithKeys(key, previous, st)
+	m := newManagerWithRetiredKeys(key, previous, st)
 	m.keyPath = keyPath
 	m.prevDir = prevDir
 	m.lastRefresh = m.now()
@@ -77,12 +82,26 @@ func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, err
 // NewManagerWithKeys builds a Manager that signs with current and also
 // verifies tokens signed by any key in previous (rotation support, plan §7).
 func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKey, st store.Store) *Manager {
+	retired := make([]RetiredKey, len(previous))
+	now := time.Now()
+	for i := range previous {
+		retired[i] = RetiredKey{Key: previous[i], RetiredAt: now}
+	}
+	return newManagerWithRetiredKeys(current, retired, st)
+}
+
+func newManagerWithRetiredKeys(current ed25519.PrivateKey, previous []RetiredKey, st store.Store) *Manager {
 	// The HMAC secret for challenge derivation is derived from the signing
 	// key's seed, so one persistent secret file serves both purposes and all
 	// instances sharing the key derive the same challenges.
 	sum := sha256.Sum256(append([]byte("guardian-hmac-v1\x00"), current.Seed()...))
+	keys := make([]managerKey, 1, 1+len(previous))
+	keys[0] = managerKey{private: current}
+	for _, key := range previous {
+		keys = append(keys, managerKey{private: key.Key, retiredAt: key.RetiredAt})
+	}
 	return &Manager{
-		keys:         append([]ed25519.PrivateKey{current}, previous...),
+		keys:         keys,
 		hmacSecret:   sum[:],
 		store:        st,
 		cache:        newTokenCache(),
@@ -96,8 +115,22 @@ func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKe
 // a rotation reloads keys from disk. The token cache is cleared so a token
 // signed by a now-removed key is re-verified rather than served from cache.
 func (m *Manager) SetKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKey) {
+	retired := make([]RetiredKey, len(previous))
+	now := m.now()
+	for i := range previous {
+		retired[i] = RetiredKey{Key: previous[i], RetiredAt: now}
+	}
+	m.setRetiredKeys(current, retired)
+}
+
+func (m *Manager) setRetiredKeys(current ed25519.PrivateKey, previous []RetiredKey) {
+	keys := make([]managerKey, 1, 1+len(previous))
+	keys[0] = managerKey{private: current}
+	for _, key := range previous {
+		keys = append(keys, managerKey{private: key.Key, retiredAt: key.RetiredAt})
+	}
 	m.mu.Lock()
-	m.keys = append([]ed25519.PrivateKey{current}, previous...)
+	m.keys = keys
 	m.mu.Unlock()
 	m.cache.reset()
 }
@@ -106,7 +139,7 @@ func (m *Manager) signingKey() ed25519.PrivateKey {
 	_, _ = m.refreshKeys(false)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.keys[0]
+	return m.keys[0].private
 }
 
 // Rotate generates a new signing key, archives the current one into prevDir,
@@ -142,11 +175,11 @@ func (m *Manager) reloadKeysLocked() error {
 	if err != nil {
 		return err
 	}
-	previous, err := LoadPreviousKeys(m.prevDir)
+	previous, err := LoadRetiredKeys(m.prevDir)
 	if err != nil {
 		return err
 	}
-	m.SetKeys(current, previous)
+	m.setRetiredKeys(current, previous)
 	m.lastRefresh = m.now()
 	return nil
 }

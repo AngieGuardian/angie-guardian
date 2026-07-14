@@ -20,6 +20,7 @@ import (
 
 const powYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   pow: { enabled: false }
 domains:

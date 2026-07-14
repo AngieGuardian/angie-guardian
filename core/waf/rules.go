@@ -9,6 +9,7 @@ package waf
 import (
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log/slog"
 	"os"
 	"regexp"
@@ -102,7 +103,7 @@ type MatchInput struct {
 	Path    string
 	Query   string
 	UA      string
-	Headers map[string]string
+	Headers map[string][]string
 }
 
 // Match returns the first matching rule, or nil.
@@ -135,8 +136,10 @@ func (r *Rule) matches(in *MatchInput) bool {
 		return true
 	}
 	for _, name := range r.headers {
-		if r.matchesText(in.Headers[name]) {
-			return true
+		for _, value := range in.Headers[name] {
+			if r.matchesText(value) {
+				return true
+			}
 		}
 	}
 	return false
@@ -173,6 +176,13 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&file); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse %s: multiple YAML documents are not supported", path)
+		}
+		return nil, fmt.Errorf("parse %s trailing document: %w", path, err)
 	}
 	rs := &RuleSet{Rules: make([]Rule, 0, len(file.Rules))}
 	seen := make(map[string]bool, len(file.Rules))
@@ -239,9 +249,15 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 		}
 
 		for _, kw := range ry.Keywords {
+			if strings.TrimSpace(kw) == "" {
+				return nil, fmt.Errorf("%s: rule %s: empty keyword", path, ry.ID)
+			}
 			r.keywords = append(r.keywords, strings.ToLower(kw))
 		}
 		for _, expr := range ry.Regexes {
+			if strings.TrimSpace(expr) == "" {
+				return nil, fmt.Errorf("%s: rule %s: empty regex", path, ry.ID)
+			}
 			re, err := regexp.Compile(expr)
 			if err != nil {
 				return nil, fmt.Errorf("%s: rule %s: %w", path, ry.ID, err)

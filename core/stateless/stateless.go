@@ -34,18 +34,18 @@ type RequestContext struct {
 	UserAgent  string
 	Cookie     string // raw Cookie header
 
-	// Header returns one request header by (case-insensitive) name, or ""
-	// when absent. Transports set it so header-targeting WAF rules fetch only
-	// the headers they actually name; nil means headers are unavailable and
-	// header targets simply never match. Read it via HeaderValue.
-	Header func(name string) string
+	// Header returns every value of one request header by (case-insensitive)
+	// name. Transports set it so header-targeting WAF rules fetch only the
+	// headers they actually name; nil means headers are unavailable and header
+	// targets simply never match. Read it via HeaderValues.
+	Header func(name string) []string
 }
 
-// HeaderValue returns a request header via the transport's getter, or "" when
-// none was provided.
-func (r *RequestContext) HeaderValue(name string) string {
+// HeaderValues returns every value of a request header via the transport's
+// getter, or nil when none was provided.
+func (r *RequestContext) HeaderValues(name string) []string {
 	if r.Header == nil {
-		return ""
+		return nil
 	}
 	return r.Header(name)
 }
@@ -119,6 +119,10 @@ func (l *ListConfig) Compile() error {
 	}
 	l.uasLower = l.uasLower[:0]
 	for _, ua := range l.UAs {
+		ua = strings.TrimSpace(ua)
+		if ua == "" {
+			return fmt.Errorf("empty user-agent entry")
+		}
 		l.uasLower = append(l.uasLower, strings.ToLower(ua))
 	}
 	return nil
@@ -275,10 +279,12 @@ func BuildMatchInput(req *RequestContext, rs *waf.RuleSet) waf.MatchInput {
 		in.Method = strings.ToUpper(req.Method)
 	}
 	if names := rs.HeaderTargets(); len(names) > 0 && req.Header != nil {
-		in.Headers = make(map[string]string, len(names))
+		in.Headers = make(map[string][]string, len(names))
 		for _, name := range names {
-			if v := req.HeaderValue(name); v != "" {
-				in.Headers[name] = strings.ToLower(DecodePath(v))
+			for _, v := range req.HeaderValues(name) {
+				if v != "" {
+					in.Headers[name] = append(in.Headers[name], strings.ToLower(DecodePath(v)))
+				}
 			}
 		}
 	}

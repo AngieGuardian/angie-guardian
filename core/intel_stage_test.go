@@ -46,6 +46,7 @@ func intelEngine(t *testing.T) (*Engine, *pow.Manager) {
 
 	cfg := loadTestConfig(t, fmt.Sprintf(`
 store: { backend: memory }
+signing_key_file: test-signing.key
 geoip:
   country_db: %s
   asn_db: %s

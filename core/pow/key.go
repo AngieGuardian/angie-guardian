@@ -20,7 +20,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // LoadOrCreateKey returns the Ed25519 signing key stored at path, generating
@@ -63,28 +65,26 @@ func parseKey(raw []byte, path string) (ed25519.PrivateKey, error) {
 }
 
 func generateKey(path string) (ed25519.PrivateKey, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	// Initial creation shares the rotation lock: the winner fully writes and
+	// atomically publishes the key before any concurrent starter can read it.
+	unlock, err := lockRotation(path + ".rotate.lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock key creation: %w", err)
+	}
+	defer unlock()
+	if key, err := loadKey(path); err == nil {
+		return key, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	key, buf, err := newKeyPEM()
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	// O_EXCL: if two instances race on first start, exactly one wins and the
-	// other loads the winner's key instead of silently overwriting it.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		raw, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return nil, rerr
-		}
-		return parseKey(raw, path)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if _, err := f.Write(buf); err != nil {
+	if err := atomicReplaceKey(path, buf); err != nil {
 		return nil, err
 	}
 	return key, nil
@@ -102,10 +102,18 @@ func newKeyPEM() (ed25519.PrivateKey, []byte, error) {
 	return key, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
-// LoadPreviousKeys loads retired signing keys from a directory, for the
-// verification set during rotation. Files are read in lexical order; missing
-// directory is not an error (no previous keys). Only *.key files are read.
-func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
+// RetiredKey carries an archived private key and when it stopped being the
+// active signer. Verification uses that timestamp to bound the lifetime of
+// tokens accepted from the key.
+type RetiredKey struct {
+	Key       ed25519.PrivateKey
+	RetiredAt time.Time
+}
+
+// LoadRetiredKeys loads archived signing keys and their retirement metadata.
+// Archive names created by RotateKey start with a Unix timestamp; legacy or
+// manually named files fall back to their modification time.
+func LoadRetiredKeys(dir string) ([]RetiredKey, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -123,7 +131,7 @@ func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
 		}
 	}
 	sort.Strings(names)
-	keys := make([]ed25519.PrivateKey, 0, len(names))
+	keys := make([]RetiredKey, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		raw, err := os.ReadFile(path)
@@ -134,7 +142,32 @@ func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		keys = append(keys, k)
+		retiredAt := time.Time{}
+		if stamp, _, ok := strings.Cut(name, "-"); ok {
+			if unix, err := strconv.ParseInt(stamp, 10, 64); err == nil && unix > 0 {
+				retiredAt = time.Unix(unix, 0)
+			}
+		}
+		if retiredAt.IsZero() {
+			if info, err := os.Stat(path); err == nil {
+				retiredAt = info.ModTime()
+			}
+		}
+		keys = append(keys, RetiredKey{Key: k, RetiredAt: retiredAt})
+	}
+	return keys, nil
+}
+
+// LoadPreviousKeys is the compatibility view used by callers that only need
+// the archived key material (for example startup logging and key-set tests).
+func LoadPreviousKeys(dir string) ([]ed25519.PrivateKey, error) {
+	retired, err := LoadRetiredKeys(dir)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]ed25519.PrivateKey, len(retired))
+	for i := range retired {
+		keys[i] = retired[i].Key
 	}
 	return keys, nil
 }

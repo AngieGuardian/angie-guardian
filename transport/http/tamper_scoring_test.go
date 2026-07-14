@@ -12,6 +12,7 @@ import (
 // forged PoW challenge IDs must be scored out of the box.
 const tamperYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   waf:
     ip_behaviour:
