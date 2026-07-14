@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -196,6 +198,114 @@ func TestLivePeerRefreshesAfterRotation(t *testing.T) {
 		if err := tc.manager.VerifyToken(tc.token, host, ip, ua); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestPeerNeverSignsWithAlreadyRetiredKey(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+
+	rotator, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_900_000_000, 0).UTC()
+	rotationTime := base.Add(900 * time.Millisecond)
+	signingTime := base.Add(1050 * time.Millisecond)
+	rotator.now = func() time.Time { return rotationTime }
+	if err := rotator.Rotate(keyPath, prevDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The peer's normal refresh timestamp is deliberately inside the old
+	// 250ms throttle window. Signing must still lock and observe the new file.
+	peer.lastRefresh = base.Add(850 * time.Millisecond)
+	peer.now = func() time.Time { return signingTime }
+	rotator.now = func() time.Time { return signingTime }
+	token, err := peer.mintToken("example.test", Fingerprint("198.51.100.7", "UA"), "cid", 20, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rotator.VerifyToken(token, "example.test", "198.51.100.7", "UA"); err != nil {
+		t.Fatalf("peer minted a token with an already-retired key: %v", err)
+	}
+}
+
+func TestLoadRetiredKeysDeduplicatesUsingLatestRetirement(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	key, err := LoadOrCreateKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevDir := filepath.Join(dir, "previous")
+	if err := os.MkdirAll(prevDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := sha256.Sum256(raw)
+	for _, stamp := range []int64{1_900_000_000, 1_900_000_100} {
+		name := filepath.Join(prevDir, fmt.Sprintf("%d-%x.key", stamp, fingerprint[:8]))
+		if err := archiveKey(name, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys, err := loadRetiredKeysAt(prevDir, time.Unix(1_900_000_101, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || !keys[0].Key.Equal(key) {
+		t.Fatalf("deduplicated keys = %d, want the one archived key", len(keys))
+	}
+	if got := keys[0].RetiredAt.Unix(); got != 1_900_000_100 {
+		t.Fatalf("retirement timestamp = %d, want latest 1900000100", got)
+	}
+}
+
+func TestLoadRetiredKeysOmitsExpiredHorizon(t *testing.T) {
+	dir := t.TempDir()
+	prevDir := filepath.Join(dir, "previous")
+	if err := os.MkdirAll(prevDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_900_000_000, 0).UTC()
+	for i, stamp := range []int64{
+		now.Add(-maxAcceptedTokenLifetime).Unix(),
+		now.Add(-maxAcceptedTokenLifetime - time.Second).Unix(),
+	} {
+		path := filepath.Join(dir, fmt.Sprintf("key-%d", i))
+		if _, err := LoadOrCreateKey(path); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fingerprint := sha256.Sum256(raw)
+		name := filepath.Join(prevDir, fmt.Sprintf("%d-%x.key", stamp, fingerprint[:8]))
+		if err := archiveKey(name, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys, err := loadRetiredKeysAt(prevDir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("active retired keys = %d, want only the exact-horizon key", len(keys))
+	}
+	if got := keys[0].RetiredAt; !got.Equal(now.Add(-maxAcceptedTokenLifetime)) {
+		t.Fatalf("kept retirement = %v, want exact horizon", got)
 	}
 }
 

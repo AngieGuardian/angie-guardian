@@ -68,9 +68,11 @@ Which value fires:
 
 - **`mode: always` (the default):** every unvouched request, regardless of
   HTTP method or User-Agent,
-  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie.
+  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie. The
+  token lifetime must be at least one second and at most seven days.
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits
-  = 16x, capped at `max`).
+  = 16x, capped at `max`). A valid bound token satisfies rules whose action is
+  `challenge`; it never bypasses `deny` or `block` rules.
 - **The anomaly scorer:** scales the difficulty across the `[base, max]`
   range with the score, so a more bot-like client pays more. Requires
   `waf.anomaly` enabled with a trained model.
@@ -148,6 +150,8 @@ generated on first run if missing and **never** regenerated on restart, so
 restarts don't log clients out and replicas can share it. Retired keys (from
 `POST /admin/rotate-key`) are archived in `previous_key_dir` and still
 accepted only for bounded, pre-rotation token lifetimes (at most seven days).
+Expired archives may remain on disk, but they are omitted from the active
+verification set after that horizon.
 Rotation requires a
 non-empty `previous_key_dir`; replicas must share both paths and automatically
 refresh their verification set when another replica rotates.

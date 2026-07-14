@@ -187,6 +187,13 @@ func TestVouchedClientStillPassesWAF(t *testing.T) {
 	if d := e.Evaluate(ctx, r); d.Action != ActionDeny || d.Reason != "waf:dotfile" {
 		t.Fatalf("vouched attack request: got %s/%s, want waf:dotfile deny", d.Action, d.Reason)
 	}
+	// A challenge-only signature is satisfied by that same valid token instead
+	// of trapping the client in an infinite challenge loop.
+	r = req("pow.test", ip, "/union all select", ua)
+	r.Cookie = pow.CookieName + "=" + token
+	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
+		t.Fatalf("vouched challenge-rule request: got %s/%s, want allow/pow:token", d.Action, d.Reason)
+	}
 }
 
 func TestReportEvent(t *testing.T) {

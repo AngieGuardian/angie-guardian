@@ -62,6 +62,11 @@ services:
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
       - guardian-state:/var/lib/guardian
       - guardian-keys:/etc/guardian/keys
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/guardiand", "-config", "/etc/guardian/guardian.yaml", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 volumes:
   guardian-state:
   guardian-keys:
@@ -181,3 +186,5 @@ enable the built-in reporting page: see
 path, archive names cannot collide, and live replicas refresh the key set
 automatically. Retired keys accept only tokens issued before rotation, and no
 accepted token may have a lifetime longer than seven days.
+Older archive files may remain for operator retention, but Guardian drops them
+from the in-memory verification set once that seven-day horizon has elapsed.

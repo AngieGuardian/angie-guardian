@@ -259,6 +259,33 @@ func TestBoltPersistence(t *testing.T) {
 	}
 }
 
+func TestBoltRejectsTTLThatWouldBecomePermanent(t *testing.T) {
+	s, err := NewBolt(filepath.Join(t.TempDir(), "overflow.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ttl, err := time.ParseDuration("2562047h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Set(ctx, "set", []byte("v"), ttl); err == nil {
+		t.Fatal("oversized positive Set TTL was accepted as a permanent record")
+	}
+	if _, err := s.IncrBy(ctx, "incr", 1, ttl); err == nil {
+		t.Fatal("oversized positive IncrBy TTL was accepted as a permanent record")
+	}
+	if _, err := s.CompareAndSwap(ctx, "cas", nil, []byte("v"), ttl); err == nil {
+		t.Fatal("oversized positive CAS TTL was accepted as a permanent record")
+	}
+	for _, key := range []string{"set", "incr", "cas"} {
+		if _, ok, err := s.Get(ctx, key); err != nil || ok {
+			t.Fatalf("rejected TTL wrote %q: ok=%v err=%v", key, ok, err)
+		}
+	}
+}
+
 // TestRedisSubMillisecondTTL is the regression for MR review 9181: a positive
 // sub-millisecond TTL must not truncate to the 0 "no expiry" sentinel and make
 // the counter permanent. IncrBy and CompareAndSwap both go through the TTL-aware

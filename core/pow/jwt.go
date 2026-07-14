@@ -42,13 +42,55 @@ func (m *Manager) mintToken(host, fingerprint, challengeID string, difficulty in
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(m.signingKey())
+	return m.signToken(jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims))
+}
+
+// signToken serializes signing with file-based rotation and reads the current
+// key while holding the same cross-process lock used by RotateKey. A peer can
+// therefore never retire the key between our refresh and signature creation.
+// In-memory-only managers have no shared files and sign directly.
+func (m *Manager) signToken(token *jwt.Token) (string, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if m.keyPath == "" {
+		return token.SignedString(m.signingKey())
+	}
+
+	unlock, err := lockRotation(m.keyPath + ".rotate.lock")
+	if err != nil {
+		return "", fmt.Errorf("lock key for signing: %w", err)
+	}
+	defer unlock()
+
+	current, err := loadKey(m.keyPath)
+	if err != nil {
+		return "", err
+	}
+	m.mu.RLock()
+	changed := !m.keys[0].private.Equal(current)
+	m.mu.RUnlock()
+	if changed {
+		previous, err := loadRetiredKeysAt(m.prevDir, m.now())
+		if err != nil {
+			return "", err
+		}
+		m.setRetiredKeys(current, previous)
+	}
+	m.lastRefresh = m.now()
+	return token.SignedString(current)
 }
 
 func (m *Manager) verificationKeys() []managerKey {
+	now := m.now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]managerKey(nil), m.keys...)
+	keys := make([]managerKey, 0, len(m.keys))
+	for _, key := range m.keys {
+		if key.retiredAt.IsZero() || !now.After(key.retiredAt.Add(maxAcceptedTokenLifetime)) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 const maxAcceptedTokenLifetime = 7 * 24 * time.Hour

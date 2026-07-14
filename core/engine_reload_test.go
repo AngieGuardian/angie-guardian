@@ -6,10 +6,14 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/intel/inteltest"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
@@ -68,5 +72,78 @@ func TestEngineReload(t *testing.T) {
 	}
 	if _, blocked, err := e.BlockStatus(ctx, "192.0.2.55"); err != nil || !blocked {
 		t.Errorf("block did not survive reload: blocked=%v err=%v", blocked, err)
+	}
+}
+
+type reloadBlockingResolver struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *reloadBlockingResolver) LookupAddr(context.Context, string) ([]string, error) {
+	close(r.started)
+	<-r.release
+	return nil, &net.DNSError{Err: "temporary failure", IsTemporary: true}
+}
+
+func (*reloadBlockingResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return nil, &net.DNSError{Err: "temporary failure", IsTemporary: true}
+}
+
+func TestReloadKeepsInflightSnapshotResourcesAlive(t *testing.T) {
+	db := inteltest.WriteCountryDB(t, t.TempDir(), map[string]string{"198.51.100.0/24": "NL"})
+	cfg := loadTestConfig(t, fmt.Sprintf(`
+store: { backend: memory }
+geoip: { country_db: %s }
+defaults:
+  verified_bots:
+    dns_timeout: 1m
+    bots: [ { name: googlebot } ]
+  geo:
+    enabled: true
+    deny: { countries: [ NL ] }
+`, db))
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	e, err := NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+
+	resolver := &reloadBlockingResolver{started: make(chan struct{}), release: make(chan struct{})}
+	e.BotVerifier().SetResolver(resolver)
+	oldSnapshot := e.snap.Load()
+	decisions := make(chan Decision, 1)
+	go func() {
+		decisions <- e.Evaluate(context.Background(), req("x.test", "198.51.100.7", "/", googlebotUA))
+	}()
+
+	select {
+	case <-resolver.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never entered bot DNS verification")
+	}
+	if err := e.Reload(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := oldSnapshot.refs.Load(); got != 1 {
+		t.Fatalf("retired snapshot refs = %d, want one in-flight owner", got)
+	}
+	if got := oldSnapshot.intel.Lookup(netip.MustParseAddr("198.51.100.7")).Country; got != "NL" {
+		t.Fatalf("retired snapshot resources closed before evaluator released: country=%q", got)
+	}
+	close(resolver.release)
+
+	select {
+	case d := <-decisions:
+		if d.Action != ActionDeny || d.Reason != "geo:country:NL" {
+			t.Fatalf("in-flight request lost its old snapshot resources: got %s/%s", d.Action, d.Reason)
+		}
+		if got := oldSnapshot.refs.Load(); got != 0 {
+			t.Fatalf("retired snapshot refs after request = %d, want zero", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight request did not complete")
 	}
 }

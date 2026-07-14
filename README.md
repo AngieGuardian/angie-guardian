@@ -85,7 +85,8 @@ signature checks, so a stolen token can't ride past the WAF.
 - **Key rotation**: `POST /admin/rotate-key` atomically archives the current
   Ed25519 key and generates a new one; `previous_key_dir` is required. Live
   replicas sharing both paths refresh automatically. Retired keys accept only
-  tokens issued before rotation, with a maximum lifetime of seven days.
+  tokens issued before rotation, with a maximum lifetime of seven days; older
+  archives may remain on disk but are ignored by the active verifier.
 - **Hot reload**: `SIGHUP` (or `POST /admin/reload`) re-reads `guardian.yaml`
   and applies it without a restart: domains, lists, thresholds, difficulty,
   GeoIP/feed sources, log level. Active blocks and issued tokens survive; a

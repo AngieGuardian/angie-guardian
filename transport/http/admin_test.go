@@ -148,6 +148,19 @@ func TestAdminAuth(t *testing.T) {
 	if resp := adminReq(t, ts, "GET", "/admin/blocks/1.2.3.4", "wrong", ""); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong token: status = %d, want 401", resp.StatusCode)
 	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/admin/blocks/1.2.3.4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "xxxxxxx"+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong auth scheme: status = %d, want 401", resp.StatusCode)
+	}
 	// Correct token → 200.
 	if resp := adminReq(t, ts, "GET", "/admin/blocks/1.2.3.4", adminToken, ""); resp.StatusCode != http.StatusOK {
 		t.Errorf("correct token: status = %d, want 200", resp.StatusCode)
@@ -236,6 +249,24 @@ func TestAdminBlockLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdminBlockCanonicalizesIPv6(t *testing.T) {
+	ts, _ := adminServer(t)
+	raw := "2001:0DB8:0:0:0:0:0:1"
+	canonical := "2001:db8::1"
+	m := decodeJSON(t, adminReq(t, ts, http.MethodPut, "/admin/blocks/"+raw, adminToken, `{"reason":"ipv6"}`))
+	if m["ip"] != canonical || m["blocked"] != true {
+		t.Fatalf("PUT response = %v, want canonical blocked IP", m)
+	}
+	m = decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/blocks/"+canonical, adminToken, ""))
+	if m["ip"] != canonical || m["blocked"] != true || m["reason"] != "ipv6" {
+		t.Fatalf("canonical GET response = %v", m)
+	}
+	m = decodeJSON(t, adminReq(t, ts, http.MethodDelete, "/admin/blocks/"+raw, adminToken, ""))
+	if m["ip"] != canonical || m["blocked"] != false {
+		t.Fatalf("expanded DELETE response = %v", m)
+	}
+}
+
 func TestAdminBlockRejectsInvalidInput(t *testing.T) {
 	ts, _ := adminServer(t)
 	for _, tc := range []struct {
@@ -247,6 +278,7 @@ func TestAdminBlockRejectsInvalidInput(t *testing.T) {
 		{"unknown field", "203.0.113.13", `{"ttl":"1m","extra":true}`},
 		{"trailing json", "203.0.113.14", `{"ttl":"1m"} {"ttl":"2m"}`},
 		{"invalid ip", "not-an-ip", `{"ttl":"1m"}`},
+		{"oversized ttl", "203.0.113.15", `{"ttl":"8761h"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := adminReq(t, ts, http.MethodPut, "/admin/blocks/"+tc.ip, adminToken, tc.body)

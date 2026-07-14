@@ -23,7 +23,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `log_level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `trusted_proxy` | bool | `false` | Allow a non-loopback `listen`. The hot path trusts the `X-Guardian-*` client-identity headers from its caller, so only set this when the listener is isolated to Angie (private network, firewall, or mTLS). |
 | `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Required when any effective domain enables PoW. Generated on first run if missing; never regenerated on restart. |
-| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; required for rotation. Replicas must share it with `signing_key_file`. Retired keys accept only pre-rotation tokens with lifetimes up to seven days. |
+| `previous_key_dir` | string | | Where retired signing keys (from `POST /admin/rotate-key`) are archived; required for rotation. Replicas must share it with `signing_key_file`. Retired keys accept only pre-rotation tokens with lifetimes up to seven days; older archives may remain on disk but are omitted from the active verification set. |
 | `admin` | object | | See [admin](#admin). |
 | `store` | object | | See [store](#store). |
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
@@ -98,7 +98,7 @@ Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
 | `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: only challenge clients the anomaly scorer flags (requires `waf.anomaly.enabled`). |
 | `pow.base_difficulty` | float | `5` | The floor every clean client pays. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
 | `pow.max_difficulty` | float | `6` | The ceiling, reached only via anomaly-scaled difficulty. Must be finite and in range `base_difficulty`..8, in quarter steps. |
-| `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. |
+| `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. Must be between `1s` and seven days when PoW is enabled. |
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. |
 | `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. |
 
@@ -147,15 +147,15 @@ Behavioural IP blocking with exponential backoff.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable behavioural blocking. |
-| `block_ttl` | Duration | `15m` | First-offense block duration; doubles per repeat offense. |
-| `max_block_ttl` | Duration | `4h` | Backoff cap. Must be >= `block_ttl`. |
+| `block_ttl` | Duration | `15m` | First-offense block duration; doubles per repeat offense. Maximum one year (`8760h`). |
+| `max_block_ttl` | Duration | `4h` | Backoff cap. Must be >= `block_ttl`; maximum one year (`8760h`). |
 | `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min`, `bot_spoof: 5/min` | Bad events per window before the IP is blocked, keyed by event type. |
 
 ### waf.keywords
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; every physical value of a duplicate header is inspected. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. Empty or whitespace-only keywords and regexes are rejected. |
+| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`), all URL-decoded and lowercased; every physical value of a duplicate header is inspected. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. A valid bound PoW token satisfies an `action: challenge` match, while `deny` and `block` remain terminal. Empty or whitespace-only keywords and regexes are rejected. |
 | `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must exist when enabled (fail-fast); hot-reloaded on change. |
 
 ### waf.anomaly
@@ -230,8 +230,8 @@ the shared store, so DNS runs once per crawler IP, not per request.
 |---|---|---|---|
 | `bots` | list | `[]` | Bots to verify. Each entry needs `name`, plus non-empty `uas` and `domains` unless `name` is a built-in preset. Empty or whitespace-only UA needles are rejected. |
 | `dns_timeout` | duration | `1s` | DNS budget for one first-sight verification. |
-| `cache_ttl` | duration | `12h` | How long a confirmed identity is cached. |
-| `negative_ttl` | duration | `1h` | How long a proven impostor is cached. |
+| `cache_ttl` | duration | `12h` | How long a confirmed identity is cached; maximum one year (`8760h`). |
+| `negative_ttl` | duration | `1h` | How long a proven impostor is cached; maximum one year (`8760h`). |
 | `spoof_action` | `deny` \| `continue` | `deny` | What happens to a client that claims a listed UA but definitively fails verification (no PTR, or rDNS owned by someone else). `deny` rejects and scores a `bot_spoof` behaviour event (see `waf.ip_behaviour.thresholds`); `continue` just withholds the allowlist skip and lets the rest of the pipeline handle the request. |
 
 Built-in presets (need only `name`): `googlebot`, `google-special`,

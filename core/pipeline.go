@@ -280,6 +280,12 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	switch rule.Action {
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
+			// A challenge-only signature asks the client to prove work; a valid
+			// bound token is that proof. Deny/block rules still terminate above
+			// the ordinary token stage and can never be bypassed by a token.
+			if hasValidPoWToken(req, env) {
+				return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
+			}
 			return &Decision{
 				Action: ActionChallenge,
 				// A signature hit pays one full difficulty step (+4 bits = 16x
@@ -314,17 +320,18 @@ type powTokenStage struct{}
 func (powTokenStage) Name() string { return "pow_token" }
 
 func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.pow == nil || !env.domain.PoW.Enabled {
-		return nil, nil
-	}
-	token := cookieValue(req.Cookie, pow.CookieName)
-	if token == "" {
-		return nil, nil
-	}
-	if err := env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent); err != nil {
+	if !hasValidPoWToken(req, env) {
 		return nil, nil
 	}
 	return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
+}
+
+func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
+	if env.pow == nil || !env.domain.PoW.Enabled {
+		return false
+	}
+	token := cookieValue(req.Cookie, pow.CookieName)
+	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent) == nil
 }
 
 // anomalyStage — pipeline stage 5 (plan §4.3). Scores the request against

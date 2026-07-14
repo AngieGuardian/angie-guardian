@@ -37,7 +37,8 @@ admin:
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
 # missing; NEVER regenerated on restart, so restarts don't log clients out
 # and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
-# archived here and still accepted for verification until their tokens expire.
+# archived here and still accepted for verification until their tokens expire
+# (at most 7 days); older archive files are ignored in memory, not auto-deleted.
 signing_key_file: /etc/guardian/ed25519.key
 previous_key_dir: /etc/guardian/keys.d
 
@@ -78,8 +79,8 @@ defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 15m          # first offense; doubles per repeat offense
-      max_block_ttl: 4h       # backoff cap
+      block_ttl: 15m          # first offense; doubles per repeat; max 8760h
+      max_block_ttl: 4h       # backoff cap; max 8760h
       thresholds:             # bad events per window before the IP is blocked
         signature: 10/min     # WAF signature hits
         pow_fail: 10/min      # failed challenge solutions
@@ -111,7 +112,7 @@ defaults:
     # See "Measured solve times" in USAGE.md before changing these.
     base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
     max_difficulty: 6         # ceiling for anomaly-scaled challenges
-    token_ttl: 4h
+    token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m
     noscript_fallback: true
   geo:
@@ -168,8 +169,8 @@ defaults:
     #                    pipeline handles the request like any other client
     spoof_action: deny
     dns_timeout: 1s           # DNS budget for a first-sight verification
-    cache_ttl: 12h            # confirmed identities
-    negative_ttl: 1h          # proven impostors
+    cache_ttl: 12h            # confirmed identities; max 8760h
+    negative_ttl: 1h          # proven impostors; max 8760h
     # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
 
 domains:

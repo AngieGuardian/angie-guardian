@@ -85,7 +85,8 @@ func (s *AdminServer) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
 		got := r.Header.Get("Authorization")
-		if len(got) <= len(prefix) || subtle.ConstantTimeCompare([]byte(got[len(prefix):]), []byte(s.token)) != 1 {
+		if !strings.HasPrefix(got, prefix) || len(got) <= len(prefix) ||
+			subtle.ConstantTimeCompare([]byte(got[len(prefix):]), []byte(s.token)) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 			return
@@ -95,7 +96,10 @@ func (s *AdminServer) auth(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *AdminServer) handleBlockStatus(w http.ResponseWriter, r *http.Request) {
-	ip := r.PathValue("ip")
+	ip, ok := canonicalAdminIP(w, r.PathValue("ip"))
+	if !ok {
+		return
+	}
 	reason, blocked, err := s.engine.BlockStatus(r.Context(), ip)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -105,9 +109,8 @@ func (s *AdminServer) handleBlockStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
-	ip := r.PathValue("ip")
-	if _, err := netip.ParseAddr(ip); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ip: " + err.Error()})
+	ip, ok := canonicalAdminIP(w, r.PathValue("ip"))
+	if !ok {
 		return
 	}
 	var body struct {
@@ -143,6 +146,10 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ttl must be greater than zero"})
 		return
 	}
+	if ttl > core.MaxStateTTL {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ttl must be at most " + core.MaxStateTTL.String()})
+		return
+	}
 	if body.Reason == "" {
 		body.Reason = "admin"
 	}
@@ -155,13 +162,25 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *AdminServer) handleUnblock(w http.ResponseWriter, r *http.Request) {
-	ip := r.PathValue("ip")
+	ip, ok := canonicalAdminIP(w, r.PathValue("ip"))
+	if !ok {
+		return
+	}
 	if err := s.engine.UnblockIP(r.Context(), ip); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	s.log.Info("admin unblocked ip", "ip", ip)
 	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "blocked": false})
+}
+
+func canonicalAdminIP(w http.ResponseWriter, raw string) (string, bool) {
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ip: " + err.Error()})
+		return "", false
+	}
+	return addr.Unmap().String(), true
 }
 
 // handleBlockList returns every currently active behavioural block.

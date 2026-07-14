@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/melroy89/angie-guardian/core/stateless"
 )
 
 // LogRecord is one Angie access-log line in the guardian_json format
@@ -67,7 +69,7 @@ func (t *Trainer) Add(rec *LogRecord) {
 	if t.domains == nil {
 		t.domains = make(map[string]*aggregate)
 	}
-	host := strings.ToLower(rec.Host)
+	host := stateless.NormalizeHost(rec.Host)
 	agg, ok := t.domains[host]
 	if !ok {
 		agg = &aggregate{uaCounts: make(map[string]int64), prefixCount: make(map[string]int64)}

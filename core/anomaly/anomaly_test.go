@@ -166,13 +166,23 @@ func TestNullBaselineRejectedNotScored(t *testing.T) {
 // TestParseModelNormalizesDomainKeys: a mixed-case domain key must survive
 // parsing folded to lower case, matching how Score looks it up.
 func TestParseModelNormalizesDomainKeys(t *testing.T) {
-	raw := `{"version":1,"kind":"statistical-baseline","domains":{"Example.COM":{"requests":100,"ua_freq":{"curl":1}}}}`
+	raw := `{"version":1,"kind":"statistical-baseline","domains":{"Example.COM.:443":{"requests":100,"ua_freq":{"curl":1}}}}`
 	m, err := ParseModel([]byte(raw), "probe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m.Domains["example.com"]; !ok {
 		t.Fatalf("domain key not normalized: %v", keysOf(m.Domains))
+	}
+}
+
+func TestScoreNormalizesEquivalentHostSpellings(t *testing.T) {
+	m := trainBaseline(t)
+	want := m.Score("blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+	for _, host := range []string{"BLOG.EXAMPLE.COM:443", "blog.example.com."} {
+		if got := m.Score(host, "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"); got != want {
+			t.Errorf("Score(%q) = %v, want normalized-domain score %v", host, got, want)
+		}
 	}
 }
 

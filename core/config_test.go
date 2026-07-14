@@ -247,11 +247,13 @@ func TestConfigValidation(t *testing.T) {
 		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
 		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
+		"oversized max_block_ttl":                "defaults: { waf: { ip_behaviour: { max_block_ttl: 8761h } } }",
 		"bot without name":                       "defaults: { verified_bots: { bots: [ { uas: [X], domains: [x.test] } ] } }",
 		"unknown bot preset":                     "defaults: { verified_bots: { bots: [ { name: mybot } ] } }",
 		"bot empty domain":                       "defaults: { verified_bots: { bots: [ { name: mybot, uas: [MyBot], domains: [\"\"] } ] } }",
 		"bad spoof_action":                       "defaults: { verified_bots: { spoof_action: block } }",
 		"negative dns_timeout":                   "defaults: { verified_bots: { dns_timeout: -1s } }",
+		"oversized bot cache ttl":                "defaults: { verified_bots: { cache_ttl: 8761h } }",
 		"bot also in ua allowlist":               "defaults: { allowlist: { uas: [ Googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } }",
 		"bot overlaps ua allowlist per-domain":   "domains: { a.test: { allowlist: { uas: [ googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } } }",
 		"bad country code":                       "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ Netherlands ] } } }",
@@ -278,6 +280,7 @@ func TestConfigValidation(t *testing.T) {
 		"reputation without feeds":               "defaults: { reputation: { enabled: true } }",
 		"nan difficulty":                         "defaults: { pow: { base_difficulty: .nan } }",
 		"infinite max difficulty":                "defaults: { pow: { max_difficulty: .inf } }",
+		"subsecond pow token ttl":                "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 999ms } }",
 		"nan anomaly threshold":                  "defaults: { anomaly: { model: model.json, challenge_threshold: .nan } }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
@@ -287,6 +290,13 @@ func TestConfigValidation(t *testing.T) {
 		if _, err := LoadConfig(path); err == nil {
 			t.Errorf("%s: expected validation error, got nil", name)
 		}
+	}
+}
+
+func TestMinimumPoWTokenTTLIsAccepted(t *testing.T) {
+	cfg := loadTestConfig(t, "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 1s } }")
+	if got := cfg.Defaults.PoW.TokenTTL.Std(); got != time.Second {
+		t.Fatalf("token_ttl = %v, want 1s", got)
 	}
 }
 

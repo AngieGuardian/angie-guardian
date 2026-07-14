@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -43,12 +44,24 @@ func NewBolt(path string) (*Bolt, error) {
 	return s, nil
 }
 
-func encode(value []byte, ttl time.Duration) []byte {
-	var deadline int64
-	if ttl > 0 {
-		deadline = time.Now().Add(ttl).UnixNano()
+func ttlDeadline(ttl time.Duration) (int64, error) {
+	if ttl <= 0 {
+		return 0, nil
 	}
-	return encodeAbs(value, deadline)
+	now := time.Now()
+	deadline := now.Add(ttl).UnixNano()
+	if deadline <= now.UnixNano() {
+		return 0, fmt.Errorf("ttl %v exceeds bbolt's unix-nanosecond expiry range", ttl)
+	}
+	return deadline, nil
+}
+
+func encode(value []byte, ttl time.Duration) ([]byte, error) {
+	deadline, err := ttlDeadline(ttl)
+	if err != nil {
+		return nil, err
+	}
+	return encodeAbs(value, deadline), nil
 }
 
 // encodeAbs stores value with an absolute unix-nano expiry (0 = no expiry).
@@ -117,8 +130,12 @@ func (s *Bolt) Get(_ context.Context, key string) ([]byte, bool, error) {
 // assigns the out-var fresh on every call (never appends/accumulates).
 
 func (s *Bolt) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
+	encoded, err := encode(value, ttl)
+	if err != nil {
+		return err
+	}
 	return s.db.Batch(func(tx *bolt.Tx) error {
-		return tx.Bucket(boltBucket).Put([]byte(key), encode(value, ttl))
+		return tx.Bucket(boltBucket).Put([]byte(key), encoded)
 	})
 }
 
@@ -133,9 +150,9 @@ func (s *Bolt) Incr(ctx context.Context, key string, ttl time.Duration) (int64, 
 }
 
 func (s *Bolt) IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
-	var deadline int64
-	if ttl > 0 {
-		deadline = time.Now().Add(ttl).UnixNano()
+	deadline, err := ttlDeadline(ttl)
+	if err != nil {
+		return 0, err
 	}
 	n, _, err := s.IncrByDeadline(ctx, key, delta, deadline)
 	return n, err
@@ -182,8 +199,12 @@ func (s *Bolt) IncrByDeadline(_ context.Context, key string, delta, deadline int
 }
 
 func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
+	encoded, err := encode(new, ttl)
+	if err != nil {
+		return false, err
+	}
 	var swapped bool
-	err := s.db.Batch(func(tx *bolt.Tx) error {
+	err = s.db.Batch(func(tx *bolt.Tx) error {
 		swapped = false // reset: Batch may retry this fn
 		b := tx.Bucket(boltBucket)
 		k := []byte(key)
@@ -196,7 +217,7 @@ func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, tt
 			return nil
 		}
 		swapped = true
-		return b.Put(k, encode(new, ttl))
+		return b.Put(k, encoded)
 	})
 	return swapped, err
 }

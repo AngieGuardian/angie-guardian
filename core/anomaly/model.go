@@ -18,6 +18,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/melroy89/angie-guardian/core/stateless"
 )
 
 // ModelVersion is bumped when the artifact schema changes; a scorer refuses
@@ -71,7 +73,7 @@ const (
 // ordinary, 1 = maximally anomalous. Unknown domains score 0 (no baseline,
 // no opinion — the other pipeline stages still apply).
 func (m *Model) Score(host, path, query, ua string) float64 {
-	b, ok := m.Domains[strings.ToLower(host)]
+	b, ok := m.Domains[stateless.NormalizeHost(host)]
 	if !ok {
 		return 0
 	}
@@ -224,7 +226,7 @@ func (m *Model) validate() error {
 		if err := validateFreq(host, "path_prefix_freq", b.PathPrefixFreq); err != nil {
 			return err
 		}
-		key := strings.ToLower(host)
+		key := stateless.NormalizeHost(host)
 		if _, dup := normalized[key]; dup {
 			return fmt.Errorf("domain %q: duplicate after case-folding", host)
 		}

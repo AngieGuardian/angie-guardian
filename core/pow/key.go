@@ -114,6 +114,16 @@ type RetiredKey struct {
 // Archive names created by RotateKey start with a Unix timestamp; legacy or
 // manually named files fall back to their modification time.
 func LoadRetiredKeys(dir string) ([]RetiredKey, error) {
+	return loadRetiredKeysAt(dir, time.Now())
+}
+
+// loadRetiredKeysAt is the clock-injected implementation used by Manager
+// refreshes and boundary tests. Archives older than the maximum accepted token
+// lifetime are no longer useful for verification and are omitted. Duplicate
+// archives of the same key retain the latest retirement timestamp: an archive
+// written by a failed replacement attempt must not make the later successful
+// retirement appear to have happened early.
+func loadRetiredKeysAt(dir string, now time.Time) ([]RetiredKey, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -132,6 +142,7 @@ func LoadRetiredKeys(dir string) ([]RetiredKey, error) {
 	}
 	sort.Strings(names)
 	keys := make([]RetiredKey, 0, len(names))
+	byFingerprint := make(map[[32]byte]int, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		raw, err := os.ReadFile(path)
@@ -153,6 +164,17 @@ func LoadRetiredKeys(dir string) ([]RetiredKey, error) {
 				retiredAt = info.ModTime()
 			}
 		}
+		if !retiredAt.IsZero() && now.After(retiredAt.Add(maxAcceptedTokenLifetime)) {
+			continue
+		}
+		fingerprint := sha256.Sum256(k.Public().(ed25519.PublicKey))
+		if i, ok := byFingerprint[fingerprint]; ok {
+			if retiredAt.After(keys[i].RetiredAt) {
+				keys[i].RetiredAt = retiredAt
+			}
+			continue
+		}
+		byFingerprint[fingerprint] = len(keys)
 		keys = append(keys, RetiredKey{Key: k, RetiredAt: retiredAt})
 	}
 	return keys, nil
