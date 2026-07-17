@@ -311,8 +311,22 @@ domains:
   example.com:
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
     waf: { honeypot: { enabled: true } }
+    # Per-path overlays: scope any setting to a URI prefix on this host.
+    # A key is an exact path, or a prefix when it ends with "/"; the most
+    # specific key wins, matched against the percent-decoded path. Each entry
+    # only overrides what it mentions (merged defaults -> domain -> path).
+    paths:
+      # Machine clients under /api/v1/ skip the interstitial; the WAF above
+      # keeps covering them.
+      "/api/v1/":
+        pow: { enabled: false }
+      # The login page demands harder work. A token solved elsewhere at a
+      # lower difficulty re-challenges here instead of vouching.
+      "/account/login":
+        pow: { base_difficulty: 6 }
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.
+  # (For an API living on the SAME host as the site, use paths: above.)
   api.example.com:
     pow: { enabled: false }
 
