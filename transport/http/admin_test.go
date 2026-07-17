@@ -25,9 +25,16 @@ import (
 
 const adminYAML = `
 store: { backend: memory }
+signing_key_file: test-signing.key
 defaults:
   waf:
     ip_behaviour: { enabled: true, block_ttl: 15m }
+domains:
+  shop.test:
+    pow: { enabled: true, base_difficulty: 5 }
+    paths:
+      "/api/":
+        pow: { enabled: false }
 `
 
 const adminToken = "s3cret-admin-token"
@@ -388,6 +395,25 @@ func TestAdminConfigView(t *testing.T) {
 	}
 	if _, ok := m["defaults"]; !ok {
 		t.Fatal("config view missing defaults")
+	}
+
+	// Path overlays are visible, with the fields they override.
+	shop, ok := m["domains"].(map[string]any)["shop.test"].(map[string]any)
+	if !ok {
+		t.Fatalf("config view missing shop.test: %v", m["domains"])
+	}
+	if shop["pow_enabled"] != true || shop["pow_base_difficulty"] != 5.0 {
+		t.Errorf("shop.test view = %v, want pow enabled at base 5", shop)
+	}
+	api, ok := shop["paths"].(map[string]any)["/api/"].(map[string]any)
+	if !ok {
+		t.Fatalf("shop.test view missing /api/ overlay: %v", shop["paths"])
+	}
+	if api["pow_enabled"] != false {
+		t.Errorf("/api/ overlay pow_enabled = %v, want false", api["pow_enabled"])
+	}
+	if _, nested := api["paths"]; nested {
+		t.Error("path overlay view must not carry a nested paths field")
 	}
 }
 
