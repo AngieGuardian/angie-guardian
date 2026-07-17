@@ -76,9 +76,13 @@ defaults:
       - name: bingbot
 
 domains:
-  # The harness site. PoW on so we can exercise the challenge flow.
+  # The harness site. PoW on so we can exercise the challenge flow, with a
+  # per-path overlay disabling PoW under /api/ (the WAF stays active there).
   localhost:
     pow: { enabled: true }
+    paths:
+      "/api/":
+        pow: { enabled: false }
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }
