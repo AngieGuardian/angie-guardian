@@ -131,16 +131,16 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	}
 
 	// The minted token verifies for the same client+host, and only for them.
-	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "Mozilla/5.0"); err != nil {
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "Mozilla/5.0", 0, 0); err != nil {
 		t.Errorf("token should verify: %v", err)
 	}
-	if err := m.VerifyToken(res.Token, "other.com", "198.51.100.7", "Mozilla/5.0"); err == nil {
+	if err := m.VerifyToken(res.Token, "other.com", "198.51.100.7", "Mozilla/5.0", 0, 0); err == nil {
 		t.Error("token must not verify for another host")
 	}
-	if err := m.VerifyToken(res.Token, "example.com", "203.0.113.1", "Mozilla/5.0"); err == nil {
+	if err := m.VerifyToken(res.Token, "example.com", "203.0.113.1", "Mozilla/5.0", 0, 0); err == nil {
 		t.Error("token must not verify for another IP")
 	}
-	if err := m.VerifyToken(res.Token+"x", "example.com", "198.51.100.7", "Mozilla/5.0"); err == nil {
+	if err := m.VerifyToken(res.Token+"x", "example.com", "198.51.100.7", "Mozilla/5.0", 0, 0); err == nil {
 		t.Error("tampered token must not verify")
 	}
 
@@ -171,7 +171,7 @@ func TestMinimumTokenTTLIsImmediatelyValid(t *testing.T) {
 	if res.TokenTTL != time.Second {
 		t.Fatalf("redeemed token TTL = %v, want 1s", res.TokenTTL)
 	}
-	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, 0); err != nil {
 		t.Fatalf("new token at minimum accepted TTL is not immediately valid: %v", err)
 	}
 }
@@ -253,7 +253,7 @@ func TestNoJSRedemption(t *testing.T) {
 	if res.RedirectURI != "/page" {
 		t.Errorf("redirect = %q, want /page", res.RedirectURI)
 	}
-	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, 0); err != nil {
 		t.Errorf("no-JS token should verify: %v", err)
 	}
 }
@@ -277,5 +277,116 @@ func TestLeadingZeroBits(t *testing.T) {
 		if got := leadingZeroBits(tc.sum); got != tc.want {
 			t.Errorf("leadingZeroBits(%x) = %d, want %d", tc.sum, got, tc.want)
 		}
+	}
+}
+
+// TestVerifyTokenMinBits: a token vouches only for a required difficulty no
+// higher than what it was actually solved at, so per-path base_difficulty is
+// enforced at verification and not just at issuance.
+func TestVerifyTokenMinBits(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 8, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, min := range []int{0, 4, 8} {
+		if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", min, 0); err != nil {
+			t.Errorf("8-bit token must verify at min %d bits: %v", min, err)
+		}
+	}
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 12, 0); err == nil {
+		t.Error("8-bit token must not verify at min 12 bits")
+	}
+	// The verification cache must not leak an accept across minimums: the
+	// 8-bit accepts above are cached, 12 must still be rejected afterwards.
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 12, 0); err == nil {
+		t.Error("cached accept must not satisfy a higher minimum")
+	}
+}
+
+// TestVerifyTokenMaxAge: a token minted with a long token_ttl on one path is
+// rejected once iat+maxAge has elapsed on a path whose token_ttl is shorter,
+// so a full overlay's shorter lifetime is honored. The token's own exp stays
+// the issuing-path upper bound, so verification with the issuing maxAge (or 0)
+// still accepts within that window.
+func TestVerifyTokenMaxAge(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	now := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	m.now = func() time.Time { return now }
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/", 4, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Issued on "/" with a 4h token_ttl.
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 4),
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: 4 * time.Hour, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 90s later: still within the long issuing lifetime, but past a stricter
+	// path's 1m token_ttl.
+	now = now.Add(90 * time.Second)
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, 4*time.Hour); err != nil {
+		t.Errorf("token must still verify under the issuing 4h token_ttl: %v", err)
+	}
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, time.Minute); err == nil {
+		t.Error("token older than the target path's 1m token_ttl must be rejected")
+	}
+	// maxAge 0 enforces only exp, so the long-lived token is still accepted.
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, 0); err != nil {
+		t.Errorf("maxAge 0 must enforce only exp: %v", err)
+	}
+	// The lax-path accepts above are cached; the strict-path rejection must
+	// still hold and not be masked by an earlier long-lived cache entry.
+	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "UA", 0, time.Minute); err == nil {
+		t.Error("cached lax accept must not satisfy a shorter maxAge")
+	}
+}
+
+// TestRedeemTTLResolver: when the caller supplies a TTLs resolver, the token
+// and spent-marker TTLs come from the URI the challenge was issued for, so
+// per-path token policy applies at redemption.
+func TestRedeemTTLResolver(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/app/login", 4, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotURI string
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 4),
+		Host: "example.com", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+		TTLs: func(uri string) (time.Duration, time.Duration) {
+			gotURI = uri
+			return 30 * time.Minute, time.Minute
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotURI != "/app/login" {
+		t.Errorf("TTLs resolver got URI %q, want the issued URI", gotURI)
+	}
+	if res.TokenTTL != 30*time.Minute {
+		t.Errorf("token TTL = %v, want the resolver's 30m", res.TokenTTL)
 	}
 }

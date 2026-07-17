@@ -136,7 +136,9 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	host := headerOr(r, "X-Guardian-Host", r.Host)
 	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
 	uri := headerOr(r, "X-Guardian-URI", "/")
-	dcfg := s.engine.Config().DomainFor(host)
+	// Path-resolved config: a paths: overlay may scope PoW (enabled,
+	// difficulty, TTLs) to a URI prefix within the host.
+	dcfg := s.engine.Config().ConfigFor(host, uri)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -239,9 +241,14 @@ func (s *Server) handlePassNoJS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemRequest, elapsedMS int64) {
 	host := headerOr(r, "X-Guardian-Host", r.Host)
 	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
-	dcfg := s.engine.Config().DomainFor(host)
+	cfg := s.engine.Config()
+	dcfg := cfg.DomainFor(host)
 
-	if s.pow == nil || !dcfg.PoW.Enabled {
+	// Gate on PoWAnywhere, not PoW.Enabled: a domain may disable PoW at the
+	// top level and enable it only for some paths, and those solves must
+	// still redeem. The path itself is not in the solve request; the TTLs
+	// callback below resolves it from the challenge record's stored URI.
+	if s.pow == nil || !dcfg.PoWAnywhere() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "unavailable"})
 		return
 	}
@@ -251,6 +258,10 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	req.UserAgent = headerOr(r, "X-Guardian-UA", r.UserAgent())
 	req.TokenTTL = dcfg.PoW.TokenTTL.Std()
 	req.ChallengeTTL = dcfg.PoW.ChallengeTTL.Std()
+	req.TTLs = func(uri string) (time.Duration, time.Duration) {
+		pc := cfg.ConfigFor(host, uri)
+		return pc.PoW.TokenTTL.Std(), pc.PoW.ChallengeTTL.Std()
+	}
 
 	res, err := s.pow.Redeem(r.Context(), req)
 	if err != nil {

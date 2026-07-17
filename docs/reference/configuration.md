@@ -29,7 +29,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
 | `reputation` | object | | Global IP reputation feeds; domains opt in via `reputation.enabled`. See [reputation](#reputation). |
 | `defaults` | object | | The base [domain config](#per-domain-options-defaults-and-domains) every domain inherits from. |
-| `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. Host keys and anomaly-model lookups share one normalization for case, ports, trailing dots, and bracketed IPv6 (`A.test.:443` = `a.test`); two keys that collapse to the same host are rejected. |
+| `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. Host keys and anomaly-model lookups share one normalization for case, ports, trailing dots, and bracketed IPv6 (`A.test.:443` = `a.test`); two keys that collapse to the same host are rejected. A domain entry may also carry [`paths`](#per-path-overrides-domains-host-paths) overlays scoped to URI prefixes within the host. |
 
 ## admin
 
@@ -88,7 +88,63 @@ Each feed entry:
 ## Per-domain options (`defaults` and `domains.<host>`)
 
 Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
-`allowlist`, `denylist`, `verified_bots`.
+`allowlist`, `denylist`, `verified_bots`. A `domains.<host>` entry (but not
+`defaults`) may additionally carry a `paths` map of per-path overlays; see
+[per-path overrides](#per-path-overrides-domains-host-paths).
+
+## Per-path overrides (`domains.<host>.paths`)
+
+A domain entry may scope any part of its configuration to a URI prefix, so one
+vhost can, for example, keep PoW on for the whole site while exempting a
+machine-facing API:
+
+```yaml
+domains:
+  example.com:
+    pow: { enabled: true }
+    paths:
+      "/api/v1/":
+        pow: { enabled: false }
+      "/admin/":
+        pow: { base_difficulty: 6 }
+```
+
+Each `paths` value is a full domain-config overlay, merged in three levels:
+`defaults`, then the domain's own settings, then the path's. A path entry only
+overrides the fields it mentions; everything else is inherited, exactly like a
+domain entry over `defaults`. An empty path body inherits everything.
+
+Matching rules:
+
+- A key is an exact path, or a prefix when it ends with `/` (the same
+  semantics as `allowlist.paths`). A prefix key also matches its own bare
+  path: `/api/` matches `/api`.
+- The most specific key wins: the longest key ignoring a trailing `/`, and an
+  exact key beats a prefix key of the same length. No key matching means the
+  domain's own config applies.
+- Matching is against the percent-decoded request path (the honeypot and WAF
+  convention), so `/api%2Fv1/` cannot dodge an override. Keys must be written
+  percent-decoded; an encoded key is rejected at load.
+- Matching is byte-exact and case-sensitive, and dot-segments are not
+  resolved. Keys must start with `/` and cannot contain `?` or `#`.
+- Keys are plain prefixes: no globs or regular expressions.
+
+Restrictions and behavior notes:
+
+- `paths` is only valid inside a `domains.<host>` entry: not under `defaults`
+  and not nested inside another path overlay. Both are load errors.
+- A WAF signature with `action: challenge` degrades to a deny on a path whose
+  overlay disables PoW, exactly as it does on a PoW-disabled domain.
+- A PoW token records the difficulty it was solved at and only vouches where
+  that difficulty meets the resolved path's `base_difficulty`. A token earned
+  on a cheaper path re-challenges on a harder one, and raising
+  `base_difficulty` in config invalidates outstanding weaker tokens.
+- A token is also held to the resolved path's `token_ttl`: a long-lived token
+  issued on a lax path is re-challenged once it is older than a stricter path's
+  `token_ttl`, even though the cookie's own expiry (set on the issuing path) has
+  not yet passed. The issuing-path lifetime remains the upper bound.
+- Per-path overlays are a sidecar feature; the stateless WASM guest config
+  does not accept `paths`.
 
 ### pow
 

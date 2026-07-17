@@ -282,6 +282,18 @@ func TestConfigValidation(t *testing.T) {
 		"infinite max difficulty":                "defaults: { pow: { max_difficulty: .inf } }",
 		"subsecond pow token ttl":                "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 999ms } }",
 		"nan anomaly threshold":                  "defaults: { anomaly: { model: model.json, challenge_threshold: .nan } }",
+		"paths under defaults":                   "defaults: { paths: { \"/api/\": { pow: { enabled: false } } } }",
+		"nested paths":                           "domains: { a.test: { paths: { \"/api/\": { paths: { \"/v1/\": } } } } }",
+		"path key without slash":                 "domains: { a.test: { paths: { \"api/\": { pow: { enabled: false } } } } }",
+		"empty path key":                         "domains: { a.test: { paths: { \"\": { pow: { enabled: false } } } } }",
+		"percent-encoded path key":               "domains: { a.test: { paths: { \"/api%2Fv1/\": { pow: { enabled: false } } } } }",
+		"path key with query":                    "domains: { a.test: { paths: { \"/api?x=1\": { pow: { enabled: false } } } } }",
+		"typo inside path overlay":               "domains: { a.test: { paths: { \"/api/\": { pow: { enabeld: true } } } } }",
+		"bad difficulty inside path overlay":     "domains: { a.test: { paths: { \"/api/\": { pow: { base_difficulty: 9 } } } } }",
+		"path pow without signing key":           "domains: { a.test: { paths: { \"/app/\": { pow: { enabled: true, token_ttl: 1h, challenge_ttl: 5m } } } } }",
+		"path keywords without rules":            "domains: { a.test: { paths: { \"/api/\": { waf: { keywords: { enabled: true } } } } } }",
+		"path reputation without feeds":          "domains: { a.test: { paths: { \"/api/\": { reputation: { enabled: true } } } } }",
+		"path geo without databases":             "domains: { a.test: { paths: { \"/api/\": { geo: { enabled: true, deny: { countries: [ NL ] } } } } } }",
 	} {
 		path := filepath.Join(t.TempDir(), "bad.yaml")
 		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
@@ -446,5 +458,221 @@ func TestGeoConfig(t *testing.T) {
 	}
 	if !cfg.Defaults.Reputation.Enabled || cfg.DomainFor("home.test").Reputation.Enabled != true {
 		t.Error("reputation enablement should inherit from defaults")
+	}
+}
+
+const pathOverlayYAML = `
+listen: 127.0.0.1:9999
+signing_key_file: test-signing.key
+store:
+  backend: memory
+defaults:
+  pow:
+    base_difficulty: 4
+    max_difficulty: 6
+    token_ttl: 4h
+domains:
+  example.com:
+    pow: { enabled: true, base_difficulty: 5 }
+    paths:
+      "/api/":
+        pow: { enabled: false }
+      "/api/v1/":
+        pow: { enabled: false, max_difficulty: 7 }
+      "/api/v1/solve":
+        pow: { enabled: true, base_difficulty: 6, max_difficulty: 7 }
+      "/admin/":
+        pow: { base_difficulty: 6, max_difficulty: 7 }
+  plain.example.com:
+    pow: { enabled: true }
+`
+
+// TestPathOverlayMerge pins the three-level inheritance chain: defaults,
+// then the domain overlay, then the path overlay, each only overriding the
+// fields it mentions.
+func TestPathOverlayMerge(t *testing.T) {
+	cfg := loadTestConfig(t, pathOverlayYAML)
+	dom := cfg.DomainFor("example.com")
+
+	api := dom.ForPath("/api/x")
+	if api.PoW.Enabled {
+		t.Error("/api/ overlay should disable pow")
+	}
+	if api.PoW.BaseDifficulty != 5 {
+		t.Errorf("/api/ base_difficulty = %v, want domain's 5", api.PoW.BaseDifficulty)
+	}
+	if api.PoW.TokenTTL.Std() != 4*time.Hour {
+		t.Errorf("/api/ token_ttl = %v, want defaults' 4h", api.PoW.TokenTTL.Std())
+	}
+
+	admin := dom.ForPath("/admin/panel")
+	if !admin.PoW.Enabled || admin.PoW.BaseDifficulty != 6 {
+		t.Errorf("/admin/ should inherit enabled and override base to 6, got %+v", admin.PoW)
+	}
+
+	// The domain config itself is untouched by its overlays.
+	if !dom.PoW.Enabled || dom.PoW.BaseDifficulty != 5 {
+		t.Errorf("domain config mutated by path overlays: %+v", dom.PoW)
+	}
+	// A sibling domain has no overlays at all.
+	if got := cfg.DomainFor("plain.example.com").ForPath("/api/x"); !got.PoW.Enabled {
+		t.Error("plain.example.com has no overlays; /api/ must use the domain config")
+	}
+}
+
+// TestPathOverlayLongestMatch pins the specificity order: longest bare key
+// first, an exact key beats a prefix key, and a prefix key matches its own
+// bare path.
+func TestPathOverlayLongestMatch(t *testing.T) {
+	cfg := loadTestConfig(t, pathOverlayYAML)
+	dom := cfg.DomainFor("example.com")
+
+	for path, wantBase := range map[string]float64{
+		"/api/x":        5, // "/api/" wins, pow off, base inherited from domain
+		"/api":          5, // prefix key matches its own bare path
+		"/api/v1/x":     5, // "/api/v1/" wins over "/api/"
+		"/api/v1/solve": 6, // exact key wins over "/api/v1/"
+		"/admin/x":      6,
+	} {
+		got := dom.ForPath(path)
+		if got.PoW.BaseDifficulty != wantBase {
+			t.Errorf("ForPath(%q).base = %v, want %v", path, got.PoW.BaseDifficulty, wantBase)
+		}
+	}
+	for path, wantEnabled := range map[string]bool{
+		"/api/x":        false,
+		"/api/v1/x":     false,
+		"/api/v1/solve": true,
+		"/admin/x":      true,
+		"/":             true,
+	} {
+		if got := dom.ForPath(path).PoW.Enabled; got != wantEnabled {
+			t.Errorf("ForPath(%q).enabled = %v, want %v", path, got, wantEnabled)
+		}
+	}
+	// No match returns the domain config itself, not a copy.
+	if dom.ForPath("/other") != dom {
+		t.Error("unmatched path must return the domain config pointer")
+	}
+}
+
+// TestPathOverlayDecodedMatch: overlay selection happens on the decoded path
+// (the honeypot/WAF convention), so percent-encoding cannot dodge an
+// override.
+func TestPathOverlayDecodedMatch(t *testing.T) {
+	cfg := loadTestConfig(t, pathOverlayYAML)
+	if cfg.ConfigFor("example.com", "/api%2Fv1%2Fthing?x=1").PoW.Enabled {
+		t.Error("encoded /api%2Fv1/ URI must still hit the /api/v1/ overlay")
+	}
+	if !cfg.ConfigFor("example.com", "/apix").PoW.Enabled {
+		t.Error("/apix must not match the /api/ prefix")
+	}
+	if cfg.ConfigFor("EXAMPLE.com:443", "/api/x").PoW.Enabled {
+		t.Error("host normalization must apply before path resolution")
+	}
+	// Unknown hosts fall back to defaults, which never have overlays.
+	if cfg.ConfigFor("unknown.test", "/api/x") != &cfg.Defaults {
+		t.Error("unknown host must resolve to defaults regardless of path")
+	}
+}
+
+// TestPathOverlayCompiled: compiled state (list prefixes, UA needles) must be
+// rebuilt for the merged path config after the yaml round-trip.
+func TestPathOverlayCompiled(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+defaults:
+  allowlist:
+    ips: [ "10.0.0.0/8" ]
+domains:
+  a.test:
+    paths:
+      "/api/":
+        allowlist:
+          ips: [ "10.0.0.0/8", "192.0.2.0/24" ]
+`)
+	pc := cfg.DomainFor("a.test").ForPath("/api/x")
+	if !pc.Allowlist.MatchIP(netip.MustParseAddr("192.0.2.7")) {
+		t.Error("path overlay allowlist must be compiled and match its own entry")
+	}
+	if !pc.Allowlist.MatchIP(netip.MustParseAddr("10.1.2.3")) {
+		t.Error("path overlay must keep the inherited allowlist entries")
+	}
+	if cfg.DomainFor("a.test").Allowlist.MatchIP(netip.MustParseAddr("192.0.2.7")) {
+		t.Error("domain config must not gain the path overlay's entry")
+	}
+}
+
+// TestPathOverlayFileCollection: rule and model files referenced only by a
+// path overlay must reach the snapshot caches.
+func TestPathOverlayFileCollection(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+domains:
+  a.test:
+    paths:
+      "/api/":
+        waf:
+          keywords: { enabled: true, rules_file: path-rules.yaml }
+          anomaly: { enabled: true, model: path-model.json, challenge_at: 0.8, deny_at: 0.9 }
+`)
+	rules := cfg.RuleFiles()
+	if len(rules) != 1 || rules[0] != "path-rules.yaml" {
+		t.Errorf("RuleFiles = %v, want [path-rules.yaml]", rules)
+	}
+	models := cfg.ModelFiles()
+	if len(models) != 1 || models[0] != "path-model.json" {
+		t.Errorf("ModelFiles = %v, want [path-model.json]", models)
+	}
+}
+
+func TestPoWAnywhere(t *testing.T) {
+	cfg := loadTestConfig(t, `
+signing_key_file: test-signing.key
+store: { backend: memory }
+domains:
+  off.test:
+    pow: { enabled: false }
+  pathonly.test:
+    pow: { enabled: false }
+    paths:
+      "/app/":
+        pow: { enabled: true }
+`)
+	if cfg.DomainFor("off.test").PoWAnywhere() {
+		t.Error("off.test has pow disabled everywhere")
+	}
+	if !cfg.DomainFor("pathonly.test").PoWAnywhere() {
+		t.Error("pathonly.test enables pow on /app/, PoWAnywhere must be true")
+	}
+	if pc := cfg.DomainFor("pathonly.test").ForPath("/app/x"); !pc.PoW.Enabled {
+		t.Error("/app/ overlay must enable pow")
+	}
+}
+
+// TestPathOverlayNullAndEmpty: a null overlay body equals the domain config;
+// an empty paths map is a no-op.
+func TestPathOverlayNullAndEmpty(t *testing.T) {
+	cfg := loadTestConfig(t, `
+signing_key_file: test-signing.key
+store: { backend: memory }
+domains:
+  a.test:
+    pow: { enabled: true }
+    paths:
+      "/api/":
+  b.test:
+    paths: {}
+`)
+	dom := cfg.DomainFor("a.test")
+	pc := dom.ForPath("/api/x")
+	if pc == dom {
+		t.Error("null overlay still creates a distinct config")
+	}
+	if !pc.PoW.Enabled {
+		t.Error("null overlay must equal the domain config")
+	}
+	if got := cfg.DomainFor("b.test").PathOverrideViews(); got != nil {
+		t.Errorf("empty paths map must yield no overlays, got %v", got)
 	}
 }

@@ -289,6 +289,12 @@ type RedeemRequest struct {
 	// ChallengeTTL bounds how long the spent marker must outlive redemption
 	// so a solved challenge can never be replayed (plan §11).
 	ChallengeTTL time.Duration
+
+	// TTLs optionally resolves the token and spent-marker TTLs from the URI
+	// the challenge was issued for, so per-path token policy applies at
+	// redemption (the solve POST itself does not carry the original URI).
+	// When nil, TokenTTL and ChallengeTTL are used as given.
+	TTLs func(uri string) (token, challenge time.Duration)
 }
 
 // RedeemResult is a minted token plus where to send the client afterwards.
@@ -331,6 +337,10 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if !strings.EqualFold(rec.Host, req.Host) || rec.IP != req.IP {
 		return nil, ErrBindingMismatch
 	}
+	tokenTTL, challengeTTL := req.TokenTTL, req.ChallengeTTL
+	if req.TTLs != nil {
+		tokenTTL, challengeTTL = req.TTLs(rec.URI)
+	}
 
 	if req.NoJS {
 		if !rec.NoJS {
@@ -351,7 +361,7 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if err != nil {
 		return nil, err
 	}
-	swapped, err := m.store.CompareAndSwap(ctx, challengeKey(req.ChallengeID), raw, spent, req.ChallengeTTL)
+	swapped, err := m.store.CompareAndSwap(ctx, challengeKey(req.ChallengeID), raw, spent, challengeTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -363,11 +373,11 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
 	m.counters.Forget(escalationKey(rec.Host, rec.IP))
 
-	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, req.TokenTTL)
+	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, tokenTTL)
 	if err != nil {
 		return nil, err
 	}
-	return &RedeemResult{Token: token, TokenTTL: req.TokenTTL, RedirectURI: rec.URI}, nil
+	return &RedeemResult{Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI}, nil
 }
 
 // leadingZeroBits counts the leading zero bits of a hash, the unit of

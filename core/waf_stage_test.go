@@ -173,7 +173,7 @@ func TestVouchedClientStillPassesWAF(t *testing.T) {
 	ctx := context.Background()
 	e, mgr := wafEngine(t)
 	ip, ua := "198.51.100.23", "Mozilla/5.0"
-	token := mintTestToken(t, mgr, "pow.test", ip, ua)
+	token := mintTestToken(t, mgr, "pow.test", ip, ua, 8)
 
 	// The token vouches for clean requests...
 	r := req("pow.test", ip, "/clean", ua)

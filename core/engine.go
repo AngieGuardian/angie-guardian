@@ -230,9 +230,9 @@ func (e *Engine) acquireSnapshot() *engineSnapshot {
 	}
 }
 
-// Evaluate resolves the domain config for the request's host and runs the
-// pipeline. Stage errors fail open: Guardian degrades to "allow" rather than
-// taking a site down with it.
+// Evaluate resolves the effective config for the request's host and path and
+// runs the pipeline. Stage errors fail open: Guardian degrades to "allow"
+// rather than taking a site down with it.
 func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	start := time.Now()
 	snap := e.acquireSnapshot()
@@ -240,7 +240,9 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 		return Decision{Action: ActionAllow, Reason: "engine:closed"}
 	}
 	defer snap.release()
-	dcfg := snap.cfg.DomainFor(req.Host)
+	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
+	// The metric label stays host-scoped: paths are client-controlled and
+	// unbounded, so they must never become a label value.
 	label := snap.cfg.DomainLabel(req.Host)
 	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots}
 	d := Decision{Action: ActionAllow, Reason: "default"}
@@ -327,6 +329,9 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 // redemption tampering is scored out of the box rather than gated behind a
 // separate feature toggle.
 func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail string) {
+	// Host-level config on purpose: callers report from contexts where only
+	// the host is cheaply known (redeem failures), and events/blocks are
+	// IP-scoped anyway.
 	dcfg := e.Config().DomainFor(host)
 	if addr, err := netip.ParseAddr(ip); err == nil && dcfg.Allowlist.MatchIP(addr) {
 		return
@@ -386,7 +391,7 @@ func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
 		return -1
 	}
 	defer snap.release()
-	dcfg := snap.cfg.DomainFor(host)
+	dcfg := snap.cfg.ConfigFor(host, uri)
 	if !dcfg.WAF.Anomaly.Enabled {
 		return -1
 	}

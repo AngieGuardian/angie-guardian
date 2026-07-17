@@ -157,7 +157,27 @@ not automatically deleted from disk).
 
 ### `GET /admin/config`
 
-The active per-domain configuration: which features are enabled where.
+The active per-domain configuration: which features are enabled where,
+including PoW base/max difficulty and, when a domain defines
+[per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
+a `paths` object with the same view per overlay:
+
+```json
+{
+  "store": "bbolt",
+  "defaults": { "pow_enabled": false, "pow_base_difficulty": 5, "...": "..." },
+  "domains": {
+    "example.com": {
+      "pow_enabled": true,
+      "pow_base_difficulty": 5,
+      "pow_max_difficulty": 6,
+      "paths": {
+        "/api/v1/": { "pow_enabled": false, "...": "..." }
+      }
+    }
+  }
+}
+```
 
 ### `POST /admin/reload`
 

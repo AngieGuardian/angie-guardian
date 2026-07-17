@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,19 +47,21 @@ func powEngine(t *testing.T) (*Engine, *pow.Manager) {
 	return e, mgr
 }
 
-// mintTestToken runs the real issue→solve→redeem flow at 4 bits difficulty.
-func mintTestToken(t *testing.T, mgr *pow.Manager, host, ip, ua string) string {
+// mintTestToken runs the real issue→solve→redeem flow at the given number of
+// difficulty bits (a multiple of 4, so whole leading hex zeros).
+func mintTestToken(t *testing.T, mgr *pow.Manager, host, ip, ua string, bits int) string {
 	t.Helper()
 	ctx := context.Background()
-	ch, err := mgr.Issue(ctx, host, ip, "/", 4, time.Minute, false)
+	ch, err := mgr.Issue(ctx, host, ip, "/", bits, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	zeros := strings.Repeat("0", bits/4)
 	var nonce string
 	for n := 0; ; n++ {
 		nonce = strconv.Itoa(n)
 		sum := sha256.Sum256([]byte(ch.Challenge + nonce))
-		if hex.EncodeToString(sum[:])[0] == '0' {
+		if strings.HasPrefix(hex.EncodeToString(sum[:]), zeros) {
 			break
 		}
 	}
@@ -77,7 +80,7 @@ func TestPoWStages(t *testing.T) {
 	ctx := context.Background()
 	e, mgr := powEngine(t)
 	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
-	token := mintTestToken(t, mgr, "html.test", ip, ua)
+	token := mintTestToken(t, mgr, "html.test", ip, ua, 4)
 
 	cases := []struct {
 		name   string

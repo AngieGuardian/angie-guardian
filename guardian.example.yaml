@@ -181,6 +181,17 @@ domains:
   example.com:
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
     waf: { honeypot: { enabled: true } }
+    # Per-path overlays: scope any setting to a URI prefix within this host.
+    # Keys are exact paths, or prefixes when they end with "/"; the most
+    # specific key wins, matched against the percent-decoded path. Each entry
+    # only overrides the fields it mentions (defaults, then domain, then
+    # path). Here the machine-facing API skips the interstitial while the WAF
+    # stays on, and the login area demands harder work:
+    # paths:
+    #   "/api/v1/":
+    #     pow: { enabled: false }
+    #   "/account/login":
+    #     pow: { base_difficulty: 6 }
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.
   api.example.com:

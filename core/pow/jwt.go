@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,15 +96,23 @@ func (m *Manager) verificationKeys() []managerKey {
 
 const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 
-// VerifyToken checks signature, exp/nbf and the host + fingerprint binding.
+// VerifyToken checks signature, exp/nbf, the host + fingerprint binding, that
+// the token was solved at no less than minBits difficulty, and that it is no
+// older than maxAge. The token carries the difficulty it was actually solved
+// at, so a token earned on a cheap path cannot vouch for a path whose config
+// demands harder work; pass 0 to accept any difficulty. maxAge caps the token
+// against the target path's token_ttl: a token minted with a long lifetime on
+// one path is rejected once iat+maxAge has elapsed on a path with a shorter
+// token_ttl, so a full overlay's shorter lifetime is honored (the token's own
+// exp remains the issuing-path upper bound); pass 0 to enforce only exp.
 // Results are cached briefly so repeat requests from a vouched client don't
 // pay the Ed25519 verification on every request. During key rotation the
 // signature is checked against the current key first, then any previous
-// verification keys, so tokens minted before a rotation stay valid until
-// they age out via exp (plan §7).
-func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
+// verification keys, so tokens minted before a rotation stay valid until they
+// age out via exp (plan §7).
+func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, maxAge time.Duration) error {
 	now := m.now()
-	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent))
+	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent + "\x00" + strconv.Itoa(minBits) + "\x00" + strconv.FormatInt(int64(maxAge), 10)))
 	if m.cache.get(cacheKey, now) {
 		return nil
 	}
@@ -116,7 +125,23 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 	if err != nil {
 		return err
 	}
-	m.cache.put(cacheKey, claims.ExpiresAt.Time, now)
+	if claims.Difficulty < minBits {
+		return fmt.Errorf("token solved at %d bits, path requires %d", claims.Difficulty, minBits)
+	}
+	// The target path may demand a shorter lifetime than the path that issued
+	// the token. Reject once iat+maxAge has elapsed even though exp is later.
+	expiry := claims.ExpiresAt.Time
+	if maxAge > 0 {
+		if ttlExpiry := claims.IssuedAt.Time.Add(maxAge); ttlExpiry.Before(expiry) {
+			expiry = ttlExpiry
+		}
+		if !now.Before(expiry) {
+			return fmt.Errorf("token older than path token_ttl %v", maxAge)
+		}
+	}
+	// Cache only up to the effective expiry so a later re-verification with a
+	// shorter maxAge is not masked by an earlier long-lived cache entry.
+	m.cache.put(cacheKey, expiry, now)
 	return nil
 }
 

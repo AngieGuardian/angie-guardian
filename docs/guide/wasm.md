@@ -11,7 +11,8 @@ enough, or alongside a backend that handles the rest. Both paths share the
 same parsing and matching logic. The guest has no store or PoW manager, so a
 matching `deny`, `challenge`, or `block` rule returns the same `403`, and a
 honeypot hit denies only that request; only the sidecar can issue a challenge
-or persist an IP block.
+or persist an IP block. Per-path `paths` overlays are also sidecar-only: the
+guest config schema does not accept a `paths` key.
 
 ## Build
 

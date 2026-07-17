@@ -166,7 +166,11 @@ type FeedConfig struct {
 }
 
 // DomainConfig is the per-domain feature configuration. Domain entries are
-// merged over Defaults field-by-field at load time.
+// merged over Defaults field-by-field at load time. A domain entry may also
+// carry a paths: map of per-path overlays; that key is split off before this
+// struct is decoded (see finalize), so DomainConfig itself deliberately has no
+// Paths field. That keeps paths: under defaults, or nested inside another path
+// overlay, an unknown-field load error.
 type DomainConfig struct {
 	WAF          WAFConfig          `yaml:"waf"`
 	PoW          PoWConfig          `yaml:"pow"`
@@ -175,6 +179,19 @@ type DomainConfig struct {
 	Allowlist    ListConfig         `yaml:"allowlist"`
 	Denylist     ListConfig         `yaml:"denylist"`
 	VerifiedBots VerifiedBotsConfig `yaml:"verified_bots"`
+
+	// pathOverrides are the compiled paths: entries, sorted most specific
+	// first (see resolvePaths); populated only on resolved domain configs.
+	pathOverrides []pathOverride
+}
+
+// pathOverride is one compiled paths: entry: a full DomainConfig resolved as
+// defaults, then the domain's overlay, then this path's overlay on top.
+type pathOverride struct {
+	key    string // as configured, e.g. "/api/v1/"
+	bare   string // key minus any trailing "/", the specificity ruler
+	prefix bool   // key ends with "/", so it prefix-matches
+	cfg    *DomainConfig
 }
 
 // VerifiedBotsConfig allowlists well-known crawlers by verified identity
@@ -611,7 +628,9 @@ func (c *Config) finalize() error {
 		if err := yaml.Unmarshal(defaultsRaw, dc); err != nil {
 			return fmt.Errorf("copy defaults for %s: %w", host, err)
 		}
+		var pathsNode *yaml.Node
 		if node.Kind != 0 && node.Tag != "!!null" {
+			pathsNode = splitPathsNode(&node)
 			if err := decodeStrict(&node, dc); err != nil {
 				return fmt.Errorf("domain %s: %w", host, err)
 			}
@@ -621,6 +640,9 @@ func (c *Config) finalize() error {
 		}
 		if err := c.checkGeoRefs(dc); err != nil {
 			return fmt.Errorf("domain %s: %w", host, err)
+		}
+		if err := c.resolvePaths(host, dc, pathsNode); err != nil {
+			return err
 		}
 		key, err := stateless.NormalizeHostKey(seen, host)
 		if err != nil {
@@ -637,6 +659,107 @@ func (c *Config) finalize() error {
 	if err := c.validateFeatureDependencies(); err != nil {
 		return err
 	}
+	return nil
+}
+
+// splitPathsNode removes the paths key from a domain mapping node and returns
+// its value node, so the remainder decodes into DomainConfig. Splitting before
+// the decode is what lets DomainConfig stay Paths-free: a paths key anywhere
+// else (defaults, or nested inside a path overlay) hits the KnownFields
+// decoder and fails the load.
+func splitPathsNode(node *yaml.Node) *yaml.Node {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "paths" {
+			paths := node.Content[i+1]
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return paths
+		}
+	}
+	return nil
+}
+
+// validatePathKey checks one paths: map key. Keys are matched against the
+// percent-decoded request path, so an encoded key could never match and is
+// refused rather than silently dead.
+func validatePathKey(key string) error {
+	if key == "" || key[0] != '/' {
+		return fmt.Errorf(`must start with "/"`)
+	}
+	if strings.ContainsAny(key, "?#") {
+		return fmt.Errorf("must not contain ? or #; only the path is matched")
+	}
+	if decoded := stateless.DecodePath(key); decoded != key {
+		return fmt.Errorf("must be written percent-decoded (matching uses the decoded request path, write %q)", decoded)
+	}
+	return nil
+}
+
+// resolvePaths compiles a domain's paths: overlays. Each entry deep-copies the
+// already resolved domain config (so defaulted scalars propagate), decodes the
+// path's own YAML node on top, and re-runs validate so compiled state (list
+// prefixes, geo maps, bot needles) is rebuilt for the merged result. Overlays
+// are sorted most specific first: longest bare key, an exact key before a
+// prefix key of the same length, then lexicographic for determinism.
+func (c *Config) resolvePaths(host string, dc *DomainConfig, pathsNode *yaml.Node) error {
+	if pathsNode == nil || pathsNode.Tag == "!!null" {
+		return nil
+	}
+	var nodes map[string]yaml.Node
+	if err := pathsNode.Decode(&nodes); err != nil {
+		return fmt.Errorf("domain %s: paths: %w", host, err)
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	baseRaw, err := yaml.Marshal(dc)
+	if err != nil {
+		return fmt.Errorf("domain %s: marshal resolved config: %w", host, err)
+	}
+	keys := make([]string, 0, len(nodes))
+	for k := range nodes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := validatePathKey(key); err != nil {
+			return fmt.Errorf("domain %s: paths key %q: %w", host, key, err)
+		}
+		pc := &DomainConfig{}
+		if err := yaml.Unmarshal(baseRaw, pc); err != nil {
+			return fmt.Errorf("domain %s path %s: copy config: %w", host, key, err)
+		}
+		node := nodes[key]
+		if node.Kind != 0 && node.Tag != "!!null" {
+			if err := decodeStrict(&node, pc); err != nil {
+				return fmt.Errorf("domain %s path %s: %w", host, key, err)
+			}
+		}
+		if err := pc.validate(); err != nil {
+			return fmt.Errorf("domain %s path %s: %w", host, key, err)
+		}
+		if err := c.checkGeoRefs(pc); err != nil {
+			return fmt.Errorf("domain %s path %s: %w", host, key, err)
+		}
+		dc.pathOverrides = append(dc.pathOverrides, pathOverride{
+			key:    key,
+			bare:   strings.TrimSuffix(key, "/"),
+			prefix: strings.HasSuffix(key, "/"),
+			cfg:    pc,
+		})
+	}
+	sort.SliceStable(dc.pathOverrides, func(i, j int) bool {
+		a, b := &dc.pathOverrides[i], &dc.pathOverrides[j]
+		if len(a.bare) != len(b.bare) {
+			return len(a.bare) > len(b.bare)
+		}
+		if a.prefix != b.prefix {
+			return !a.prefix
+		}
+		return a.key < b.key
+	})
 	return nil
 }
 
@@ -672,6 +795,12 @@ func (c *Config) validateFeatureDependencies() error {
 		dc := c.resolved[host]
 		if err := check("domain "+host, dc); err != nil {
 			return err
+		}
+		for i := range dc.pathOverrides {
+			o := &dc.pathOverrides[i]
+			if err := check("domain "+host+" path "+o.key, o.cfg); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -905,6 +1034,9 @@ func (c *Config) RuleFiles() []string {
 	add(&c.Defaults)
 	for _, dc := range c.resolved {
 		add(dc)
+		for i := range dc.pathOverrides {
+			add(dc.pathOverrides[i].cfg)
+		}
 	}
 	files := make([]string, 0, len(seen))
 	for f := range seen {
@@ -925,6 +1057,9 @@ func (c *Config) ModelFiles() []string {
 	add(&c.Defaults)
 	for _, dc := range c.resolved {
 		add(dc)
+		for i := range dc.pathOverrides {
+			add(dc.pathOverrides[i].cfg)
+		}
 	}
 	files := make([]string, 0, len(seen))
 	for f := range seen {
@@ -946,6 +1081,66 @@ func (c *Config) DomainFor(host string) *DomainConfig {
 		return dc
 	}
 	return &c.Defaults
+}
+
+// ForPath returns the config for a percent-decoded request path: the most
+// specific matching paths: overlay, or dc itself when none matches. Overlays
+// are pre-sorted most specific first, so the first hit wins. A prefix key
+// also matches its own bare path (/api/ matches /api), mirroring
+// stateless.MatchPathList.
+func (dc *DomainConfig) ForPath(decodedPath string) *DomainConfig {
+	for i := range dc.pathOverrides {
+		o := &dc.pathOverrides[i]
+		if o.prefix {
+			if strings.HasPrefix(decodedPath, o.key) || decodedPath == o.bare {
+				return o.cfg
+			}
+		} else if decodedPath == o.key {
+			return o.cfg
+		}
+	}
+	return dc
+}
+
+// ConfigFor resolves a host plus request URI to the effective config. The
+// path is matched percent-decoded (the honeypot/WAF convention), so an
+// encoded /api%2Fv1/ cannot dodge a path override.
+func (c *Config) ConfigFor(host, uri string) *DomainConfig {
+	return c.DomainFor(host).ForPath(stateless.DecodePath(stateless.RequestPath(uri)))
+}
+
+// PoWAnywhere reports whether PoW is enabled at the domain level or in any of
+// its path overlays. The redeem endpoint gates on it: a solve may belong to
+// any path's policy, and the challenge record decides which.
+func (dc *DomainConfig) PoWAnywhere() bool {
+	if dc.PoW.Enabled {
+		return true
+	}
+	for i := range dc.pathOverrides {
+		if dc.pathOverrides[i].cfg.PoW.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// PathOverrideView is one compiled per-path overlay, for admin inspection.
+type PathOverrideView struct {
+	Path   string
+	Config *DomainConfig
+}
+
+// PathOverrideViews returns the domain's compiled path overlays in lookup
+// order (most specific first). Callers must not mutate the configs.
+func (dc *DomainConfig) PathOverrideViews() []PathOverrideView {
+	if len(dc.pathOverrides) == 0 {
+		return nil
+	}
+	views := make([]PathOverrideView, len(dc.pathOverrides))
+	for i := range dc.pathOverrides {
+		views[i] = PathOverrideView{Path: dc.pathOverrides[i].key, Config: dc.pathOverrides[i].cfg}
+	}
+	return views
 }
 
 // DomainLabel maps a request host to a bounded metric label: the normalized
