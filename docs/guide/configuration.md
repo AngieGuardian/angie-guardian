@@ -36,6 +36,27 @@ domains:
                  challenge_at: 0.5, deny_at: 0.85 }
 ```
 
+## Per-path overrides
+
+When a site and its machine endpoints share one host, a domain entry can scope
+any setting to a URI prefix with a `paths` map. Overlays merge in three
+levels (defaults, then the domain, then the path), the most specific key wins,
+and matching is against the percent-decoded path:
+
+```yaml
+domains:
+  example.com:
+    pow: { enabled: true }
+    paths:
+      "/api/v1/":
+        pow: { enabled: false }   # no interstitial; the WAF stays on
+      "/account/login":
+        pow: { base_difficulty: 6 }
+```
+
+See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
+in the reference for the exact matching and inheritance rules.
+
 ## Validating a config
 
 Validate a config without starting the daemon with `-t` (like `angie -t`). It

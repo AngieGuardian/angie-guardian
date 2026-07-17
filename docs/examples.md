@@ -47,6 +47,26 @@ domains:
     waf: { ip_behaviour: { enabled: false } }
 ```
 
+## One host, different paths: PoW everywhere except the API
+
+Not every estate splits its API onto its own subdomain. A `paths` overlay
+scopes any setting to a URI prefix within one host: the most specific key
+wins, and each entry only overrides the fields it mentions (see the
+[reference](/reference/configuration#per-path-overrides-domains-host-paths)).
+Here machine clients under `/api/v1/` skip the interstitial while the WAF
+keeps covering them, and the login page demands harder work:
+
+```yaml
+domains:
+  example.com:
+    pow: { enabled: true }
+    paths:
+      "/api/v1/":
+        pow: { enabled: false }
+      "/account/login":
+        pow: { base_difficulty: 6 }
+```
+
 ## Suspicion-only challenges (anomaly model)
 
 This fragment disables the catch-all and defines only an anomaly challenge
