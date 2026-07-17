@@ -139,6 +139,10 @@ Restrictions and behavior notes:
   that difficulty meets the resolved path's `base_difficulty`. A token earned
   on a cheaper path re-challenges on a harder one, and raising
   `base_difficulty` in config invalidates outstanding weaker tokens.
+- A token is also held to the resolved path's `token_ttl`: a long-lived token
+  issued on a lax path is re-challenged once it is older than a stricter path's
+  `token_ttl`, even though the cookie's own expiry (set on the issuing path) has
+  not yet passed. The issuing-path lifetime remains the upper bound.
 - Per-path overlays are a sidecar feature; the stateless WASM guest config
   does not accept `paths`.
 
