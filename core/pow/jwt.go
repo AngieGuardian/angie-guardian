@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,15 +96,18 @@ func (m *Manager) verificationKeys() []managerKey {
 
 const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 
-// VerifyToken checks signature, exp/nbf and the host + fingerprint binding.
-// Results are cached briefly so repeat requests from a vouched client don't
-// pay the Ed25519 verification on every request. During key rotation the
-// signature is checked against the current key first, then any previous
-// verification keys, so tokens minted before a rotation stay valid until
-// they age out via exp (plan §7).
-func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
+// VerifyToken checks signature, exp/nbf, the host + fingerprint binding, and
+// that the token was solved at no less than minBits difficulty. The token
+// carries the difficulty it was actually solved at, so a token earned on a
+// cheap path cannot vouch for a path whose config demands harder work; pass 0
+// to accept any difficulty. Results are cached briefly so repeat requests
+// from a vouched client don't pay the Ed25519 verification on every request.
+// During key rotation the signature is checked against the current key first,
+// then any previous verification keys, so tokens minted before a rotation
+// stay valid until they age out via exp (plan §7).
+func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int) error {
 	now := m.now()
-	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent))
+	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent + "\x00" + strconv.Itoa(minBits)))
 	if m.cache.get(cacheKey, now) {
 		return nil
 	}
@@ -115,6 +119,9 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if claims.Difficulty < minBits {
+		return fmt.Errorf("token solved at %d bits, path requires %d", claims.Difficulty, minBits)
 	}
 	m.cache.put(cacheKey, claims.ExpiresAt.Time, now)
 	return nil

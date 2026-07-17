@@ -331,7 +331,10 @@ func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
 		return false
 	}
 	token := cookieValue(req.Cookie, pow.CookieName)
-	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent) == nil
+	// The resolved (possibly per-path) base difficulty is the floor: a token
+	// solved on a cheaper path must not vouch here. An under-difficulty token
+	// counts as absent, so the client is re-challenged at this path's bits.
+	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent, env.domain.PoW.BaseBits()) == nil
 }
 
 // anomalyStage — pipeline stage 5 (plan §4.3). Scores the request against

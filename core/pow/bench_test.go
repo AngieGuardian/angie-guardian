@@ -43,7 +43,7 @@ func BenchmarkVerifyTokenUncached(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m.cache = newTokenCache() // force the full Ed25519 path every time
-		if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA"); err != nil {
+		if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA", 0); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -51,13 +51,13 @@ func BenchmarkVerifyTokenUncached(b *testing.B) {
 
 func BenchmarkVerifyTokenCached(b *testing.B) {
 	m, token := benchManagerAndToken(b)
-	if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA", 0); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA"); err != nil {
+			if err := m.VerifyToken(token, "bench.test", "198.51.100.7", "UA", 0); err != nil {
 				b.Fatal(err)
 			}
 		}

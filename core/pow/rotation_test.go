@@ -64,7 +64,7 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldToken := res.Token
-	if err := m.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	}
 
 	// The pre-rotation token still verifies (old key kept in the verify set).
-	if err := m.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA", 0); err != nil {
 		t.Fatalf("token minted before rotation must still verify: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.VerifyToken(res2.Token, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := m.VerifyToken(res2.Token, "example.com", "198.51.100.7", "UA", 0); err != nil {
 		t.Fatalf("post-rotation token must verify: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 	// old token — proving the old signature really did change.
 	freshKey, _ := LoadOrCreateKey(keyPath)
 	fresh := NewManager(freshKey, st)
-	if err := fresh.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA"); err == nil {
+	if err := fresh.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA", 0); err == nil {
 		t.Fatal("old token must fail against the new key alone")
 	}
 
@@ -110,7 +110,7 @@ func TestKeyRotationKeepsOldTokensValid(t *testing.T) {
 		t.Fatalf("expected 1 archived key, got %d", len(prev))
 	}
 	peer := NewManagerWithKeys(freshKey, prev, st)
-	if err := peer.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA"); err != nil {
+	if err := peer.VerifyToken(oldToken, "example.com", "198.51.100.7", "UA", 0); err != nil {
 		t.Fatalf("peer with archived key must accept old token: %v", err)
 	}
 }
@@ -151,15 +151,15 @@ func TestRetiredKeyCannotMintPostRetirementOrOverlongTokens(t *testing.T) {
 	}
 
 	legitimate := sign(retiredAt.Add(-time.Minute), retiredAt.Add(3*time.Hour))
-	if err := m.VerifyToken(legitimate, host, ip, ua); err != nil {
+	if err := m.VerifyToken(legitimate, host, ip, ua, 0); err != nil {
 		t.Fatalf("bounded pre-retirement token rejected: %v", err)
 	}
 	overlong := sign(retiredAt.Add(-time.Minute), retiredAt.Add(10*365*24*time.Hour))
-	if err := m.VerifyToken(overlong, host, ip, ua); err == nil {
+	if err := m.VerifyToken(overlong, host, ip, ua, 0); err == nil {
 		t.Fatal("overlong token signed by retired key was accepted")
 	}
 	postRetirement := sign(retiredAt.Add(time.Hour), retiredAt.Add(3*time.Hour))
-	if err := m.VerifyToken(postRetirement, host, ip, ua); err == nil {
+	if err := m.VerifyToken(postRetirement, host, ip, ua, 0); err == nil {
 		t.Fatal("token minted after key retirement was accepted")
 	}
 }
@@ -195,7 +195,7 @@ func TestLivePeerRefreshesAfterRotation(t *testing.T) {
 		"rotating peer accepts new token":   {a, newToken},
 		"live peer refreshes for new token": {b, newToken},
 	} {
-		if err := tc.manager.VerifyToken(tc.token, host, ip, ua); err != nil {
+		if err := tc.manager.VerifyToken(tc.token, host, ip, ua, 0); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -233,7 +233,7 @@ func TestPeerNeverSignsWithAlreadyRetiredKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rotator.VerifyToken(token, "example.test", "198.51.100.7", "UA"); err != nil {
+	if err := rotator.VerifyToken(token, "example.test", "198.51.100.7", "UA", 0); err != nil {
 		t.Fatalf("peer minted a token with an already-retired key: %v", err)
 	}
 }

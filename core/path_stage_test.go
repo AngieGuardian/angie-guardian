@@ -32,7 +32,7 @@ domains:
         pow: { base_difficulty: 2 }
 `
 
-func pathStageEngine(t *testing.T) *Engine {
+func pathStageEngine(t *testing.T) (*Engine, *pow.Manager) {
 	t.Helper()
 	rules := filepath.Join(t.TempDir(), "rules.yaml")
 	if err := os.WriteFile(rules, []byte(stageRules), 0o600); err != nil {
@@ -45,12 +45,13 @@ func pathStageEngine(t *testing.T) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
+	mgr := pow.NewManager(key, st)
+	e, err := NewEngine(cfg, st, mgr, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(e.Close)
-	return e
+	return e, mgr
 }
 
 // TestPathOverrideStages: the pipeline resolves the per-path config, so PoW
@@ -58,7 +59,7 @@ func pathStageEngine(t *testing.T) *Engine {
 // that same prefix, keep working.
 func TestPathOverrideStages(t *testing.T) {
 	ctx := context.Background()
-	e := pathStageEngine(t)
+	e, _ := pathStageEngine(t)
 	ua := "Mozilla/5.0 (X11; Linux x86_64)"
 
 	cases := []struct {
@@ -95,6 +96,39 @@ func TestPathOverrideStages(t *testing.T) {
 				t.Errorf("difficulty = %d bits, want %d", d.Difficulty, tc.difficulty)
 			}
 		})
+	}
+}
+
+// TestPathTokenDifficulty: a token vouches only where its solved difficulty
+// meets the resolved path's base. A cheap token cannot ride into a harder
+// path; the client is re-challenged at that path's bits instead.
+func TestPathTokenDifficulty(t *testing.T) {
+	ctx := context.Background()
+	e, mgr := pathStageEngine(t)
+	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
+
+	cheap := mintTestToken(t, mgr, "shop.test", ip, ua, 4)
+	r := req("shop.test", ip, "/", ua)
+	r.Cookie = pow.CookieName + "=" + cheap
+	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
+		t.Errorf("4-bit token on 4-bit path: got %s/%s, want allow/pow:token", d.Action, d.Reason)
+	}
+	r = req("shop.test", ip, "/admin/panel", ua)
+	r.Cookie = pow.CookieName + "=" + cheap
+	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Difficulty != 8 {
+		t.Errorf("4-bit token on 8-bit path: got %s (dif %d), want challenge at 8 bits", d.Action, d.Difficulty)
+	}
+
+	strong := mintTestToken(t, mgr, "shop.test", ip, ua, 8)
+	r = req("shop.test", ip, "/admin/panel", ua)
+	r.Cookie = pow.CookieName + "=" + strong
+	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
+		t.Errorf("8-bit token on 8-bit path: got %s/%s, want allow/pow:token", d.Action, d.Reason)
+	}
+	r = req("shop.test", ip, "/", ua)
+	r.Cookie = pow.CookieName + "=" + strong
+	if d := e.Evaluate(ctx, r); d.Action != ActionAllow {
+		t.Errorf("8-bit token on 4-bit path: got %s/%s, want allow", d.Action, d.Reason)
 	}
 }
 

@@ -141,7 +141,7 @@ func TestIntelStages(t *testing.T) {
 	// A client from a challenge-listed country solves once and then browses
 	// on its token: the geo challenge must sit AFTER the token stage.
 	ip := "192.0.2.99"
-	token := mintTestToken(t, mgr, "x.test", ip, ua)
+	token := mintTestToken(t, mgr, "x.test", ip, ua, 4)
 	d := e.Evaluate(ctx, &RequestContext{
 		Host: "x.test", Method: "GET", URI: "/page", RemoteAddr: ip,
 		UserAgent: ua, Cookie: pow.CookieName + "=" + token,
@@ -152,7 +152,7 @@ func TestIntelStages(t *testing.T) {
 
 	// But a token must NOT carry a client past a geo/reputation deny.
 	ip = "203.0.113.42"
-	token = mintTestToken(t, mgr, "x.test", ip, ua)
+	token = mintTestToken(t, mgr, "x.test", ip, ua, 4)
 	d = e.Evaluate(ctx, &RequestContext{
 		Host: "x.test", Method: "GET", URI: "/page", RemoteAddr: ip,
 		UserAgent: ua, Cookie: pow.CookieName + "=" + token,
