@@ -61,6 +61,16 @@ counters do not add write rounds: they are counted in-process and synced to
 the shared store in the background. See
 [choosing a store backend](/guide/production#choosing-a-store-backend).
 
+::: tip The block check is now off the store
+With the [in-process mirror](/guide/block-offload) (always on), the behavioural
+block lookup on the `allow` path no longer reads the store on single-writer
+backends. In the `core` micro-benchmarks the seeded authoritative mirror takes
+the full bbolt allow path from ~1600 ns to ~160 ns per `Evaluate` (about 10x),
+and a request from an already-blocked IP is denied in ~590 ns with zero store
+I/O. That is what keeps a flood from known-bad clients cheap; run
+`go test -bench BenchmarkEvaluateBoltMirror ./core/` to reproduce.
+:::
+
 ## Micro-benchmarks
 
 Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly

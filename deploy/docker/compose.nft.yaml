@@ -1,0 +1,69 @@
+# Angie Guardian: kernel block offload (nftables) demo topology.
+#
+#   Angie (reverse proxy) ──► guardiand (sidecar, shares Angie's netns) ──► whoami
+#
+# This overlay demonstrates enforcement.nftables.enabled. The key difference
+# from compose.yaml is the network namespace: guardiand programs an nftables
+# set in the SAME namespace where client packets arrive, which here is Angie's.
+# So guardiand runs with network_mode: "service:angie" (it shares Angie's
+# network stack) plus cap_add: NET_ADMIN, and Angie reaches the sidecar at
+# 127.0.0.1:8071 instead of over the compose bridge.
+#
+# Run it by hand from this directory:
+#
+#   docker compose -f compose.nft.yaml up --build -d
+#   docker compose -f compose.nft.yaml down -v
+#
+# The gated e2e-nft suite (make e2e-nft) boots this same file. It needs a
+# kernel with nf_tables and a runtime that grants NET_ADMIN; it skips cleanly
+# where that is unavailable (e.g. some CI shell runners).
+name: angie-guardian-nft
+
+services:
+  guardiand:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["-config", "/etc/guardian/guardian.yaml"]
+    # Share Angie's network namespace so the nftables set lives where client
+    # traffic is seen, and so 127.0.0.1:8071 reaches this sidecar from Angie.
+    network_mode: "service:angie"
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ${GUARDIAN_CONFIG:-./guardian.e2e-nft.yaml}:/etc/guardian/guardian.yaml:ro
+      - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
+      - guardian-nft-data:/var/lib/guardian
+      - guardian-nft-keys:/etc/guardian/keys
+    depends_on:
+      angie:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/guardiand", "-config", "/etc/guardian/guardian.yaml", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    image: traefik/whoami:latest
+    command: ["--port", "8080"]
+    expose:
+      - "8080"
+
+  angie:
+    image: docker.angie.software/angie:latest
+    depends_on:
+      backend:
+        condition: service_started
+    volumes:
+      - ./angie.nft.conf:/etc/angie/angie.conf:ro
+    ports:
+      # The protected site and the guardiand admin API are both published
+      # through Angie's namespace (guardiand shares it). Overridable so the
+      # e2e harness can pick free ports.
+      - "127.0.0.1:${GUARDIAN_SITE_PORT:-8080}:80"
+      - "127.0.0.1:${GUARDIAN_ADMIN_PORT:-8072}:8072"
+
+volumes:
+  guardian-nft-data:
+  guardian-nft-keys:

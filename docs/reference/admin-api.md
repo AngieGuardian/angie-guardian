@@ -140,6 +140,33 @@ denied".
  "feeds":[{"feed":"firehol-level1","action":"deny"}]}
 ```
 
+## Enforcement offload
+
+### `GET /admin/offload`
+
+The state of the [block enforcement offload](/guide/block-offload): the
+in-process mirror (mode, entry count, seed status, last reconcile, drop count)
+and every external sink's health. Returns `{"enabled": false}` when the
+offload manager is not wired.
+
+```json
+{"mirror":{"entries":12,"mode":"authoritative","seeded":true,
+           "last_reconcile":"2026-07-19T10:00:00Z","reconcile_errors":0,"dropped":0},
+ "sinks":[{"name":"nftables","mode":"managed","healthy":true,
+           "elements":12,"last_error":""}]}
+```
+
+### `POST /admin/offload/reconcile`
+
+Force an immediate authoritative store scan: drift repair after a manual
+`nft flush` or an out-of-band store edit, without waiting for the next
+reconcile tick. The scan runs asynchronously. Returns `409` when the offload
+manager is not active.
+
+```json
+{"status":"reconcile scheduled"}
+```
+
 ## Keys and config
 
 ### `POST /admin/rotate-key`

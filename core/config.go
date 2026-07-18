@@ -12,12 +12,15 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
 	"gopkg.in/yaml.v3"
@@ -98,6 +101,7 @@ type Config struct {
 	TrustedProxy bool                 `yaml:"trusted_proxy"`
 	Admin        AdminConfig          `yaml:"admin"`
 	Store        StoreConfig          `yaml:"store"`
+	Enforcement  EnforcementConfig    `yaml:"enforcement"`
 	GeoIP        GeoIPConfig          `yaml:"geoip"`
 	Reputation   ReputationFeeds      `yaml:"reputation"`
 	Defaults     DomainConfig         `yaml:"defaults"`
@@ -132,6 +136,152 @@ type StoreConfig struct {
 	Addr     string `yaml:"addr"`     // redis host:port
 	Password string `yaml:"password"` // redis password (or use REDIS_PASSWORD)
 	DB       int    `yaml:"db"`       // redis database number
+}
+
+// EnforcementConfig moves active-block enforcement onto layers cheaper than
+// the per-request store lookup: the always-on in-process mirror, and an
+// optional nftables sink that drops blocked clients in the kernel before
+// they reach Angie at all. Every field is restart-required (the mirror seed,
+// sink and netlink wiring happen at startup).
+type EnforcementConfig struct {
+	Mirror   MirrorConfig   `yaml:"mirror"`
+	NFTables NFTablesConfig `yaml:"nftables"`
+}
+
+// MirrorConfig tunes the in-process block mirror. It has no enabled toggle
+// on purpose: the mirror is strictly cheaper than the store lookup it fronts
+// and degrades to it in every failure mode, so there is nothing to turn off.
+type MirrorConfig struct {
+	// ReconcileInterval is the cadence of the authoritative store scan that
+	// seeds the mirror, corrects learned entries and repairs sink drift. It
+	// also bounds cross-replica propagation of unblocks in read_through mode.
+	ReconcileInterval Duration `yaml:"reconcile_interval"` // default 10s, min 1s
+	// MaxEntries bounds the mirror; overflow entries fall back to store reads.
+	MaxEntries int `yaml:"max_entries"` // default 1048576
+	// Mode: auto (default) picks authoritative for single-writer backends
+	// (memory, bbolt) and read_through for a shared store (redis), where a
+	// mirror miss must still consult the store so another replica's blocks
+	// bite before the next reconcile scan.
+	Mode string `yaml:"mode"` // auto | authoritative | read_through
+}
+
+// NFTablesConfig is the optional kernel enforcement sink (Linux only; needs
+// CAP_NET_ADMIN in the network namespace where client traffic arrives).
+type NFTablesConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Mode managed (default) owns a table with a base chain whose drop rule
+	// matches only Ports, so SSH and the admin listener are structurally out
+	// of reach. sets_only just maintains the sets for an operator-owned rule.
+	Mode  string `yaml:"mode"`  // managed | sets_only
+	Table string `yaml:"table"` // default "guardian"
+	Hook  string `yaml:"hook"`  // managed only: input (default) | prerouting
+	// Ports the managed drop rule applies to. Refused empty in managed mode:
+	// an all-ports drop could cut off SSH and the admin API.
+	Ports []int `yaml:"ports"` // default [80, 443]
+	// NetNS is a network namespace file (e.g. /proc/1/ns/net or a bind mount)
+	// to program instead of the daemon's own namespace.
+	NetNS      string `yaml:"netns"`
+	MaxEntries int    `yaml:"max_entries"` // kernel set size bound, default 65536
+	// MinTTL skips offloading short blocks (kernel churn is not worth it for
+	// them); 0 offloads every block.
+	MinTTL Duration `yaml:"min_ttl"`
+	// NeverBlock CIDRs are never sent to the kernel. Put load balancer and
+	// CDN ranges here: dropping an LB address at L3 takes down everything
+	// behind it. Configured allowlists are excluded automatically on top.
+	NeverBlock []string `yaml:"never_block"`
+
+	neverBlock []netip.Prefix
+}
+
+func (e *EnforcementConfig) validate() error {
+	m := &e.Mirror
+	switch m.Mode {
+	case "":
+		m.Mode = "auto"
+	case "auto", "authoritative", "read_through":
+	default:
+		return fmt.Errorf("enforcement.mirror.mode must be auto, authoritative or read_through, got %q", m.Mode)
+	}
+	if m.ReconcileInterval == 0 {
+		m.ReconcileInterval = Duration(10 * time.Second)
+	}
+	if m.ReconcileInterval.Std() < time.Second {
+		return fmt.Errorf("enforcement.mirror.reconcile_interval must be at least 1s, got %v", m.ReconcileInterval.Std())
+	}
+	if m.MaxEntries == 0 {
+		m.MaxEntries = 1 << 20
+	}
+	if m.MaxEntries < 0 {
+		return fmt.Errorf("enforcement.mirror.max_entries must be > 0, got %d", m.MaxEntries)
+	}
+	n := &e.NFTables
+	switch n.Mode {
+	case "":
+		n.Mode = "managed"
+	case "managed", "sets_only":
+	default:
+		return fmt.Errorf("enforcement.nftables.mode must be managed or sets_only, got %q", n.Mode)
+	}
+	switch n.Hook {
+	case "":
+		n.Hook = "input"
+	case "input", "prerouting":
+	default:
+		return fmt.Errorf("enforcement.nftables.hook must be input or prerouting, got %q", n.Hook)
+	}
+	if n.Table == "" {
+		n.Table = "guardian"
+	}
+	if n.Ports == nil {
+		n.Ports = []int{80, 443}
+	}
+	for _, p := range n.Ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("enforcement.nftables.ports: invalid port %d", p)
+		}
+	}
+	if n.MaxEntries == 0 {
+		n.MaxEntries = 65536
+	}
+	if n.MaxEntries < 0 {
+		return fmt.Errorf("enforcement.nftables.max_entries must be > 0, got %d", n.MaxEntries)
+	}
+	if n.MinTTL < 0 {
+		return fmt.Errorf("enforcement.nftables.min_ttl must be >= 0, got %v", n.MinTTL.Std())
+	}
+	n.neverBlock = n.neverBlock[:0]
+	for _, s := range n.NeverBlock {
+		p, err := parsePrefixOrAddr(s)
+		if err != nil {
+			return fmt.Errorf("enforcement.nftables.never_block: %w", err)
+		}
+		n.neverBlock = append(n.neverBlock, p)
+	}
+	if n.Enabled {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("enforcement.nftables is only supported on Linux (running on %s)", runtime.GOOS)
+		}
+		if n.Mode == "managed" && len(n.Ports) == 0 {
+			return fmt.Errorf("enforcement.nftables.ports must not be empty in managed mode: an all-ports drop rule could cut off SSH and the admin API; use mode sets_only to write your own rule")
+		}
+	}
+	return nil
+}
+
+// parsePrefixOrAddr accepts a CIDR or a bare IP (as ListConfig does).
+func parsePrefixOrAddr(s string) (netip.Prefix, error) {
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return netip.Prefix{}, fmt.Errorf("invalid CIDR %q: %w", s, err)
+		}
+		return p.Masked(), nil
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("invalid IP %q: %w", s, err)
+	}
+	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
 // GeoIPConfig points at MaxMind-format (.mmdb) databases: MaxMind
@@ -569,6 +719,9 @@ func (c *Config) finalize() error {
 		}
 	default:
 		return fmt.Errorf("store.backend must be memory, bbolt or redis, got %q", c.Store.Backend)
+	}
+	if err := c.Enforcement.validate(); err != nil {
+		return err
 	}
 	if err := c.Reputation.validate(); err != nil {
 		return err
@@ -1020,6 +1173,72 @@ func (c *Config) IntelConfig() intel.Config {
 		})
 	}
 	return ic
+}
+
+// EnforceConfig assembles the enforcement manager's configuration. The mirror
+// mode "auto" resolves here: single-writer backends (memory, bbolt) make the
+// seeded mirror authoritative, while a shared store (redis) keeps the
+// per-request store fallback so blocks placed by another replica bite before
+// the next reconcile scan.
+func (c *Config) EnforceConfig() enforce.Config {
+	mode := c.Enforcement.Mirror.Mode
+	if mode == "" || mode == "auto" {
+		if c.Store.Backend == "redis" {
+			mode = enforce.ModeReadThrough
+		} else {
+			mode = enforce.ModeAuthoritative
+		}
+	}
+	n := &c.Enforcement.NFTables
+	ports := make([]uint16, 0, len(n.Ports))
+	for _, p := range n.Ports {
+		ports = append(ports, uint16(p))
+	}
+	// The kernel sees neither Host nor path, so an allowlist entry anywhere
+	// in the config must win globally at that layer: union them all into the
+	// never-offload filter.
+	never := append(append([]netip.Prefix{}, n.neverBlock...), c.AllowlistUnion()...)
+	return enforce.Config{
+		KeyPrefix:         blockKeyPrefix,
+		ReconcileInterval: c.Enforcement.Mirror.ReconcileInterval.Std(),
+		MaxEntries:        c.Enforcement.Mirror.MaxEntries,
+		Mode:              mode,
+		NFTables: enforce.NFTConfig{
+			Enabled:    n.Enabled,
+			Mode:       n.Mode,
+			Table:      n.Table,
+			Hook:       n.Hook,
+			Ports:      ports,
+			NetNS:      n.NetNS,
+			MaxEntries: n.MaxEntries,
+			MinTTL:     n.MinTTL.Std(),
+			NeverBlock: never,
+		},
+	}
+}
+
+// AllowlistUnion returns every allowlist IP prefix configured anywhere:
+// defaults, every domain and every path overlay. Deduplicated, order
+// unspecified.
+func (c *Config) AllowlistUnion() []netip.Prefix {
+	seen := make(map[netip.Prefix]bool)
+	add := func(dc *DomainConfig) {
+		for _, p := range dc.Allowlist.Prefixes() {
+			seen[p] = true
+		}
+	}
+	add(&c.Defaults)
+	for _, dc := range c.resolved {
+		add(dc)
+		for i := range dc.pathOverrides {
+			add(dc.pathOverrides[i].cfg)
+		}
+	}
+	out := make([]netip.Prefix, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	return out
 }
 
 // RuleFiles returns every distinct WAF rules file referenced by an enabled

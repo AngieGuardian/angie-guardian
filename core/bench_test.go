@@ -10,9 +10,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -95,6 +97,39 @@ func benchmarkEvaluate(b *testing.B, st store.Store, req *RequestContext, wantRe
 	})
 }
 
+// benchmarkEvaluateMirror wires the enforcement offload the way guardiand does
+// (authoritative seeded mirror), so the block stage is served from memory. A
+// "behaviour_block:" wantReason places a block for the request's IP first.
+func benchmarkEvaluateMirror(b *testing.B, st store.Store, req *RequestContext, wantReason string) {
+	b.Helper()
+	e, _ := benchEngine(b, st)
+	ctx := context.Background()
+	if reason, ok := strings.CutPrefix(wantReason, "behaviour_block:"); ok {
+		if err := e.BlockIP(ctx, req.RemoteAddr, reason, time.Hour); err != nil {
+			b.Fatal(err)
+		}
+	}
+	enf := enforce.New(e.Config().EnforceConfig(), st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { enf.Close() })
+	e.SetEnforcer(enf)
+	ectx, cancel := context.WithCancel(ctx)
+	b.Cleanup(cancel)
+	enf.Start(ectx)
+	for !enf.Status().Mirror.Seeded { // wait for the seed scan
+		time.Sleep(time.Millisecond)
+	}
+	if d := e.Evaluate(ctx, req); d.Reason != wantReason {
+		b.Fatalf("sanity: reason = %q, want %q", d.Reason, wantReason)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			e.Evaluate(ctx, req)
+		}
+	})
+}
+
 func BenchmarkEvaluateAllowDefault(b *testing.B) {
 	st := store.NewMemory()
 	defer st.Close()
@@ -149,4 +184,32 @@ func BenchmarkEvaluateWithBolt(b *testing.B) {
 	benchmarkEvaluate(b, st,
 		&RequestContext{Host: "plain.test", Method: "GET", URI: "/page?x=1", RemoteAddr: "198.51.100.7", UserAgent: "curl/8.0"},
 		"default")
+}
+
+// BenchmarkEvaluateBoltMirror is the production authoritative-mirror path on a
+// bbolt store: the block check is served from the seeded in-process mirror, so
+// the per-request store read is gone. Compare against BenchmarkEvaluateWithBolt
+// (same store, no enforcer) to see the offload's hot-path win.
+func BenchmarkEvaluateBoltMirror(b *testing.B) {
+	st, err := store.NewBolt(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	benchmarkEvaluateMirror(b, st,
+		&RequestContext{Host: "plain.test", Method: "GET", URI: "/page?x=1", RemoteAddr: "198.51.100.7", UserAgent: "curl/8.0"},
+		"default")
+}
+
+// BenchmarkEvaluateBoltMirrorBlocked measures a blocked client under the
+// mirror: the denial is a memory lookup with zero store I/O, the exact flood
+// case the offload exists for.
+func BenchmarkEvaluateBoltMirrorBlocked(b *testing.B) {
+	st, err := store.NewBolt(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	req := &RequestContext{Host: "plain.test", Method: "GET", URI: "/p", RemoteAddr: "198.51.100.9", UserAgent: "curl/8.0"}
+	benchmarkEvaluateMirror(b, st, req, "behaviour_block:flood")
 }

@@ -16,12 +16,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
@@ -143,6 +145,14 @@ func run(configPath string) error {
 	}
 	engine.SetMetrics(m)
 	defer engine.Close()
+
+	// Enforcement offload: the in-process block mirror (always on) and the
+	// optional nftables sink. Sink failures degrade to in-daemon enforcement
+	// and are never fatal.
+	enforcer := enforce.New(cfg.EnforceConfig(), st, m, log)
+	engine.SetEnforcer(enforcer)
+	enforcer.Start(context.Background())
+	defer enforcer.Close()
 
 	// reload re-reads guardian.yaml and hot-swaps everything derived from it
 	// (domains, lists, thresholds, rule/model/geoip/feed sources, log level).
@@ -286,13 +296,14 @@ type staticConfig struct {
 	trustedProxy                           bool
 	admin                                  core.AdminConfig
 	store                                  core.StoreConfig
+	enforcement                            core.EnforcementConfig
 }
 
 func staticConfigFrom(cfg *core.Config) staticConfig {
 	return staticConfig{
 		listen: cfg.Listen, trustedProxy: cfg.TrustedProxy,
 		signingKeyFile: cfg.SigningKeyFile, previousKeyDir: cfg.PreviousKeyDir,
-		admin: cfg.Admin, store: cfg.Store,
+		admin: cfg.Admin, store: cfg.Store, enforcement: cfg.Enforcement,
 	}
 }
 
@@ -319,6 +330,9 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 	add("store.addr", running.store.Addr != next.Store.Addr)
 	add("store.password", running.store.Password != next.Store.Password)
 	add("store.db", running.store.DB != next.Store.DB)
+	// The mirror seed and any netlink/table setup happen at startup, so the
+	// whole section is compared as one unit.
+	add("enforcement", !reflect.DeepEqual(running.enforcement, next.Enforcement))
 	slices.Sort(changed)
 	return changed
 }

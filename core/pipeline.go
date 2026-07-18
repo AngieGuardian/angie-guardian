@@ -12,6 +12,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/botverify"
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -38,6 +39,7 @@ type stageEnv struct {
 	intel       *intel.Provider // nil when no geoip/reputation is configured
 	metrics     *metrics.Metrics
 	bots        *botverify.Verifier
+	enforcer    *enforce.Manager // nil = store-only block enforcement
 
 	origin *intel.Info // memoized geo lookup: both intel stages share one
 }
@@ -147,21 +149,47 @@ func (verifiedBotStage) Evaluate(ctx context.Context, req *RequestContext, env *
 // admin API. The block lookup always runs: the ip_behaviour.enabled toggle
 // only gates automatic *scoring* (whether new blocks get placed), not whether
 // an existing block — e.g. one an operator set by hand — is honoured.
+//
+// The in-process mirror is consulted first: a hit denies in nanoseconds with
+// no store I/O, so a flood from an already-blocked IP cannot saturate the
+// store, and blocks keep enforcing through a store outage. The store read
+// runs only on a miss when the mirror is not authoritative (before its seed
+// scan, or on a shared store where another replica may have placed the
+// block); a hit found that way is cached back into the mirror.
 type behaviourBlockStage struct{}
 
 func (behaviourBlockStage) Name() string { return "behaviour_block" }
 
 func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	if reason, ok := env.enforcer.Lookup(req.RemoteAddr); ok {
+		env.metrics.BlockLookup("mirror", "hit")
+		return &Decision{
+			Action: ActionDeny,
+			Reason: "behaviour_block:" + reason,
+		}, nil
+	}
+	// The mirror only represents parseable addresses, so an authoritative
+	// miss skips the store only for those; anything else (impossible from
+	// the Angie transport) keeps the exact store semantics.
+	if !env.enforcer.ReadThrough() {
+		if _, err := netip.ParseAddr(req.RemoteAddr); err == nil {
+			env.metrics.BlockLookup("mirror", "miss")
+			return nil, nil
+		}
+	}
 	reason, blocked, err := env.store.Get(ctx, BlockKey(req.RemoteAddr))
 	if err != nil {
 		return nil, err
 	}
 	if blocked {
+		env.metrics.BlockLookup("store", "hit")
+		env.enforcer.Learn(req.RemoteAddr, string(reason))
 		return &Decision{
 			Action: ActionDeny,
 			Reason: "behaviour_block:" + string(reason),
 		}, nil
 	}
+	env.metrics.BlockLookup("store", "miss")
 	return nil, nil
 }
 

@@ -1,0 +1,97 @@
+# Guardian config for the nftables-offload e2e suite (make e2e-nft).
+#
+# Same shape as guardian.e2e.yaml, but with enforcement.nftables enabled in
+# managed mode. guardiand runs in Angie's network namespace (see
+# compose.nft.yaml) with CAP_NET_ADMIN, so the drop rule it installs, scoped
+# to port 80, drops a blocked client's site traffic while leaving the admin
+# API on 8072 reachable.
+listen: 0.0.0.0:8071
+# The hot path binds 0.0.0.0 so Angie (a separate container) can reach it, but
+# the port is NOT published to the host (see compose.yaml), so it stays
+# isolated to the compose network. trusted_proxy acknowledges that isolation;
+# without it guardiand refuses a non-loopback bind.
+trusted_proxy: true
+log_level: info
+
+admin:
+  listen: 0.0.0.0:8072
+  token: "harness-admin-token"   # harness only; use ADMIN_TOKEN env in real deploys
+                                  # (0.0.0.0 admin bind without a token is refused)
+  dashboard: true                 # the reporting page at /admin/dashboard
+
+signing_key_file: /etc/guardian/keys/ed25519.key
+previous_key_dir: /etc/guardian/keys/keys.d
+
+store:
+  backend: bbolt
+  path: /var/lib/guardian/guardian.db
+
+enforcement:
+  mirror:
+    reconcile_interval: 2s
+  nftables:
+    enabled: true
+    mode: managed
+    table: guardian_e2e
+    hook: input
+    ports: [80]        # drop only site traffic; admin API on 8072 stays reachable
+    # never_block must NOT list the test client here: the whole point is to
+    # drop it. Real deployments put LB/CDN ranges here.
+    never_block: []
+
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      max_block_ttl: 4h
+      thresholds:
+        signature: 10/min
+        pow_fail: 10/min
+        tamper: 10/min
+        bot_spoof: 5/min
+    keywords:
+      enabled: true
+      rules_file: /etc/guardian/rules.d/common.yaml
+    honeypot:
+      enabled: false
+      paths: []
+  pow:
+    enabled: true
+    mode: always
+    # Deliberately below the production default (5): the e2e suite solves
+    # challenges in Go on every run, and the WAF escalation test asserts
+    # base 16 bits + 4 = 20. Raising this slows every e2e run.
+    base_difficulty: 4
+    max_difficulty: 6
+    token_ttl: 4h
+    challenge_ttl: 30m         # must be positive; 7d maximum
+    noscript_fallback: true
+  allowlist:
+    ips: [ "127.0.0.1", "::1" ]
+    # No crawler names in uas: a UA string is forgeable. See verified_bots.
+    uas: []
+    paths:
+      - /robots.txt
+      - /favicon.ico
+      - /.well-known/
+  denylist:
+    ips: []
+  # Kept in sync with guardian.docker.yaml. Inert in the e2e suite: no test
+  # claims a crawler UA, and the compose network has no real crawler rDNS.
+  verified_bots:
+    bots:
+      - name: googlebot
+      - name: bingbot
+
+domains:
+  # The harness site. PoW on so we can exercise the challenge flow, with a
+  # per-path overlay disabling PoW under /api/ (the WAF stays active there).
+  localhost:
+    pow: { enabled: true }
+    paths:
+      "/api/":
+        pow: { enabled: false }
+  # A WAF-only host to test the no-PoW path.
+  api.localhost:
+    pow: { enabled: false }

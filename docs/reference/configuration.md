@@ -50,6 +50,27 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `store.password` | string | `$REDIS_PASSWORD` | Redis/Valkey password. Falls back to the `REDIS_PASSWORD` env var. |
 | `store.db` | int | `0` | Redis database number. |
 
+## enforcement
+
+Moves active-block enforcement onto layers cheaper than the per-request store
+lookup. See the [Block Enforcement Offload](/guide/block-offload) guide for the
+full picture. Every field is restart-required.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enforcement.mirror.reconcile_interval` | duration | `10s` | Cadence of the store scan that seeds the mirror, corrects entries and repairs sink drift. Minimum `1s`. |
+| `enforcement.mirror.max_entries` | int | `1048576` | Mirror capacity. Overflow entries fall back to the store read path (never lost, just not cached). |
+| `enforcement.mirror.mode` | string | `auto` | `auto` (authoritative for `memory`/`bbolt`, read-through for `redis`), `authoritative`, or `read_through`. |
+| `enforcement.nftables.enabled` | bool | `false` | Enable the kernel sink. Linux only; needs `CAP_NET_ADMIN`. |
+| `enforcement.nftables.mode` | string | `managed` | `managed` (own a table + port-scoped drop rule) or `sets_only` (maintain the sets, you write the rule). |
+| `enforcement.nftables.table` | string | `guardian` | nftables `inet` table name. |
+| `enforcement.nftables.hook` | string | `input` | Managed mode chain hook: `input` or `prerouting`. |
+| `enforcement.nftables.ports` | []int | `[80, 443]` | Managed-mode drop rule matches only these TCP ports. Refused empty in managed mode (an all-ports drop could cut off SSH/admin). |
+| `enforcement.nftables.netns` | string | | Network namespace file to program instead of guardiand's own. |
+| `enforcement.nftables.max_entries` | int | `65536` | Kernel set size bound. |
+| `enforcement.nftables.min_ttl` | duration | `0s` | Skip offloading blocks shorter than this; `0` offloads all. |
+| `enforcement.nftables.never_block` | []string | `[]` | CIDRs/IPs never sent to the kernel. Put LB/CDN ranges here. Configured allowlists are excluded automatically on top. |
+
 ## geoip
 
 MaxMind-format (`.mmdb`) databases: MaxMind GeoLite2/GeoIP2, DB-IP, or any

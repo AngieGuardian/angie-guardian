@@ -16,6 +16,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/botverify"
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -54,16 +55,17 @@ const (
 // Engine runs the ordered decision pipeline. This is THE seam: every
 // transport wraps Evaluate and nothing else.
 type Engine struct {
-	snap    atomic.Pointer[engineSnapshot]
-	store   store.Store
-	pow     *pow.Manager // nil when no signing key is configured: PoW stages inert
-	bots    *botverify.Verifier
-	board   *Scoreboard
-	metrics *metrics.Metrics // nil = instrumentation disabled (no-op)
-	recent  recentRing       // last non-allow decisions, for the admin API
-	stages  []Stage
-	log     *slog.Logger
-	lifeMu  sync.Mutex // serializes Reload and Close
+	snap     atomic.Pointer[engineSnapshot]
+	store    store.Store
+	pow      *pow.Manager // nil when no signing key is configured: PoW stages inert
+	bots     *botverify.Verifier
+	board    *Scoreboard
+	metrics  *metrics.Metrics // nil = instrumentation disabled (no-op)
+	enforcer *enforce.Manager // nil = mirror/offload disabled (store-only enforcement)
+	recent   recentRing       // last non-allow decisions, for the admin API
+	stages   []Stage
+	log      *slog.Logger
+	lifeMu   sync.Mutex // serializes Reload and Close
 }
 
 // engineSnapshot bundles the config with the caches derived from it (rules
@@ -103,6 +105,18 @@ func (e *Engine) SetMetrics(m *metrics.Metrics) {
 	e.metrics = m
 	e.snap.Load().intel.SetMetrics(m)
 }
+
+// SetEnforcer attaches the enforcement offload manager. Call once at startup
+// before serving; a nil manager (the default) keeps the store-only block
+// path, which is what unit tests and the config validator run with.
+func (e *Engine) SetEnforcer(enf *enforce.Manager) {
+	e.enforcer = enf
+	e.board.enforcer = enf
+}
+
+// Enforcer exposes the offload manager for the admin API (may be nil; its
+// methods are nil-safe).
+func (e *Engine) Enforcer() *enforce.Manager { return e.enforcer }
 
 // reloadInterval is how often WAF rules files and anomaly model artifacts
 // are polled for changes.
@@ -244,7 +258,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	// The metric label stays host-scoped: paths are client-controlled and
 	// unbounded, so they must never become a label value.
 	label := snap.cfg.DomainLabel(req.Host)
-	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots}
+	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -342,7 +356,11 @@ func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail strin
 // BlockIP places a temporary behavioural block with an explicit TTL (no
 // backoff): an operator/admin-API primitive.
 func (e *Engine) BlockIP(ctx context.Context, ip, reason string, ttl time.Duration) error {
-	return e.store.Set(ctx, BlockKey(ip), []byte(reason), ttl)
+	if err := e.store.Set(ctx, BlockKey(ip), []byte(reason), ttl); err != nil {
+		return err
+	}
+	e.board.notifyEnforcer(ip, reason, ttl, false)
+	return nil
 }
 
 // UnblockIP clears a behavioural block.

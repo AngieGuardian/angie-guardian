@@ -45,12 +45,17 @@ See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 ## Rate limiting (volumetric DDoS)
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
-raw flood. Every request still costs an `auth_request` subrequest; requests not
-terminated by the early static allow/deny policy also reach the shared-state
-lookup. A client that
+raw flood. Every request still costs an `auth_request` subrequest. A client that
 follows the challenge redirect also makes the sidecar issue and persist a
 challenge. Under enough load the sidecar saturates and fail-open (the default)
 sends the flood straight to your backend.
+
+Blocked clients no longer add to that cost inside the sidecar: an always-on
+in-process mirror answers the block lookup with no store read, and the
+optional [kernel offload](/guide/block-offload) can drop a blocked client's
+packets in nftables before Angie ever runs the subrequest. That keeps a flood
+from *already-known-bad* IPs cheap, but it does not help against a first-time
+flood from fresh IPs, which is what the rate limits below are for.
 
 Volumetric DDoS is Angie's job, in front of the `auth_request`, so a flood is
 dropped before it reaches the sidecar at all. The two layers are

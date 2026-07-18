@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
@@ -36,13 +37,25 @@ func blockCountKey(ip string) string { return "blkct:" + ip }
 // stateful (needs the shared store), so it lives with the sidecar, not in the
 // store-free stateless package.
 type Scoreboard struct {
-	store store.Store
-	log   *slog.Logger
-	now   func() time.Time
+	store    store.Store
+	log      *slog.Logger
+	now      func() time.Time
+	enforcer *enforce.Manager // nil-safe; mirrors every block change
 }
 
 func NewScoreboard(st store.Store, log *slog.Logger) *Scoreboard {
 	return &Scoreboard{store: st, log: log, now: time.Now}
+}
+
+// notifyEnforcer feeds one block change to the enforcement offload. The ip
+// string is what BlockKey stores; unparseable values (impossible from the
+// Angie transport) just stay on the store-only path.
+func (s *Scoreboard) notifyEnforcer(ip, reason string, ttl time.Duration, remove bool) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return
+	}
+	s.enforcer.Notify(enforce.BlockEvent{IP: addr, Reason: reason, TTL: ttl, Remove: remove})
 }
 
 // RecordEvent counts one occurrence of evtype for ip within window. When the
@@ -91,10 +104,18 @@ func (s *Scoreboard) Block(ctx context.Context, ip, reason string, ttl, maxBlock
 		ttl = cap
 	}
 	s.log.Info("blocking ip", "ip", ip, "reason", reason, "ttl", ttl, "offenses", offenses)
-	return s.store.Set(ctx, BlockKey(ip), []byte(reason), ttl)
+	if err := s.store.Set(ctx, BlockKey(ip), []byte(reason), ttl); err != nil {
+		return err
+	}
+	s.notifyEnforcer(ip, reason, ttl, false)
+	return nil
 }
 
 // Unblock lifts an active block (admin action; does not reset backoff).
 func (s *Scoreboard) Unblock(ctx context.Context, ip string) error {
-	return s.store.Delete(ctx, BlockKey(ip))
+	if err := s.store.Delete(ctx, BlockKey(ip)); err != nil {
+		return err
+	}
+	s.notifyEnforcer(ip, "", 0, true)
+	return nil
 }
