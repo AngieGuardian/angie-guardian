@@ -46,6 +46,12 @@ func testServer(t *testing.T) *httptest.Server {
 
 func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
 	t.Helper()
+	ts, _ := testServerAndHandler(t, yaml)
+	return ts
+}
+
+func testServerAndHandler(t *testing.T, yaml string) (*httptest.Server, *Server) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -67,9 +73,10 @@ func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts := httptest.NewServer(New(engine, mgr, st, nil, slog.Default()))
+	h := New(engine, mgr, st, nil, slog.Default())
+	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, h
 }
 
 // client that does not follow redirects, so the no-JS 303 can be inspected.
@@ -453,14 +460,63 @@ func TestCookieSecureFollowsProto(t *testing.T) {
 func TestChallengeRateLimit(t *testing.T) {
 	ts := testServer(t)
 	h := guardianHeaders("html.test", "198.51.100.9", "/", "Mozilla/5.0")
+	// The default pow.issuance_rate_limit is 60/min.
+	const defaultLimit = 60
 	var last int
-	for i := 0; i < issuanceRateLimit+5; i++ {
+	for i := 0; i < defaultLimit+5; i++ {
 		resp := do(t, "GET", ts.URL+"/challenge", h, nil)
 		io.Copy(io.Discard, resp.Body)
 		last = resp.StatusCode
 	}
 	if last != http.StatusTooManyRequests {
-		t.Fatalf("after %d issuances: status = %d, want 429", issuanceRateLimit+5, last)
+		t.Fatalf("after %d issuances: status = %d, want 429", defaultLimit+5, last)
+	}
+}
+
+func TestLoadSheddingPassesTokenHolders(t *testing.T) {
+	const shedYAML = `
+store: { backend: memory }
+signing_key_file: k
+attack_mode: { enabled: true, effects: { max_inflight: 1 } }
+defaults:
+  pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 4 }
+domains:
+  html.test: { pow: { enabled: true } }
+`
+	ts, h := testServerAndHandler(t, shedYAML)
+	ip, ua := "198.51.100.7", "Mozilla/5.0"
+
+	// Mint a real token by solving one challenge.
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": solve(t, challenge, difficulty)})
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/", ua), body)
+	var cookie string
+	for _, c := range resp.Cookies() {
+		if c.Name == pow.CookieName {
+			cookie = c.Value
+		}
+	}
+	if cookie == "" {
+		t.Fatal("could not mint a token")
+	}
+
+	// Saturate: fill the single in-flight slot so the guard's default branch runs.
+	h.inflight <- struct{}{}
+	defer func() { <-h.inflight }()
+
+	// A tokenless request is shed with 503 + Retry-After.
+	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", "203.0.113.50", "/page", ua), nil)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("tokenless under saturation: status = %d retry-after = %q, want 503 + Retry-After",
+			resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+
+	// A token holder still passes (cheap stateless check, no store).
+	th := guardianHeaders("html.test", ip, "/page", ua)
+	th["X-Guardian-Cookie"] = pow.CookieName + "=" + cookie
+	resp = do(t, "GET", ts.URL+"/auth", th, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token holder under saturation: status = %d, want 200", resp.StatusCode)
 	}
 }
 

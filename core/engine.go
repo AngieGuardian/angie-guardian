@@ -445,6 +445,20 @@ func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
 	return m.Score(host, decodePath(requestPath(uri)), decodeQuery(requestQuery(uri)), ua)
 }
 
+// HasValidToken reports whether the request carries a valid PoW token for its
+// resolved (host, path) policy. It is a cheap stateless signature check with
+// no store I/O, used by the transport's load-shedding guard to keep admitting
+// vouched clients while shedding everyone else under saturation.
+func (e *Engine) HasValidToken(req *RequestContext) bool {
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return false
+	}
+	defer snap.release()
+	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
+	return hasValidPoWToken(req, &stageEnv{domain: dcfg, pow: e.pow})
+}
+
 // PoWManager exposes the PoW manager for admin key rotation (may be nil).
 func (e *Engine) PoWManager() *pow.Manager { return e.pow }
 
