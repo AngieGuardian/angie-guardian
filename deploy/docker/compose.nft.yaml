@@ -1,4 +1,4 @@
-# Angie Guardian — kernel block offload (nftables) demo topology.
+# Angie Guardian: kernel block offload (nftables) demo topology.
 #
 #   Angie (reverse proxy) ──► guardiand (sidecar, shares Angie's netns) ──► whoami
 #

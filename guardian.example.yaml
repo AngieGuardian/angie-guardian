@@ -50,6 +50,24 @@ store:
   # password: ""              # or the REDIS_PASSWORD env var
   # db: 0
 
+# Block enforcement offload. The in-process mirror is always on (it makes the
+# per-request block check a memory lookup, no store read) and needs no config;
+# the tunables below and the optional kernel sink are all you set here. See
+# the "Block Enforcement Offload" guide for the full story.
+# enforcement:
+#   mirror:
+#     reconcile_interval: 10s   # store scan cadence; also repairs sink drift
+#     max_entries: 1048576      # overflow falls back to store reads
+#     mode: auto                # auto | authoritative | read_through
+#   # Kernel sink: drop blocked clients in nftables before Angie sees them.
+#   # Linux only, needs CAP_NET_ADMIN in the namespace where clients arrive.
+#   nftables:
+#     enabled: false
+#     mode: managed             # managed (own the drop rule) | sets_only
+#     ports: [80, 443]          # drop rule matches only these; keeps SSH/admin safe
+#     never_block:              # ALWAYS list your load balancer / CDN ranges
+#       - 203.0.113.0/24
+
 # GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
 # for the per-domain `geo` scoping below. Keep them updated with geoipupdate
 # or a scheduled download; guardiand hot-reloads the files when they are
