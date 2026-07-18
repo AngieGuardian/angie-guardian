@@ -102,6 +102,7 @@ type Config struct {
 	Admin        AdminConfig          `yaml:"admin"`
 	Store        StoreConfig          `yaml:"store"`
 	Enforcement  EnforcementConfig    `yaml:"enforcement"`
+	AttackMode   AttackModeConfig     `yaml:"attack_mode"`
 	GeoIP        GeoIPConfig          `yaml:"geoip"`
 	Reputation   ReputationFeeds      `yaml:"reputation"`
 	Defaults     DomainConfig         `yaml:"defaults"`
@@ -282,6 +283,168 @@ func parsePrefixOrAddr(s string) (netip.Prefix, error) {
 		return netip.Prefix{}, fmt.Errorf("invalid IP %q: %w", s, err)
 	}
 	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
+// AttackModeConfig drives the fleet-wide attack posture. Absent or
+// enabled: false keeps behaviour identical to today. Signals are measured
+// per instance over a sliding window; when a threshold is crossed the
+// instance raises PoW difficulty fleet-wide, optionally forces challenges and
+// switches challenge issuance to a store-free (stateless) path, so a flood of
+// new clients stops saturating the store. Hot-reloadable.
+type AttackModeConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Window is the sliding measurement window (bucketed in 5s steps).
+	Window Duration `yaml:"window"`
+	// MinDwell is the minimum time at a level before it decays one step, so a
+	// posture cannot flap on threshold-straddling load. Must be >= Window.
+	MinDwell Duration `yaml:"min_dwell"`
+	// SharePosture broadcasts the level through the shared store (one op per
+	// tick) so replicas move together; a failing store degrades to local-only.
+	SharePosture *bool                 `yaml:"share_posture"`
+	Signals      AttackSignalsConfig   `yaml:"signals"`
+	Effects      AttackEffectsConfig   `yaml:"effects"`
+}
+
+// AttackSignalsConfig are the thresholds that move the posture. A rate of 0
+// disables that signal.
+type AttackSignalsConfig struct {
+	ChallengeRate       Rate    `yaml:"challenge_rate"`        // issuance/s entering elevated
+	AttackChallengeRate Rate    `yaml:"attack_challenge_rate"` // issuance/s entering attack
+	MinSolveRatio       float64 `yaml:"min_solve_ratio"`      // attack entry needs solved/issued below this
+	RequestRate         Rate    `yaml:"request_rate"`         // global Evaluate/s; 0 disables
+	StoreErrorRatio     float64 `yaml:"store_error_ratio"`    // store op error fraction entering elevated
+	StoreSlowRatio      float64 `yaml:"store_slow_ratio"`     // slow (>25ms) op fraction entering elevated
+}
+
+// AttackEffectsConfig are the independently-toggleable effects. Difficulty
+// raises are on the historical 1..8 quarter-step scale (each 0.25 = 1 bit).
+type AttackEffectsConfig struct {
+	ElevatedDifficultyRaise float64 `yaml:"elevated_difficulty_raise"`
+	AttackDifficultyRaise   float64 `yaml:"attack_difficulty_raise"`
+	DifficultyCap           float64 `yaml:"difficulty_cap"` // ceiling for the shifted window
+	ForceAlways             *bool   `yaml:"force_always"`   // attack: suspicion behaves as always
+	StatelessIssuance       *bool   `yaml:"stateless_issuance"`
+	ScoreboardFactor        float64 `yaml:"scoreboard_factor"` // attack: multiply thresholds (0<f<=1)
+	// MaxInflight bounds concurrent Evaluate calls (Part C load-shedding);
+	// over the bound, token holders still pass and others get 503. 0 = off.
+	MaxInflight int `yaml:"max_inflight"`
+}
+
+// ExtraBits returns the fleet difficulty raise in leading-zero bits for the
+// given level (0 normal, 1 elevated, 2 attack).
+func (a *AttackModeConfig) ExtraBits(level int) int {
+	switch level {
+	case 1:
+		return difficultyBits(a.Effects.ElevatedDifficultyRaise)
+	case 2:
+		return difficultyBits(a.Effects.AttackDifficultyRaise)
+	default:
+		return 0
+	}
+}
+
+// CapBits is the ceiling for the shifted difficulty window, in bits.
+func (a *AttackModeConfig) CapBits() int { return difficultyBits(a.Effects.DifficultyCap) }
+
+// SharePostureEnabled resolves the *bool default (true).
+func (a *AttackModeConfig) SharePostureEnabled() bool { return a.SharePosture == nil || *a.SharePosture }
+
+// ForceAlwaysEnabled resolves the *bool default (true).
+func (a *AttackEffectsConfig) ForceAlwaysEnabled() bool { return a.ForceAlways == nil || *a.ForceAlways }
+
+// StatelessEnabled resolves the *bool default (true).
+func (a *AttackEffectsConfig) StatelessEnabled() bool { return a.StatelessIssuance == nil || *a.StatelessIssuance }
+
+func (a *AttackModeConfig) validate() error {
+	if a.Window == 0 {
+		a.Window = Duration(30 * time.Second)
+	}
+	if a.Window.Std() < 10*time.Second || a.Window.Std() > 10*time.Minute {
+		return fmt.Errorf("attack_mode.window must be 10s..10m, got %v", a.Window.Std())
+	}
+	if a.MinDwell == 0 {
+		a.MinDwell = Duration(60 * time.Second)
+	}
+	if a.MinDwell < a.Window {
+		return fmt.Errorf("attack_mode.min_dwell (%v) must be >= window (%v)", a.MinDwell.Std(), a.Window.Std())
+	}
+	s := &a.Signals
+	if s.ChallengeRate.Count == 0 {
+		s.ChallengeRate = Rate{Count: 200, Per: time.Second}
+	}
+	if s.AttackChallengeRate.Count == 0 {
+		s.AttackChallengeRate = Rate{Count: 1000, Per: time.Second}
+	}
+	if perSecond(s.AttackChallengeRate) < perSecond(s.ChallengeRate) {
+		return fmt.Errorf("attack_mode.signals.attack_challenge_rate must be >= challenge_rate")
+	}
+	if s.MinSolveRatio == 0 {
+		s.MinSolveRatio = 0.2
+	}
+	if err := ratioField("min_solve_ratio", s.MinSolveRatio); err != nil {
+		return err
+	}
+	if s.StoreErrorRatio == 0 {
+		s.StoreErrorRatio = 0.05
+	}
+	if err := ratioField("store_error_ratio", s.StoreErrorRatio); err != nil {
+		return err
+	}
+	if s.StoreSlowRatio == 0 {
+		s.StoreSlowRatio = 0.25
+	}
+	if err := ratioField("store_slow_ratio", s.StoreSlowRatio); err != nil {
+		return err
+	}
+	e := &a.Effects
+	if e.ElevatedDifficultyRaise == 0 {
+		e.ElevatedDifficultyRaise = 0.5
+	}
+	if e.AttackDifficultyRaise == 0 {
+		e.AttackDifficultyRaise = 1.0
+	}
+	if e.DifficultyCap == 0 {
+		e.DifficultyCap = 7.0
+	}
+	for _, r := range []struct {
+		name string
+		v    float64
+	}{{"elevated_difficulty_raise", e.ElevatedDifficultyRaise}, {"attack_difficulty_raise", e.AttackDifficultyRaise}} {
+		if r.v < 0 || r.v > 2 {
+			return fmt.Errorf("attack_mode.effects.%s must be 0..2, got %v", r.name, r.v)
+		}
+		if math.Abs(r.v*4-math.Round(r.v*4)) > 1e-9 {
+			return fmt.Errorf("attack_mode.effects.%s must be a multiple of 0.25, got %v", r.name, r.v)
+		}
+	}
+	if e.DifficultyCap < 1 || e.DifficultyCap > 8 {
+		return fmt.Errorf("attack_mode.effects.difficulty_cap must be 1..8, got %v", e.DifficultyCap)
+	}
+	if e.ScoreboardFactor == 0 {
+		e.ScoreboardFactor = 1.0
+	}
+	if e.ScoreboardFactor <= 0 || e.ScoreboardFactor > 1 {
+		return fmt.Errorf("attack_mode.effects.scoreboard_factor must be 0<f<=1, got %v", e.ScoreboardFactor)
+	}
+	if e.MaxInflight < 0 {
+		return fmt.Errorf("attack_mode.effects.max_inflight must be >= 0, got %d", e.MaxInflight)
+	}
+	return nil
+}
+
+// perSecond normalizes a Rate to a per-second float for comparison.
+func perSecond(r Rate) float64 {
+	if r.Per <= 0 {
+		return 0
+	}
+	return float64(r.Count) / r.Per.Seconds()
+}
+
+func ratioField(name string, v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 1 {
+		return fmt.Errorf("attack_mode.signals.%s must be 0<r<=1, got %v", name, v)
+	}
+	return nil
 }
 
 // GeoIPConfig points at MaxMind-format (.mmdb) databases: MaxMind
@@ -611,11 +774,16 @@ type PoWConfig struct {
 	// each +0.25 doubles the work (4.25 is 2x harder than 4). Internally a
 	// difficulty is the number of leading zero BITS required of the SHA-256,
 	// i.e. round(difficulty * 4); see BaseBits/MaxBits.
-	BaseDifficulty   float64  `yaml:"base_difficulty"`
-	MaxDifficulty    float64  `yaml:"max_difficulty"`
-	TokenTTL         Duration `yaml:"token_ttl"`
-	ChallengeTTL     Duration `yaml:"challenge_ttl"`
-	NoScriptFallback bool     `yaml:"noscript_fallback"`
+	BaseDifficulty float64  `yaml:"base_difficulty"`
+	MaxDifficulty  float64  `yaml:"max_difficulty"`
+	TokenTTL       Duration `yaml:"token_ttl"`
+	ChallengeTTL   Duration `yaml:"challenge_ttl"`
+	// IssuanceRateLimit caps how many challenges one IP may be issued per
+	// window, so the interstitial cannot itself be used to flood the store.
+	// Promoted from a compile-time constant so operators can tune it under
+	// attack. Default 60/min preserves the historical behaviour.
+	IssuanceRateLimit Rate `yaml:"issuance_rate_limit"`
+	NoScriptFallback  bool `yaml:"noscript_fallback"`
 }
 
 // maxPoWTTL caps token_ttl and challenge_ttl so a mistyped unit (e.g. a value
@@ -723,6 +891,9 @@ func (c *Config) finalize() error {
 	if err := c.Enforcement.validate(); err != nil {
 		return err
 	}
+	if err := c.AttackMode.validate(); err != nil {
+		return err
+	}
 	if err := c.Reputation.validate(); err != nil {
 		return err
 	}
@@ -741,6 +912,9 @@ func (c *Config) finalize() error {
 	}
 	if c.Defaults.PoW.ChallengeTTL == 0 {
 		c.Defaults.PoW.ChallengeTTL = Duration(30 * time.Minute)
+	}
+	if c.Defaults.PoW.IssuanceRateLimit.Count == 0 {
+		c.Defaults.PoW.IssuanceRateLimit = Rate{Count: 60, Per: time.Minute}
 	}
 	if c.Defaults.WAF.IPBehaviour.BlockTTL == 0 {
 		c.Defaults.WAF.IPBehaviour.BlockTTL = Duration(15 * time.Minute)
