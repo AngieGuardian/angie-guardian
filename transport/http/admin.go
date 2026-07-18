@@ -67,6 +67,8 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
 	s.mux.HandleFunc("GET /admin/intel", s.auth(s.handleIntel))
 	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
+	s.mux.HandleFunc("GET /admin/offload", s.auth(s.handleOffload))
+	s.mux.HandleFunc("POST /admin/offload/reconcile", s.auth(s.handleOffloadReconcile))
 
 	// The reporting dashboard is a static self-contained page: it holds no data
 	// itself (all data comes from the token-guarded endpoints above, which the
@@ -356,6 +358,31 @@ func (s *AdminServer) handleReload(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.log.Info("admin reloaded config")
 	writeJSON(w, http.StatusOK, map[string]any{"reloaded": true})
+}
+
+// handleOffload reports the enforcement offload state: mirror mode, size and
+// seed status plus every external sink's health, so an operator can see at a
+// glance whether blocks are enforced in the kernel or in-daemon.
+func (s *AdminServer) handleOffload(w http.ResponseWriter, _ *http.Request) {
+	enf := s.engine.Enforcer()
+	if enf == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, enf.Status())
+}
+
+// handleOffloadReconcile schedules an immediate authoritative store scan:
+// drift repair after a manual nft flush or an out-of-band store edit, without
+// waiting for the next reconcile tick. The scan itself runs asynchronously.
+func (s *AdminServer) handleOffloadReconcile(w http.ResponseWriter, _ *http.Request) {
+	enf := s.engine.Enforcer()
+	if enf == nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "enforcement offload not active"})
+		return
+	}
+	enf.ForceReconcile()
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "reconcile scheduled"})
 }
 
 // handleIntel reports the state of the IP-intelligence sources: which GeoIP
