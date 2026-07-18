@@ -300,9 +300,9 @@ type AttackModeConfig struct {
 	MinDwell Duration `yaml:"min_dwell"`
 	// SharePosture broadcasts the level through the shared store (one op per
 	// tick) so replicas move together; a failing store degrades to local-only.
-	SharePosture *bool                 `yaml:"share_posture"`
-	Signals      AttackSignalsConfig   `yaml:"signals"`
-	Effects      AttackEffectsConfig   `yaml:"effects"`
+	SharePosture *bool               `yaml:"share_posture"`
+	Signals      AttackSignalsConfig `yaml:"signals"`
+	Effects      AttackEffectsConfig `yaml:"effects"`
 }
 
 // AttackSignalsConfig are the thresholds that move the posture. A rate of 0
@@ -310,10 +310,10 @@ type AttackModeConfig struct {
 type AttackSignalsConfig struct {
 	ChallengeRate       Rate    `yaml:"challenge_rate"`        // issuance/s entering elevated
 	AttackChallengeRate Rate    `yaml:"attack_challenge_rate"` // issuance/s entering attack
-	MinSolveRatio       float64 `yaml:"min_solve_ratio"`      // attack entry needs solved/issued below this
-	RequestRate         Rate    `yaml:"request_rate"`         // global Evaluate/s; 0 disables
-	StoreErrorRatio     float64 `yaml:"store_error_ratio"`    // store op error fraction entering elevated
-	StoreSlowRatio      float64 `yaml:"store_slow_ratio"`     // slow (>25ms) op fraction entering elevated
+	MinSolveRatio       float64 `yaml:"min_solve_ratio"`       // attack entry needs solved/issued below this
+	RequestRate         Rate    `yaml:"request_rate"`          // global Evaluate/s; 0 disables
+	StoreErrorRatio     float64 `yaml:"store_error_ratio"`     // store op error fraction entering elevated
+	StoreSlowRatio      float64 `yaml:"store_slow_ratio"`      // slow (>25ms) op fraction entering elevated
 }
 
 // AttackEffectsConfig are the independently-toggleable effects. Difficulty
@@ -347,13 +347,19 @@ func (a *AttackModeConfig) ExtraBits(level int) int {
 func (a *AttackModeConfig) CapBits() int { return difficultyBits(a.Effects.DifficultyCap) }
 
 // SharePostureEnabled resolves the *bool default (true).
-func (a *AttackModeConfig) SharePostureEnabled() bool { return a.SharePosture == nil || *a.SharePosture }
+func (a *AttackModeConfig) SharePostureEnabled() bool {
+	return a.SharePosture == nil || *a.SharePosture
+}
 
 // ForceAlwaysEnabled resolves the *bool default (true).
-func (a *AttackEffectsConfig) ForceAlwaysEnabled() bool { return a.ForceAlways == nil || *a.ForceAlways }
+func (a *AttackEffectsConfig) ForceAlwaysEnabled() bool {
+	return a.ForceAlways == nil || *a.ForceAlways
+}
 
 // StatelessEnabled resolves the *bool default (true).
-func (a *AttackEffectsConfig) StatelessEnabled() bool { return a.StatelessIssuance == nil || *a.StatelessIssuance }
+func (a *AttackEffectsConfig) StatelessEnabled() bool {
+	return a.StatelessIssuance == nil || *a.StatelessIssuance
+}
 
 func (a *AttackModeConfig) validate() error {
 	if a.Window == 0 {
