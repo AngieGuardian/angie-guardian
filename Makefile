@@ -35,6 +35,14 @@ test:
 e2e:
 	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
+# Gated nftables kernel-offload e2e. Needs a kernel with nf_tables and a
+# runtime that grants NET_ADMIN; skips cleanly where that is unavailable
+# (e.g. some CI shell runners). Separate build tag so `make e2e` never
+# requires elevated capabilities.
+.PHONY: e2e-nft
+e2e-nft:
+	go test -tags e2e_nft -count=1 -timeout 15m ./test/e2e/...
+
 # Run every fuzz target for FUZZTIME each. `go test -fuzz` fuzzes exactly one
 # target per package invocation, so discover them with `-list` and loop. Any
 # crasher is written to testdata/fuzz/ and fails the run. A parser panic in a

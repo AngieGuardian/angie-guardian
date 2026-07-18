@@ -53,5 +53,15 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=true
 
+# Kernel block offload (enforcement.nftables.enabled). Uncomment these to let
+# guardiand drop blocked clients in nftables so their packets never reach
+# Angie. The daemon programs the kernel over netlink (AF_NETLINK) and needs
+# CAP_NET_ADMIN in the namespace where client traffic arrives; on bare metal
+# that is the host namespace, so no netns: is required. NoNewPrivileges above
+# still holds: ambient capabilities are granted, not gained via setuid.
+# AmbientCapabilities=CAP_NET_ADMIN
+# CapabilityBoundingSet=CAP_NET_ADMIN
+# RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
 [Install]
 WantedBy=multi-user.target
