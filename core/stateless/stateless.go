@@ -137,6 +137,11 @@ func (l *ListConfig) MatchIP(addr netip.Addr) bool {
 	return false
 }
 
+// Prefixes exposes the compiled IP prefixes (after Compile). The enforcement
+// layer unions them across all scopes into its kernel-sink safety filter;
+// callers must not mutate the returned slice.
+func (l *ListConfig) Prefixes() []netip.Prefix { return l.prefixes }
+
 func (l *ListConfig) MatchUA(ua string) bool {
 	if ua == "" {
 		return false

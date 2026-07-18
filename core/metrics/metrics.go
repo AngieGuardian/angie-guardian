@@ -31,6 +31,12 @@ type Metrics struct {
 	evalLatency  prometheus.Histogram
 	feedEntries  *prometheus.GaugeVec   // by feed
 	feedRefresh  *prometheus.CounterVec // by feed, status
+
+	blockLookups     *prometheus.CounterVec // by source (mirror|store), outcome (hit|miss)
+	offloadEntries   *prometheus.GaugeVec   // by sink (mirror|nftables)
+	offloadOps       *prometheus.CounterVec // by sink, op (add|remove), status (ok|error|dropped)
+	offloadReconcile *prometheus.CounterVec // by status (ok|error)
+	offloadHealthy   *prometheus.GaugeVec   // by sink; 1 = enforcing, 0 = degraded to in-daemon
 }
 
 func New() *Metrics {
@@ -92,6 +98,26 @@ func New() *Metrics {
 			Namespace: "guardian", Name: "feed_refresh_total",
 			Help: "Reputation feed refresh attempts by feed and status (ok|error).",
 		}, []string{"feed", "status"}),
+		blockLookups: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "block_lookups_total",
+			Help: "Behavioural block lookups by source (mirror|store) and outcome (hit|miss).",
+		}, []string{"source", "outcome"}),
+		offloadEntries: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "offload_entries",
+			Help: "Active block entries held per enforcement sink.",
+		}, []string{"sink"}),
+		offloadOps: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "offload_ops_total",
+			Help: "Enforcement offload operations by sink, op (add|remove) and status (ok|error|dropped).",
+		}, []string{"sink", "op", "status"}),
+		offloadReconcile: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "offload_reconcile_total",
+			Help: "Block-set reconciliation scans by status (ok|error).",
+		}, []string{"status"}),
+		offloadHealthy: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "offload_healthy",
+			Help: "Whether an enforcement sink is healthy (1) or degraded to in-daemon enforcement (0).",
+		}, []string{"sink"}),
 	}
 }
 
@@ -171,4 +197,49 @@ func (m *Metrics) EvaluateLatency(seconds float64) {
 		return
 	}
 	m.evalLatency.Observe(seconds)
+}
+
+// BlockLookup records one behavioural block lookup on the auth hot path.
+// Both label sets are closed: source is mirror|store, outcome is hit|miss.
+func (m *Metrics) BlockLookup(source, outcome string) {
+	if m == nil {
+		return
+	}
+	m.blockLookups.WithLabelValues(source, outcome).Inc()
+}
+
+func (m *Metrics) OffloadEntries(sink string, n int) {
+	if m == nil {
+		return
+	}
+	m.offloadEntries.WithLabelValues(sink).Set(float64(n))
+}
+
+func (m *Metrics) OffloadOp(sink, op, status string) {
+	if m == nil {
+		return
+	}
+	m.offloadOps.WithLabelValues(sink, op, status).Inc()
+}
+
+func (m *Metrics) OffloadReconcile(ok bool) {
+	if m == nil {
+		return
+	}
+	status := "ok"
+	if !ok {
+		status = "error"
+	}
+	m.offloadReconcile.WithLabelValues(status).Inc()
+}
+
+func (m *Metrics) OffloadHealthy(sink string, healthy bool) {
+	if m == nil {
+		return
+	}
+	v := 0.0
+	if healthy {
+		v = 1.0
+	}
+	m.offloadHealthy.WithLabelValues(sink).Set(v)
 }
