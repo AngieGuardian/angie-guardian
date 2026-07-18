@@ -130,6 +130,10 @@
     <button id="logout">Forget token</button>
   </header>
 
+  <div id="attack-banner" role="status" hidden
+       style="margin:0 0 1rem;padding:.6rem .9rem;border-radius:6px;font-weight:600;
+              background:#7a2020;color:#fff;"></div>
+
   <div class="tiles">
     <div class="tile"><div class="label">Active blocks</div>
       <div class="value" id="t-blocks">–</div>
@@ -291,6 +295,16 @@
       api("/admin/decisions?limit=100"), api("/admin/config"),
       api("/admin/intel"),
     ]);
+
+    // Attack-mode banner: shown only when the posture is above normal.
+    const banner = $("attack-banner");
+    if (stats.attack && stats.attack.level && stats.attack.level !== "normal") {
+      banner.textContent = "Attack mode: " + stats.attack.level.toUpperCase() +
+        (stats.attack.since ? " since " + new Date(stats.attack.since).toLocaleTimeString() : "");
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
 
     // KPI tiles.
     $("t-blocks").textContent = stats.blocks_active;

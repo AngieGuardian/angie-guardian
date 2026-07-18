@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -69,6 +70,8 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
 	s.mux.HandleFunc("GET /admin/offload", s.auth(s.handleOffload))
 	s.mux.HandleFunc("POST /admin/offload/reconcile", s.auth(s.handleOffloadReconcile))
+	s.mux.HandleFunc("GET /admin/attack", s.auth(s.handleAttack))
+	s.mux.HandleFunc("POST /admin/attack", s.auth(s.handleAttackSet))
 
 	// The reporting dashboard is a static self-contained page: it holds no data
 	// itself (all data comes from the token-guarded endpoints above, which the
@@ -266,6 +269,10 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	if ch := s.challengeStats(); ch != nil {
 		out["challenges"] = ch
 	}
+	if d := s.engine.AttackDetector(); d != nil {
+		st := d.State()
+		out["attack"] = map[string]any{"level": st.Level.String(), "since": st.Since}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -383,6 +390,67 @@ func (s *AdminServer) handleOffloadReconcile(w http.ResponseWriter, _ *http.Requ
 	}
 	enf.ForceReconcile()
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "reconcile scheduled"})
+}
+
+// handleAttack reports the current attack posture: level, since, reason,
+// whether it is operator-pinned, the current window signal rates, the active
+// effects, and the configured thresholds.
+func (s *AdminServer) handleAttack(w http.ResponseWriter, _ *http.Request) {
+	d := s.engine.AttackDetector()
+	if d == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	st := d.State()
+	_, pinned := d.Pinned()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"level":   st.Level.String(),
+		"since":   st.Since,
+		"reason":  st.Reason,
+		"pinned":  pinned,
+		"effects": map[string]any{"extra_bits": st.ExtraBits, "stateless": st.Stateless, "force_always": st.ForceAlways},
+		"signals": d.CurrentSignals(),
+	})
+}
+
+// handleAttackSet pins or unpins the posture. Body: {"level": "normal" |
+// "elevated" | "attack" | "auto", "ttl": "10m"}. "auto" unpins; a pinned
+// level wins in both directions, so pinning "normal" is a kill switch.
+func (s *AdminServer) handleAttackSet(w http.ResponseWriter, r *http.Request) {
+	d := s.engine.AttackDetector()
+	if d == nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "attack mode not active"})
+		return
+	}
+	var body struct {
+		Level string `json:"level"`
+		TTL   string `json:"ttl"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
+		return
+	}
+	level, auto, ok := attackmode.ParseLevel(body.Level)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "level must be normal, elevated, attack or auto"})
+		return
+	}
+	if auto {
+		d.Unpin()
+		writeJSON(w, http.StatusOK, map[string]any{"pinned": false, "level": d.State().Level.String()})
+		return
+	}
+	var ttl time.Duration
+	if body.TTL != "" {
+		var err error
+		if ttl, err = time.ParseDuration(body.TTL); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ttl: " + err.Error()})
+			return
+		}
+	}
+	d.Pin(level, ttl)
+	s.log.Warn("attack posture pinned via admin API", "level", level.String(), "ttl", ttl)
+	writeJSON(w, http.StatusOK, map[string]any{"pinned": true, "level": level.String()})
 }
 
 // handleIntel reports the state of the IP-intelligence sources: which GeoIP
