@@ -167,6 +167,33 @@ manager is not active.
 {"status":"reconcile scheduled"}
 ```
 
+## Attack mode
+
+### `GET /admin/attack`
+
+The current [attack posture](/guide/attack-mode): level, since, reason,
+whether it is operator-pinned, the active effects, and the current window
+signal rates. Returns `{"enabled": false}` when attack mode is not active.
+
+```json
+{"level":"attack","since":"2026-07-19T10:00:00Z","reason":"challenge_rate",
+ "pinned":false,
+ "effects":{"extra_bits":4,"stateless":true,"force_always":true},
+ "signals":{"challenge_rate":1450.0,"request_rate":0,"solve_ratio":0.02,
+            "store_error_ratio":0,"store_slow_ratio":0}}
+```
+
+### `POST /admin/attack`
+
+Pin or unpin the posture. Body `{"level": "normal"|"elevated"|"attack"|"auto", "ttl": "10m"}`.
+`auto` returns to automatic detection; any other level pins (a pin wins in
+both directions, so pinning `normal` is a kill switch). `ttl` is optional
+(no expiry when omitted). Returns `409` when attack mode is not active.
+
+```json
+{"pinned":true,"level":"attack"}
+```
+
 ## Keys and config
 
 ### `POST /admin/rotate-key`

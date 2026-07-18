@@ -61,6 +61,14 @@ counters do not add write rounds: they are counted in-process and synced to
 the shared store in the background. See
 [choosing a store backend](/guide/production#choosing-a-store-backend).
 
+::: tip Attack mode lifts the write ceiling
+The ~4.1k/s bbolt issuance ceiling is exactly what a new-client flood
+saturates. Under [attack mode](/guide/attack-mode), challenge issuance goes
+store-free (stateless), so issuance throughput rises toward the read-path
+numbers instead of being fsync-bound. The single store write moves to redeem
+time and is gated behind the client actually solving the proof of work.
+:::
+
 ::: tip The block check is now off the store
 With the [in-process mirror](/guide/block-offload) (always on), the behavioural
 block lookup on the `allow` path no longer reads the store on single-writer

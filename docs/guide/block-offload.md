@@ -3,7 +3,7 @@
 Once Guardian decides an IP is bad, every later request from it must be
 denied. Enforcing that check as cheaply as possible matters under attack: a
 flood from already-blocked clients should cost near nothing, not saturate the
-sidecar and trip [fail-open](/guide/production#fail-open-vs-fail-closed).
+sidecar and trip [fail-open](/guide/threat-model#fail-open-by-design).
 
 Guardian enforces blocks on two layers:
 
