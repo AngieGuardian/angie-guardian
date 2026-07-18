@@ -302,6 +302,11 @@ type RedeemResult struct {
 	Token       string
 	TokenTTL    time.Duration
 	RedirectURI string
+	// SoftError is set when a token was minted despite a non-fatal issue
+	// (currently only a failed single-spend write during a store outage, on
+	// the stateless path). The caller may count it; the redemption still
+	// succeeds.
+	SoftError error
 }
 
 var (
@@ -317,6 +322,12 @@ var (
 // two concurrent redemptions of one challenge can never both mint (the
 // mint-twice replay class).
 func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult, error) {
+	// A stateless challenge carries its own authenticated state; it is always
+	// accepted (both formats coexist forever) so a challenge issued just
+	// before an attack-mode flip still redeems.
+	if IsStatelessID(req.ChallengeID) {
+		return m.redeemStateless(ctx, req)
+	}
 	if len(req.ChallengeID) != 32 {
 		return nil, ErrChallengeUnknown
 	}
