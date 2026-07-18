@@ -57,6 +57,7 @@ const (
 var (
 	site  string // the protected site, through Angie
 	admin string // guardiand admin API + /metrics
+	auth  string // guardiand auth hot path, published for the attack-mode test
 )
 
 // stack is the running compose stack, shared by every test via TestMain.
@@ -92,11 +93,20 @@ func runSuite(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "e2e: pick admin port:", err)
 		return 1
 	}
+	authPort, err := freePort()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: pick auth port:", err)
+		return 1
+	}
 	site = fmt.Sprintf("http://127.0.0.1:%d", sitePort)
 	admin = fmt.Sprintf("http://127.0.0.1:%d", adminPort)
+	auth = fmt.Sprintf("http://127.0.0.1:%d", authPort)
 	stack = stack.WithEnv(map[string]string{
 		"GUARDIAN_SITE_PORT":  strconv.Itoa(sitePort),
 		"GUARDIAN_ADMIN_PORT": strconv.Itoa(adminPort),
+		// The auth hot path is published so the attack-mode test can drive
+		// /challenge directly from synthetic client IPs (trusted_proxy: true).
+		"GUARDIAN_AUTH_PORT": strconv.Itoa(authPort),
 		// The e2e config: identical to the manual harness's
 		// guardian.docker.yaml except for a low PoW difficulty, so the
 		// Go solver in this suite stays fast.

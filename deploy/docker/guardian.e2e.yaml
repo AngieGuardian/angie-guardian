@@ -30,6 +30,20 @@ store:
   backend: bbolt
   path: /var/lib/guardian/guardian.db
 
+# Attack mode with a short window and thresholds low enough for the e2e
+# attack-mode test to trip by hammering /challenge, but well above what the
+# other tests generate. request_rate stays disabled so ordinary suite traffic
+# never elevates.
+attack_mode:
+  enabled: true
+  window: 10s
+  min_dwell: 10s
+  share_posture: false
+  signals:
+    challenge_rate: 15/s
+    attack_challenge_rate: 30/s
+    min_solve_ratio: 0.2
+
 defaults:
   waf:
     ip_behaviour:
@@ -57,6 +71,9 @@ defaults:
     max_difficulty: 6
     token_ttl: 4h
     challenge_ttl: 30m         # must be positive; 7d maximum
+    # Generous so the attack-mode test can hammer /challenge from a handful of
+    # rotating IPs without hitting the per-IP cap before the global rate trips.
+    issuance_rate_limit: 6000/min
     noscript_fallback: true
   allowlist:
     ips: [ "127.0.0.1", "::1" ]
