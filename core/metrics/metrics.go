@@ -37,6 +37,12 @@ type Metrics struct {
 	offloadOps       *prometheus.CounterVec // by sink, op (add|remove), status (ok|error|dropped)
 	offloadReconcile *prometheus.CounterVec // by status (ok|error)
 	offloadHealthy   *prometheus.GaugeVec   // by sink; 1 = enforcing, 0 = degraded to in-daemon
+
+	attackMode        prometheus.Gauge       // 0 normal, 1 elevated, 2 attack
+	attackExtraBits   prometheus.Gauge       // active fleet difficulty raise in bits
+	attackTransitions *prometheus.CounterVec // by to, reason
+	attackSignal      *prometheus.GaugeVec   // by signal; current window value
+	shed              *prometheus.CounterVec // load-shed decisions by outcome
 }
 
 func New() *Metrics {
@@ -118,6 +124,26 @@ func New() *Metrics {
 			Namespace: "guardian", Name: "offload_healthy",
 			Help: "Whether an enforcement sink is healthy (1) or degraded to in-daemon enforcement (0).",
 		}, []string{"sink"}),
+		attackMode: f.NewGauge(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "attack_mode",
+			Help: "Global attack posture: 0 normal, 1 elevated, 2 attack.",
+		}),
+		attackExtraBits: f.NewGauge(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "attack_extra_bits",
+			Help: "Active fleet-wide PoW difficulty raise, in leading-zero bits.",
+		}),
+		attackTransitions: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "attack_mode_transitions_total",
+			Help: "Attack posture transitions by target level and reason.",
+		}, []string{"to", "reason"}),
+		attackSignal: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "attack_mode_signal",
+			Help: "Current window value per attack-mode signal.",
+		}, []string{"signal"}),
+		shed: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "shed_total",
+			Help: "Load-shed decisions under saturation by outcome (pass_token|shed).",
+		}, []string{"outcome"}),
 	}
 }
 
@@ -242,4 +268,37 @@ func (m *Metrics) OffloadHealthy(sink string, healthy bool) {
 		v = 1.0
 	}
 	m.offloadHealthy.WithLabelValues(sink).Set(v)
+}
+
+// AttackMode records the current posture level and the active difficulty raise.
+func (m *Metrics) AttackMode(level, extraBits int) {
+	if m == nil {
+		return
+	}
+	m.attackMode.Set(float64(level))
+	m.attackExtraBits.Set(float64(extraBits))
+}
+
+// AttackTransition counts one posture transition. reason is a bounded set.
+func (m *Metrics) AttackTransition(to, reason string) {
+	if m == nil {
+		return
+	}
+	m.attackTransitions.WithLabelValues(to, reason).Inc()
+}
+
+// AttackSignal sets one signal's current window value (bounded label set).
+func (m *Metrics) AttackSignal(signal string, value float64) {
+	if m == nil {
+		return
+	}
+	m.attackSignal.WithLabelValues(signal).Set(value)
+}
+
+// Shed counts one load-shed decision (outcome pass_token|shed).
+func (m *Metrics) Shed(outcome string) {
+	if m == nil {
+		return
+	}
+	m.shed.WithLabelValues(outcome).Inc()
 }

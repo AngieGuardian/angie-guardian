@@ -104,10 +104,21 @@ type Config struct {
 type State struct {
 	Level       Level
 	ExtraBits   int  // fleet difficulty raise in bits
+	CapBits     int  // ceiling for the shifted difficulty window
 	ForceAlways bool // suspicion behaves as always
 	Stateless   bool // issue store-free challenges
 	Since       time.Time
 	Reason      string // bounded: challenge_rate|request_rate|store_errors|store_slow|forced|peer|""
+}
+
+// Cap returns the effective difficulty ceiling: the configured attack-mode cap
+// when a raise is active, else the caller's own maxBits (so a Normal posture
+// never shrinks a domain's window). Safe on a nil State.
+func (s *State) Cap(maxBits int) int {
+	if s == nil || s.ExtraBits == 0 || s.CapBits == 0 {
+		return maxBits
+	}
+	return s.CapBits
 }
 
 // counters are the raw atomics the hot path bumps; the ticker snapshots deltas.
@@ -147,6 +158,7 @@ type Detector struct {
 	pinUntil atomic.Int64 // unix nano; 0 = no expiry
 
 	onTransition atomic.Pointer[func(from, to Level, reason string)]
+	onTick       atomic.Pointer[func(level Level, extraBits int, sig Signals)]
 
 	// current window rates, for the admin API / metrics (ticker-written).
 	mu       sync.Mutex
@@ -200,6 +212,15 @@ func (d *Detector) OnTransition(fn func(from, to Level, reason string)) {
 		return
 	}
 	d.onTransition.Store(&fn)
+}
+
+// OnTick registers a callback fired at the end of every aggregation tick with
+// the current level and window signals, for publishing gauges. One callback.
+func (d *Detector) OnTick(fn func(level Level, extraBits int, sig Signals)) {
+	if d == nil {
+		return
+	}
+	d.onTick.Store(&fn)
 }
 
 // --- hot-path feeds (single atomic add each) --------------------------------
@@ -358,6 +379,10 @@ func (d *Detector) tick() {
 			d.publish(cfg, adopted, "peer", d.now())
 		}
 	}
+	if fn := d.onTick.Load(); fn != nil {
+		st := d.state.Load()
+		(*fn)(st.Level, st.ExtraBits, sig)
+	}
 	if d.tickHook != nil {
 		d.tickHook()
 	}
@@ -515,6 +540,7 @@ func (d *Detector) publish(cfg *Config, level Level, reason string, now time.Tim
 	next := &State{
 		Level:       level,
 		ExtraBits:   d.bitsFor(cfg, level),
+		CapBits:     cfg.CapBits,
 		ForceAlways: level == Attack && cfg.ForceAlways,
 		Stateless:   level == Attack && cfg.Stateless,
 		Since:       now,

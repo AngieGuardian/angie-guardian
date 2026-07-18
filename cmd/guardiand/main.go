@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -119,7 +120,23 @@ func run(configPath string) error {
 	}
 
 	m := metrics.New()
-	st = store.Instrument(st, m)
+	// The attack-mode detector observes every store op (latency + errors) for
+	// its store-degradation signal, so it must wrap the store alongside the
+	// metrics recorder. Constructed before the engine so its posture is live
+	// from the first request.
+	detector := attackmode.New(cfg.AttackModeSettings(), st, log)
+	detector.OnTransition(func(from, to attackmode.Level, reason string) {
+		m.AttackTransition(to.String(), reason)
+	})
+	detector.OnTick(func(level attackmode.Level, extraBits int, sig attackmode.Signals) {
+		m.AttackMode(int(level), extraBits)
+		m.AttackSignal("challenge_rate", sig.ChallengeRate)
+		m.AttackSignal("request_rate", sig.RequestRate)
+		m.AttackSignal("solve_ratio", sig.SolveRatio)
+		m.AttackSignal("store_error_ratio", sig.StoreErrorRatio)
+		m.AttackSignal("store_slow_ratio", sig.StoreSlowRatio)
+	})
+	st = store.Instrument(st, m, detector)
 	defer st.Close()
 
 	var powMgr *pow.Manager
@@ -153,6 +170,13 @@ func run(configPath string) error {
 	engine.SetEnforcer(enforcer)
 	enforcer.Start(context.Background())
 	defer enforcer.Close()
+
+	// Global attack posture: the detector aggregates hot-path signals and
+	// raises PoW difficulty fleet-wide under attack. nil-safe; disabled unless
+	// attack_mode.enabled.
+	engine.SetAttackDetector(detector)
+	detector.Start(context.Background())
+	defer detector.Close()
 
 	// reload re-reads guardian.yaml and hot-swaps everything derived from it
 	// (domains, lists, thresholds, rule/model/geoip/feed sources, log level).

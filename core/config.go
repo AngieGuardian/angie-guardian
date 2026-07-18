@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
@@ -1394,6 +1395,29 @@ func (c *Config) EnforceConfig() enforce.Config {
 			MinTTL:     n.MinTTL.Std(),
 			NeverBlock: never,
 		},
+	}
+}
+
+// AttackModeSettings assembles the attack-mode detector's configuration from
+// the loaded config, resolving the quarter-step difficulty raises to bits.
+func (c *Config) AttackModeSettings() attackmode.Config {
+	a := &c.AttackMode
+	return attackmode.Config{
+		Enabled:             a.Enabled,
+		Window:              a.Window.Std(),
+		MinDwell:            a.MinDwell.Std(),
+		SharePosture:        a.SharePostureEnabled(),
+		ChallengeRate:       perSecond(a.Signals.ChallengeRate),
+		AttackChallengeRate: perSecond(a.Signals.AttackChallengeRate),
+		MinSolveRatio:       a.Signals.MinSolveRatio,
+		RequestRate:         perSecond(a.Signals.RequestRate),
+		StoreErrorRatio:     a.Signals.StoreErrorRatio,
+		StoreSlowRatio:      a.Signals.StoreSlowRatio,
+		ElevatedBits:        a.ExtraBits(1),
+		AttackBits:          a.ExtraBits(2),
+		CapBits:             a.CapBits(),
+		ForceAlways:         a.Effects.ForceAlwaysEnabled(),
+		Stateless:           a.Effects.StatelessEnabled(),
 	}
 }
 
