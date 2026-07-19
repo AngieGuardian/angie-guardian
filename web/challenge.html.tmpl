@@ -18,9 +18,14 @@
   h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
   p { margin: 0.25rem 0; color: #71717a; font-size: 0.9rem; }
   #status { min-height: 1.2rem; }
+  footer { margin-top: 2rem; font-size: 0.8rem; color: #52525b; line-height: 1.5; }
+  footer a { color: #2563eb; font-weight: 600; text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
   @media (prefers-color-scheme: dark) {
     body { background: #18181b; color: #f4f4f5; }
     .bar { background: #3f3f46; }
+    footer { color: #a1a1aa; }
+    footer a { color: #60a5fa; }
   }
 </style>
 </head>
@@ -42,6 +47,10 @@
     <p>JavaScript is required to access this site.</p>
     {{end}}
   </noscript>
+  <footer>
+    <p>Protected by <a href="https://gitlab.melroy.org/melroy/angie-guardian/" rel="noopener noreferrer">Angie Guardian</a></p>
+    <p>AGPL-3.0, © <a href="https://melroy.org" rel="noopener noreferrer">Melroy van den Berg</a></p>
+  </footer>
 </main>
 <script id="guardian-data" type="application/json">{{.JSON}}</script>
 <script>
