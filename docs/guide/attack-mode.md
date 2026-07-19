@@ -22,7 +22,7 @@ flap on threshold-straddling load.
 | Signal | Enters elevated | Enters attack |
 |---|---|---|
 | challenge issuance rate | `> challenge_rate` | `> attack_challenge_rate` **and** solve ratio `< min_solve_ratio` |
-| global request rate | `> request_rate` (0 disables) | n/a |
+| global request rate | `> request_rate` (omit to disable) | n/a |
 | store error ratio | `> store_error_ratio` | `> 3 x store_error_ratio` |
 | store slow-op ratio | `> store_slow_ratio` | n/a |
 

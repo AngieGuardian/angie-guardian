@@ -88,12 +88,16 @@ type Config struct {
 	MinDwell     time.Duration
 	SharePosture bool
 
-	ChallengeRate       float64 // issued/s entering elevated
-	AttackChallengeRate float64 // issued/s entering attack
-	MinSolveRatio       float64
-	RequestRate         float64 // Evaluate/s; 0 disables
-	StoreErrorRatio     float64
-	StoreSlowRatio      float64
+	// The rate/ratio signals below disable when 0 (see elevatedSignal/
+	// attackSignal, which each guard on `> 0`). At the YAML layer that maps to
+	// omitting the field: a Rate cannot be written "0/s" (the parser rejects a
+	// zero count), so an omitted signal reaches here as 0 = disabled.
+	ChallengeRate       float64 // issued/s entering elevated; 0 disables
+	AttackChallengeRate float64 // issued/s entering attack; 0 disables
+	MinSolveRatio       float64 // attack issuance qualifier (always set)
+	RequestRate         float64 // Evaluate/s entering elevated; 0 disables
+	StoreErrorRatio     float64 // store error fraction; 0 disables
+	StoreSlowRatio      float64 // store slow-op fraction; 0 disables
 
 	ElevatedBits int // fleet raise in bits at elevated
 	AttackBits   int // fleet raise in bits at attack
