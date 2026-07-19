@@ -40,7 +40,7 @@ tools that own these problems.
 
 - **Volumetric / L3–L4 floods.** Proof-of-work only taxes clients that *solve*
   the puzzle. A raw flood that never follows the challenge redirect is not
-  Guardian's problem to absorb — put Angie's own
+  Guardian's problem to absorb: put Angie's own
   [rate limiting](/guide/angie#rate-limiting-volumetric-ddos) in front, and a
   network/transport DDoS mitigation in front of that. Guardian *fails open* (see
   below), so it will not itself become the bottleneck under a flood.
@@ -70,7 +70,7 @@ wrong and the protections above weaken or invert:
 
 - **The `X-Guardian-*` headers are trusted.** Guardian reads the client IP,
   host and cookie from headers Angie sets on the subrequest. If a client can
-  reach the sidecar's listener directly, it can forge those headers — spoof
+  reach the sidecar's listener directly, it can forge those headers: spoof
   another IP, frame it into a block, or ride an allowlisted identity. Guardian
   **refuses to start** on a non-loopback `listen` unless you set
   `trusted_proxy: true` to assert you have isolated the listener to Angie. Keep
@@ -85,10 +85,18 @@ If Guardian is unreachable, Angie bypasses it and serves the request. If one
 internal stage errors, that stage abstains and later stages still run; only
 when none returns a terminal decision does the request default to allow. This
 availability choice avoids making the WAF a single point of failure. A full
-Guardian outage is a *protection* outage — the site keeps serving, but
+Guardian outage is a *protection* outage: the site keeps serving, but
 unfiltered. Monitor for it: the systemd unit is `Type=notify` with a watchdog,
 `/metrics` exposes store health, and "up but degraded to fail-open" is exactly
 the condition to alert on. See [Run it in Production](/guide/production).
+
+Fail-open is the behaviour when Guardian is *down or erroring*, not the only
+answer to overload. When the daemon itself is saturated,
+[attack mode](/guide/attack-mode)'s optional load-shedding bound
+(`attack_mode.effects.max_inflight`) is the middle ground: clients holding a
+valid token still pass (a cheap stateless check), everyone else gets a fast
+`503` with `Retry-After`, and the backend sees only vouched traffic instead of
+the whole flood.
 
 ## Reporting a vulnerability
 

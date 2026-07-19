@@ -68,11 +68,12 @@ suspicion mode, so a brief spike never walls a suspicion-mode site.
 ### Stateless issuance (`stateless_issuance`, default on)
 
 Normally each issued challenge writes an issuance record to the store, and
-embedded bbolt's single fsync'd writer tops out around 4k/s (see
+embedded bbolt's single fsync'd writer tops out around 4.5k/s (see
 [load testing](/guide/load-testing)). Under attack, Guardian issues
 **stateless** challenges instead: an HMAC-signed, self-authenticating ID
 (`s1.` prefix) that carries its own state, so issuance performs no store
-write. Single-spend moves to redeem time, keyed by the solved challenge and
+write. Measured, that lifts the bbolt issuance ceiling to ~44k/s, an order
+of magnitude. Single-spend moves to redeem time, keyed by the solved challenge and
 written only after the client has actually paid the proof of work, so the only
 store write an attacker can induce costs them real compute first.
 
@@ -107,8 +108,8 @@ store failure is itself a trigger).
 
 Thresholds are therefore **per instance**. With N replicas behind a balancer,
 each sees roughly 1/N of the traffic; size `challenge_rate` and
-`attack_challenge_rate` accordingly, and keep `attack_challenge_rate` well
-below your store's issuance ceiling (bbolt ~4k/s, redis/valkey ~6x).
+`attack_challenge_rate` to your per-instance share of the fleet rate, not the
+fleet total.
 
 ## Configuration
 

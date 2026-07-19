@@ -46,9 +46,12 @@ See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
 raw flood. Every request still costs an `auth_request` subrequest. A client that
-follows the challenge redirect also makes the sidecar issue and persist a
-challenge. Under enough load the sidecar saturates and fail-open (the default)
-sends the flood straight to your backend.
+follows the challenge redirect also makes the sidecar issue a challenge (and
+persist it, unless [attack mode](/guide/attack-mode)'s stateless issuance has
+kicked in). Under enough load the sidecar saturates and fail-open (the default)
+sends the flood straight to your backend; attack mode's optional
+`max_inflight` load-shedding bound turns that into fast `503`s for unvouched
+clients instead.
 
 Blocked clients no longer add to that cost inside the sidecar: an always-on
 in-process mirror answers the block lookup with no store read, and the
@@ -79,12 +82,12 @@ limit_conn_status 429;
 
 Guardian's auth subrequest carries only the request line and headers, never the
 body (`proxy_pass_request_body off`). That keeps the auth hop cheap and means
-these common request shapes work as you'd expect — each is covered by the
+these common request shapes work as you'd expect, each covered by the
 end-to-end suite:
 
 - **Any method (POST, PUT, DELETE…).** The WAF evaluates method, path, query,
   User-Agent and targeted headers on every request, body or not. A `block`/`deny`
-  rule fires on a POST just as on a GET. Request bodies are never inspected — see
+  rule fires on a POST just as on a GET. Request bodies are never inspected; see
   the [security model](/guide/threat-model#what-guardian-does-not-defend-against);
   that's the backend's or a full inline WAF's job. In `pow.mode: always`, an
   unvouched non-idempotent request is diverted before its body reaches the
@@ -97,7 +100,7 @@ end-to-end suite:
   change Angie's own `client_max_body_size` (default 1 MiB): a body over that
   limit is rejected by Angie with `413` before Guardian or the backend see it.
   If you accept large uploads, raise `client_max_body_size` in Angie as you
-  normally would — it's independent of Guardian.
+  normally would; it's independent of Guardian.
 - **WebSocket / SSE / long-lived streams.** The upgrade or initial request goes
   through `auth_request` once, like any request; once allowed, the connection
   proxies to your backend and Guardian is no longer in the path (it never sees
