@@ -116,13 +116,16 @@ both persistent backends:
 
 | Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
 |---|---|---|
-| allow     | ~78k / 0.50 ms / 3.4 ms  | ~92k / 0.64 ms / 1.5 ms |
-| token     | ~71k / 0.54 ms / 3.9 ms  | ~90k / 0.65 ms / 1.6 ms |
-| deny      | ~124k / 0.35 ms / 2.5 ms | ~186k / 0.12 ms / 1.8 ms |
-| challenge (write) | **~4.1k / 16 ms / 19 ms** | **~26k / 2.3 ms / 4.7 ms** |
+| allow     | ~161k / 0.19 ms / 1.8 ms | ~78k / 0.77 ms / 1.7 ms |
+| token     | ~135k / 0.34 ms / 1.9 ms | ~77k / 0.78 ms / 1.8 ms |
+| deny      | ~125k / 0.41 ms / 1.8 ms | ~151k / 0.24 ms / 1.8 ms |
+| challenge (write) | **~4.5k / 14 ms / 16 ms** | **~21k / 1.5 ms / 33 ms** |
+| challenge, attack mode (stateless) | ~44k / 0.27 ms / 18 ms | ~26k / 0.38 ms / 25 ms |
 
 The one write-heavy path (issuing a fresh challenge) is where the backends
-differ; see [choosing a store backend](/guide/production#choosing-a-store-backend)
+differ; under [attack mode](/guide/attack-mode) issuance goes stateless and
+skips that write entirely. See
+[choosing a store backend](/guide/production#choosing-a-store-backend)
 for how to pick, and [Load Testing](/guide/load-testing) to reproduce the
 numbers on your own hardware.
 

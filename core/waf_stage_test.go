@@ -212,8 +212,7 @@ func TestReportEvent(t *testing.T) {
 
 	// Tamper events (forged/replayed challenge IDs) are scored out of the box,
 	// with no separate feature toggle: the tamper threshold is 3/min, so the
-	// third report blocks. This is the behaviour that finding 6 fixed; the old
-	// uuid_tamper gate dropped these by default.
+	// third report blocks.
 	tamperIP := "198.51.100.77"
 	for i := 0; i < 3; i++ {
 		e.ReportEvent(ctx, "pow.test", tamperIP, EventTamper, "unknown challenge id")

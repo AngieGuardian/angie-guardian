@@ -50,6 +50,21 @@ store:
   # password: ""              # or the REDIS_PASSWORD env var
   # db: 0
 
+# Fleet-wide attack posture. Off when absent. When aggregate signals (issuance
+# rate with a low solve ratio, store degradation) cross a threshold, Guardian
+# raises PoW difficulty fleet-wide and issues store-free challenges so a flood
+# of new clients stops saturating the store. Existing tokens stay valid. See
+# the "Attack Mode" guide before tuning; thresholds are per instance.
+# attack_mode:
+#   enabled: true
+#   window: 30s
+#   signals:
+#     challenge_rate: 200/s           # issuance/s entering elevated
+#     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
+#     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
+#   effects:
+#     max_inflight: 0                 # >0 sheds excess load (503) while token holders pass
+
 # Block enforcement offload. The in-process mirror is always on (it makes the
 # per-request block check a memory lookup, no store read) and needs no config;
 # the tunables below and the optional kernel sink are all you set here. See

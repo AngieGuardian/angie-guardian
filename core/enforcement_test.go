@@ -110,8 +110,8 @@ func TestMirrorFastPathBlockedIPWithoutStoreReads(t *testing.T) {
 }
 
 func TestMirrorNeverOverridesAllowlist(t *testing.T) {
-	// Pipeline-order regression: 10.0.0.66 is allowlisted in pipelineYAML.
-	// Even with a mirror entry for it, the allowlist stage terminates first.
+	// Pipeline order: 10.0.0.66 is allowlisted in pipelineYAML. Even with a
+	// mirror entry for it, the allowlist stage terminates first.
 	ctx := context.Background()
 	e, _ := enforcedEngine(t, pipelineYAML)
 	if err := e.BlockIP(ctx, "10.0.0.66", "framed", time.Minute); err != nil {

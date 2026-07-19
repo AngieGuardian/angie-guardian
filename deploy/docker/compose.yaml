@@ -43,6 +43,12 @@ services:
       - "8071"
     ports:
       - "127.0.0.1:${GUARDIAN_ADMIN_PORT:-8072}:8072"
+      # The auth hot path is published on a host-chosen ephemeral port by
+      # default (GUARDIAN_AUTH_PORT overrides it). The attack-mode e2e test
+      # reads the mapping back and drives /challenge directly from many
+      # synthetic X-Guardian-IP values; the e2e config runs trusted_proxy: true.
+      # Manual/production topologies keep the sidecar internal to Angie.
+      - "127.0.0.1:${GUARDIAN_AUTH_PORT:-0}:8071"
     healthcheck:
       # The distroless image has no shell; guardiand serves /healthz on both
       # listeners. Angie depends on this being healthy before it starts.

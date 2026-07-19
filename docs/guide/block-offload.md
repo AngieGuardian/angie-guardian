@@ -3,7 +3,7 @@
 Once Guardian decides an IP is bad, every later request from it must be
 denied. Enforcing that check as cheaply as possible matters under attack: a
 flood from already-blocked clients should cost near nothing, not saturate the
-sidecar and trip [fail-open](/guide/production#fail-open-vs-fail-closed).
+sidecar and trip [fail-open](/guide/threat-model#fail-open-by-design).
 
 Guardian enforces blocks on two layers:
 
@@ -39,6 +39,19 @@ the mirror is **read-through**: a miss still consults the store so a block
 placed by another replica bites before the next scan, and the discovered
 block is cached back so the flood's next request is free. `mode: auto`
 (the default) picks the right one from your store backend.
+
+That read-through consult is one store round-trip per request, and on a
+networked store it is the dominant cost of the allow/token path: it is why
+single-instance bbolt (authoritative, zero reads) measures roughly twice the
+read throughput of redis (see the
+[performance numbers](/guide/load-testing#reference-numbers)). The trade is
+deliberate: paying that read is what makes a block placed on one replica apply
+on the others within microseconds instead of up to one `reconcile_interval`.
+If you would rather have the speed and can accept that cross-replica lag, set
+`enforcement.mirror.mode: authoritative` explicitly on redis; blocks placed by
+other replicas then apply only after the next reconcile scan (measured ~168k
+vs ~77k req/s on the allow path). A shorter `reconcile_interval` narrows that
+lag at the cost of a periodic full store scan per instance.
 
 If the mirror fills past `max_entries` (default ~1M), new entries fall back to
 the store read path. Enforcement is never lost, only the optimization, and the

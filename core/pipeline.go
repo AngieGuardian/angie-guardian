@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
@@ -39,9 +40,19 @@ type stageEnv struct {
 	intel       *intel.Provider // nil when no geoip/reputation is configured
 	metrics     *metrics.Metrics
 	bots        *botverify.Verifier
-	enforcer    *enforce.Manager // nil = store-only block enforcement
+	enforcer    *enforce.Manager  // nil = store-only block enforcement
+	attack      *attackmode.State // never nil (Normal when attack mode is off)
 
 	origin *intel.Info // memoized geo lookup: both intel stages share one
+}
+
+// effBits resolves the difficulty window for the resolved domain, shifted up
+// by the fleet attack-mode raise (a no-op when the posture is Normal). Every
+// challenge-issuing stage composes its difficulty from these, so per-IP
+// escalation and anomaly scaling operate inside the shifted window.
+func (env *stageEnv) effBits() (base, maxDiff int) {
+	return attackmode.EffectiveBits(env.attack,
+		env.domain.PoW.BaseBits(), env.domain.PoW.MaxBits(), env.attack.Cap(env.domain.PoW.MaxBits()))
 }
 
 // originInfo looks up the request origin (country/ASN) once per request; the
@@ -244,13 +255,14 @@ func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env 
 	if err != nil {
 		return nil, nil
 	}
+	base, maxDiff := env.effBits()
 	if env.domain.Reputation.Enabled {
 		if feed, ok := env.intel.FeedMatch(addr, intel.FeedActionChallenge); ok {
 			return &Decision{
 				Action: ActionChallenge,
 				// A reputation-listed client pays one full step (+4 bits =
 				// 16x) more than a clean one, like a WAF signature hit.
-				Difficulty: min(env.domain.PoW.BaseBits()+4, env.domain.PoW.MaxBits()),
+				Difficulty: min(base+4, maxDiff),
 				Reason:     "reputation:" + feed,
 			}, nil
 		}
@@ -260,7 +272,7 @@ func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env 
 		if action, reason := env.domain.Geo.Action(info.Country, info.ASN); action == "challenge" {
 			return &Decision{
 				Action:     ActionChallenge,
-				Difficulty: env.domain.PoW.BaseBits(),
+				Difficulty: base,
 				Reason:     reason,
 			}, nil
 		}
@@ -314,11 +326,13 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 			if hasValidPoWToken(req, env) {
 				return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
 			}
+			base, maxDiff := env.effBits()
 			return &Decision{
 				Action: ActionChallenge,
 				// A signature hit pays one full difficulty step (+4 bits = 16x
-				// the base work), capped at the domain ceiling.
-				Difficulty: min(env.domain.PoW.BaseBits()+4, env.domain.PoW.MaxBits()),
+				// the base work), capped at the (possibly attack-shifted)
+				// domain ceiling.
+				Difficulty: min(base+4, maxDiff),
 				Reason:     reason,
 				Events:     []Event{{Type: EventSignature, Detail: rule.ID}},
 			}, nil
@@ -364,6 +378,12 @@ func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
 	// counts as absent, so the client is re-challenged at this path's bits.
 	// The resolved token_ttl is likewise enforced: a long-lived token from a
 	// lax path does not survive its full lifetime on a stricter path.
+	//
+	// Deliberately the UNSHIFTED base, not env.effBits(): entering attack mode
+	// must not invalidate every existing visitor's token and trigger a
+	// re-challenge stampede at the worst possible moment. Only NEW challenges
+	// get harder; tokens already held stay valid at the difficulty they were
+	// solved for.
 	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent, env.domain.PoW.BaseBits(), env.domain.PoW.TokenTTL.Std()) == nil
 }
 
@@ -398,9 +418,10 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 			Events: []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
 		}, nil
 	case score >= a.ChallengeAt && env.pow != nil && env.domain.PoW.Enabled:
+		base, maxDiff := env.effBits()
 		return &Decision{
 			Action:     ActionChallenge,
-			Difficulty: scaleDifficulty(env.domain.PoW.BaseBits(), env.domain.PoW.MaxBits(), score, a.ChallengeAt),
+			Difficulty: scaleDifficulty(base, maxDiff, score, a.ChallengeAt),
 			Reason:     "anomaly:challenge",
 			Events:     []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
 		}, nil
@@ -430,12 +451,16 @@ func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	if env.pow == nil || !env.domain.PoW.Enabled {
 		return nil, nil
 	}
-	if env.domain.PoW.Mode == "suspicion" && env.domain.WAF.Anomaly.Enabled {
+	// In attack mode, force_always overrides suspicion so every unvouched
+	// client is challenged; otherwise suspicion leaves challenge decisions to
+	// the anomaly stage.
+	if env.domain.PoW.Mode == "suspicion" && env.domain.WAF.Anomaly.Enabled && !env.attack.ForceAlways {
 		return nil, nil
 	}
+	base, _ := env.effBits()
 	return &Decision{
 		Action:     ActionChallenge,
-		Difficulty: env.domain.PoW.BaseBits(),
+		Difficulty: base,
 		Reason:     "pow:no_token",
 	}, nil
 }

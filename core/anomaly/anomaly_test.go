@@ -119,7 +119,7 @@ func TestModelRoundTripAndVersionCheck(t *testing.T) {
 
 // TestParseModelRejectsBrokenBaselines: a structurally valid artifact whose
 // baselines are semantically broken must fail to parse, not panic on the first
-// request it scores (issue #21, finding 4).
+// request it scores.
 func TestParseModelRejectsBrokenBaselines(t *testing.T) {
 	for name, raw := range map[string]string{
 		"null baseline":     `{"version":1,"kind":"statistical-baseline","domains":{"example.com":null}}`,

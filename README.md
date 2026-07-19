@@ -164,42 +164,50 @@ write-heavy path):
 
 | Scenario | What it does | Store I/O per request |
 |---|---|---|
-| `allow` | plain request, full pipeline, ends in "default allow" | 1 read (block lookup) |
-| `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | 1 read |
+| `allow` | plain request, full pipeline, ends in "default allow" | none on `bbolt`/`memory` once the block mirror is seeded; 1 read on `redis` (read-through, so another replica's blocks apply immediately) |
+| `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | no store I/O |
-| `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); the issuance-rate and host+IP escalation counters are counted in-process and flushed to the store in the background |
+| `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); under [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode) issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
 same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the
-redis backend). Numbers are req/s and per-request latency:
+redis backend; fresh daemon per run). Numbers are req/s and per-request
+latency:
 
 | Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
 |---|---|---|
-| allow     | ~78k / 0.50 ms / 3.4 ms  | ~92k / 0.64 ms / 1.5 ms |
-| token     | ~71k / 0.54 ms / 3.9 ms  | ~90k / 0.65 ms / 1.6 ms |
-| deny      | ~124k / 0.35 ms / 2.5 ms | ~186k / 0.12 ms / 1.8 ms |
-| challenge (write) | **~4.1k / 16 ms / 19 ms** | **~26k / 2.3 ms / 4.7 ms** |
+| allow     | ~161k / 0.19 ms / 1.8 ms | ~78k / 0.77 ms / 1.7 ms |
+| token     | ~135k / 0.34 ms / 1.9 ms | ~77k / 0.78 ms / 1.8 ms |
+| deny      | ~125k / 0.41 ms / 1.8 ms | ~151k / 0.24 ms / 1.8 ms |
+| challenge (write) | **~4.5k / 14 ms / 16 ms** | **~21k / 1.5 ms / 33 ms** |
+| challenge, attack mode (stateless) | ~44k / 0.27 ms / 18 ms | ~26k / 0.38 ms / 25 ms |
 
-The read paths all comfortably clear the ≥50k req/s budget on both backends.
-The takeaway is the **write** path: issuing a challenge writes the issuance
-record through embedded bbolt's single fsync'd writer (~4.1k/s, ~16 ms under
-contention), while redis/valkey sustains ~6× that (~26k/s). The per-IP
-rate-limit and farming-escalation counters do not add write rounds: they are
-counted in-process and synced to the shared store in the background. So the
-backend choice hinges on your *new-client* rate, i.e. the clients that
-trigger a challenge write:
+The read paths clear the ≥50k req/s budget on both backends with a wide
+margin. On single-writer backends the in-process block mirror removes the
+per-request store read entirely, which is why bbolt now *out-reads* the
+networked store: allow/token cost no store I/O at all there, while the redis
+backend keeps one read for cross-replica correctness.
+
+The takeaway remains the **write** path: issuing a challenge writes the
+issuance record through embedded bbolt's single fsync'd writer (~4.5k/s,
+~14 ms under contention), while redis/valkey sustains ~5x that. Under attack
+mode, issuance goes stateless and the bbolt ceiling lifts to ~44k/s, an order
+of magnitude, because the only remaining write is the single-spend marker at
+redemption, which an attacker cannot trigger without actually solving the
+proof of work. So the backend choice hinges on your *sustained, normal-mode*
+new-client rate:
 
 - With `pow.mode: always`, every unvouched request is challenged, so a burst of
   fresh visitors is bounded by the write path. If that burst can exceed a few
   thousand per second, use the **redis** backend (Redis or
-  [Valkey](https://valkey.io/), a drop-in replacement), or set
-  `pow.mode: suspicion` so there is no catch-all challenge; only anomaly or
-  explicit WAF/GeoIP/reputation challenge policies then cause writes.
+  [Valkey](https://valkey.io/), a drop-in replacement), set
+  `pow.mode: suspicion` so there is no catch-all challenge, or rely on
+  attack mode's stateless issuance to absorb the surge.
 - Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
   verification), so a returning client's request stays on the fast read path
   regardless of backend.
 - At these rates the read paths are bound by Go's garbage collector, not the
-  store: `GOGC=800` more than doubles them (allow: ~188k req/s on bbolt). See
+  store: `GOGC=800` raises bbolt allow from ~161k to ~193k req/s. See
   "GC tuning" in the production guide.
 
 ### Reproduce
@@ -220,10 +228,12 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
 # 2. Run each scenario (8s, 64 connections). Use a distinct -ip per read run so
 #    a behavioural block from one run doesn't bleed into the next; the
 #    challenge scenario rotates the client IP itself to dodge the issuance limit.
-./guardian-loadtest -scenario allow     -host example.com -ip 198.51.100.10 -c 64 -d 8s
-./guardian-loadtest -scenario token     -host example.com -ip 198.51.100.11 -c 64 -d 8s
-./guardian-loadtest -scenario deny      -host example.com -ip 203.0.113.9   -c 64 -d 8s   # IP must be denylisted
-./guardian-loadtest -scenario challenge -host example.com                    -c 64 -d 8s
+#    allow uses the PoW-off host: the scenario expects 200s, and a PoW-on host
+#    answers 401 (challenge) for unvouched clients.
+./guardian-loadtest -scenario allow     -host api.example.com -ip 198.51.100.10 -c 64 -d 8s
+./guardian-loadtest -scenario token     -host example.com     -ip 198.51.100.11 -c 64 -d 8s
+./guardian-loadtest -scenario deny      -host example.com     -ip 203.0.113.9   -c 64 -d 8s   # IP must be denylisted
+./guardian-loadtest -scenario challenge -host example.com                        -c 64 -d 8s
 ```
 
 Micro-benchmarks for the hot functions (`Evaluate`, PoW verification, anomaly
@@ -310,7 +320,7 @@ web/             challenge/denied pages (self-contained HTML + JS solver)
 
 Guardian's [security model and limitations](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)
 spell out what it defends against and what it deliberately does not. To report a
-vulnerability, see [SECURITY.md](SECURITY.md) — please do not open a public issue.
+vulnerability, see [SECURITY.md](SECURITY.md); please do not open a public issue.
 
 ## License
 

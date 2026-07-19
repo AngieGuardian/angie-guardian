@@ -234,19 +234,18 @@ func (c *CounterCache) quiesced() bool {
 	return len(c.dirty) == 0 && len(c.queue) == 0 && c.workers == 0
 }
 
-// TestCounterCachePropertyLossless is the anti-regression property test for the
-// coalescing/flush machinery reworked across MR !11. Many goroutines hammer a
-// small set of hot keys, each with a long (non-expiring) window; once all
-// background flushes have drained, every event a client counted must be present
-// in the shared store: the store total for each key equals the number of Incr
-// calls against it. This is the invariant the earlier coalescing violated (N
-// events collapsing to 1 in the shared store).
+// TestCounterCachePropertyLossless is the property test for the coalescing and
+// flush machinery. Many goroutines hammer a small set of hot keys, each with a
+// long (non-expiring) window; once all background flushes have drained, every
+// event a client counted must be present in the shared store: the store total
+// for each key equals the number of Incr calls against it (N events must not
+// collapse to 1 in the shared store).
 //
 // Note it does NOT assert cross-goroutine monotonicity of the values Incr
 // returns: a flush that merges the shared total raises the local count, so a
 // concurrent Incr operating on the pre-merge value can legitimately return a
 // smaller number. The counter is not linearizable across goroutines and never
-// claimed to be; the local merge's own non-regression is covered by
+// claimed to be; the local merge's own monotonicity is covered by
 // TestCounterCacheMonotonicMerge.
 func TestCounterCachePropertyLossless(t *testing.T) {
 	st := NewMemory()
@@ -354,9 +353,9 @@ func TestCounterCacheFlushWorkersBounded(t *testing.T) {
 	}
 }
 
-// TestCounterCacheCoalescesLosslessly is the direct regression for the MR
-// review: many rapid bumps of one key that coalesce before the flush runs must
-// still reach the shared store as the full count, not a single event. The
+// TestCounterCacheCoalescesLosslessly: many rapid bumps of one key that
+// coalesce before the flush runs must still reach the shared store as the full
+// count, not a single event. The
 // drainer is captured (not run), so all 50 bumps accumulate into one dirty
 // entry; running the drainer once then pushes the whole delta of 50.
 func TestCounterCacheCoalescesLosslessly(t *testing.T) {
@@ -567,9 +566,9 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 	}
 }
 
-// TestCounterCacheStaleFlushNotMergedIntoNewWindow is the regression for MR
-// review 9180/9193: a flush that blocks past its window's deadline must not
-// pollute a fresh window that started meanwhile, neither by merging its return
+// TestCounterCacheStaleFlushNotMergedIntoNewWindow: a flush that blocks past
+// its window's deadline must not pollute a fresh window that started
+// meanwhile, neither by merging its return
 // value nor by leaving a stale record in the store for the follow-up flush to
 // pick up. The first flush is parked in the store; a real 20ms window elapses;
 // a fresh 1s window opens; the stale flush is released and (because it delegates
@@ -603,8 +602,8 @@ func TestCounterCacheStaleFlushNotMergedIntoNewWindow(t *testing.T) {
 	}
 }
 
-// TestCounterCacheForgetHeldThroughDelete is the regression for MR review 9182:
-// while a Forget's Delete is in flight, an Incr on the same key must not be
+// TestCounterCacheForgetHeldThroughDelete: while a Forget's Delete is in
+// flight, an Incr on the same key must not be
 // flushed concurrently by a second worker, and the fresh increment must survive
 // after the delete completes (the delete is applied first, then the increment).
 func TestCounterCacheForgetHeldThroughDelete(t *testing.T) {

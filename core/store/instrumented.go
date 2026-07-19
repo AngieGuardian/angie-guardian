@@ -20,18 +20,29 @@ type OpRecorder interface {
 // wrapped backend does the real work; this only times it.
 type Instrumented struct {
 	inner Store
-	rec   OpRecorder
+	recs  []OpRecorder
 }
 
-func Instrument(inner Store, rec OpRecorder) Store {
-	if rec == nil {
+// Instrument wraps inner so every op is reported to each non-nil recorder
+// (e.g. Prometheus metrics plus the attack-mode store-degradation signal).
+func Instrument(inner Store, recs ...OpRecorder) Store {
+	var live []OpRecorder
+	for _, r := range recs {
+		if r != nil {
+			live = append(live, r)
+		}
+	}
+	if len(live) == 0 {
 		return inner
 	}
-	return &Instrumented{inner: inner, rec: rec}
+	return &Instrumented{inner: inner, recs: live}
 }
 
 func (s *Instrumented) observe(op string, start time.Time, err error) {
-	s.rec.StoreOp(op, time.Since(start).Seconds(), err)
+	secs := time.Since(start).Seconds()
+	for _, r := range s.recs {
+		r.StoreOp(op, secs, err)
+	}
 }
 
 func (s *Instrumented) Get(ctx context.Context, key string) ([]byte, bool, error) {

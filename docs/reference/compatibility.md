@@ -12,8 +12,8 @@ is settled before the freeze.
 
 ## What a stable (1.x) release guarantees
 
-Within a `1.x` line, these do not change in a breaking way — new fields,
-routes, metrics and values may be *added*, but existing ones keep working:
+Within a `1.x` line, these do not change in a breaking way (new fields,
+routes, metrics and values may be *added*, but existing ones keep working):
 
 - **The `guardian.yaml` schema.** Field names, nesting, types and the meaning
   of values are stable. A config that loads on `1.0` loads on any `1.x`.
@@ -78,5 +78,5 @@ consistently `enabled`, and the grouping (`waf.*`, `pow.*`, `geo.*`,
 `store.*`, `admin.*`) matches how operators reason about it. Two names were
 weighed and deliberately kept: `pow` (short, and the term of art) over a
 spelled-out `proof_of_work`, and `ip_behaviour` (British spelling, consistent
-with the rest of the prose) — renaming either would churn a stable, clear name
+with the rest of the prose): renaming either would churn a stable, clear name
 for no real gain.

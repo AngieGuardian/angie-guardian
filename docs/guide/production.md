@@ -118,10 +118,22 @@ verdicts) in a pluggable store. Signing keys remain in
 The rule of thumb from the
 [measured numbers](/guide/what-is-guardian#performance): the backend choice
 hinges on your *new-client* rate, i.e. the clients that trigger a challenge
-write. bbolt sustains ~4.1k challenge issuances/s; redis/valkey ~6x that
-(~26k/s). Verified tokens are cached in-process (~144 ns vs ~43 µs for a full
-Ed25519 verification), so a returning client's request stays on the fast read
-path regardless of backend.
+write. bbolt sustains ~4.5k challenge issuances/s; redis/valkey ~5x that
+(~21k/s).
+
+On the *read* path the trade runs the other way, and it is not a mistake that
+single-instance bbolt out-reads networked redis. The
+[block mirror](/guide/block-offload) makes bbolt (and `memory`) authoritative:
+after the seed scan the allow/token path does zero store reads. redis stays
+read-through, keeping one network read per request so a block placed by
+another replica applies immediately, the price of multi-instance correctness.
+So bbolt wins the read path, redis wins the write path and is the multi-instance
+option. Under [attack mode](/guide/attack-mode), issuance switches to a
+stateless path with no write at issue time, lifting the bbolt ceiling to
+~44k/s, so the numbers above bound your *sustained, normal-mode* new-client
+rate, not the flood case. Verified tokens are cached in-process (~144 ns vs
+~43 µs for a full Ed25519 verification), so a returning client's request
+stays on the fast read path regardless of backend.
 
 ## GC tuning for peak throughput
 
@@ -129,8 +141,8 @@ At tens of thousands of requests per second, guardiand's read paths are
 bound by Go's garbage collector, not the store: a freshly started daemon has
 a small heap, so at high allocation rates the GC runs almost continuously.
 On the [benchmark machine](/guide/load-testing#reference-numbers), starting
-guardiand with `GOGC=800` more than doubled the read-path throughput (allow:
-~78k to ~188k req/s on bbolt), at the price of a larger heap between
+guardiand with `GOGC=800` raised the read-path throughput by about 20% (allow:
+~161k to ~193k req/s on bbolt), at the price of a larger heap between
 collections. If you chase peak throughput, set `GOGC` (or a `GOMEMLIMIT`
 budget) in the systemd unit's `Environment=` and measure with
 `guardian-loadtest`; at typical production rates the default is fine.

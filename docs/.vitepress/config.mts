@@ -48,6 +48,7 @@ export default defineConfig({
           items: [
             { text: 'Admin API & Dashboard', link: '/guide/admin' },
             { text: 'Block Enforcement Offload', link: '/guide/block-offload' },
+            { text: 'Attack Mode', link: '/guide/attack-mode' },
             { text: 'Train the Anomaly Model', link: '/guide/anomaly' },
             { text: 'Load Testing', link: '/guide/load-testing' },
             { text: 'Troubleshooting', link: '/guide/troubleshooting' },

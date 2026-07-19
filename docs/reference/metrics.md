@@ -67,6 +67,24 @@ See the [Block Enforcement Offload](/guide/block-offload) guide.
 | `guardian_offload_reconcile_total` | counter | `status` | Reconcile scans, `ok` or `error`. |
 | `guardian_offload_healthy` | gauge | `sink` | `1` = sink enforcing, `0` = degraded to in-daemon enforcement. Alert on `nftables` at `0`. |
 
+## Attack mode
+
+See the [Attack Mode](/guide/attack-mode) guide.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `guardian_attack_mode` | gauge | | Current posture: 0 normal, 1 elevated, 2 attack. Alert on `>= 1`. |
+| `guardian_attack_extra_bits` | gauge | | Active fleet-wide PoW difficulty raise, in bits. |
+| `guardian_attack_mode_transitions_total` | counter | `to`, `reason` | Posture transitions by target level and reason. |
+| `guardian_attack_mode_signal` | gauge | `signal` | Current window value per signal (`challenge_rate`, `request_rate`, `solve_ratio`, `store_error_ratio`, `store_slow_ratio`). |
+| `guardian_shed_total` | counter | `outcome` | Load-shed decisions under saturation: `pass_token` (a token holder admitted) or `shed` (503'd). |
+
+Note two new outcomes on `guardian_challenges_total`: `issued_stateless` (a
+store-free challenge issued under attack, counted IN ADDITION to `issued`, so
+`issued` still reflects the full issuance rate and `issued_stateless` is the
+subset on the stateless path) and `spent_cas_failed` (a stateless token minted
+fail-open because the single-spend write failed during a store outage).
+
 ## Useful queries
 
 ```

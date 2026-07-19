@@ -17,9 +17,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
@@ -30,10 +32,6 @@ import (
 // Angie glue; the challenge page posts here.
 const PassPath = "/__guardian/pass"
 
-// issuanceRateLimit caps challenge issuance per IP per minute so the
-// interstitial itself cannot be used to flood the store (plan §11).
-const issuanceRateLimit = 60
-
 type Server struct {
 	engine   *core.Engine
 	pow      *pow.Manager // nil = PoW unavailable (no signing key configured)
@@ -42,6 +40,14 @@ type Server struct {
 	metrics  *metrics.Metrics    // nil = no-op
 	log      *slog.Logger
 	mux      *http.ServeMux
+
+	// inflight counts auth evaluations currently in Evaluate (Part C
+	// load-shedding). It is compared per request against the LIVE
+	// attack_mode.effects.max_inflight bound read from the engine config, so a
+	// hot reload of that bound takes effect immediately. When over the bound,
+	// token holders still pass (a cheap stateless check) and everyone else
+	// gets a fast 503; the backend sees only vouched traffic under saturation.
+	inflight atomic.Int64
 
 	challengeTmpl *template.Template
 	deniedHTML    []byte
@@ -94,6 +100,52 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 // through, 401 diverts to @guardian_challenge, 403 to @guardian_denied.
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	req := s.requestContext(r)
+
+	// Load-shedding: when the daemon is saturated, admit a bounded number of
+	// full evaluations. Over the bound, a client holding a valid token still
+	// passes (a cheap stateless signature check, no store I/O), and everyone
+	// else gets a fast 503 with Retry-After instead of a full evaluation that
+	// would only add to the pileup. This keeps the backend seeing vouched
+	// traffic under overload rather than fail-open dumping the whole flood.
+	// The bound is read live from the config, so a hot reload of
+	// attack_mode.effects.max_inflight (including toggling it on or off) takes
+	// effect immediately.
+	if bound := s.engine.Config().AttackMode.Effects.MaxInflight; bound > 0 {
+		if s.inflight.Add(1) > int64(bound) {
+			s.inflight.Add(-1)
+			// Saturated: run only the cheap store-free terminal checks. A
+			// blocked or denylisted IP is still denied (never fast-passed on a
+			// token); an allowlisted client or a valid-token holder passes;
+			// anyone else is shed with a 503 rather than a full evaluation.
+			switch s.engine.ShedDecision(req) {
+			case core.ShedPass:
+				s.metrics.Shed("pass_token")
+				w.Header().Set("X-Guardian-Action", string(core.ActionAllow))
+				w.WriteHeader(http.StatusOK)
+				return
+			case core.ShedDeny:
+				s.metrics.Shed("deny")
+				w.Header().Set("X-Guardian-Action", string(core.ActionDeny))
+				w.WriteHeader(http.StatusForbidden)
+				return
+			default:
+				// Shed. This is an auth subrequest, and Angie's auth_request
+				// module only forwards 2xx/401/403 from it; any other status
+				// (a bare 503) becomes a 500 for the main request, which the
+				// fail-open error_page then routes to the backend, defeating
+				// the shed. So return 403 with a distinguishing action header:
+				// the Angie glue maps action=shed to a real 503 + Retry-After
+				// (see deploy/angie-guardian.conf @guardian_denied).
+				s.metrics.Shed("shed")
+				w.Header().Set("X-Guardian-Action", "shed")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+		}
+		// Admitted under the bound: hold the slot for the duration of Evaluate.
+		defer s.inflight.Add(-1)
+	}
+
 	d := s.engine.Evaluate(r.Context(), req)
 
 	w.Header().Set("X-Guardian-Action", string(d.Action))
@@ -151,46 +203,70 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// Cheap per-IP issuance rate limit; bucketed per minute. Counted through
 	// the CounterCache so the request never blocks on a store write round:
 	// the local count enforces immediately (and keeps enforcing if the store
-	// is down), the shared counter syncs in the background.
-	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/60)
-	if s.counters.Incr(rlKey, 2*time.Minute) > issuanceRateLimit {
+	// is down), the shared counter syncs in the background. The limit is
+	// config-driven (pow.issuance_rate_limit) so operators can tighten it.
+	limit := dcfg.PoW.IssuanceRateLimit
+	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/int64(limit.Per.Seconds()))
+	if int(s.counters.Incr(rlKey, 2*limit.Per)) > limit.Count {
 		s.log.Warn("challenge issuance rate limit", "ip", ip, "host", host)
 		http.Error(w, "too many challenge requests, slow down", http.StatusTooManyRequests)
 		return
 	}
 
+	// The attack posture shifts the whole difficulty window up (a no-op when
+	// Normal), so the base and ceiling here already reflect the fleet raise.
+	attack := s.engine.AttackDetector().State()
+	base, maxBits := attackmode.EffectiveBits(attack,
+		dcfg.PoW.BaseBits(), dcfg.PoW.MaxBits(), attack.Cap(dcfg.PoW.MaxBits()))
+
 	// The auth decision may have escalated the difficulty (WAF signature hit,
 	// anomaly score); Angie relays it via X-Guardian-Difficulty (see the
 	// auth_request_set lines in deploy/angie-guardian.conf). Clamp it to the
-	// domain's [base, max] so a client forging the header can only raise its
-	// own difficulty within policy, never lower it.
-	difficulty := dcfg.PoW.BaseBits()
+	// (possibly attack-shifted) [base, max] so a client forging the header can
+	// only raise its own difficulty within policy, never lower it.
+	difficulty := base
 	if v := r.Header.Get("X-Guardian-Difficulty"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			difficulty = min(max(n, difficulty), dcfg.PoW.MaxBits())
+			difficulty = min(max(n, difficulty), maxBits)
 		}
 	}
 
 	// Escalate for clients that keep requesting challenges without solving
 	// them: within the rate limit above, a challenge farmer would otherwise
 	// pay base difficulty forever. Each unsolved issuance past a small
-	// allowance raises the work, capped at the domain ceiling; a successful
+	// allowance raises the work, capped at the ceiling; a successful
 	// redemption resets this host+IP counter (core/pow/escalation.go).
 	if extra := s.pow.BumpEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
-		difficulty = min(difficulty+extra, dcfg.PoW.MaxBits())
+		difficulty = min(difficulty+extra, maxBits)
 		s.metrics.Challenge("escalated")
 		s.log.Info("challenge difficulty escalated",
 			"ip", ip, "host", host, "extra_bits", extra, "difficulty", difficulty)
 	}
 
-	ch, err := s.pow.Issue(r.Context(), host, ip, uri,
-		difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
+	// Under attack, issue store-free (stateless) challenges so a flood of new
+	// clients stops writing an issuance record per request. Redemption accepts
+	// both formats, so this can flip per request with no coordination.
+	var ch *pow.Challenge
+	var err error
+	if attack.Stateless {
+		ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)
+	} else {
+		ch, err = s.pow.Issue(r.Context(), host, ip, uri,
+			difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
+	}
 	if err != nil {
 		s.log.Error("challenge issuance failed", "host", host, "ip", ip, "err", err)
 		http.Error(w, "challenge unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	s.engine.AttackDetector().ChallengeIssued()
+	// Always count "issued" so pre-existing dashboards/alerts keep seeing the
+	// full issuance rate; additionally count "issued_stateless" so the split
+	// between the two paths is visible during an attack.
 	s.metrics.Challenge("issued")
+	if attack.Stateless {
+		s.metrics.Challenge("issued_stateless")
+	}
 
 	payload, err := json.Marshal(map[string]any{
 		"challenge_id":    ch.ID,
@@ -292,6 +368,14 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	}
 
 	s.metrics.Challenge("solved")
+	s.engine.AttackDetector().ChallengeRedeemed()
+	if res.SoftError != nil {
+		// The token was minted despite a failed single-spend write (store
+		// outage on the stateless path). Bounded by token binding; counted.
+		s.metrics.Challenge("spent_cas_failed")
+		s.log.Warn("stateless spend cas failed, token minted fail-open",
+			"host", host, "ip", ip, "err", res.SoftError)
+	}
 	if elapsedMS > 0 {
 		s.metrics.SolveTime(float64(elapsedMS) / 1000)
 	}

@@ -71,6 +71,31 @@ full picture. Every field is restart-required.
 | `enforcement.nftables.min_ttl` | duration | `0s` | Skip offloading blocks shorter than this; `0` offloads all. |
 | `enforcement.nftables.never_block` | []string | `[]` | CIDRs/IPs never sent to the kernel. Put LB/CDN ranges here. Configured allowlists are excluded automatically on top. |
 
+## attack_mode
+
+Fleet-wide attack posture. Off when absent. See the
+[Attack Mode](/guide/attack-mode) guide. Hot-reloadable.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `attack_mode.enabled` | bool | `false` | Enable the posture state machine. |
+| `attack_mode.window` | duration | `30s` | Sliding measurement window (5s buckets). Range 10s..10m. |
+| `attack_mode.min_dwell` | duration | `60s` | Minimum time at a level before it decays one step. Must be >= window. |
+| `attack_mode.share_posture` | bool | `true` | Publish/adopt the level through the shared store so replicas move together. |
+| `attack_mode.signals.challenge_rate` | rate | `200/s` | Issuance rate entering elevated. |
+| `attack_mode.signals.attack_challenge_rate` | rate | `1000/s` | Issuance rate entering attack (with the solve-ratio qualifier). Must be >= challenge_rate. |
+| `attack_mode.signals.min_solve_ratio` | float | `0.2` | Attack entry requires solved/issued below this (separates a flood from a flash crowd). |
+| `attack_mode.signals.request_rate` | rate | (omitted = disabled) | Global Evaluate rate entering elevated. Omit to disable (a rate cannot be `0/s`). In a partial signals block, an omitted signal stays disabled; a fully-omitted block gets all defaults. |
+| `attack_mode.signals.store_error_ratio` | float | `0.05` | Store op error fraction entering elevated (3x enters attack). |
+| `attack_mode.signals.store_slow_ratio` | float | `0.25` | Fraction of store ops slower than 25ms entering elevated. |
+| `attack_mode.effects.elevated_difficulty_raise` | float | `0.5` | Fleet difficulty raise at elevated, in 1..8 quarter steps (+2 bits). Range 0..2, multiples of 0.25. An explicit `0.0` raises nothing at elevated; omitting the field uses the default. |
+| `attack_mode.effects.attack_difficulty_raise` | float | `1.0` | Fleet difficulty raise at attack (+4 bits). |
+| `attack_mode.effects.difficulty_cap` | float | `7.0` | Ceiling for the shifted window (28 bits). Range 1..8. |
+| `attack_mode.effects.force_always` | bool | `true` | At attack, `pow.mode: suspicion` behaves as `always`. |
+| `attack_mode.effects.stateless_issuance` | bool | `true` | At attack, issue store-free HMAC challenges. |
+| `attack_mode.effects.scoreboard_factor` | float | `1.0` | At attack, multiply behavioural thresholds (0 < f <= 1). |
+| `attack_mode.effects.max_inflight` | int | `0` | Bound on concurrent auth evaluations for load-shedding; 0 = off. |
+
 ## geoip
 
 MaxMind-format (`.mmdb`) databases: MaxMind GeoLite2/GeoIP2, DB-IP, or any
@@ -177,6 +202,7 @@ Restrictions and behavior notes:
 | `pow.max_difficulty` | float | `6` | Ceiling for anomaly, WAF/reputation, and challenge-farming escalation. Must be finite and in range `base_difficulty`..8, in quarter steps. |
 | `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. Must be between `1s` and seven days when PoW is enabled. |
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. Must be greater than zero when PoW is enabled and no more than seven days. |
+| `pow.issuance_rate_limit` | rate | `60/min` | Per-IP cap on challenge issuance, so the interstitial cannot be used to flood the store. Inherited by domains and path overlays. |
 | `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. It substitutes a minimum five-second wait for hash work, so it is weaker and more parallelizable than PoW. |
 
 See [base_difficulty and max_difficulty](/guide/configuration#base-difficulty-and-max-difficulty)
