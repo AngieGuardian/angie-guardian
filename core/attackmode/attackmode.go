@@ -18,6 +18,8 @@ package attackmode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -137,9 +139,10 @@ type bucket struct {
 
 // Detector aggregates signals and publishes the posture.
 type Detector struct {
-	cfg   atomic.Pointer[Config]
-	log   *slog.Logger
-	store store.Store // for posture sharing; may be nil
+	cfg        atomic.Pointer[Config]
+	log        *slog.Logger
+	store      store.Store // for posture sharing; may be nil
+	instanceID string      // per-process id for this instance's posture-share key
 
 	c        counters
 	prev     counters // last-tick totals, for deltas (ticker-only, no lock)
@@ -149,9 +152,18 @@ type Detector struct {
 
 	state atomic.Pointer[State]
 
+	// evalMu serializes the whole evaluate/publish path, which runs on both
+	// the ticker goroutine and the admin goroutine (Pin/Unpin). It guards
+	// lastAbove and the load-then-store of state so the two goroutines cannot
+	// race or revert each other's decision.
+	evalMu sync.Mutex
 	// lastAbove[level] is the last tick (unix nano) at which any entry signal
 	// for that level was at or above threshold; drives dwell + hysteresis.
+	// Guarded by evalMu.
 	lastAbove [3]int64
+	// localLvl is this instance's own detected level (before adopting any
+	// peer level); it is what we publish to peers. Guarded by evalMu.
+	localLvl Level
 
 	pinned   atomic.Bool
 	pinLevel atomic.Int32
@@ -181,10 +193,20 @@ type Signals struct {
 // New builds a detector in the Normal state. A nil *Detector is safe to call
 // every method on (feature-off no-op), so callers never nil-check.
 func New(cfg Config, st store.Store, log *slog.Logger) *Detector {
-	d := &Detector{log: log, store: st, now: time.Now}
+	d := &Detector{log: log, store: st, now: time.Now, instanceID: newInstanceID()}
 	d.applyConfig(cfg)
 	d.state.Store(&State{Level: Normal})
 	return d
+}
+
+// newInstanceID returns a random per-process id for this instance's
+// posture-share key, so replicas never collide on the shared store.
+func newInstanceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func (d *Detector) applyConfig(cfg Config) {
@@ -297,7 +319,7 @@ func (d *Detector) Pin(level Level, ttl time.Duration) {
 		d.pinUntil.Store(0)
 	}
 	d.pinned.Store(true)
-	d.recompute("forced")
+	d.recompute()
 }
 
 // Unpin returns to automatic detection.
@@ -306,7 +328,7 @@ func (d *Detector) Unpin() {
 		return
 	}
 	d.pinned.Store(false)
-	d.recompute("")
+	d.recompute()
 }
 
 // Start begins the aggregation ticker. Call once; Close stops it.
@@ -366,19 +388,19 @@ func (d *Detector) tick() {
 	d.sig = sig
 	d.mu.Unlock()
 
-	d.evaluate(cfg, sig)
-	// After the local decision, reconcile with peers: adopt the fleet max so
-	// replicas move together. Off the hot path (one tick), store errors
-	// degrade to local-only.
-	if cfg.Enabled && cfg.SharePosture && d.store != nil {
-		local := d.state.Load().Level
+	// Posture sharing runs OUTSIDE evalMu (it does blocking store I/O) but is
+	// fed into evaluate as the peer level, so the whole decision (local +
+	// pin + peer) is made in one serialized place. This publishes the local
+	// level to peers only when we are the ones detecting elevation, so a
+	// replica that merely adopted a peer's level never writes it back (which
+	// would let a decayed replica clobber the true source).
+	peer := Normal
+	if cfg.Enabled && cfg.SharePosture && d.store != nil && !d.pinned.Load() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		adopted := d.sharePosture(ctx, cfg, local)
+		peer = d.sharePosture(ctx, cfg, d.localLevel())
 		cancel()
-		if adopted > local {
-			d.publish(cfg, adopted, "peer", d.now())
-		}
 	}
+	d.evaluate(cfg, sig, peer)
 	if fn := d.onTick.Load(); fn != nil {
 		st := d.state.Load()
 		(*fn)(st.Level, st.ExtraBits, sig)
@@ -439,10 +461,36 @@ func (d *Detector) windowSignals(cfg *Config) Signals {
 	return sig
 }
 
+// localLevel returns this instance's own detected level (ignoring any
+// peer-adopted level), which is what it publishes to peers. Guarded by evalMu.
+func (d *Detector) localLevel() Level {
+	d.evalMu.Lock()
+	defer d.evalMu.Unlock()
+	return d.localLvl
+}
+
 // evaluate runs the state machine against the current window and publishes a
-// new State when the level or reason changes.
-func (d *Detector) evaluate(cfg *Config, sig Signals) {
+// new State. peer is the level adopted from other replicas via the shared
+// store (Normal when sharing is off or we are pinned); the published level is
+// max(local, peer), but a pin overrides everything. The whole body runs under
+// evalMu so the ticker and an admin Pin cannot race or revert each other.
+func (d *Detector) evaluate(cfg *Config, sig Signals, peer Level) {
+	d.evalMu.Lock()
+	defer d.evalMu.Unlock()
 	now := d.now()
+
+	// Manual pin overrides detection in both directions (kill switch).
+	if lvl, pinned := d.resolvePin(now); pinned {
+		d.localLvl = lvl
+		d.publish(cfg, lvl, "forced", now)
+		return
+	}
+	if !cfg.Enabled {
+		d.localLvl = Normal
+		d.publish(cfg, Normal, "", now)
+		return
+	}
+
 	elevatedHit, elevatedReason := d.elevatedSignal(cfg, sig)
 	attackHit, attackReason := d.attackSignal(cfg, sig)
 	if elevatedHit {
@@ -452,31 +500,30 @@ func (d *Detector) evaluate(cfg *Config, sig Signals) {
 		d.lastAbove[Attack] = now.UnixNano()
 	}
 
-	cur := d.state.Load()
-	target, reason := cur.Level, cur.Reason
-
-	// Manual pin overrides detection in both directions.
-	if lvl, pinned := d.resolvePin(now); pinned {
-		d.publish(cfg, lvl, "forced", now)
-		return
-	}
-
-	if !cfg.Enabled {
-		d.publish(cfg, Normal, "", now)
-		return
-	}
-
+	// The local decision drives what we detect (and publish to peers).
+	cur := d.localLvl
+	local, reason := cur, ""
 	switch {
 	case attackHit:
-		target, reason = Attack, attackReason
-	case elevatedHit && cur.Level < Attack:
-		target, reason = Elevated, elevatedReason
+		local, reason = Attack, attackReason
+	case elevatedHit && cur < Attack:
+		local, reason = Elevated, elevatedReason
 	default:
-		// No entry signal active: decay one step if we have dwelled long
-		// enough below every signal for the current level.
-		target, reason = d.decay(cfg, cur, now)
+		local, reason = d.decayFrom(cfg, cur, now)
 	}
-	d.publish(cfg, target, reason, now)
+	d.localLvl = local
+
+	// The published posture is the fleet max. Adopting a peer's higher level
+	// records its dwell timestamp too, so an adopted level does not decay on
+	// the very next tick.
+	target, treason := local, reason
+	if peer > target {
+		target, treason = peer, "peer"
+		if d.lastAbove[peer] == 0 {
+			d.lastAbove[peer] = now.UnixNano()
+		}
+	}
+	d.publish(cfg, target, treason, now)
 }
 
 // resolvePin returns the pinned level, expiring the pin if its TTL passed.
@@ -517,25 +564,28 @@ func (d *Detector) attackSignal(cfg *Config, sig Signals) (bool, string) {
 	return false, ""
 }
 
-// decay lowers the level one step when every entry signal for the current
-// level has stayed below 50% of its threshold for MinDwell.
-func (d *Detector) decay(cfg *Config, cur *State, now time.Time) (Level, string) {
-	if cur.Level == Normal {
+// decayFrom lowers a level one step when it has dwelled long enough below
+// every entry signal for MinDwell; otherwise it holds. Caller holds evalMu.
+func (d *Detector) decayFrom(cfg *Config, cur Level, now time.Time) (Level, string) {
+	if cur == Normal {
 		return Normal, ""
 	}
-	last := d.lastAbove[cur.Level]
+	last := d.lastAbove[cur]
 	if last != 0 && now.Sub(time.Unix(0, last)) < cfg.MinDwell {
-		return cur.Level, cur.Reason // still dwelling
+		return cur, "" // still dwelling; reason recomputed by publish's short-circuit
 	}
-	return cur.Level - 1, cur.Reason
+	return cur - 1, ""
 }
 
-// publish swaps in a new State when the effective level or reason changed, and
-// fires the transition callback.
+// publish swaps in a new State. Caller holds evalMu. It republishes when the
+// level, the reason, or any config-derived effect field changes, so a hot
+// reload of the raise/cap/stateless/force settings takes effect even while a
+// level is held (not only at the next transition). An empty reason while the
+// level is unchanged preserves the current reason (a dwell "hold").
 func (d *Detector) publish(cfg *Config, level Level, reason string, now time.Time) {
 	cur := d.state.Load()
-	if cur.Level == level && cur.Reason == reason {
-		return
+	if reason == "" && level == cur.Level {
+		reason = cur.Reason // holding at the same level keeps its reason
 	}
 	next := &State{
 		Level:       level,
@@ -546,8 +596,14 @@ func (d *Detector) publish(cfg *Config, level Level, reason string, now time.Tim
 		Since:       now,
 		Reason:      reason,
 	}
+	// No-op unless something actually changed (level, reason, or an effect).
+	if cur.Level == next.Level && cur.Reason == next.Reason &&
+		cur.ExtraBits == next.ExtraBits && cur.CapBits == next.CapBits &&
+		cur.ForceAlways == next.ForceAlways && cur.Stateless == next.Stateless {
+		return
+	}
 	if cur.Level == level {
-		next.Since = cur.Since // reason-only change keeps the start time
+		next.Since = cur.Since // effect/reason-only change keeps the start time
 	}
 	d.state.Store(next)
 	if cur.Level != level {
@@ -573,50 +629,72 @@ func (d *Detector) bitsFor(cfg *Config, level Level) int {
 
 // recompute forces a state re-evaluation off the current window (used by
 // Pin/Unpin so an operator action takes effect immediately, not next tick).
-func (d *Detector) recompute(_ string) {
+// Peer level is not re-read here: a pin overrides it anyway, and an unpin
+// picks the fleet level up on the next tick.
+func (d *Detector) recompute() {
 	d.mu.Lock()
 	sig := d.sig
 	d.mu.Unlock()
-	d.evaluate(d.cfg.Load(), sig)
+	d.evaluate(d.cfg.Load(), sig, Normal)
 }
 
 // EffectiveBits shifts a domain's difficulty window up by the fleet raise,
 // clamped to the attack-mode cap. Both floor and ceiling move so per-IP
 // escalation and anomaly scaling keep their headroom above the new floor.
+//
+// The raise can only ever RAISE difficulty: the effective base never drops
+// below the domain's own base, and the ceiling never below the domain's own
+// max, even when difficulty_cap is misconfigured below them. That guarantee
+// is load-bearing, because the pow_token stage verifies against the unshifted
+// base (core/pipeline.go): if a challenge were issued below that floor, the
+// solved token would be rejected and the visitor trapped in a solve loop.
 func EffectiveBits(st *State, baseBits, maxBits, capBits int) (effBase, effMax int) {
 	if st == nil || st.ExtraBits == 0 {
 		return baseBits, maxBits
 	}
-	effBase = min(baseBits+st.ExtraBits, capBits)
-	effMax = max(min(maxBits+st.ExtraBits, capBits), effBase)
+	cap := max(capBits, maxBits) // the cap can never shrink the domain window
+	effBase = max(min(baseBits+st.ExtraBits, cap), baseBits)
+	effMax = max(min(maxBits+st.ExtraBits, cap), effBase)
 	return effBase, effMax
 }
 
 // --- posture sharing (store, tick-only, off the hot path) -------------------
 
-const posturePrefix = "attack:posture"
+const posturePrefix = "attack:posture:"
 
-// sharePosture publishes this instance's level (if above Normal) and adopts
-// the max of local and any peer level. One store op each per tick; a failing
-// store degrades to local-only (and is itself a trigger signal).
+// sharePosture publishes this instance's own level under its own key and
+// returns the maximum level any OTHER live instance is reporting. Per-instance
+// keys avoid the last-writer-wins clobber a single shared key suffers: a
+// decayed replica writing "1" can never overwrite an attacking replica's "2".
+// Each key self-expires after the window, so a crashed instance stops voting.
+// The scan and set run tick-only (every bucketWidth), off the request path; a
+// failing store degrades to local-only (and the failure is itself a trigger).
 func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) Level {
 	if d.store == nil || !cfg.SharePosture {
-		return local
+		return Normal
 	}
-	window := cfg.Window
+	// Publish our own level (or clear our key when back to Normal) under a
+	// key nobody else writes. A short floor keeps a Normal instance's key from
+	// lingering as a stale "0" vote.
+	key := posturePrefix + d.instanceID
 	if local > Normal {
-		_ = d.store.Set(ctx, posturePrefix, []byte(strconv.Itoa(int(local))), window)
+		_ = d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window)
+	} else {
+		_ = d.store.Delete(ctx, key)
 	}
-	v, ok, err := d.store.Get(ctx, posturePrefix)
-	if err != nil || !ok {
-		return local
+	// Adopt the max over every OTHER instance's key.
+	kvs, err := d.store.Scan(ctx, posturePrefix)
+	if err != nil {
+		return Normal
 	}
-	peer, perr := strconv.Atoi(string(v))
-	if perr != nil {
-		return local
+	peer := Normal
+	for _, kv := range kvs {
+		if kv.Key == key {
+			continue // our own vote is already reflected in local
+		}
+		if n, perr := strconv.Atoi(string(kv.Value)); perr == nil && Level(n) > peer {
+			peer = Level(n)
+		}
 	}
-	if Level(peer) > local {
-		return Level(peer)
-	}
-	return local
+	return peer
 }

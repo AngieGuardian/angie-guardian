@@ -18,8 +18,8 @@ func TestSharePostureAdoptsPeerLevel(t *testing.T) {
 	cfg := testConfig()
 	cfg.SharePosture = true
 
-	// A peer already published "attack" into the shared store.
-	if err := st.Set(t.Context(), posturePrefix, []byte("2"), time.Minute); err != nil {
+	// A peer instance published "attack" under its own per-instance key.
+	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 
@@ -42,7 +42,7 @@ func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = false
-	if err := st.Set(t.Context(), posturePrefix, []byte("2"), time.Minute); err != nil {
+	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	c := &clock{}
@@ -53,5 +53,92 @@ func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 	d.TickForTest()
 	if d.State().Level != Normal {
 		t.Fatalf("share_posture off but adopted peer: %s", d.State().Level)
+	}
+}
+
+// TestPinNormalDefeatsPeerAdoption is the review regression: with sharing on
+// and a peer reporting Attack, an operator's Pin(Normal) kill switch must
+// hold, not flap back to Attack every tick.
+func TestPinNormalDefeatsPeerAdoption(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	d.Pin(Normal, 0) // kill switch
+	for range 5 {
+		c.add(bucketWidth)
+		d.TickForTest()
+		if d.State().Level != Normal {
+			t.Fatalf("Pin(Normal) kill switch defeated by peer adoption: level = %s", d.State().Level)
+		}
+	}
+}
+
+// TestAdoptedPeerLevelDoesNotDecayImmediately: a level adopted from a peer must
+// honor min_dwell, not drop on the very next tick.
+func TestAdoptedPeerLevelDoesNotDecayImmediately(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Attack {
+		t.Fatalf("setup: level = %s", d.State().Level)
+	}
+	// Next tick, still no local signals: the adopted level must hold (peer key
+	// still says Attack, and dwell has not elapsed).
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Attack {
+		t.Fatalf("adopted level decayed immediately: level = %s", d.State().Level)
+	}
+}
+
+// TestDecayedReplicaDoesNotClobberPeer: an instance that only ADOPTED a peer's
+// attack level must not write it back, so when the peer clears, this instance
+// does not keep voting Attack.
+func TestDecayedReplicaDoesNotWriteBack(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	ctx := t.Context()
+	if err := st.Set(ctx, posturePrefix+"peer-abc", []byte("2"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	c.add(bucketWidth)
+	d.TickForTest() // adopts Attack from the peer
+
+	// This instance's own key must NOT exist: it only adopted, never detected.
+	kvs, err := st.Scan(ctx, posturePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range kvs {
+		if kv.Key != posturePrefix+"peer-abc" {
+			t.Fatalf("adopting instance wrote its own posture vote %q=%q (write-back clobber risk)", kv.Key, kv.Value)
+		}
 	}
 }

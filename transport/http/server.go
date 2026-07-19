@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
@@ -40,11 +41,13 @@ type Server struct {
 	log      *slog.Logger
 	mux      *http.ServeMux
 
-	// inflight bounds concurrent auth evaluations (Part C load-shedding). When
-	// full, token holders still pass (a cheap stateless check) and everyone
-	// else gets a fast 503, so the backend sees only vouched traffic under
-	// saturation instead of the raw flood. nil when max_inflight is 0 (off).
-	inflight chan struct{}
+	// inflight counts auth evaluations currently in Evaluate (Part C
+	// load-shedding). It is compared per request against the LIVE
+	// attack_mode.effects.max_inflight bound read from the engine config, so a
+	// hot reload of that bound takes effect immediately. When over the bound,
+	// token holders still pass (a cheap stateless check) and everyone else
+	// gets a fast 503; the backend sees only vouched traffic under saturation.
+	inflight atomic.Int64
 
 	challengeTmpl *template.Template
 	deniedHTML    []byte
@@ -58,9 +61,6 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		counters:      store.NewCounterCache(st),
 		mux:           http.NewServeMux(),
 		challengeTmpl: template.Must(template.ParseFS(web.FS, "challenge.html.tmpl")),
-	}
-	if n := engine.Config().AttackMode.Effects.MaxInflight; n > 0 {
-		s.inflight = make(chan struct{}, n)
 	}
 	s.deniedHTML, _ = web.FS.ReadFile("denied.html")
 
@@ -107,22 +107,36 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	// else gets a fast 503 with Retry-After instead of a full evaluation that
 	// would only add to the pileup. This keeps the backend seeing vouched
 	// traffic under overload rather than fail-open dumping the whole flood.
-	if s.inflight != nil {
-		select {
-		case s.inflight <- struct{}{}:
-			defer func() { <-s.inflight }()
-		default:
-			if s.engine.HasValidToken(req) {
+	// The bound is read live from the config, so a hot reload of
+	// attack_mode.effects.max_inflight (including toggling it on or off) takes
+	// effect immediately.
+	if bound := s.engine.Config().AttackMode.Effects.MaxInflight; bound > 0 {
+		if s.inflight.Add(1) > int64(bound) {
+			s.inflight.Add(-1)
+			// Saturated: run only the cheap store-free terminal checks. A
+			// blocked or denylisted IP is still denied (never fast-passed on a
+			// token); an allowlisted client or a valid-token holder passes;
+			// anyone else is shed with a 503 rather than a full evaluation.
+			switch s.engine.ShedDecision(req) {
+			case core.ShedPass:
 				s.metrics.Shed("pass_token")
 				w.Header().Set("X-Guardian-Action", string(core.ActionAllow))
 				w.WriteHeader(http.StatusOK)
 				return
+			case core.ShedDeny:
+				s.metrics.Shed("deny")
+				w.Header().Set("X-Guardian-Action", string(core.ActionDeny))
+				w.WriteHeader(http.StatusForbidden)
+				return
+			default:
+				s.metrics.Shed("shed")
+				w.Header().Set("Retry-After", "2")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
 			}
-			s.metrics.Shed("shed")
-			w.Header().Set("Retry-After", "2")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
 		}
+		// Admitted under the bound: hold the slot for the duration of Evaluate.
+		defer s.inflight.Add(-1)
 	}
 
 	d := s.engine.Evaluate(r.Context(), req)
@@ -239,10 +253,12 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.engine.AttackDetector().ChallengeIssued()
+	// Always count "issued" so pre-existing dashboards/alerts keep seeing the
+	// full issuance rate; additionally count "issued_stateless" so the split
+	// between the two paths is visible during an attack.
+	s.metrics.Challenge("issued")
 	if attack.Stateless {
 		s.metrics.Challenge("issued_stateless")
-	} else {
-		s.metrics.Challenge("issued")
 	}
 
 	payload, err := json.Marshal(map[string]any{

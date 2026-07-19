@@ -80,9 +80,10 @@ See the [Attack Mode](/guide/attack-mode) guide.
 | `guardian_shed_total` | counter | `outcome` | Load-shed decisions under saturation: `pass_token` (a token holder admitted) or `shed` (503'd). |
 
 Note two new outcomes on `guardian_challenges_total`: `issued_stateless` (a
-store-free challenge issued under attack) and `spent_cas_failed` (a stateless
-token minted fail-open because the single-spend write failed during a store
-outage).
+store-free challenge issued under attack, counted IN ADDITION to `issued`, so
+`issued` still reflects the full issuance rate and `issued_stateless` is the
+subset on the stateless path) and `spent_cas_failed` (a stateless token minted
+fail-open because the single-spend write failed during a store outage).
 
 ## Useful queries
 

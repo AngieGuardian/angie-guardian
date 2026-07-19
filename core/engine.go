@@ -284,7 +284,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 			continue
 		}
 		if sd != nil {
-			e.recordEvents(ctx, req.RemoteAddr, dcfg, sd.Events)
+			e.recordEvents(ctx, req.RemoteAddr, dcfg, sd.Events, e.scoreboardFactor(snap.cfg))
 			d = *sd
 			break
 		}
@@ -319,9 +319,24 @@ func reasonCategory(reason string) string {
 	return reason
 }
 
+// scoreboardFactor resolves the attack-mode scoreboard tightening from a
+// caller-supplied config (never a fresh e.Config() load, which could race a
+// nil snapshot swap during shutdown). Returns 1 (unchanged) unless the posture
+// is Attack and a factor is configured.
+func (e *Engine) scoreboardFactor(cfg *Config) float64 {
+	if e.attack.State().Level != attackmode.Attack {
+		return 1
+	}
+	if f := cfg.AttackMode.Effects.ScoreboardFactor; f > 0 && f < 1 {
+		return f
+	}
+	return 1
+}
+
 // recordEvents feeds behaviour events into the scoreboard. Bad events are
-// rare by construction, so the store writes stay off the common path.
-func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig, events []Event) {
+// rare by construction, so the store writes stay off the common path. factor
+// (<1 under attack mode) tightens the thresholds so fewer bad events block.
+func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig, events []Event, factor float64) {
 	if len(events) == 0 {
 		return
 	}
@@ -339,13 +354,8 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 		default:
 			if rate, ok := ib.Thresholds[ev.Type]; ok {
 				limit := rate.Count
-				// In attack mode, tighten the scoreboard: fewer bad events
-				// place a block sooner. scoreboard_factor is 1 (unchanged)
-				// unless configured and the posture is Attack.
-				if st := e.attack.State(); st.Level == attackmode.Attack {
-					if f := e.Config().AttackMode.Effects.ScoreboardFactor; f > 0 && f < 1 {
-						limit = max(1, int(float64(rate.Count)*f))
-					}
+				if factor > 0 && factor < 1 {
+					limit = max(1, int(float64(rate.Count)*factor))
 				}
 				blocked, err = e.board.RecordEvent(ctx, ip, ev.Type, limit, rate.Per,
 					ib.BlockTTL.Std(), ib.MaxBlockTTL.Std())
@@ -368,14 +378,19 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 // redemption tampering is scored out of the box rather than gated behind a
 // separate feature toggle.
 func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail string) {
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return // engine closing
+	}
+	defer snap.release()
 	// Host-level config on purpose: callers report from contexts where only
 	// the host is cheaply known (redeem failures), and events/blocks are
 	// IP-scoped anyway.
-	dcfg := e.Config().DomainFor(host)
+	dcfg := snap.cfg.DomainFor(host)
 	if addr, err := netip.ParseAddr(ip); err == nil && dcfg.Allowlist.MatchIP(addr) {
 		return
 	}
-	e.recordEvents(ctx, ip, dcfg, []Event{{Type: evtype, Detail: detail}})
+	e.recordEvents(ctx, ip, dcfg, []Event{{Type: evtype, Detail: detail}}, e.scoreboardFactor(snap.cfg))
 }
 
 // BlockIP places a temporary behavioural block with an explicit TTL (no
@@ -445,18 +460,55 @@ func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
 	return m.Score(host, decodePath(requestPath(uri)), decodeQuery(requestQuery(uri)), ua)
 }
 
-// HasValidToken reports whether the request carries a valid PoW token for its
-// resolved (host, path) policy. It is a cheap stateless signature check with
-// no store I/O, used by the transport's load-shedding guard to keep admitting
-// vouched clients while shedding everyone else under saturation.
-func (e *Engine) HasValidToken(req *RequestContext) bool {
+// ShedVerdict is the outcome of the load-shedding fast path (see ShedDecision).
+type ShedVerdict int
+
+const (
+	// ShedPass: admit without a full evaluation (allowlisted, or a valid token).
+	ShedPass ShedVerdict = iota
+	// ShedDeny: a cheap terminal check already rejects this request.
+	ShedDeny
+	// ShedReject: no cheap verdict; shed (503) rather than run a full eval.
+	ShedReject
+)
+
+// ShedDecision is the load-shedding gate: it runs ONLY the cheap, store-free
+// terminal checks that the full pipeline would run before the token stage, so
+// a saturated daemon still enforces blocks and denylists while fast-passing
+// vouched clients. It deliberately does not run the store-touching or
+// expensive stages (verified-bot rDNS, WAF signatures, anomaly); those are
+// what the shed exists to skip. Because it mirrors pipeline order, a blocked
+// or denylisted IP can never be fast-passed just because it holds a token.
+func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	snap := e.acquireSnapshot()
 	if snap == nil {
-		return false
+		return ShedReject
 	}
 	defer snap.release()
 	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
-	return hasValidPoWToken(req, &stageEnv{domain: dcfg, pow: e.pow})
+	env := &stageEnv{domain: dcfg, pow: e.pow, enforcer: e.enforcer}
+
+	// Stage 0: static allowlist wins over everything (same as the pipeline).
+	if _, ok := stateless.CheckAllowlist(req, &dcfg.Allowlist); ok {
+		return ShedPass
+	}
+	// Stage 1: static denylist. An unparseable IP fails open in the pipeline
+	// (stage error), so here it is not a cheap deny; fall through to shed it.
+	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil {
+		if dcfg.Denylist.MatchIP(addr) {
+			return ShedDeny
+		}
+	}
+	// Stage 2: behavioural block, via the in-process mirror only (no store
+	// read; a shared-store miss just falls through to shed, never to pass).
+	if _, blocked := e.enforcer.Lookup(req.RemoteAddr); blocked {
+		return ShedDeny
+	}
+	// Stage 3: a valid PoW token vouches. Cheap stateless signature check.
+	if hasValidPoWToken(req, env) {
+		return ShedPass
+	}
+	return ShedReject
 }
 
 // PoWManager exposes the PoW manager for admin key rotation (may be nil).

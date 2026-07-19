@@ -264,6 +264,44 @@ func TestOnTransitionFires(t *testing.T) {
 	}
 }
 
+// TestConcurrentPinAndTick exercises the evalMu serialization: an admin Pin
+// racing the ticker must not trip the race detector or revert the pin.
+func TestConcurrentPinAndTick(t *testing.T) {
+	d, c := newTestDetector(t, testConfig())
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				c.add(bucketWidth)
+				d.TickForTest()
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				d.Pin(Attack, time.Minute)
+			} else {
+				d.Unpin()
+			}
+		}
+		close(stop)
+	}()
+	wg.Wait()
+	// After a final pin, the level must reflect it (serialized, not reverted).
+	d.Pin(Attack, time.Minute)
+	if d.State().Level != Attack {
+		t.Fatalf("final pin not honored: level = %s", d.State().Level)
+	}
+}
+
 func TestDisabledStaysNormal(t *testing.T) {
 	cfg := testConfig()
 	cfg.Enabled = false
@@ -288,6 +326,11 @@ func TestEffectiveBits(t *testing.T) {
 	// Cap clamps; effMax never below effBase.
 	if b, m := EffectiveBits(&State{ExtraBits: 4}, 26, 27, 28); b != 28 || m != 28 {
 		t.Fatalf("clamp = %d/%d, want 28/28", b, m)
+	}
+	// A cap BELOW the domain base must never lower difficulty: the raise can
+	// only raise. base 30, cap 28 -> effBase stays >= 30, effMax >= domain max.
+	if b, m := EffectiveBits(&State{ExtraBits: 4, CapBits: 28}, 30, 30, 28); b < 30 || m < 30 {
+		t.Fatalf("cap-below-base = %d/%d, want both >= 30 (raise must not lower difficulty)", b, m)
 	}
 	// Nil state is safe.
 	if b, m := EffectiveBits(nil, 20, 24, 28); b != 20 || m != 24 {

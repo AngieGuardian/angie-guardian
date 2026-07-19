@@ -306,13 +306,14 @@ type AttackModeConfig struct {
 	Effects      AttackEffectsConfig `yaml:"effects"`
 }
 
-// AttackSignalsConfig are the thresholds that move the posture. A rate of 0
-// disables that signal.
+// AttackSignalsConfig are the thresholds that move the posture. A signal is
+// disabled by omission (a rate cannot be written "0/s"); a fully-omitted
+// signals block instead receives the standard defaults.
 type AttackSignalsConfig struct {
 	ChallengeRate       Rate    `yaml:"challenge_rate"`        // issuance/s entering elevated
 	AttackChallengeRate Rate    `yaml:"attack_challenge_rate"` // issuance/s entering attack
 	MinSolveRatio       float64 `yaml:"min_solve_ratio"`       // attack entry needs solved/issued below this
-	RequestRate         Rate    `yaml:"request_rate"`          // global Evaluate/s; 0 disables
+	RequestRate         Rate    `yaml:"request_rate"`          // global Evaluate/s; omit to disable
 	StoreErrorRatio     float64 `yaml:"store_error_ratio"`     // store op error fraction entering elevated
 	StoreSlowRatio      float64 `yaml:"store_slow_ratio"`      // slow (>25ms) op fraction entering elevated
 }
@@ -375,41 +376,50 @@ func (a *AttackModeConfig) validate() error {
 	if a.MinDwell < a.Window {
 		return fmt.Errorf("attack_mode.min_dwell (%v) must be >= window (%v)", a.MinDwell.Std(), a.Window.Std())
 	}
+	// Whole-block defaulting: when the operator supplied NO signals/effects
+	// block at all (every field is the zero value), fill the standard
+	// defaults. Once any field is set, omitted fields keep their zero value, so
+	// an omitted signal stays disabled and elevated_difficulty_raise: 0.0
+	// raises nothing at elevated, instead of being silently defaulted.
 	s := &a.Signals
-	if s.ChallengeRate.Count == 0 {
+	if (AttackSignalsConfig{}) == *s {
 		s.ChallengeRate = Rate{Count: 200, Per: time.Second}
-	}
-	if s.AttackChallengeRate.Count == 0 {
 		s.AttackChallengeRate = Rate{Count: 1000, Per: time.Second}
+		s.MinSolveRatio = 0.2
+		s.StoreErrorRatio = 0.05
+		s.StoreSlowRatio = 0.25
 	}
-	if perSecond(s.AttackChallengeRate) < perSecond(s.ChallengeRate) {
-		return fmt.Errorf("attack_mode.signals.attack_challenge_rate must be >= challenge_rate")
-	}
+	// min_solve_ratio only matters when the attack issuance signal is active,
+	// and 0 is not a usable value for it (the ratio qualifier would never
+	// pass), so it keeps a sane default even in a partial block.
 	if s.MinSolveRatio == 0 {
 		s.MinSolveRatio = 0.2
+	}
+	if s.ChallengeRate.Count != 0 && s.AttackChallengeRate.Count != 0 &&
+		perSecond(s.AttackChallengeRate) < perSecond(s.ChallengeRate) {
+		return fmt.Errorf("attack_mode.signals.attack_challenge_rate must be >= challenge_rate")
 	}
 	if err := ratioField("min_solve_ratio", s.MinSolveRatio); err != nil {
 		return err
 	}
-	if s.StoreErrorRatio == 0 {
-		s.StoreErrorRatio = 0.05
+	// The ratio signals accept 0 (disabled); validate only non-zero values.
+	if s.StoreErrorRatio != 0 {
+		if err := ratioField("store_error_ratio", s.StoreErrorRatio); err != nil {
+			return err
+		}
 	}
-	if err := ratioField("store_error_ratio", s.StoreErrorRatio); err != nil {
-		return err
-	}
-	if s.StoreSlowRatio == 0 {
-		s.StoreSlowRatio = 0.25
-	}
-	if err := ratioField("store_slow_ratio", s.StoreSlowRatio); err != nil {
-		return err
+	if s.StoreSlowRatio != 0 {
+		if err := ratioField("store_slow_ratio", s.StoreSlowRatio); err != nil {
+			return err
+		}
 	}
 	e := &a.Effects
-	if e.ElevatedDifficultyRaise == 0 {
+	if (AttackEffectsConfig{}) == *e {
 		e.ElevatedDifficultyRaise = 0.5
-	}
-	if e.AttackDifficultyRaise == 0 {
 		e.AttackDifficultyRaise = 1.0
+		e.DifficultyCap = 7.0
 	}
+	// difficulty_cap has no "disabled" meaning; it must be a real ceiling.
 	if e.DifficultyCap == 0 {
 		e.DifficultyCap = 7.0
 	}
@@ -992,6 +1002,45 @@ func (c *Config) finalize() error {
 	}
 	if err := c.validateFeatureDependencies(); err != nil {
 		return err
+	}
+	if err := c.validateAttackDifficultyCap(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAttackDifficultyCap refuses an attack_mode.effects.difficulty_cap
+// below any PoW-enabled domain or path base_difficulty. Below it, the fleet
+// raise would have to clamp new challenges under the domain's own base, but
+// the pow_token stage verifies against that unshifted base, so a solved token
+// would be rejected and the visitor trapped in a solve loop. EffectiveBits
+// also floors defensively, but a config that can never take effect is an
+// operator error worth failing loudly at load.
+func (c *Config) validateAttackDifficultyCap() error {
+	if !c.AttackMode.Enabled {
+		return nil
+	}
+	capBits := c.AttackMode.CapBits()
+	check := func(label string, dc *DomainConfig) error {
+		if dc.PoW.Enabled && dc.PoW.BaseBits() > capBits {
+			return fmt.Errorf("%s: pow.base_difficulty (%v = %d bits) exceeds attack_mode.effects.difficulty_cap (%v = %d bits); raise the cap so attack mode can never issue below the domain base",
+				label, dc.PoW.BaseDifficulty, dc.PoW.BaseBits(), c.AttackMode.Effects.DifficultyCap, capBits)
+		}
+		return nil
+	}
+	if err := check("defaults", &c.Defaults); err != nil {
+		return err
+	}
+	for host, dc := range c.resolved {
+		if err := check("domain "+host, dc); err != nil {
+			return err
+		}
+		for i := range dc.pathOverrides {
+			o := &dc.pathOverrides[i]
+			if err := check("domain "+host+" path "+o.key, o.cfg); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

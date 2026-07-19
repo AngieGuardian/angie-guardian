@@ -85,7 +85,7 @@ Fleet-wide attack posture. Off when absent. See the
 | `attack_mode.signals.challenge_rate` | rate | `200/s` | Issuance rate entering elevated. |
 | `attack_mode.signals.attack_challenge_rate` | rate | `1000/s` | Issuance rate entering attack (with the solve-ratio qualifier). Must be >= challenge_rate. |
 | `attack_mode.signals.min_solve_ratio` | float | `0.2` | Attack entry requires solved/issued below this (separates a flood from a flash crowd). |
-| `attack_mode.signals.request_rate` | rate | `0/s` | Global Evaluate rate entering elevated; 0 disables. |
+| `attack_mode.signals.request_rate` | rate | (omitted = disabled) | Global Evaluate rate entering elevated. Omit to disable (a rate cannot be `0/s`). In a partial signals block, an omitted signal stays disabled; a fully-omitted block gets all defaults. |
 | `attack_mode.signals.store_error_ratio` | float | `0.05` | Store op error fraction entering elevated (3x enters attack). |
 | `attack_mode.signals.store_slow_ratio` | float | `0.25` | Fraction of store ops slower than 25ms entering elevated. |
 | `attack_mode.effects.elevated_difficulty_raise` | float | `0.5` | Fleet difficulty raise at elevated, in 1..8 quarter steps (+2 bits). Range 0..2, multiples of 0.25. |

@@ -102,3 +102,85 @@ func TestAttackModeValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestAttackModePartialBlockDisablesOmitted: in a PARTIAL signals/effects
+// block, fields the operator omits stay at zero (disabled / no raise) instead
+// of being silently rewritten to the standard defaults. Rates cannot be
+// written as "0/s" (the parser rejects a zero count), so "disabled" is
+// expressed by omission once the block is otherwise present.
+func TestAttackModePartialBlockDisablesOmitted(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+attack_mode:
+  enabled: true
+  signals: { attack_challenge_rate: 500/s, store_error_ratio: 0.1 }
+  effects: { attack_difficulty_raise: 1.0 }
+`)
+	s := cfg.AttackMode.Signals
+	if s.ChallengeRate.Count != 0 {
+		t.Fatalf("omitted challenge_rate was defaulted to %+v (partial block should leave it disabled)", s.ChallengeRate)
+	}
+	if s.AttackChallengeRate.Count != 500 {
+		t.Fatalf("attack_challenge_rate = %+v, want 500/s", s.AttackChallengeRate)
+	}
+	if s.StoreSlowRatio != 0 {
+		t.Fatalf("omitted store_slow_ratio should stay disabled (0), got %v", s.StoreSlowRatio)
+	}
+	if cfg.AttackMode.ExtraBits(1) != 0 {
+		t.Fatalf("omitted elevated raise was defaulted: extra bits = %d, want 0", cfg.AttackMode.ExtraBits(1))
+	}
+	// Whole-block-absent still gets full defaults.
+	full := loadTestConfig(t, "store: { backend: memory }\nattack_mode: { enabled: true }\n")
+	if full.AttackMode.Signals.ChallengeRate.Count != 200 || full.AttackMode.ExtraBits(1) != 2 {
+		t.Fatalf("absent block did not get defaults: %+v", full.AttackMode)
+	}
+}
+
+// TestAttackDifficultyCapVsBase: a difficulty_cap below a PoW-enabled domain's
+// base_difficulty is refused, because the fleet raise would otherwise clamp
+// new challenges under the base the token stage verifies against.
+func TestAttackDifficultyCapVsBase(t *testing.T) {
+	yaml := `
+store: { backend: memory }
+signing_key_file: k
+attack_mode: { enabled: true, effects: { difficulty_cap: 6.0 } }
+defaults:
+  pow: { enabled: true, base_difficulty: 7, max_difficulty: 7 }
+domains:
+  a.test: {}
+`
+	_, err := loadConfigErr(t, yaml)
+	if err == nil || !strings.Contains(err.Error(), "difficulty_cap") {
+		t.Fatalf("err = %v, want a difficulty_cap-below-base error", err)
+	}
+
+	// A per-path base above the cap is also caught.
+	yaml2 := `
+store: { backend: memory }
+signing_key_file: k
+attack_mode: { enabled: true, effects: { difficulty_cap: 6.0 } }
+defaults:
+  pow: { enabled: true, base_difficulty: 5, max_difficulty: 6 }
+domains:
+  a.test:
+    paths:
+      "/hard": { pow: { base_difficulty: 7, max_difficulty: 7 } }
+`
+	if _, err := loadConfigErr(t, yaml2); err == nil || !strings.Contains(err.Error(), "difficulty_cap") {
+		t.Fatalf("path base above cap: err = %v, want a difficulty_cap error", err)
+	}
+
+	// A cap at or above every base is fine.
+	ok := `
+store: { backend: memory }
+signing_key_file: k
+attack_mode: { enabled: true, effects: { difficulty_cap: 7.0 } }
+defaults:
+  pow: { enabled: true, base_difficulty: 7, max_difficulty: 7 }
+domains:
+  a.test: {}
+`
+	if _, err := loadConfigErr(t, ok); err != nil {
+		t.Fatalf("cap == base should be valid, got %v", err)
+	}
+}

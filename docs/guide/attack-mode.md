@@ -123,7 +123,9 @@ attack_mode:
     challenge_rate: 200/s
     attack_challenge_rate: 1000/s   # >= challenge_rate
     min_solve_ratio: 0.2
-    request_rate: 0/s               # 0 disables
+    # request_rate is omitted, which disables it. A rate cannot be written as
+    # "0/s" (a zero count is rejected); omit a signal from the block to disable
+    # it. A fully-omitted signals block gets all the defaults instead.
     store_error_ratio: 0.05
     store_slow_ratio: 0.25
   effects:

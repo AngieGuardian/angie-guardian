@@ -480,6 +480,7 @@ signing_key_file: k
 attack_mode: { enabled: true, effects: { max_inflight: 1 } }
 defaults:
   pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 4 }
+  denylist: { ips: [ "203.0.113.66" ] }
 domains:
   html.test: { pow: { enabled: true } }
 `
@@ -500,9 +501,9 @@ domains:
 		t.Fatal("could not mint a token")
 	}
 
-	// Saturate: fill the single in-flight slot so the guard's default branch runs.
-	h.inflight <- struct{}{}
-	defer func() { <-h.inflight }()
+	// Saturate: push the in-flight counter to the bound so the shed branch runs.
+	h.inflight.Add(1)
+	defer h.inflight.Add(-1)
 
 	// A tokenless request is shed with 503 + Retry-After.
 	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", "203.0.113.50", "/page", ua), nil)
@@ -517,6 +518,27 @@ domains:
 	resp = do(t, "GET", ts.URL+"/auth", th, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token holder under saturation: status = %d, want 200", resp.StatusCode)
+	}
+
+	// A denylisted IP is DENIED even holding a token: the shed fast path must
+	// not bypass the terminal pre-token checks (regression for the review
+	// finding). Craft a token bound to the denylisted IP so the only thing
+	// that could wave it through is the token check.
+	dIP := "203.0.113.66"
+	dID, dCh, dDiff := fetchChallenge(t, ts, dIP, ua)
+	dBody, _ := json.Marshal(map[string]any{"challenge_id": dID, "nonce": solve(t, dCh, dDiff)})
+	dResp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", dIP, "/", ua), dBody)
+	var dCookie string
+	for _, c := range dResp.Cookies() {
+		if c.Name == pow.CookieName {
+			dCookie = c.Value
+		}
+	}
+	dh := guardianHeaders("html.test", dIP, "/page", ua)
+	dh["X-Guardian-Cookie"] = pow.CookieName + "=" + dCookie
+	resp = do(t, "GET", ts.URL+"/auth", dh, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("denylisted token holder under saturation: status = %d, want 403 (shed must not bypass the denylist)", resp.StatusCode)
 	}
 }
 
