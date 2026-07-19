@@ -154,9 +154,13 @@ reputation:
 URL feeds are fetched in the background: startup never blocks on a remote, a
 failed refresh keeps the last good list (and retries within 5 minutes), and
 `cache_dir` seeds the list at boot so a restart doesn't open a window. A
-local `file:` feed must exist at startup (fail-fast, like the WAF rules
-files) and is hot-reloaded on change. Matching is a binary search over
-merged ranges, so six-figure feeds are fine on the hot path.
+hot config reload also carries the in-memory last-good state forward when a
+URL feed keeps the same name and URL, before the replacement provider starts
+its asynchronous refresh. This avoids a temporary enforcement gap even when
+`cache_dir` is unset and the remote is down during reload. A local `file:`
+feed must exist at startup (fail-fast, like the WAF rules files) and is
+hot-reloaded on change. Matching is a binary search over merged ranges, so
+six-figure feeds are fine on the hot path.
 
 An `action: deny` feed rejects matching IPs outright; `action: challenge`
 makes them prove work first, one full difficulty step (+4 bits = 16x) above

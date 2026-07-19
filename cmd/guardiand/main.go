@@ -247,6 +247,9 @@ func run(configPath string) error {
 			Handler: httptransport.NewAdminServer(engine, cfg, m,
 				cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, reload, log),
 			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
 		go func() {
 			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen)
@@ -368,7 +371,10 @@ func displayAddr(addr string) string {
 	if err != nil {
 		return addr
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	if host == "::" {
+		return net.JoinHostPort("::1", port)
+	}
+	if host == "" || host == "0.0.0.0" {
 		return net.JoinHostPort("127.0.0.1", port)
 	}
 	return addr

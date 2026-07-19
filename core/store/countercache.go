@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"hash/maphash"
 	"sync"
 	"time"
 )
@@ -58,6 +59,13 @@ type CounterCache struct {
 	// uncached until a drainer releases an entry; existing hot keys keep their
 	// exact local count and reconciliation state.
 	capacityProtected bool
+	// overflow is a bounded count-min sketch used only while every primary
+	// cache entry is protected by unpushed work. It keeps repeat requests from
+	// an unseen key counting upward instead of returning 1 forever. Hash
+	// collisions can only over-count, which is the safer overload failure mode
+	// for rate limiting.
+	overflow      [overflowCounterDepth][]overflowCounterCell
+	overflowSeeds [overflowCounterDepth]maphash.Seed
 
 	now func() time.Time
 }
@@ -66,6 +74,11 @@ type counterEntry struct {
 	n       int64
 	expires int64 // unix nanoseconds
 	pending int64 // increments retained locally while no dirty slot is available
+}
+
+type overflowCounterCell struct {
+	n       int64
+	expires int64
 }
 
 // dirtyEntry is the unpushed shared-store work for a key. delta is the number
@@ -96,6 +109,11 @@ type dirtyEntry struct {
 // a drainer makes room.
 const maxCounterEntries = 1 << 17
 
+const (
+	overflowCounterDepth = 4
+	overflowCounterWidth = 1 << 14
+)
+
 // maxFlushWorkers caps how many drain goroutines flush the shared store
 // counter concurrently. It bounds the goroutine and store-concurrency cost of
 // a flood: past this, extra dirty keys wait in the queue.
@@ -113,13 +131,18 @@ const maxFlushQueue = 1 << 14
 const flushTimeout = 5 * time.Second
 
 func NewCounterCache(st Store) *CounterCache {
-	return &CounterCache{
+	c := &CounterCache{
 		store: st,
 		Go:    func(f func()) { go f() },
 		m:     make(map[string]counterEntry),
 		dirty: make(map[string]*dirtyEntry),
 		now:   time.Now,
 	}
+	for i := range c.overflow {
+		c.overflow[i] = make([]overflowCounterCell, overflowCounterWidth)
+		c.overflowSeeds[i] = maphash.MakeSeed()
+	}
+	return c
 }
 
 // Incr counts one event under key and returns the running total, without
@@ -139,11 +162,11 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 			c.capacityProtected = false
 		} else if !c.makeCounterRoomLocked() {
 			// Every cached entry owns unpushed work. Evicting any of them would
-			// lose reconciliation state, so shed only this previously unseen key.
-			// It returns the first-event count but is not allowed to erase a hot
-			// key's exact local enforcement state.
+			// lose reconciliation state. Count this previously unseen key in the
+			// bounded overload sketch so repeated requests still trip the limiter.
+			n := c.incrOverflowLocked(key, now, ttl)
 			c.mu.Unlock()
-			return 1
+			return n
 		}
 		e = counterEntry{expires: now + ttl.Nanoseconds()}
 	}
@@ -162,6 +185,31 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 		c.Go(c.drain)
 	}
 	return n
+}
+
+// incrOverflowLocked increments a count-min sketch. Returning the minimum of
+// independent rows ensures collisions never under-count a key. Under a hash
+// collision, the cell keeps the later deadline; this can conservatively hold
+// an overload count longer but cannot reset a live key's window early.
+// c.mu must be held.
+func (c *CounterCache) incrOverflowLocked(key string, now int64, ttl time.Duration) int64 {
+	minimum := int64(^uint64(0) >> 1)
+	for i := range c.overflow {
+		idx := maphash.String(c.overflowSeeds[i], key) & (overflowCounterWidth - 1)
+		cell := &c.overflow[i][idx]
+		if cell.n == 0 || (cell.expires > 0 && now >= cell.expires) {
+			cell.n = 0
+			cell.expires = 0
+		}
+		if ttl > 0 {
+			cell.expires = max(cell.expires, now+ttl.Nanoseconds())
+		}
+		if cell.n < int64(^uint64(0)>>1) {
+			cell.n++
+		}
+		minimum = min(minimum, cell.n)
+	}
+	return minimum
 }
 
 // makeCounterRoomLocked preserves every entry that still owns unpushed work

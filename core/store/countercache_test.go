@@ -537,6 +537,34 @@ func TestCounterCacheCapacityPreservesOverflowPending(t *testing.T) {
 	}
 }
 
+// If every primary slot owns unpushed work, a new key is counted in the
+// bounded overload sketch. It must keep increasing rather than fail open by
+// returning the first-event count forever.
+func TestCounterCacheProtectedCapacityCountsUnseenKey(t *testing.T) {
+	c := NewCounterCache(failingStore{})
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	c.mu.Lock()
+	for i := 0; i < maxCounterEntries; i++ {
+		key := fmt.Sprintf("protected-%d", i)
+		c.m[key] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
+	}
+	c.capacityProtected = true
+	c.mu.Unlock()
+
+	if n := c.Incr("new-attacker", time.Minute); n != 1 {
+		t.Fatalf("first overflow count = %d, want 1", n)
+	}
+	if n := c.Incr("new-attacker", time.Minute); n != 2 {
+		t.Fatalf("second overflow count = %d, want 2", n)
+	}
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if n := c.Incr("new-attacker", time.Minute); n != 1 {
+		t.Fatalf("overflow count after expiry = %d, want 1", n)
+	}
+}
+
 // TestCounterCacheMonotonicMerge: an out-of-order flush carrying a stale
 // (smaller) shared total must never roll the local count backward. Two local
 // bumps return 1 then 2; landing shared=2 then a late shared=1 must leave the

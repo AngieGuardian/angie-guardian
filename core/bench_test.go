@@ -6,10 +6,13 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"io"
 	"log/slog"
+	"math/bits"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,16 +62,33 @@ func benchEngine(b *testing.B, st store.Store) (*Engine, *pow.Manager) {
 	return e, mgr
 }
 
-// benchToken mints a real token by issuing at difficulty 0 (any nonce passes).
+// benchToken mints a real token at the minimum production difficulty.
 func benchToken(b *testing.B, mgr *pow.Manager, host, ip, ua string) string {
 	b.Helper()
 	ctx := context.Background()
-	ch, err := mgr.Issue(ctx, host, ip, "/", 0, time.Minute, false)
+	const difficulty = 4
+	ch, err := mgr.Issue(ctx, host, ip, "/", difficulty, time.Minute, false)
 	if err != nil {
 		b.Fatal(err)
 	}
+	var nonce string
+	for n := 0; ; n++ {
+		nonce = strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(ch.Challenge + nonce))
+		leading := 0
+		for _, v := range sum {
+			if v != 0 {
+				leading += bits.LeadingZeros8(v)
+				break
+			}
+			leading += 8
+		}
+		if leading >= difficulty {
+			break
+		}
+	}
 	res, err := mgr.Redeem(ctx, &pow.RedeemRequest{
-		ChallengeID: ch.ID, Nonce: "0",
+		ChallengeID: ch.ID, Nonce: nonce,
 		Host: host, IP: ip, UserAgent: ua,
 		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
 	})

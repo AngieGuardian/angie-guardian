@@ -248,11 +248,26 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// both formats, so this can flip per request with no coordination.
 	var ch *pow.Challenge
 	var err error
+	issuedStateless := attack.Stateless
 	if attack.Stateless {
 		ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)
 	} else {
 		ch, err = s.pow.Issue(r.Context(), host, ip, uri,
 			difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
+		if err != nil {
+			// Stateful issuance is the only challenge-page operation that needs a
+			// store write. If the store is unavailable, falling back to the
+			// authenticated stateless format preserves the shipped fail-open
+			// availability contract for new visitors instead of trapping every
+			// unvouched client on a 503 until Redis/bbolt recovers.
+			s.log.Warn("stateful challenge issuance failed; falling back to stateless",
+				"host", host, "ip", ip, "err", err)
+			ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)
+			if err == nil {
+				issuedStateless = true
+				s.metrics.Challenge("issued_stateless_fallback")
+			}
+		}
 	}
 	if err != nil {
 		s.log.Error("challenge issuance failed", "host", host, "ip", ip, "err", err)
@@ -264,7 +279,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// full issuance rate; additionally count "issued_stateless" so the split
 	// between the two paths is visible during an attack.
 	s.metrics.Challenge("issued")
-	if attack.Stateless {
+	if issuedStateless {
 		s.metrics.Challenge("issued_stateless")
 	}
 

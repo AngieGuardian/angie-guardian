@@ -161,10 +161,14 @@ func buildSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	startSnapshot(snap)
+	return snap, nil
+}
+
+func startSnapshot(snap *engineSnapshot) {
 	snap.rules.Start(reloadInterval)
 	snap.models.Start(reloadInterval)
 	snap.intel.Start()
-	return snap, nil
 }
 
 // ValidateConfigArtifacts eagerly loads every local artifact required to
@@ -223,12 +227,19 @@ func (e *Engine) Reload(cfg *Config) error {
 	if e.snap.Load() == nil {
 		return errors.New("engine is closed")
 	}
-	snap, err := buildSnapshot(cfg, e.log)
+	// Construct without starting URL fetchers, synchronously inherit the last
+	// good state of unchanged remote feeds, then make background refresh live.
+	// This preserves active deny/reputation protection across a reload even if
+	// the remote feed is temporarily unavailable and no cache_dir is configured.
+	snap, err := loadSnapshot(cfg, e.log)
 	if err != nil {
 		return err
 	}
+	old := e.snap.Load()
+	snap.intel.SeedURLFeedsFrom(old.intel)
+	startSnapshot(snap)
 	snap.intel.SetMetrics(e.metrics)
-	old := e.snap.Swap(snap)
+	old = e.snap.Swap(snap)
 	old.release() // resources close after the final in-flight evaluator releases
 	// attack_mode is hot-reloadable: push the new thresholds/effects into the
 	// live detector (nil-safe).
@@ -474,11 +485,12 @@ const (
 
 // ShedDecision is the load-shedding gate: it runs ONLY the cheap, store-free
 // terminal checks that the full pipeline would run before the token stage, so
-// a saturated daemon still enforces blocks and denylists while fast-passing
-// vouched clients. It deliberately does not run the store-touching or
-// expensive stages (verified-bot rDNS, WAF signatures, anomaly); those are
-// what the shed exists to skip. Because it mirrors pipeline order, a blocked
-// or denylisted IP can never be fast-passed just because it holds a token.
+// a saturated daemon still enforces blocks, denylists, local IP-intel verdicts,
+// honeypots and WAF signatures while fast-passing clean vouched clients. It
+// deliberately does not run store reads, verified-bot DNS, anomaly scoring or
+// event-recording writes; those are what the shed exists to skip. Because it
+// preserves the terminal pre-token checks, a token can never become a WAF or
+// policy bypass just because the daemon is saturated.
 func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	snap := e.acquireSnapshot()
 	if snap == nil {
@@ -486,7 +498,10 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	}
 	defer snap.release()
 	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
-	env := &stageEnv{domain: dcfg, pow: e.pow, enforcer: e.enforcer}
+	env := &stageEnv{
+		domain: dcfg, pow: e.pow, enforcer: e.enforcer,
+		rules: snap.rules, intel: snap.intel, attack: e.attack.State(),
+	}
 
 	// Stage 0: static allowlist wins over everything (same as the pipeline).
 	if _, ok := stateless.CheckAllowlist(req, &dcfg.Allowlist); ok {
@@ -504,7 +519,46 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	if _, blocked := e.enforcer.Lookup(req.RemoteAddr); blocked {
 		return ShedDeny
 	}
-	// Stage 3: a valid PoW token vouches. Cheap stateless signature check.
+	// A read-through (shared, unseeded, or capacity-incomplete) mirror cannot
+	// prove that a miss is unblocked without consulting the store. Store I/O is
+	// intentionally forbidden on the shed path, so reject the request instead
+	// of letting a token bypass a block known only to another replica/the store.
+	if e.enforcer != nil && e.enforcer.ReadThrough() {
+		return ShedReject
+	}
+
+	// A claimed verified-bot identity with spoof_action=deny cannot be safely
+	// fast-passed without the stage's potentially blocking DNS verification.
+	// Shed it instead. This is preferable to letting a token minted before a
+	// config/DNS-state change bypass the bot-spoof policy under saturation.
+	vb := &dcfg.VerifiedBots
+	if vb.SpoofAction != "continue" && vb.match(req.UserAgent) != nil {
+		return ShedReject
+	}
+
+	// The remaining pre-token terminal stages are entirely local/store-free.
+	// Reuse their implementations so shed behavior cannot drift from the normal
+	// pipeline. No events are recorded here: that would put store writes back on
+	// the overload path.
+	if d, _ := (intelDenyStage{}).Evaluate(context.Background(), req, env); d != nil {
+		return ShedDeny
+	}
+	if d, _ := (honeypotStage{}).Evaluate(context.Background(), req, env); d != nil {
+		return ShedDeny
+	}
+	if d, _ := (wafSignatureStage{}).Evaluate(context.Background(), req, env); d != nil {
+		switch d.Action {
+		case ActionDeny:
+			return ShedDeny
+		case ActionAllow:
+			return ShedPass // valid token satisfied a challenge-only rule
+		default:
+			return ShedReject
+		}
+	}
+
+	// A valid PoW token vouches after every retained terminal check. Cheap
+	// stateless signature check; no store I/O on a cache hit.
 	if hasValidPoWToken(req, env) {
 		return ShedPass
 	}

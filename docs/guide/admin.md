@@ -108,7 +108,9 @@ form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, IP intelligence health (loaded GeoIP databases plus each reputation
 feed's entries, refresh age and last error), and headline counters,
-auto-refreshing every 5 seconds.
+auto-refreshing every 5 seconds. The potentially large active-block list is
+cached for one minute (and refreshed immediately after a block/unblock action)
+so leaving the dashboard open does not force a full store scan every tick.
 
 The page is a static shell: it stores no secrets, stays off unless enabled,
 and every data call goes to the token-guarded `/admin/*` endpoints. The shell

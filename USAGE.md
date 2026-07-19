@@ -594,6 +594,11 @@ does no store I/O. `challenge` is write-heavy and is
 where bbolt's single embedded writer trails redis/valkey. See
 [Choosing a store backend](#choosing-a-store-backend).
 
+In normal operation challenge issuance uses that stateful write. If it fails,
+Guardian preserves availability by issuing the authenticated stateless format;
+the single-spend write moves to redemption and the fallback is visible through
+the `issued_stateless_fallback` challenge metric outcome.
+
 ## Choosing a store backend
 
 - **memory**: single instance, state lost on restart. Fine for dev or a small
@@ -617,10 +622,13 @@ where bbolt's single embedded writer trails redis/valkey. See
 To run replicas behind a load balancer, point every instance at one shared
 Redis or Valkey instance and share the signing key + `previous_key_dir` across
 them, so any instance verifies any other's tokens and sees any other's blocks.
-Live replicas notice rotations automatically; the archive directory is
-required before `POST /admin/rotate-key` is allowed. Retired archives verify
-pre-rotation tokens for at most seven days; older files may remain on disk but
-are ignored by the active verifier.
+Live replicas notice rotations automatically; token signing reads the current
+key under the rotation lock, while stateless challenge issuance performs a
+rate-limited key refresh before signing. The archive directory is required
+before `POST /admin/rotate-key` is allowed. Retired archives verify
+pre-rotation tokens for at most seven days and in-flight stateless challenges
+through a rolling rotation; older files may remain on disk but are ignored by
+the active verifier.
 Valkey is a fully compatible drop-in replacement for Redis; the configuration
 is identical for both.
 

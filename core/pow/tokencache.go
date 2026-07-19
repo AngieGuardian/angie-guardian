@@ -58,3 +58,20 @@ func (c *tokenCache) put(key [32]byte, tokenExpiry, now time.Time) {
 	c.m[key] = exp.UnixNano()
 	c.mu.Unlock()
 }
+
+// claim records key until expiry only if it is not already live. It is used
+// as a bounded in-process single-spend guard when the shared store cannot
+// commit a stateless spent marker. Cross-replica uniqueness still requires the
+// store, but concurrent/local replays cannot mint repeatedly during an outage.
+func (c *tokenCache) claim(key [32]byte, expiry, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if exp, ok := c.m[key]; ok && now.UnixNano() < exp {
+		return false
+	}
+	if len(c.m) >= maxCacheEntries {
+		clear(c.m)
+	}
+	c.m[key] = expiry.UnixNano()
+	return true
+}

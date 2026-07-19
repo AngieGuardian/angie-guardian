@@ -110,6 +110,7 @@ type MirrorStatus struct {
 	Entries         int       `json:"entries"`
 	Mode            string    `json:"mode"`
 	Seeded          bool      `json:"seeded"`
+	Complete        bool      `json:"complete"`
 	LastReconcile   time.Time `json:"last_reconcile"`
 	ReconcileErrors uint64    `json:"reconcile_errors"`
 	Dropped         uint64    `json:"dropped"`

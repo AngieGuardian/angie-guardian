@@ -106,10 +106,12 @@ func TestMirrorReconcile(t *testing.T) {
 	scanStart := base
 	mr.set(fresh, entry{reason: "new-block", expiresAt: base + int64(time.Hour), insertedAt: base + 50})
 
-	mr.reconcile(map[netip.Addr]entry{
+	if !mr.reconcile(map[netip.Addr]entry{
 		updated: {reason: "real", expiresAt: base + int64(time.Hour), insertedAt: scanStart},
 		scanned: {reason: "scanned", expiresAt: base + int64(time.Hour), insertedAt: scanStart},
-	}, scanStart)
+	}, scanStart, true) {
+		t.Fatal("small authoritative set did not fit in mirror")
+	}
 
 	if _, ok := mr.get(stale, base); ok {
 		t.Fatal("stale entry survived reconcile")

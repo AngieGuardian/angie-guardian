@@ -180,6 +180,39 @@ store:
   # password: ""              # or the REDIS_PASSWORD env var
   # db: 0
 
+# Fleet-wide attack posture. Off when absent. When aggregate signals (issuance
+# rate with a low solve ratio, store degradation) cross a threshold, Guardian
+# raises PoW difficulty fleet-wide and issues store-free challenges so a flood
+# of new clients stops saturating the store. Existing tokens stay valid. See
+# the "Attack Mode" guide before tuning; thresholds are per instance.
+# attack_mode:
+#   enabled: true
+#   window: 30s
+#   signals:
+#     challenge_rate: 200/s           # issuance/s entering elevated
+#     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
+#     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
+#   effects:
+#     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
+
+# Block enforcement offload. The in-process mirror is always on (it makes the
+# per-request block check a memory lookup, no store read) and needs no config;
+# the tunables below and the optional kernel sink are all you set here. See
+# the "Block Enforcement Offload" guide for the full story.
+# enforcement:
+#   mirror:
+#     reconcile_interval: 10s   # store scan cadence; also repairs sink drift
+#     max_entries: 1048576      # overflow falls back to store reads
+#     mode: auto                # auto | authoritative | read_through
+#   # Kernel sink: drop blocked clients in nftables before Angie sees them.
+#   # Linux only, needs CAP_NET_ADMIN in the namespace where clients arrive.
+#   nftables:
+#     enabled: false
+#     mode: managed             # managed (own the drop rule) | sets_only
+#     ports: [80, 443]          # drop rule matches only these; keeps SSH/admin safe
+#     never_block:              # ALWAYS list your load balancer / CDN ranges
+#       - 203.0.113.0/24
+
 # GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
 # for the per-domain `geo` scoping below. Keep them updated with geoipupdate
 # or a scheduled download; guardiand hot-reloads the files when they are
@@ -192,9 +225,10 @@ store:
 # External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
 # line, '#'/';' comments), like the FireHOL netsets or a local file you
 # maintain. URL feeds refresh in the background: a slow or down mirror never
-# blocks startup, and the last good list keeps serving. cache_dir persists
-# fetched feeds so a restart enforces yesterday's list immediately. Feeds are
-# defined once here; each domain opts in via `reputation.enabled` below.
+# blocks startup, and the last good list keeps serving (including across a hot
+# reload when name+URL are unchanged). cache_dir persists fetched feeds so a
+# restart enforces yesterday's list immediately. Feeds are defined once here;
+# each domain opts in via `reputation.enabled` below.
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds
 #   feeds:
@@ -311,22 +345,19 @@ domains:
   example.com:
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
     waf: { honeypot: { enabled: true } }
-    # Per-path overlays: scope any setting to a URI prefix on this host.
-    # A key is an exact path, or a prefix when it ends with "/"; the most
+    # Per-path overlays: scope any setting to a URI prefix within this host.
+    # Keys are exact paths, or prefixes when they end with "/"; the most
     # specific key wins, matched against the percent-decoded path. Each entry
-    # only overrides what it mentions (merged defaults -> domain -> path).
-    paths:
-      # Machine clients under /api/v1/ skip the interstitial; the WAF above
-      # keeps covering them.
-      "/api/v1/":
-        pow: { enabled: false }
-      # The login page demands harder work. A token solved elsewhere at a
-      # lower difficulty re-challenges here instead of vouching.
-      "/account/login":
-        pow: { base_difficulty: 6 }
+    # only overrides the fields it mentions (defaults, then domain, then
+    # path). Here the machine-facing API skips the interstitial while the WAF
+    # stays on, and the login area demands harder work:
+    # paths:
+    #   "/api/v1/":
+    #     pow: { enabled: false }
+    #   "/account/login":
+    #     pow: { base_difficulty: 6 }
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.
-  # (For an API living on the SAME host as the site, use paths: above.)
   api.example.com:
     pow: { enabled: false }
 

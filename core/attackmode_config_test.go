@@ -88,9 +88,12 @@ func TestAttackModeValidation(t *testing.T) {
 		{"bad solve ratio", "attack_mode: { signals: { min_solve_ratio: 2 } }", "min_solve_ratio"},
 		{"bad error ratio", "attack_mode: { signals: { store_error_ratio: -1 } }", "store_error_ratio"},
 		{"raise too big", "attack_mode: { effects: { attack_difficulty_raise: 3 } }", "attack_difficulty_raise"},
+		{"raise nan", "attack_mode: { effects: { attack_difficulty_raise: .nan } }", "attack_difficulty_raise"},
 		{"raise not quarter", "attack_mode: { effects: { elevated_difficulty_raise: 0.3 } }", "multiple of 0.25"},
 		{"cap out of range", "attack_mode: { effects: { difficulty_cap: 9 } }", "difficulty_cap"},
+		{"cap infinite", "attack_mode: { effects: { difficulty_cap: .inf } }", "difficulty_cap"},
 		{"bad scoreboard factor", "attack_mode: { effects: { scoreboard_factor: 1.5 } }", "scoreboard_factor"},
+		{"scoreboard nan", "attack_mode: { effects: { scoreboard_factor: .nan } }", "scoreboard_factor"},
 		{"negative inflight", "attack_mode: { effects: { max_inflight: -1 } }", "max_inflight"},
 	}
 	for _, tc := range cases {

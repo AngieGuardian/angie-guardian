@@ -6,8 +6,10 @@ package httptransport
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -52,6 +54,11 @@ func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
 
 func testServerAndHandler(t *testing.T, yaml string) (*httptest.Server, *Server) {
 	t.Helper()
+	return testServerAndHandlerWithStore(t, yaml, store.NewMemory())
+}
+
+func testServerAndHandlerWithStore(t *testing.T, yaml string, st store.Store) (*httptest.Server, *Server) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,7 +67,6 @@ func testServerAndHandler(t *testing.T, yaml string) (*httptest.Server, *Server)
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
 	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
 	if err != nil {
@@ -77,6 +83,12 @@ func testServerAndHandler(t *testing.T, yaml string) (*httptest.Server, *Server)
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	return ts, h
+}
+
+type unavailableCASStore struct{ store.Store }
+
+func (s unavailableCASStore) CompareAndSwap(context.Context, string, []byte, []byte, time.Duration) (bool, error) {
+	return false, errors.New("store unavailable")
 }
 
 // client that does not follow redirects, so the no-JS 303 can be inspected.
@@ -316,6 +328,30 @@ func TestPoWFlowEndToEnd(t *testing.T) {
 	}
 }
 
+func TestStoreOutageFallsBackToStatelessChallenge(t *testing.T) {
+	base := store.NewMemory()
+	ts, _ := testServerAndHandlerWithStore(t, testYAML, unavailableCASStore{Store: base})
+	ip, ua := "198.51.100.77", "Mozilla/5.0"
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("auth status = %d, want 401 challenge", resp.StatusCode)
+	}
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	if !pow.IsStatelessID(id) {
+		t.Fatalf("store-down fallback issued stateful id %q", id)
+	}
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": solve(t, challenge, difficulty)})
+	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/page", ua), body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("stateless fallback redeem status = %d body = %s", resp.StatusCode, b)
+	}
+	if len(resp.Cookies()) == 0 {
+		t.Fatal("stateless fallback did not mint a token cookie")
+	}
+}
+
 func TestNoJSFlow(t *testing.T) {
 	ts := testServer(t)
 	ip, ua := "198.51.100.8", "Mozilla/5.0"
@@ -474,16 +510,28 @@ func TestChallengeRateLimit(t *testing.T) {
 }
 
 func TestLoadSheddingPassesTokenHolders(t *testing.T) {
-	const shedYAML = `
+	rules := filepath.Join(t.TempDir(), "shed-rules.yaml")
+	if err := os.WriteFile(rules, []byte(`rules:
+  - id: dotfile
+    action: deny
+    targets: [ path ]
+    keywords: [ ".env" ]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shedYAML := fmt.Sprintf(`
 store: { backend: memory }
 signing_key_file: k
 attack_mode: { enabled: true, effects: { max_inflight: 1 } }
 defaults:
   pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 4 }
+  waf:
+    honeypot: { enabled: true, paths: [ "/trap" ] }
+    keywords: { enabled: true, rules_file: %q }
   denylist: { ips: [ "203.0.113.66" ] }
 domains:
   html.test: { pow: { enabled: true } }
-`
+`, rules)
 	ts, h := testServerAndHandler(t, shedYAML)
 	ip, ua := "198.51.100.7", "Mozilla/5.0"
 
@@ -521,6 +569,18 @@ domains:
 	resp = do(t, "GET", ts.URL+"/auth", th, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token holder under saturation: status = %d, want 200", resp.StatusCode)
+	}
+
+	// A token is not a WAF bypass. The normal pipeline runs honeypot and
+	// terminal signature checks before token acceptance; saturation must retain
+	// those store-free checks instead of fast-passing a vouched attack request.
+	for _, uri := range []string{"/backup/.env", "/trap"} {
+		bad := guardianHeaders("html.test", ip, uri, ua)
+		bad["X-Guardian-Cookie"] = pow.CookieName + "=" + cookie
+		resp = do(t, "GET", ts.URL+"/auth", bad, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("token holder requesting %s under saturation: status = %d, want 403", uri, resp.StatusCode)
+		}
 	}
 
 	// A denylisted IP is DENIED even holding a token: the shed fast path must

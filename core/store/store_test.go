@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -319,5 +320,32 @@ func TestRedisSubMillisecondTTL(t *testing.T) {
 	}
 	if pttl := mr.TTL("cas"); pttl <= 0 {
 		t.Fatalf("CAS sub-ms TTL: key TTL = %v, want a finite positive expiry (not permanent)", pttl)
+	}
+}
+
+func TestRedisScanLimitBoundsResultAndReportsCompleteness(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisFromClient(rdb)
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+	for i := range 600 {
+		if err := s.Set(ctx, fmt.Sprintf("limit:%04d", i), []byte("x"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kvs, complete, err := s.ScanLimit(ctx, "limit:", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete || len(kvs) != 100 {
+		t.Fatalf("limited scan: len=%d complete=%v, want 100/false", len(kvs), complete)
+	}
+	kvs, complete, err = s.ScanLimit(ctx, "limit:", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete || len(kvs) != 600 {
+		t.Fatalf("complete scan: len=%d complete=%v, want 600/true", len(kvs), complete)
 	}
 }

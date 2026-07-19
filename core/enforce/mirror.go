@@ -99,20 +99,26 @@ func (mr *mirror) remove(a netip.Addr) {
 // scanned entry is upserted with its real expiry, and entries absent from the
 // scan are removed unless they were written through after the scan started
 // (those are newer truth than the scan).
-func (mr *mirror) reconcile(active map[netip.Addr]entry, scanStart int64) {
-	for i := range mr.shards {
-		s := &mr.shards[i]
-		s.mu.Lock()
-		for k, e := range s.m {
-			if _, ok := active[k]; !ok && e.insertedAt < scanStart {
-				delete(s.m, k)
+func (mr *mirror) reconcile(active map[netip.Addr]entry, scanStart int64, scannedAll bool) bool {
+	if scannedAll {
+		for i := range mr.shards {
+			s := &mr.shards[i]
+			s.mu.Lock()
+			for k, e := range s.m {
+				if _, ok := active[k]; !ok && e.insertedAt < scanStart {
+					delete(s.m, k)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
+	complete := scannedAll
 	for k, e := range active {
-		mr.set(k, e)
+		if !mr.set(k, e) {
+			complete = false
+		}
 	}
+	return complete
 }
 
 func (mr *mirror) count() int {

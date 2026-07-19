@@ -210,7 +210,12 @@ enable the built-in reporting page: see
 `previous_key_dir` and atomically installs a new one. A non-empty shared
 `previous_key_dir` is required. Rotations are serialized on the shared key
 path, archive names cannot collide, and live replicas refresh the key set
-automatically. Retired keys accept only tokens issued before rotation, and no
-accepted token may have a lifetime longer than seven days.
+automatically. Token signing reads the current key under the shared rotation
+lock; stateless challenge issuers use a rate-limited pre-issuance refresh so a
+quiet replica cannot remain indefinitely on a stale key without adding a file
+lock/read to every attack-path challenge. Current and still-live retired
+secrets keep in-flight stateless challenges redeemable through the rotation.
+Retired keys accept only tokens issued before rotation, and no accepted token
+may have a lifetime longer than seven days.
 Older archive files may remain for operator retention, but Guardian drops them
 from the in-memory verification set once that seven-day horizon has elapsed.

@@ -52,6 +52,7 @@ type Manager struct {
 	// may be missing blocks persisted before this process started (bbolt),
 	// so lookups fall back to the store even in authoritative mode.
 	seeded        atomic.Bool
+	complete      atomic.Bool // false when capacity dropped any authoritative entry
 	lastReconcile atomic.Int64
 	reconcileErrs atomic.Uint64
 
@@ -158,7 +159,7 @@ func (m *Manager) ReadThrough() bool {
 	if m == nil {
 		return true
 	}
-	return m.cfg.Mode == ModeReadThrough || !m.seeded.Load()
+	return m.cfg.Mode == ModeReadThrough || !m.seeded.Load() || !m.complete.Load()
 }
 
 // Notify applies one block change: mirror synchronously (nanoseconds), sinks
@@ -177,6 +178,7 @@ func (m *Manager) Notify(ev BlockEvent) {
 			exp = now.Add(ev.TTL).UnixNano()
 		}
 		if !m.mir.set(ev.IP, entry{reason: ev.Reason, expiresAt: exp, insertedAt: now.UnixNano()}) {
+			m.complete.Store(false)
 			m.metrics.OffloadOp("mirror", "add", "dropped")
 			m.log.Warn("block mirror full, entry falls back to store enforcement", "ip", ev.IP.String())
 		}
@@ -204,11 +206,13 @@ func (m *Manager) Learn(ip, reason string) {
 		return
 	}
 	now := m.now()
-	m.mir.set(a.Unmap(), entry{
+	if !m.mir.set(a.Unmap(), entry{
 		reason:     reason,
 		expiresAt:  now.Add(2 * m.cfg.ReconcileInterval).UnixNano(),
 		insertedAt: now.UnixNano(),
-	})
+	}) {
+		m.complete.Store(false)
+	}
 }
 
 // ForceReconcile schedules an immediate scan (admin drift repair). Non-blocking.
@@ -231,6 +235,7 @@ func (m *Manager) Status() Status {
 		Entries:         m.mir.count(),
 		Mode:            m.cfg.Mode,
 		Seeded:          m.seeded.Load(),
+		Complete:        m.complete.Load(),
 		ReconcileErrors: m.reconcileErrs.Load(),
 		Dropped:         m.mir.dropped.Load(),
 	}}
@@ -263,7 +268,20 @@ func (m *Manager) runReconcile(ctx context.Context) {
 func (m *Manager) reconcileOnce(ctx context.Context) {
 	scanStart := m.now()
 	sctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
-	kvs, err := m.st.Scan(sctx, m.cfg.KeyPrefix)
+	var (
+		kvs        []store.KV
+		scannedAll = true
+		err        error
+	)
+	if scanner, ok := m.st.(store.LimitedScanner); ok {
+		kvs, scannedAll, err = scanner.ScanLimit(sctx, m.cfg.KeyPrefix, m.cfg.MaxEntries)
+	} else {
+		kvs, err = m.st.Scan(sctx, m.cfg.KeyPrefix)
+		if len(kvs) > m.cfg.MaxEntries {
+			kvs = kvs[:m.cfg.MaxEntries]
+			scannedAll = false
+		}
+	}
 	cancel()
 	if err != nil {
 		m.reconcileErrs.Add(1)
@@ -288,7 +306,7 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 		active[a] = entry{reason: string(kv.Value), expiresAt: exp, insertedAt: scanStart.UnixNano()}
 		list = append(list, ActiveBlock{Addr: a, Reason: string(kv.Value), ExpiresAt: kv.ExpiresAt})
 	}
-	m.mir.reconcile(active, scanStart.UnixNano())
+	m.complete.Store(m.mir.reconcile(active, scanStart.UnixNano(), scannedAll))
 	m.seeded.Store(true)
 	m.lastReconcile.Store(scanStart.UnixNano())
 	m.metrics.OffloadReconcile(true)

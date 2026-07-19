@@ -72,6 +72,20 @@ func TestSignalReadyOnlyAfterListenerResponds(t *testing.T) {
 	}
 }
 
+func TestDisplayAddrPreservesWildcardAddressFamily(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"0.0.0.0:8071", "127.0.0.1:8071"},
+		{"[::]:8071", "[::1]:8071"},
+		{":8071", "127.0.0.1:8071"},
+	} {
+		if got := displayAddr(tc.in); got != tc.want {
+			t.Errorf("displayAddr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestHealthcheckProbesEveryConfiguredListener(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/healthz" {

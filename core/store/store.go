@@ -74,3 +74,10 @@ type Store interface {
 
 	Close() error
 }
+
+// LimitedScanner is an optional Store capability used by bounded background
+// reconciliation. complete is false when more live matching keys exist beyond
+// limit. A non-positive limit requests the full result, like Store.Scan.
+type LimitedScanner interface {
+	ScanLimit(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
+}

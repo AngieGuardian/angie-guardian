@@ -30,7 +30,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_challenges_total` | counter | `outcome` | Challenge lifecycle events: `issued`, `solved`, `failed` (wrong nonce, expired, or replayed), and `escalated` (issued above base difficulty to a [challenge farmer](/guide/configuration#base-difficulty-and-max-difficulty)). |
+| `guardian_challenges_total` | counter | `outcome` | Challenge lifecycle events: `issued`, `solved`, `failed` (wrong nonce, expired, or replayed), `escalated` (issued above base difficulty to a [challenge farmer](/guide/configuration#base-difficulty-and-max-difficulty)), plus the stateless outcomes described below. |
 | `guardian_challenge_solve_seconds` | histogram | | Client-reported solve time, for tuning `base_difficulty`. |
 | `guardian_anomaly_score` | histogram | `domain` | Distribution of anomaly scores, for tuning `challenge_at` / `deny_at`. |
 
@@ -77,13 +77,18 @@ See the [Attack Mode](/guide/attack-mode) guide.
 | `guardian_attack_extra_bits` | gauge | | Active fleet-wide PoW difficulty raise, in bits. |
 | `guardian_attack_mode_transitions_total` | counter | `to`, `reason` | Posture transitions by target level and reason. |
 | `guardian_attack_mode_signal` | gauge | `signal` | Current window value per signal (`challenge_rate`, `request_rate`, `solve_ratio`, `store_error_ratio`, `store_slow_ratio`). |
-| `guardian_shed_total` | counter | `outcome` | Load-shed decisions under saturation: `pass_token` (a token holder admitted) or `shed` (503'd). |
+| `guardian_shed_total` | counter | `outcome` | Load-shed decisions under saturation: `pass_token` (a clean token holder admitted after all local terminal checks and an authoritative mirror miss) or `shed` (503'd). |
 
-Note two new outcomes on `guardian_challenges_total`: `issued_stateless` (a
-store-free challenge issued under attack, counted IN ADDITION to `issued`, so
-`issued` still reflects the full issuance rate and `issued_stateless` is the
-subset on the stateless path) and `spent_cas_failed` (a stateless token minted
-fail-open because the single-spend write failed during a store outage).
+Stateless behavior adds three outcomes on `guardian_challenges_total`:
+
+- `issued_stateless`: a store-free challenge, counted in addition to `issued`,
+  so `issued` remains the full issuance rate and this is its stateless subset.
+- `issued_stateless_fallback`: the ordinary stateful issuance write failed and
+  Guardian preserved availability by issuing statelessly. It is also included
+  in `issued_stateless`.
+- `spent_cas_failed`: a stateless token was minted fail-open because the shared
+  single-spend write failed. Same-replica replay remains locally guarded, but
+  fleet-wide single-spend requires the shared store.
 
 ## Useful queries
 

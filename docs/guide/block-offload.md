@@ -26,9 +26,11 @@ path. The mirror is a bounded in-memory copy of the active block set:
 
 - **Write-through.** Every block and unblock (scoreboard, WAF, admin API)
   updates the mirror synchronously, so enforcement is immediate.
-- **Reconciled.** A periodic store scan (`reconcile_interval`, default 10s)
-  seeds the mirror at startup, corrects entries and picks up blocks placed by
-  another instance.
+- **Reconciled and bounded.** A periodic store scan (`reconcile_interval`,
+  default 10s) seeds the mirror at startup, corrects entries and picks up
+  blocks placed by another instance. Reconciliation retains at most
+  `max_entries`; Redis fetches values/TTLs in bounded batches rather than one
+  command pipeline proportional to the full block keyspace.
 - **Store-outage safe.** A mirror hit denies even while the store is down, so
   an outage no longer silently drops behavioural blocks.
 
@@ -53,9 +55,14 @@ other replicas then apply only after the next reconcile scan (measured ~168k
 vs ~77k req/s on the allow path). A shorter `reconcile_interval` narrows that
 lag at the cost of a periodic full store scan per instance.
 
-If the mirror fills past `max_entries` (default ~1M), new entries fall back to
-the store read path. Enforcement is never lost, only the optimization, and the
-drop is counted in `guardian_offload_ops_total{sink="mirror",status="dropped"}`.
+If the mirror fills past `max_entries` (default ~1M), its status becomes
+`complete: false` and misses fall back to the store read path—even when the
+configured mode is `authoritative`. Reconciliation itself stops retaining
+results at that same bound. Enforcement is never lost, only the optimization,
+and each dropped insertion is counted in
+`guardian_offload_ops_total{sink="mirror",status="dropped"}`. Size the mirror
+above the expected active-block high-water mark; sustained incompleteness
+turns clean requests back into store traffic by design.
 
 The mirror has no on/off switch: it is strictly cheaper than the store lookup
 it replaces and degrades to it in every failure mode.
@@ -152,9 +159,10 @@ configuration.
 
 ## Observability
 
-`GET /admin/offload` reports the mirror (mode, entry count, seed state, last
-reconcile) and every sink's health, and `POST /admin/offload/reconcile` forces
-an immediate reconcile scan for drift repair after a manual `nft flush`.
+`GET /admin/offload` reports the mirror (mode, entry count, seed and
+`complete` state, last reconcile) and every sink's health, and
+`POST /admin/offload/reconcile` forces an immediate reconcile scan for drift
+repair after a manual `nft flush`.
 
 Metrics (all bounded-cardinality):
 

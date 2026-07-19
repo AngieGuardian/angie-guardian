@@ -77,10 +77,25 @@ of magnitude. Single-spend moves to redeem time, keyed by the solved challenge a
 written only after the client has actually paid the proof of work, so the only
 store write an attacker can induce costs them real compute first.
 
+This format is also Guardian's availability fallback outside Attack: if the
+ordinary stateful issuance write fails, the visitor receives a stateless
+challenge instead of a `503`. The fallback is counted as both
+`issued_stateless` and `issued_stateless_fallback`, so an unexpected store
+outage remains visible even though challenge service stays available.
+
 Redemption accepts both the stateless and the classic formats forever, so a
 challenge issued moments before or after a posture flip still redeems, and a
 rolling fleet restart is safe. Instances that share the signing key verify
-each other's stateless challenges.
+each other's stateless challenges. File-backed issuers refresh the shared key
+set periodically before signing, while current and still-live retired secrets
+keep challenges redeemable during a rolling rotation.
+
+The shared store CAS is the fleet-wide single-spend authority. If that write
+fails, Guardian mints the token fail-open and records the challenge in a
+bounded local replay cache: the same replica rejects a replay, but another
+replica cannot see that local claim until the shared store recovers. Monitor
+`spent_cas_failed`; strict cross-replica replay prevention requires an
+available shared store.
 
 ### Scoreboard tightening (`scoreboard_factor`, default 1.0)
 
@@ -90,21 +105,32 @@ so fewer bad events place a block sooner.
 ## Load-shedding (`max_inflight`, default 0 = off)
 
 Independently of the posture, `max_inflight` bounds concurrent auth
-evaluations. When the daemon is saturated past that bound, a client holding a
-valid token still passes (a cheap stateless signature check, no store I/O) and
-everyone else gets a fast `503` with `Retry-After`. This is the middle ground
-between fail-open (dump the flood on the backend) and fail-closed (take the
-site down): under overload the backend sees only vouched traffic. Set it to a
-few times your core count.
+evaluations. The shed path performs no store or DNS I/O, but it still applies
+the local terminal checks that normally precede token acceptance: static
+deny/block state, deny reputation/GeoIP policy, verified-bot spoof policy,
+honeypots, and WAF signatures. A clean token holder passes only after those
+checks clear and the in-process block mirror can prove the client is not
+blocked without consulting the store. Otherwise the request gets a fast `503`
+with `Retry-After`; WAF/deny hits keep their deny response.
+
+That mirror qualification matters operationally. A seeded, complete
+authoritative mirror can fast-pass a clean token. An unseeded or
+capacity-incomplete mirror, and a `read_through` mirror such as Redis in
+`auto` mode, cannot prove a miss without a store read, so Guardian sheds the
+request rather than risk letting a token bypass a block held only in the
+store. This is the middle ground between fail-open (dump the flood on the
+backend) and silently weakening policy under pressure. Set the bound to a few
+times your core count and test it with your chosen mirror mode.
 
 ## Fleet coordination
 
 The detector is per-instance: each replica measures its own share of traffic.
 With `share_posture: true` (default) each instance publishes its level through
-the shared store once per tick and adopts the maximum of its local level and
-any peer's, so replicas move together. This is one store op per tick, off the
-hot path; if the store is down the detection degrades to local-only (and the
-store failure is itself a trigger).
+its own expiring store key once per tick and adopts the maximum of its local
+level and every live peer vote, so replicas move together. One quiet replica
+cannot overwrite a higher vote from an attacking peer. This is one store op
+per tick, off the hot path; if the store is down the detection degrades to
+local-only (and the store failure is itself a trigger).
 
 Thresholds are therefore **per instance**. With N replicas behind a balancer,
 each sees roughly 1/N of the traffic; size `challenge_rate` and
@@ -150,8 +176,10 @@ for every field and constraint.
 `GET /admin/attack` reports the level, since, reason, pin state, current window
 signal rates and active effects. `POST /admin/attack` with
 `{"level": "normal|elevated|attack|auto"}` pins or unpins the posture; `auto`
-returns to automatic detection, and pinning `normal` is a kill switch. The
-dashboard shows a banner whenever the posture is above normal.
+returns to automatic detection, and pinning `normal` is a kill switch for that
+instance. A pin ignores peer adoption and immediately clears that instance's
+automatic shared vote; pin every replica when you need a fleet-wide manual
+override. The dashboard shows a banner whenever the posture is above normal.
 
 Metrics: `guardian_attack_mode` (0/1/2), `guardian_attack_extra_bits`,
 `guardian_attack_mode_transitions_total{to,reason}`,

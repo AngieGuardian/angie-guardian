@@ -266,6 +266,8 @@
 
   // Last fetched decisions, re-rendered locally when a filter changes.
   let lastDecisions = [];
+  let lastBlocks = { blocks: [] };
+  let lastBlocksAt = 0;
 
   const renderDecisions = () => {
     const action = $("f-action").value;
@@ -289,9 +291,16 @@
       ? rows.length + " of " + lastDecisions.length : "";
   };
 
-  const render = async () => {
+  const render = async (refreshBlocks = false) => {
+    const blocksRequest = refreshBlocks || Date.now() - lastBlocksAt >= 60000
+      ? api("/admin/blocks").then((blocks) => {
+          lastBlocks = blocks;
+          lastBlocksAt = Date.now();
+          return blocks;
+        })
+      : Promise.resolve(lastBlocks);
     const [stats, blocks, decisions, config, intel] = await Promise.all([
-      api("/admin/stats"), api("/admin/blocks"),
+      api("/admin/stats"), blocksRequest,
       api("/admin/decisions?limit=100"), api("/admin/config"),
       api("/admin/intel"),
     ]);
@@ -331,7 +340,8 @@
       const unblock = el("button", null, "Unblock");
       unblock.addEventListener("click", async () => {
         await api("/admin/blocks/" + encodeURIComponent(b.ip), { method: "DELETE" });
-        render().catch(() => {});
+        lastBlocksAt = 0;
+        render(true).catch(() => {});
       });
       const act = td(null, ""); act.appendChild(unblock);
       return row(td("num", b.ip), td("wrap", b.reason),
@@ -428,7 +438,8 @@
       });
       $("block-err").textContent = "";
       $("block-ip").value = "";
-      render().catch(() => {});
+      lastBlocksAt = 0;
+      render(true).catch(() => {});
     } catch (err) {
       $("block-err").textContent = "block failed: " + err.message;
     }
