@@ -101,8 +101,13 @@ Guardian keeps TTL state (IP blocks, counters, spent challenges, and bot
 verdicts) in a pluggable store. Signing keys remain in
 `signing_key_file`/`previous_key_dir` and replicas share those files separately:
 
-- **memory**: single instance, state lost on restart. Fine for dev or a small
-  site that can re-learn blocks after a restart.
+- **memory**: single instance, state lost on restart. It is a sharded in-memory
+  store (per-shard locks, not one global lock), so unlike a single-writer store
+  its write path scales with cores and does not bottleneck on the spent-marker
+  CAS or counter increments under a flood of *new* clients. Fine for dev, and a
+  viable single-instance production choice for a site that can re-learn blocks
+  and re-issue challenges after a restart (a solved challenge could be replayed
+  only within its remaining, short, `challenge_ttl` window across a restart).
 - **bbolt**: single instance, persistent. Writes are coalesced (`db.Batch`) so
   concurrent challenge/event writes share fsyncs, but it is still one embedded
   writer: under a very high sustained rate of *new* clients (each of which
