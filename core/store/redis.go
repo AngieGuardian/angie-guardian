@@ -24,6 +24,13 @@ type Redis struct {
 	rdb *redis.Client
 }
 
+const (
+	redisBlockIndex           = "guardian:{active-blocks}:index"
+	redisBlockIndexGeneration = "guardian:{active-blocks}:generation"
+	redisPostureElevated      = "guardian:{attack-posture}:elevated"
+	redisPostureAttack        = "guardian:{attack-posture}:attack"
+)
+
 // RedisOptions configures the connection.
 type RedisOptions struct {
 	Addr     string
@@ -76,12 +83,44 @@ func (s *Redis) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 	if ttl < 0 {
 		ttl = 0
 	}
+	if strings.HasPrefix(key, "block:") {
+		return redisSetBlockScript.Run(ctx, s.rdb,
+			[]string{key, redisBlockIndex, redisBlockIndexGeneration}, value, pexpireArg(ttl)).Err()
+	}
 	return s.rdb.Set(ctx, key, value, ttl).Err()
 }
 
 func (s *Redis) Delete(ctx context.Context, key string) error {
+	if strings.HasPrefix(key, "block:") {
+		return redisDeleteBlockScript.Run(ctx, s.rdb,
+			[]string{key, redisBlockIndex, redisBlockIndexGeneration}).Err()
+	}
 	return s.rdb.Del(ctx, key).Err()
 }
+
+var redisSetBlockScript = redis.NewScript(`
+local ttl = tonumber(ARGV[2])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[1])
+end
+local score = 9000000000000000
+if ttl > 0 then
+  local t = redis.call('TIME')
+  score = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000) + ttl
+end
+redis.call('ZADD', KEYS[2], score, KEYS[1])
+redis.call('INCR', KEYS[3])
+return 1
+`)
+
+var redisDeleteBlockScript = redis.NewScript(`
+local deleted = redis.call('DEL', KEYS[1])
+local removed = redis.call('ZREM', KEYS[2], KEYS[1])
+if deleted > 0 or removed > 0 then redis.call('INCR', KEYS[3]) end
+return deleted
+`)
 
 // incrByDeadlineScript: INCRBY delta against an absolute deadline (ARGV[2],
 // unix milliseconds; 0 = no expiry), enforced atomically on the server clock in
@@ -267,6 +306,167 @@ func (s *Redis) ScanLimit(ctx context.Context, prefix string, limit int) ([]KV, 
 
 	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
 	return out, true, nil
+}
+
+// ScanActiveBlocks enumerates a dedicated expiry-ordered index and never uses
+// Redis SCAN, so unrelated store keys cannot increase reconciliation cost.
+func (s *Redis) ScanActiveBlocks(ctx context.Context, prefix string, limit int) ([]KV, bool, error) {
+	if prefix != "block:" {
+		return nil, false, ErrCapabilityUnsupported
+	}
+	startGeneration, err := redisPrepareBlockIndexScript.Run(ctx, s.rdb,
+		[]string{redisBlockIndex, redisBlockIndexGeneration}).Int64()
+	if err != nil {
+		return nil, false, err
+	}
+	complete := true
+	const valueBatchSize = 512
+	kvs := make([]KV, 0, min(max(limit, 0), valueBatchSize))
+	rawSeen := 0
+	for {
+		pageSize := valueBatchSize
+		if limit > 0 {
+			remaining := limit + 1 - rawSeen // one extra proves truncation
+			if remaining <= 0 {
+				complete = false
+				break
+			}
+			pageSize = min(pageSize, remaining)
+		}
+		keyBatch, err := s.rdb.ZRange(ctx, redisBlockIndex, int64(rawSeen), int64(rawSeen+pageSize-1)).Result()
+		if err != nil {
+			return nil, false, err
+		}
+		if len(keyBatch) == 0 {
+			break
+		}
+		rawSeen += len(keyBatch)
+		batch, err := s.scanValues(ctx, keyBatch, time.Now())
+		if err != nil {
+			return nil, false, err
+		}
+		kvs = append(kvs, batch...)
+		// Missing values can only come from out-of-band deletion or a narrow
+		// expiry race. Heal in the same fixed-size batches as value fetching.
+		if len(batch) != len(keyBatch) {
+			live := make(map[string]struct{}, len(batch))
+			for _, kv := range batch {
+				live[kv.Key] = struct{}{}
+			}
+			stale := make([]any, 0, len(keyBatch)-len(batch))
+			for _, key := range keyBatch {
+				if _, ok := live[key]; !ok {
+					stale = append(stale, key)
+				}
+			}
+			if len(stale) > 0 {
+				// Atomically re-check absence before healing. A concurrent Set may
+				// have recreated the block after our GET miss and installed a fresh
+				// score; an unconditional ZREM would erase that live index entry.
+				_ = redisHealBlockIndexScript.Run(ctx, s.rdb,
+					[]string{redisBlockIndex, redisBlockIndexGeneration}, stale...).Err()
+			}
+			complete = false // retry before claiming an authoritative snapshot
+		}
+		if len(keyBatch) < pageSize {
+			break
+		}
+	}
+	if limit > 0 && rawSeen > limit {
+		complete = false
+		if len(kvs) > limit {
+			kvs = kvs[:limit]
+		}
+	}
+	endGeneration, err := redisBlockGeneration(ctx, s.rdb)
+	if err != nil {
+		return nil, false, err
+	}
+	if endGeneration != startGeneration {
+		complete = false
+	}
+	slices.SortFunc(kvs, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+	return kvs, complete, nil
+}
+
+func redisBlockGeneration(ctx context.Context, rdb *redis.Client) (int64, error) {
+	generation, err := rdb.Get(ctx, redisBlockIndexGeneration).Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	return generation, err
+}
+
+var redisPrepareBlockIndexScript = redis.NewScript(`
+local t = redis.call('TIME')
+local nowms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local removed = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', nowms)
+if removed > 0 then redis.call('INCR', KEYS[2]) end
+return tonumber(redis.call('GET', KEYS[2]) or '0')
+`)
+
+var redisHealBlockIndexScript = redis.NewScript(`
+local removed = 0
+for i = 1, #ARGV do
+  if redis.call('EXISTS', ARGV[i]) == 0 then
+    removed = removed + redis.call('ZREM', KEYS[1], ARGV[i])
+  end
+end
+if removed > 0 then redis.call('INCR', KEYS[2]) end
+return removed
+`)
+
+var redisSetPostureScript = redis.NewScript(`
+local level = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local t = redis.call('TIME')
+local deadline = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000) + ttl
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+-- Go validates level: 1 selects elevated, 2 selects attack.
+local target = KEYS[level]
+redis.call('ZADD', target, deadline, ARGV[1])
+local currentTTL = redis.call('PTTL', target)
+if currentTTL < ttl then redis.call('PEXPIRE', target, ttl) end
+return 1
+`)
+
+var redisDeletePostureScript = redis.NewScript(`
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
+`)
+
+var redisMaxPostureScript = redis.NewScript(`
+local t = redis.call('TIME')
+local nowms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', nowms)
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', nowms)
+local attacks = redis.call('ZCARD', KEYS[2])
+if redis.call('ZSCORE', KEYS[2], ARGV[1]) then attacks = attacks - 1 end
+if attacks > 0 then return 2 end
+local elevated = redis.call('ZCARD', KEYS[1])
+if redis.call('ZSCORE', KEYS[1], ARGV[1]) then elevated = elevated - 1 end
+if elevated > 0 then return 1 end
+return 0
+`)
+
+func (s *Redis) SetPostureVote(ctx context.Context, instanceID string, level int, ttl time.Duration) error {
+	if level < 1 || level > 2 || ttl <= 0 {
+		return fmt.Errorf("invalid posture vote level=%d ttl=%v", level, ttl)
+	}
+	return redisSetPostureScript.Run(ctx, s.rdb,
+		[]string{redisPostureElevated, redisPostureAttack}, instanceID, level, pexpireArg(ttl)).Err()
+}
+
+func (s *Redis) DeletePostureVote(ctx context.Context, instanceID string) error {
+	return redisDeletePostureScript.Run(ctx, s.rdb,
+		[]string{redisPostureElevated, redisPostureAttack}, instanceID).Err()
+}
+
+func (s *Redis) MaxPostureVote(ctx context.Context, excludeInstanceID string) (int, error) {
+	return redisMaxPostureScript.Run(ctx, s.rdb,
+		[]string{redisPostureElevated, redisPostureAttack}, excludeInstanceID).Int()
 }
 
 // scanValues fetches one bounded batch of values and TTLs.

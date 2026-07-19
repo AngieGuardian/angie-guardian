@@ -17,6 +17,7 @@ import (
 	"math/bits"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
@@ -51,6 +52,16 @@ type Manager struct {
 	lastFailureRefresh time.Time
 	lastFailureErr     error
 
+	// File-backed token verification must periodically refresh even when an
+	// old-key signature still succeeds: otherwise a quiet replica can keep
+	// treating a compromised retired key as current forever. The atomic
+	// deadline keeps the common path lock-free, while routineRefresh coalesces
+	// the one disk reload due every keyRefreshInterval.
+	fileBacked           atomic.Bool
+	routineRefreshUntil  atomic.Int64
+	routineRefresh       atomic.Pointer[keyRefreshRound]
+	routineRefreshFailed atomic.Pointer[keyRefreshFailure]
+
 	// NoJSMinDelay is the minimum wall-clock wait before a meta-refresh
 	// (no-JS) redemption is accepted. Overridable for tests.
 	NoJSMinDelay time.Duration
@@ -63,6 +74,13 @@ type managerKey struct {
 	retiredAt time.Time // zero for the current signing key
 }
 
+type keyRefreshRound struct {
+	done chan struct{}
+	err  error // published before done is closed
+}
+
+type keyRefreshFailure struct{ err error }
+
 func NewManager(key ed25519.PrivateKey, st store.Store) *Manager {
 	return NewManagerWithKeys(key, nil, st)
 }
@@ -72,11 +90,10 @@ func NewManager(key ed25519.PrivateKey, st store.Store) *Manager {
 // refreshed periodically before signing and immediately (rate limited) when
 // verification misses the in-memory key set.
 func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, error) {
-	key, err := LoadOrCreateKey(keyPath)
-	if err != nil {
+	if _, err := LoadOrCreateKey(keyPath); err != nil {
 		return nil, err
 	}
-	previous, err := loadRetiredKeysAt(prevDir, time.Now())
+	key, previous, err := loadKeySetSnapshot(keyPath, prevDir, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +101,8 @@ func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, err
 	m.keyPath = keyPath
 	m.prevDir = prevDir
 	m.lastRefresh = m.now()
+	m.fileBacked.Store(true)
+	m.routineRefreshUntil.Store(m.lastRefresh.Add(keyRefreshInterval).UnixNano())
 	return m, nil
 }
 
@@ -157,6 +176,24 @@ func (m *Manager) setRetiredKeys(current ed25519.PrivateKey, previous []RetiredK
 	m.cache.reset()
 }
 
+// keySetMatches reports whether a disk refresh found exactly the key set
+// already installed. Avoiding a redundant SetKeys preserves the verified-token
+// cache across the routine 250ms refreshes.
+func (m *Manager) keySetMatches(current ed25519.PrivateKey, previous []RetiredKey) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.keys) != 1+len(previous) || !m.keys[0].private.Equal(current) {
+		return false
+	}
+	for i, key := range previous {
+		installed := m.keys[i+1]
+		if !installed.private.Equal(key.Key) || !installed.retiredAt.Equal(key.RetiredAt) {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) signingKey() ed25519.PrivateKey {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -175,7 +212,12 @@ func (m *Manager) Rotate(keyPath, prevDir string) error {
 	m.reloadMu.Lock()
 	defer m.reloadMu.Unlock()
 	m.keyPath, m.prevDir = keyPath, prevDir
-	return m.reloadKeysLocked()
+	m.fileBacked.Store(true)
+	err = m.reloadKeysLocked()
+	if err != nil {
+		m.rememberRoutineRefresh(err)
+	}
+	return err
 }
 
 const keyRefreshInterval = 250 * time.Millisecond
@@ -188,23 +230,70 @@ func (m *Manager) ReloadKeys() error {
 	if m.keyPath == "" {
 		return errors.New("manager has no signing key files configured")
 	}
-	return m.reloadKeysLocked()
+	err := m.reloadKeysLocked()
+	if err != nil {
+		m.rememberRoutineRefresh(err)
+	}
+	return err
 }
 
 func (m *Manager) reloadKeysLocked() error {
-	current, err := loadKey(m.keyPath)
+	current, previous, err := loadKeySetSnapshot(m.keyPath, m.prevDir, m.now())
 	if err != nil {
 		return err
 	}
-	previous, err := loadRetiredKeysAt(m.prevDir, m.now())
-	if err != nil {
-		return err
+	if !m.keySetMatches(current, previous) {
+		m.setRetiredKeys(current, previous)
 	}
-	m.setRetiredKeys(current, previous)
-	m.lastRefresh = m.now()
+	refreshedAt := m.now()
+	m.lastRefresh = refreshedAt
 	m.lastRefreshErr = nil
 	m.lastFailureErr = nil
+	m.routineRefreshFailed.Store(nil)
+	m.routineRefreshUntil.Store(refreshedAt.Add(keyRefreshInterval).UnixNano())
 	return nil
+}
+
+// rememberRoutineRefresh publishes one routine refresh result to the atomic
+// verification fast path. Errors remain fail-closed for the whole throttle
+// interval rather than being forgotten by the next cached-token request.
+func (m *Manager) rememberRoutineRefresh(err error) {
+	if err == nil {
+		m.routineRefreshFailed.Store(nil)
+	} else {
+		m.routineRefreshFailed.Store(&keyRefreshFailure{err: err})
+	}
+	m.routineRefreshUntil.Store(m.now().Add(keyRefreshInterval).UnixNano())
+}
+
+// refreshKeysBeforeTokenAccept is the periodic file-backed verification gate.
+// Inside the throttle window it is lock-free. At expiry exactly one caller
+// reloads; concurrent callers wait on that round instead of piling up on
+// reloadMu or accepting against stale keys while the refresh is in progress.
+func (m *Manager) refreshKeysBeforeTokenAccept() error {
+	if !m.fileBacked.Load() {
+		return nil
+	}
+	for {
+		if m.now().UnixNano() < m.routineRefreshUntil.Load() {
+			if failed := m.routineRefreshFailed.Load(); failed != nil {
+				return failed.err
+			}
+			return nil
+		}
+		if running := m.routineRefresh.Load(); running != nil {
+			<-running.done
+			return running.err
+		}
+		round := &keyRefreshRound{done: make(chan struct{})}
+		if !m.routineRefresh.CompareAndSwap(nil, round) {
+			continue
+		}
+		_, round.err = m.refreshKeys(false)
+		close(round.done)
+		m.routineRefresh.CompareAndSwap(round, nil)
+		return round.err
+	}
 }
 
 // refreshKeys performs a throttled file refresh. A verification failure uses
@@ -224,6 +313,7 @@ func (m *Manager) refreshKeys(afterVerificationFailure bool) (bool, error) {
 		m.lastFailureRefresh = now
 	} else {
 		if !m.lastRefresh.IsZero() && now.Sub(m.lastRefresh) < keyRefreshInterval {
+			m.rememberRoutineRefresh(m.lastRefreshErr)
 			return false, m.lastRefreshErr
 		}
 		m.lastRefresh = now // throttle repeated read failures too
@@ -234,6 +324,7 @@ func (m *Manager) refreshKeys(afterVerificationFailure bool) (bool, error) {
 		} else {
 			m.lastRefreshErr = err
 		}
+		m.rememberRoutineRefresh(err)
 		return false, err
 	}
 	return true, nil

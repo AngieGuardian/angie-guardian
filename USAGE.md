@@ -630,8 +630,10 @@ To run replicas behind a load balancer, point every instance at one shared
 Redis or Valkey instance and share the signing key + `previous_key_dir` across
 them, so any instance verifies any other's tokens and sees any other's blocks.
 Live replicas notice rotations automatically; token signing reads the current
-key under the rotation lock, while stateless challenge issuance performs a
-rate-limited key refresh before signing. The archive directory is required
+key under the rotation lock, while stateless challenge issuance and JWT
+verification perform bounded, rate-limited key-set refreshes. Verification
+fails closed when the shared key files cannot be refreshed, including before
+accepting a cached token. The archive directory is required
 before `POST /admin/rotate-key` is allowed. Retired archives verify
 pre-rotation tokens for at most seven days and in-flight stateless challenges
 through a rolling rotation; older files may remain on disk but are ignored by
@@ -648,15 +650,30 @@ signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
 previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
 ```
 
-Use a dedicated Redis/Valkey database or cluster per Guardian deployment and
-keep the plaintext connection on loopback/private networking or inside a
-verified TLS/mTLS tunnel. Guardian keys are not deployment-prefixed, so sharing
-one database across unrelated sites mixes their security state.
+Use a fresh, dedicated logical database on a Redis/Valkey server per Guardian
+deployment and keep the plaintext connection on loopback/private networking or
+inside a verified TLS/mTLS tunnel. Guardian keys are not deployment-prefixed,
+so sharing one database across unrelated sites mixes their security state.
+
+`store.addr` uses the standalone Redis protocol client. Redis Cluster is not
+currently supported (Guardian's atomic block-index scripts intentionally touch
+the block key and its shared index together); put a stable TCP endpoint in
+front of a replicated service if you need server failover.
 
 The signing paths must share cross-host advisory locks and atomic renames.
 Asynchronous rsync/Syncthing copies do not share the rotation `flock`; when
 asynchronous distribution is unavoidable, designate exactly one rotator and
 finish distribution before another rotation.
+
+Key refresh and token minting deliberately fail closed when either key path is
+temporarily unreadable. On a single host, keep both paths on local disk. Across
+hosts, use a low-latency, reliably mounted shared filesystem whose advisory
+locks and atomic renames work across clients; a flaky NFS/distributed mount can
+cause a brief fleet-wide challenge/token outage. Include mount interruption
+and recovery in the pre-production soak. Guardian enumerates the retirement
+directory during refresh, so archive or delete files older than the seven-day
+verification horizon to keep directory scans bounded; expired key contents are
+not read by the verifier.
 
 ## WASM module (optional)
 

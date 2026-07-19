@@ -9,6 +9,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -80,4 +81,30 @@ type Store interface {
 // limit. A non-positive limit requests the full result, like Store.Scan.
 type LimitedScanner interface {
 	ScanLimit(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
+}
+
+// ErrCapabilityUnsupported lets callers safely fall back when a wrapper or
+// third-party Store has not implemented one of the bounded, backend-native
+// indexes below.
+var ErrCapabilityUnsupported = errors.New("store capability unsupported")
+
+// PostureVotes is the bounded fleet-posture primitive. Implementations keep
+// votes outside the general keyspace so a detector tick never scans unrelated
+// challenge, scoreboard, or bot-verification keys. MaxPostureVote excludes the
+// caller's own vote, which prevents a replica feeding its previous level back
+// into its hysteresis state machine.
+type PostureVotes interface {
+	SetPostureVote(ctx context.Context, instanceID string, level int, ttl time.Duration) error
+	DeletePostureVote(ctx context.Context, instanceID string) error
+	MaxPostureVote(ctx context.Context, excludeInstanceID string) (level int, err error)
+}
+
+// ActiveBlockScanner enumerates the active-block index without walking the
+// store's general keyspace. complete is false when the caller's limit omitted
+// entries, matching LimitedScanner's safety contract. The reserved block:*
+// namespace is indexed when callers mutate it through Store.Set/Delete (the
+// production Scoreboard contract); CompareAndSwap/Incr are not block mutation
+// APIs and must not be used to create or remove active blocks.
+type ActiveBlockScanner interface {
+	ScanActiveBlocks(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
 }

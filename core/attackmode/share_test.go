@@ -5,9 +5,13 @@
 package attackmode
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,11 +20,72 @@ import (
 
 type applyThenErrorStore struct{ store.Store }
 
-func (s *applyThenErrorStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	if err := s.Store.Set(ctx, key, value, ttl); err != nil {
+func (s *applyThenErrorStore) SetPostureVote(ctx context.Context, id string, level int, ttl time.Duration) error {
+	if err := s.Store.(store.PostureVotes).SetPostureVote(ctx, id, level, ttl); err != nil {
 		return err
 	}
 	return errors.New("ambiguous write timeout")
+}
+func (s *applyThenErrorStore) DeletePostureVote(ctx context.Context, id string) error {
+	return s.Store.(store.PostureVotes).DeletePostureVote(ctx, id)
+}
+func (s *applyThenErrorStore) MaxPostureVote(ctx context.Context, exclude string) (int, error) {
+	return s.Store.(store.PostureVotes).MaxPostureVote(ctx, exclude)
+}
+
+type invalidVoteStore struct{ store.Store }
+
+func (s *invalidVoteStore) SetPostureVote(context.Context, string, int, time.Duration) error {
+	return nil
+}
+func (s *invalidVoteStore) DeletePostureVote(context.Context, string) error     { return nil }
+func (s *invalidVoteStore) MaxPostureVote(context.Context, string) (int, error) { return 999, nil }
+
+type unsupportedVoteStore struct{ store.Store }
+
+func (s *unsupportedVoteStore) SetPostureVote(context.Context, string, int, time.Duration) error {
+	return store.ErrCapabilityUnsupported
+}
+func (s *unsupportedVoteStore) DeletePostureVote(context.Context, string) error {
+	return store.ErrCapabilityUnsupported
+}
+func (s *unsupportedVoteStore) MaxPostureVote(context.Context, string) (int, error) {
+	return 0, store.ErrCapabilityUnsupported
+}
+
+type postureNoScanStore struct {
+	store.Store
+	scans atomic.Int64
+}
+
+func (s *postureNoScanStore) Scan(context.Context, string) ([]store.KV, error) {
+	s.scans.Add(1)
+	return nil, errors.New("generic Scan must not be used")
+}
+func (s *postureNoScanStore) SetPostureVote(ctx context.Context, id string, level int, ttl time.Duration) error {
+	return s.Store.(store.PostureVotes).SetPostureVote(ctx, id, level, ttl)
+}
+func (s *postureNoScanStore) DeletePostureVote(ctx context.Context, id string) error {
+	return s.Store.(store.PostureVotes).DeletePostureVote(ctx, id)
+}
+func (s *postureNoScanStore) MaxPostureVote(ctx context.Context, exclude string) (int, error) {
+	return s.Store.(store.PostureVotes).MaxPostureVote(ctx, exclude)
+}
+
+func setPeerVote(t *testing.T, st store.Store, id string, level int, ttl time.Duration) {
+	t.Helper()
+	if err := st.(store.PostureVotes).SetPostureVote(t.Context(), id, level, ttl); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func maxVote(t *testing.T, st store.Store) int {
+	t.Helper()
+	level, err := st.(store.PostureVotes).MaxPostureVote(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return level
 }
 
 func TestSharePostureAdoptsPeerLevel(t *testing.T) {
@@ -30,9 +95,7 @@ func TestSharePostureAdoptsPeerLevel(t *testing.T) {
 	cfg.SharePosture = true
 
 	// A peer instance published "attack" under its own per-instance key.
-	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Minute)
 
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
@@ -48,14 +111,38 @@ func TestSharePostureAdoptsPeerLevel(t *testing.T) {
 	}
 }
 
+func TestSharePostureNeverScansGeneralKeyspace(t *testing.T) {
+	base := store.NewMemory()
+	t.Cleanup(func() { base.Close() })
+	st := &postureNoScanStore{Store: base}
+	for i := range 1000 {
+		if err := st.Set(t.Context(), fmt.Sprintf("challenge:%04d", i), []byte("noise"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setPeerVote(t, st, "peer", 2, time.Hour)
+	cfg := testConfig()
+	cfg.SharePosture = true
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Attack {
+		t.Fatalf("did not adopt indexed peer vote: %s", d.State().Level)
+	}
+	if got := st.scans.Load(); got != 0 {
+		t.Fatalf("posture tick used generic Scan %d times", got)
+	}
+}
+
 func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = false
-	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Minute)
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -68,13 +155,11 @@ func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 }
 
 func TestSharePostureIgnoresOutOfRangePeerLevel(t *testing.T) {
-	st := store.NewMemory()
+	base := store.NewMemory()
+	st := &invalidVoteStore{Store: base}
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = true
-	if err := st.Set(t.Context(), posturePrefix+"peer-corrupt", []byte("999"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -87,6 +172,26 @@ func TestSharePostureIgnoresOutOfRangePeerLevel(t *testing.T) {
 	}
 }
 
+func TestSharePostureWarnsOnceWhenCapabilityUnsupported(t *testing.T) {
+	base := store.NewMemory()
+	t.Cleanup(func() { base.Close() })
+	st := &unsupportedVoteStore{Store: base}
+	cfg := testConfig()
+	cfg.SharePosture = true
+	var logs bytes.Buffer
+	d := New(cfg, st, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	d.TickForTest()
+	d.TickForTest()
+	const message = "store does not support fleet posture votes"
+	if got := strings.Count(logs.String(), message); got != 1 {
+		t.Fatalf("unsupported-capability warnings = %d, want 1; logs=%q", got, logs.String())
+	}
+	if d.State().Level != Normal {
+		t.Fatalf("unsupported posture sharing changed local level: %s", d.State().Level)
+	}
+}
+
 // TestPinNormalDefeatsPeerAdoption: with sharing on and a peer reporting
 // Attack, an operator's Pin(Normal) kill switch must hold, not flap back to
 // Attack every tick.
@@ -95,9 +200,7 @@ func TestPinNormalDefeatsPeerAdoption(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = true
-	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Minute); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Minute)
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -131,14 +234,13 @@ func TestPinClearsOwnSharedVote(t *testing.T) {
 	// level under this instance's key.
 	issueAndTick(d, c, 6000, 0)
 	issueAndTick(d, c, 6000, 0)
-	key := posturePrefix + d.instanceID
-	if _, ok, err := st.Get(t.Context(), key); err != nil || !ok {
-		t.Fatalf("setup: shared Attack vote missing: ok=%v err=%v", ok, err)
+	if got := maxVote(t, st); got != int(Attack) {
+		t.Fatalf("setup: shared Attack vote = %d, want %d", got, Attack)
 	}
 
 	d.Pin(Normal, 0)
-	if _, ok, err := st.Get(t.Context(), key); err != nil || ok {
-		t.Fatalf("Pin(Normal) left own shared vote live: ok=%v err=%v", ok, err)
+	if got := maxVote(t, st); got != 0 {
+		t.Fatalf("Pin(Normal) left own shared vote live: level=%d", got)
 	}
 }
 
@@ -155,14 +257,13 @@ func TestPinClearsVoteAfterAmbiguousSetError(t *testing.T) {
 
 	issueAndTick(d, c, 6000, 0)
 	issueAndTick(d, c, 6000, 0)
-	key := posturePrefix + d.instanceID
-	if _, ok, err := base.Get(t.Context(), key); err != nil || !ok {
-		t.Fatalf("setup: ambiguous SET did not apply: ok=%v err=%v", ok, err)
+	if got := maxVote(t, base); got != int(Attack) {
+		t.Fatalf("setup: ambiguous SET did not apply: level=%d", got)
 	}
 
 	d.Pin(Normal, 0)
-	if _, ok, err := base.Get(t.Context(), key); err != nil || ok {
-		t.Fatalf("pin left ambiguously-applied vote live: ok=%v err=%v", ok, err)
+	if got := maxVote(t, base); got != 0 {
+		t.Fatalf("pin left ambiguously-applied vote live: level=%d", got)
 	}
 }
 
@@ -177,15 +278,14 @@ func TestDisablingSharingClearsOwnVote(t *testing.T) {
 	d.SetClockForTest(c.now)
 	issueAndTick(d, c, 6000, 0)
 	issueAndTick(d, c, 6000, 0)
-	key := posturePrefix + d.instanceID
-	if _, ok, _ := st.Get(t.Context(), key); !ok {
+	if got := maxVote(t, st); got != int(Attack) {
 		t.Fatal("setup: shared vote missing")
 	}
 
 	cfg.SharePosture = false
 	d.SetConfig(cfg)
-	if _, ok, err := st.Get(t.Context(), key); err != nil || ok {
-		t.Fatalf("disabling share_posture left own vote live: ok=%v err=%v", ok, err)
+	if got := maxVote(t, st); got != 0 {
+		t.Fatalf("disabling share_posture left own vote live: level=%d", got)
 	}
 }
 
@@ -196,9 +296,7 @@ func TestAdoptedPeerLevelDoesNotDecayImmediately(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = true
-	if err := st.Set(t.Context(), posturePrefix+"peer-abc", []byte("2"), time.Hour); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Hour)
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -223,10 +321,7 @@ func TestAdoptedPeerLevelDwellsAndDecaysOneStepAfterVoteDisappears(t *testing.T)
 	t.Cleanup(func() { st.Close() })
 	cfg := testConfig()
 	cfg.SharePosture = true
-	peerKey := posturePrefix + "peer-abc"
-	if err := st.Set(t.Context(), peerKey, []byte("2"), time.Hour); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Hour)
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -236,7 +331,7 @@ func TestAdoptedPeerLevelDwellsAndDecaysOneStepAfterVoteDisappears(t *testing.T)
 	if d.State().Level != Attack {
 		t.Fatalf("setup: level = %s", d.State().Level)
 	}
-	if err := st.Delete(t.Context(), peerKey); err != nil {
+	if err := st.DeletePostureVote(t.Context(), "peer-abc"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -269,9 +364,7 @@ func TestDecayedReplicaDoesNotWriteBack(t *testing.T) {
 	cfg := testConfig()
 	cfg.SharePosture = true
 	ctx := t.Context()
-	if err := st.Set(ctx, posturePrefix+"peer-abc", []byte("2"), time.Hour); err != nil {
-		t.Fatal(err)
-	}
+	setPeerVote(t, st, "peer-abc", 2, time.Hour)
 	c := &clock{}
 	c.t.Store(time.Now().UnixNano())
 	d := New(cfg, st, slog.New(slog.DiscardHandler))
@@ -280,14 +373,9 @@ func TestDecayedReplicaDoesNotWriteBack(t *testing.T) {
 	c.add(bucketWidth)
 	d.TickForTest() // adopts Attack from the peer
 
-	// This instance's own key must NOT exist: it only adopted, never detected.
-	kvs, err := st.Scan(ctx, posturePrefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kv := range kvs {
-		if kv.Key != posturePrefix+"peer-abc" {
-			t.Fatalf("adopting instance wrote its own posture vote %q=%q (write-back clobber risk)", kv.Key, kv.Value)
-		}
+	// Excluding the peer leaves no vote: this instance only adopted, never
+	// detected, and therefore must not write the posture back.
+	if got, err := st.MaxPostureVote(ctx, "peer-abc"); err != nil || got != 0 {
+		t.Fatalf("adopting instance wrote its own posture vote: level=%d err=%v", got, err)
 	}
 }

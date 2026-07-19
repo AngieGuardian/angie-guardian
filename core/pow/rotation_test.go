@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -201,6 +202,179 @@ func TestLivePeerRefreshesAfterRotation(t *testing.T) {
 	}
 }
 
+func TestLivePeerRefreshesBeforeAcceptingOldKeyJWT(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+
+	rotator, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := peer.signingKey()
+	base := time.Unix(1_900_000_000, 0).UTC()
+	rotator.now = func() time.Time { return base }
+	if err := rotator.Rotate(keyPath, prevDir); err != nil {
+		t.Fatal(err)
+	}
+
+	const host, ip, ua = "example.test", "198.51.100.44", "Mozilla/5.0"
+	issued := base.Add(2 * time.Second)
+	claims := func() *TokenClaims {
+		return &TokenClaims{
+			Host: host, Difficulty: 32,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject: Fingerprint(ip, ua), IssuedAt: jwt.NewNumericDate(issued),
+				NotBefore: jwt.NewNumericDate(issued), ExpiresAt: jwt.NewNumericDate(issued.Add(time.Hour)),
+			},
+		}
+	}
+	forgedOld, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims()).SignedString(oldKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer.now = func() time.Time { return issued }
+	if err := peer.VerifyToken(forgedOld, host, ip, ua, 20, time.Hour); err == nil {
+		t.Fatal("quiet peer accepted a freshly forged JWT from the retired key")
+	}
+
+	// A current-key token verifies and enters the cache. Losing access to the
+	// key files after the next refresh deadline must still fail closed before
+	// that cache can be consulted, and the throttled consecutive call must
+	// remember the refresh failure rather than accepting the cached token.
+	currentToken, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims()).SignedString(rotator.signingKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.VerifyToken(currentToken, host, ip, ua, 20, time.Hour); err != nil {
+		t.Fatalf("current-key token rejected: %v", err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	afterDeadline := issued.Add(keyRefreshInterval + time.Millisecond)
+	peer.now = func() time.Time { return afterDeadline }
+	firstErr := peer.VerifyToken(currentToken, host, ip, ua, 20, time.Hour)
+	secondErr := peer.VerifyToken(currentToken, host, ip, ua, 20, time.Hour)
+	if firstErr == nil || secondErr == nil {
+		t.Fatalf("cached token bypassed key refresh failure: first=%v second=%v", firstErr, secondErr)
+	}
+}
+
+func TestSuccessfulSigningDoesNotProlongVerificationRefreshFailure(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+
+	m, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_900_000_000, 0).UTC()
+	m.now = func() time.Time { return base }
+	m.routineRefreshUntil.Store(base.Add(-time.Second).UnixNano())
+	rawKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.VerifyToken("invalid", "example.test", "192.0.2.1", "ua", 0, 0); err == nil {
+		t.Fatal("verification unexpectedly survived a missing current-key file")
+	}
+	if err := os.WriteFile(keyPath, rawKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Signing already loads the current key under the rotation lock. It must
+	// not move the full-keyset refresh timestamp: doing so can keep returning a
+	// cached retired-key-directory error forever on a busy issuer.
+	afterThrottle := base.Add(keyRefreshInterval + time.Millisecond)
+	m.now = func() time.Time { return afterThrottle }
+	token, err := m.mintToken("example.test", Fingerprint("192.0.2.1", "ua"), "cid", 20, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.VerifyToken(token, "example.test", "192.0.2.1", "ua", 20, time.Hour); err != nil {
+		t.Fatalf("verification did not recover after key files returned: %v", err)
+	}
+}
+
+func TestReloadTakesAtomicSnapshotAcrossRotation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-process rotation lock is implemented on Linux")
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	m, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_900_000_000, 0).UTC()
+	m.now = func() time.Time { return base }
+	oldRaw, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pause a rotation after archiving the old key but before replacing the
+	// current file. Reload must wait instead of installing this torn snapshot.
+	unlock, err := lockRotation(keyPath + ".rotate.lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+	if err := os.MkdirAll(prevDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveKey(filepath.Join(prevDir, fmt.Sprintf("%d-paused.key", base.Unix())), oldRaw); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := make(chan error, 1)
+	go func() { reloaded <- m.ReloadKeys() }()
+	select {
+	case err := <-reloaded:
+		t.Fatalf("reload escaped the rotation lock with torn key state: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	newKey, newPEM, err := newKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicReplaceKey(keyPath, newPEM); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	released = true
+	if err := <-reloaded; err != nil {
+		t.Fatal(err)
+	}
+	if !m.signingKey().Equal(newKey) {
+		t.Fatal("reload did not install the post-rotation current key")
+	}
+	keys := m.verificationKeys()
+	if len(keys) != 2 || keys[1].retiredAt.IsZero() {
+		t.Fatalf("reload did not install one retired old key: %+v", keys)
+	}
+}
+
 func TestPeerNeverSignsWithAlreadyRetiredKey(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "ed25519.key")
@@ -306,6 +480,23 @@ func TestLoadRetiredKeysOmitsExpiredHorizon(t *testing.T) {
 	}
 	if got := keys[0].RetiredAt; !got.Equal(now.Add(-maxAcceptedTokenLifetime)) {
 		t.Fatalf("kept retirement = %v, want exact horizon", got)
+	}
+}
+
+func TestLoadRetiredKeysSkipsExpiredContentsBeforeParsing(t *testing.T) {
+	prevDir := t.TempDir()
+	now := time.Unix(1_900_000_000, 0).UTC()
+	expired := now.Add(-maxAcceptedTokenLifetime - time.Second).Unix()
+	path := filepath.Join(prevDir, fmt.Sprintf("%d-corrupt.key", expired))
+	if err := os.WriteFile(path, []byte("not a private key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := loadRetiredKeysAt(prevDir, now)
+	if err != nil {
+		t.Fatalf("expired key contents were parsed: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expired keys = %d, want 0", len(keys))
 	}
 }
 

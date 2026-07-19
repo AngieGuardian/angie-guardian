@@ -52,7 +52,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_store_ops_total` | counter | `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
+| `guardian_store_ops_total` | counter | `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`, `block_index_scan`, `posture_set`, `posture_delete`, `posture_max`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
 | `guardian_store_op_seconds` | histogram | `op` | Store operation latency. On bbolt, watch `set` and `cas`: they pay an fsync. |
 
 ## Block enforcement offload
@@ -65,6 +65,7 @@ See the [Block Enforcement Offload](/guide/block-offload) guide.
 | `guardian_offload_entries` | gauge | `sink` | Active block entries held per sink (`mirror`, `nftables`). |
 | `guardian_offload_ops_total` | counter | `sink`, `op`, `status` | Offload operations by `op` (`add`, `remove`) and `status` (`ok`, `error`, `dropped`). `dropped` means a full mirror or sink queue; enforcement falls back, nothing is lost. |
 | `guardian_offload_reconcile_total` | counter | `status` | Reconcile scans, `ok` or `error`. |
+| `guardian_offload_reconcile_skipped_total` | counter | `reason` | External-sink replace-all repairs skipped because the indexed snapshot was incomplete (`incomplete_snapshot`) or a concurrent block event made it stale (`concurrent_event`). |
 | `guardian_offload_healthy` | gauge | `sink` | `1` = sink enforcing, `0` = degraded to in-daemon enforcement. Alert on `nftables` at `0`. |
 
 ## Attack mode

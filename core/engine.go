@@ -447,12 +447,22 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 		complete = true
 		err      error
 	)
-	if limited, ok := e.store.(store.LimitedScanner); ok {
-		kvs, complete, err = limited.ScanLimit(ctx, blockKeyPrefix, limit)
-	} else {
-		kvs, err = e.store.Scan(ctx, blockKeyPrefix)
-		if err == nil && limit > 0 && len(kvs) > limit {
-			kvs, complete = kvs[:limit], false
+	indexed, indexedOK := e.store.(store.ActiveBlockScanner)
+	if indexedOK {
+		kvs, complete, err = indexed.ScanActiveBlocks(ctx, blockKeyPrefix, limit)
+	}
+	if indexedOK && errors.Is(err, store.ErrCapabilityUnsupported) {
+		indexedOK = false
+		err = nil
+	}
+	if !indexedOK {
+		if limited, ok := e.store.(store.LimitedScanner); ok {
+			kvs, complete, err = limited.ScanLimit(ctx, blockKeyPrefix, limit)
+		} else {
+			kvs, err = e.store.Scan(ctx, blockKeyPrefix)
+			if err == nil && limit > 0 && len(kvs) > limit {
+				kvs, complete = kvs[:limit], false
+			}
 		}
 	}
 	if err != nil {

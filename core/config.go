@@ -156,7 +156,7 @@ type EnforcementConfig struct {
 // on purpose: the mirror is strictly cheaper than the store lookup it fronts
 // and degrades to it in every failure mode, so there is nothing to turn off.
 type MirrorConfig struct {
-	// ReconcileInterval is the cadence of the authoritative store scan that
+	// ReconcileInterval is the cadence of the active-block index read that
 	// seeds the mirror, corrects learned entries and repairs sink drift. It
 	// also bounds cross-replica propagation of unblocks in read_through mode.
 	ReconcileInterval Duration `yaml:"reconcile_interval"` // default 10s, min 1s
@@ -165,7 +165,7 @@ type MirrorConfig struct {
 	// Mode: auto (default) picks authoritative for single-writer backends
 	// (memory, bbolt) and read_through for a shared store (redis), where a
 	// mirror miss must still consult the store so another replica's blocks
-	// bite before the next reconcile scan.
+	// bite before the next indexed reconcile.
 	Mode string `yaml:"mode"` // auto | authoritative | read_through
 }
 
@@ -1433,7 +1433,7 @@ func (c *Config) IntelConfig() intel.Config {
 // mode "auto" resolves here: single-writer backends (memory, bbolt) make the
 // seeded mirror authoritative, while a shared store (redis) keeps the
 // per-request store fallback so blocks placed by another replica bite before
-// the next reconcile scan.
+// the next indexed reconcile.
 func (c *Config) EnforceConfig() enforce.Config {
 	mode := c.Enforcement.Mirror.Mode
 	if mode == "" || mode == "auto" {

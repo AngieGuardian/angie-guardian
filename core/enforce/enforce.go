@@ -10,7 +10,7 @@
 // guest transport is unaffected by construction.
 //
 // Fail-open contract: nothing in this package may surface an error into the
-// request path. A broken sink, a full mirror or a failed reconcile scan only
+// request path. A broken sink, a full mirror or a failed indexed reconcile only
 // ever degrades enforcement back to the store-backed lookup.
 package enforce
 
@@ -22,7 +22,7 @@ import (
 // Mirror consistency modes. "auto" is resolved by the config layer before
 // this package sees it: authoritative for single-writer backends (memory,
 // bbolt), read_through when the store is shared (redis) so a block placed by
-// another replica bites before the next reconcile scan.
+// another replica bites before the next indexed reconcile.
 const (
 	ModeAuthoritative = "authoritative"
 	ModeReadThrough   = "read_through"
@@ -33,7 +33,7 @@ const (
 type Config struct {
 	// KeyPrefix is the store prefix holding active blocks ("block:").
 	KeyPrefix string
-	// ReconcileInterval is the cadence of the authoritative store scan that
+	// ReconcileInterval is the cadence of the active-block index read that
 	// seeds the mirror, repairs sink drift and picks up remote block changes.
 	ReconcileInterval time.Duration
 	// MaxEntries bounds the mirror. Overflow drops the newest insert (with a
@@ -77,7 +77,7 @@ type BlockEvent struct {
 	Remove bool
 }
 
-// ActiveBlock is one authoritative block as seen by a reconcile scan.
+// ActiveBlock is one authoritative block as seen by an indexed reconcile.
 type ActiveBlock struct {
 	Addr      netip.Addr
 	Reason    string

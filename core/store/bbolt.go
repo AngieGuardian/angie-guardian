@@ -24,7 +24,10 @@ type Bolt struct {
 	done chan struct{}
 }
 
-var boltBucket = []byte("guardian")
+var (
+	boltBucket        = []byte("guardian")
+	boltPostureBucket = []byte("guardian_posture_votes")
+)
 
 func NewBolt(path string) (*Bolt, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
@@ -32,7 +35,10 @@ func NewBolt(path string) (*Bolt, error) {
 		return nil, err
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(boltBucket)
+		if _, err := tx.CreateBucketIfNotExists(boltBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(boltPostureBucket)
 		return err
 	})
 	if err != nil {
@@ -95,11 +101,13 @@ func (s *Bolt) sweeper() {
 			return
 		case now := <-t.C:
 			_ = s.db.Update(func(tx *bolt.Tx) error {
-				c := tx.Bucket(boltBucket).Cursor()
-				for k, v := c.First(); k != nil; k, v = c.Next() {
-					if _, ok := decode(v, now); !ok {
-						if err := c.Delete(); err != nil {
-							return err
+				for _, bucket := range [][]byte{boltBucket, boltPostureBucket} {
+					c := tx.Bucket(bucket).Cursor()
+					for k, v := c.First(); k != nil; k, v = c.Next() {
+						if _, ok := decode(v, now); !ok {
+							if err := c.Delete(); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -253,6 +261,56 @@ func (s *Bolt) ScanLimit(_ context.Context, prefix string, limit int) ([]KV, boo
 		return nil
 	})
 	return out, complete, err // cursor iteration is already key-ordered
+}
+
+// ScanActiveBlocks reuses bbolt's ordered cursor seek: unlike Redis SCAN or a
+// Go map walk it visits only the contiguous block-key range.
+func (s *Bolt) ScanActiveBlocks(ctx context.Context, prefix string, limit int) ([]KV, bool, error) {
+	return s.ScanLimit(ctx, prefix, limit)
+}
+
+func (s *Bolt) SetPostureVote(_ context.Context, instanceID string, level int, ttl time.Duration) error {
+	if level < 1 || level > 2 || ttl <= 0 {
+		return fmt.Errorf("invalid posture vote level=%d ttl=%v", level, ttl)
+	}
+	encoded, err := encode([]byte{byte(level)}, ttl)
+	if err != nil {
+		return err
+	}
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		return tx.Bucket(boltPostureBucket).Put([]byte(instanceID), encoded)
+	})
+}
+
+func (s *Bolt) DeletePostureVote(_ context.Context, instanceID string) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		return tx.Bucket(boltPostureBucket).Delete([]byte(instanceID))
+	})
+}
+
+func (s *Bolt) MaxPostureVote(_ context.Context, excludeInstanceID string) (int, error) {
+	maxLevel := 0
+	err := s.db.View(func(tx *bolt.Tx) error {
+		now := time.Now()
+		c := tx.Bucket(boltPostureBucket).Cursor()
+		for key, raw := c.First(); key != nil; key, raw = c.Next() {
+			if string(key) == excludeInstanceID {
+				continue
+			}
+			value, ok := decode(raw, now)
+			if !ok || len(value) != 1 || value[0] < 1 || value[0] > 2 {
+				continue
+			}
+			if int(value[0]) > maxLevel {
+				maxLevel = int(value[0])
+				if maxLevel == 2 {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	return maxLevel, err
 }
 
 func (s *Bolt) Close() error {

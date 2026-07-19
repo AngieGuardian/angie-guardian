@@ -7,13 +7,54 @@ package store
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+type scanCountingHook struct {
+	scans       atomic.Int64
+	zranges     atomic.Int64
+	maxPipeline atomic.Int64
+}
+
+type discardRecorder struct{}
+
+func (discardRecorder) StoreOp(string, float64, error) {}
+
+func (h *scanCountingHook) DialHook(next redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return next(ctx, network, addr)
+	}
+}
+
+func (h *scanCountingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.FullName() == "scan" {
+			h.scans.Add(1)
+		}
+		if cmd.FullName() == "zrange" {
+			h.zranges.Add(1)
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *scanCountingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for old := h.maxPipeline.Load(); int64(len(cmds)) > old; old = h.maxPipeline.Load() {
+			if h.maxPipeline.CompareAndSwap(old, int64(len(cmds))) {
+				break
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
 
 // backend pairs a Store with a way to make a TTL of d elapse. Real-clock
 // backends sleep; miniredis has a manual clock that must be fast-forwarded.
@@ -372,5 +413,222 @@ func TestAllBackendsBoundLimitedScans(t *testing.T) {
 				t.Fatalf("ScanLimit = len %d complete %v, want 2/false", len(kvs), complete)
 			}
 		})
+	}
+}
+
+func TestAllBackendsPostureVotesAreFleetMaxAndExpire(t *testing.T) {
+	ctx := context.Background()
+	for name, be := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			defer be.store.Close()
+			votes, ok := be.store.(PostureVotes)
+			if !ok {
+				t.Fatal("backend does not implement PostureVotes")
+			}
+			// Populate unrelated state heavily enough to catch an accidental use
+			// of the general key map/bucket/keyspace in targeted tests and profiles.
+			for i := range 128 {
+				if err := be.store.Set(ctx, fmt.Sprintf("challenge:%04d", i), []byte("x"), time.Hour); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := votes.SetPostureVote(ctx, "a", 1, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			if err := votes.SetPostureVote(ctx, "b", 2, 500*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := votes.MaxPostureVote(ctx, "a"); err != nil || got != 2 {
+				t.Fatalf("max excluding a = %d, %v; want 2, nil", got, err)
+			}
+			if got, err := votes.MaxPostureVote(ctx, "b"); err != nil || got != 1 {
+				t.Fatalf("max excluding b = %d, %v; want 1, nil", got, err)
+			}
+			be.advance(700 * time.Millisecond)
+			if got, err := votes.MaxPostureVote(ctx, ""); err != nil || got != 1 {
+				t.Fatalf("max after attack expiry = %d, %v; want 1, nil", got, err)
+			}
+			if err := votes.DeletePostureVote(ctx, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := votes.MaxPostureVote(ctx, ""); err != nil || got != 0 {
+				t.Fatalf("max after delete = %d, %v; want 0, nil", got, err)
+			}
+		})
+	}
+}
+
+func TestAllBackendsActiveBlockIndexIgnoresUnrelatedKeys(t *testing.T) {
+	ctx := context.Background()
+	for name, be := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			defer be.store.Close()
+			indexed, ok := be.store.(ActiveBlockScanner)
+			if !ok {
+				t.Fatal("backend does not implement ActiveBlockScanner")
+			}
+			for i := range 128 {
+				if err := be.store.Set(ctx, fmt.Sprintf("challenge:%04d", i), []byte("noise"), time.Hour); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := be.store.Set(ctx, "block:192.0.2.1", []byte("one"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			if err := be.store.Set(ctx, "block:192.0.2.2", []byte("two"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			kvs, complete, err := indexed.ScanActiveBlocks(ctx, "block:", 1)
+			if err != nil || len(kvs) != 1 || complete {
+				t.Fatalf("limited active scan = %+v complete=%v err=%v; want one/incomplete/nil", kvs, complete, err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 2 {
+				t.Fatalf("active scan = %+v err=%v; want two blocks", kvs, err)
+			}
+			if err := be.store.Delete(ctx, "block:192.0.2.1"); err != nil {
+				t.Fatal(err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 1 || kvs[0].Key != "block:192.0.2.2" {
+				t.Fatalf("active scan after delete = %+v err=%v", kvs, err)
+			}
+		})
+	}
+}
+
+func TestRedisIndexedOperationsNeverScanGeneralKeyspace(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	hook := &scanCountingHook{}
+	rdb.AddHook(hook)
+	s := NewRedisFromClient(rdb)
+	t.Cleanup(func() { s.Close() })
+	ctx := t.Context()
+
+	if err := s.Set(ctx, "block:192.0.2.10", []byte("indexed"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	kvs, complete, err := s.ScanActiveBlocks(ctx, "block:", 10)
+	if err != nil || !complete || len(kvs) != 1 || kvs[0].Key != "block:192.0.2.10" {
+		t.Fatalf("indexed scan = %+v complete=%v err=%v", kvs, complete, err)
+	}
+
+	// A stale index member is healed through bounded GET/ZREM work. It makes
+	// this snapshot incomplete, but must not trigger a generic keyspace scan.
+	if err := rdb.ZAdd(ctx, redisBlockIndex, redis.Z{
+		Score: float64(time.Now().Add(time.Hour).UnixMilli()), Member: "block:192.0.2.99",
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, complete, err = s.ScanActiveBlocks(ctx, "block:", 10); err != nil || complete {
+		t.Fatalf("stale-member scan complete=%v err=%v; want incomplete/nil", complete, err)
+	}
+	if _, complete, err = s.ScanActiveBlocks(ctx, "block:", 10); err != nil || !complete {
+		t.Fatalf("healed index complete=%v err=%v; want complete/nil", complete, err)
+	}
+	if err := s.SetPostureVote(ctx, "replica-a", 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.MaxPostureVote(ctx, ""); err != nil || got != 2 {
+		t.Fatalf("posture max = %d, %v", got, err)
+	}
+	if got := hook.scans.Load(); got != 0 {
+		t.Fatalf("indexed operations used Redis SCAN %d times", got)
+	}
+}
+
+func TestRedisBlockIndexUsesServerClockForExpiry(t *testing.T) {
+	mr := miniredis.RunT(t)
+	// Put Redis a day behind the application. Pruning with local time would
+	// immediately erase the otherwise-live one-hour block's index member.
+	mr.SetTime(time.Now().Add(-24 * time.Hour))
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisFromClient(rdb)
+	t.Cleanup(func() { s.Close() })
+	ctx := t.Context()
+	if err := s.Set(ctx, "block:198.51.100.8", []byte("live"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	kvs, complete, err := s.ScanActiveBlocks(ctx, "block:", 10)
+	if err != nil || !complete || len(kvs) != 1 {
+		t.Fatalf("skewed-clock active scan = %+v complete=%v err=%v", kvs, complete, err)
+	}
+}
+
+func TestRedisStaleHealPreservesConcurrentlyRecreatedBlock(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewRedisFromClient(rdb)
+	t.Cleanup(func() { s.Close() })
+	ctx := t.Context()
+	const key = "block:198.51.100.9"
+
+	// Model the exact race window: an indexed GET observed the old key as
+	// missing, then Set recreated both the key and membership before healing.
+	if err := s.Set(ctx, key, []byte("recreated"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := redisHealBlockIndexScript.Run(ctx, rdb,
+		[]string{redisBlockIndex, redisBlockIndexGeneration}, key).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rdb.ZScore(ctx, redisBlockIndex, key).Result(); err != nil {
+		t.Fatalf("conditional heal removed recreated block membership: %v", err)
+	}
+}
+
+func TestRedisActiveIndexBatchesValueFetch(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	hook := &scanCountingHook{}
+	rdb.AddHook(hook)
+	s := NewRedisFromClient(rdb)
+	t.Cleanup(func() { s.Close() })
+	ctx := t.Context()
+	for i := range 600 {
+		if err := s.Set(ctx, fmt.Sprintf("block:198.51.%d.%d", i/256, i%256), []byte("x"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kvs, complete, err := s.ScanActiveBlocks(ctx, "block:", 1000)
+	if err != nil || !complete || len(kvs) != 600 {
+		t.Fatalf("active scan len=%d complete=%v err=%v", len(kvs), complete, err)
+	}
+	if got := hook.maxPipeline.Load(); got == 0 || got > 2*512 {
+		t.Fatalf("largest value-fetch pipeline = %d, want 1..1024", got)
+	}
+	if got := hook.zranges.Load(); got < 2 {
+		t.Fatalf("indexed key enumeration used %d ZRANGE page(s), want at least 2", got)
+	}
+	if got := hook.scans.Load(); got != 0 {
+		t.Fatalf("batched active scan used Redis SCAN %d times", got)
+	}
+}
+
+func TestInstrumentedPreservesIndexedCapabilities(t *testing.T) {
+	base := NewMemory()
+	wrapped := Instrument(base, discardRecorder{})
+	t.Cleanup(func() { wrapped.Close() })
+	blocks, ok := wrapped.(ActiveBlockScanner)
+	if !ok {
+		t.Fatal("instrumentation hid ActiveBlockScanner")
+	}
+	votes, ok := wrapped.(PostureVotes)
+	if !ok {
+		t.Fatal("instrumentation hid PostureVotes")
+	}
+	ctx := t.Context()
+	if err := wrapped.Set(ctx, "block:192.0.2.20", []byte("x"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if kvs, complete, err := blocks.ScanActiveBlocks(ctx, "block:", 10); err != nil || !complete || len(kvs) != 1 {
+		t.Fatalf("instrumented active blocks = %+v complete=%v err=%v", kvs, complete, err)
+	}
+	if err := votes.SetPostureVote(ctx, "replica", 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := votes.MaxPostureVote(ctx, ""); err != nil || got != 2 {
+		t.Fatalf("instrumented posture max = %d, %v", got, err)
 	}
 }

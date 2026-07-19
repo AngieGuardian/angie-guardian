@@ -88,7 +88,9 @@ challenge issued moments before or after a posture flip still redeems, and a
 rolling fleet restart is safe. Instances that share the signing key verify
 each other's stateless challenges. File-backed issuers refresh the shared key
 set periodically before signing, while current and still-live retired secrets
-keep challenges redeemable during a rolling rotation.
+keep challenges redeemable during a rolling rotation. JWT verification also
+refreshes before accepting cached or signature-valid tokens, so learning that
+a peer retired a key cannot be suppressed by an old-key cache hit.
 
 The shared store CAS is the fleet-wide single-spend authority. If that write
 fails, Guardian mints the token fail-open and records the challenge in a
@@ -125,12 +127,14 @@ times your core count and test it with your chosen mirror mode.
 ## Fleet coordination
 
 The detector is per-instance: each replica measures its own share of traffic.
-With `share_posture: true` (default) each instance publishes its level through
-its own expiring store key once per tick and adopts the maximum of its local
+With `share_posture: true` (default) each instance publishes its level as an
+expiring per-replica vote once per tick and adopts the maximum of its local
 level and every live peer vote, so replicas move together. One quiet replica
-cannot overwrite a higher vote from an attacking peer. This is one store op
-per tick, off the hot path; if the store is down the detection degrades to
-local-only (and the store failure is itself a trigger).
+cannot overwrite a higher vote from an attacking peer. The built-in stores
+keep these votes in a dedicated map/bbolt bucket or two fixed Redis sorted
+sets; a tick never scans challenge, counter, bot-verification, or block keys.
+The bounded coordination runs off the hot path; if the store is down it
+degrades to local-only (and the store failure is itself a trigger).
 
 Thresholds are therefore **per instance**. With N replicas behind a balancer,
 each sees roughly 1/N of the traffic; size `challenge_rate` and

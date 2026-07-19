@@ -165,10 +165,10 @@ wired.
 
 ### `POST /admin/offload/reconcile`
 
-Force an immediate authoritative store scan: drift repair after a manual
+Force an immediate active-block index reconcile: drift repair after a manual
 `nft flush` or an out-of-band store edit, without waiting for the next
-reconcile tick. The scan runs asynchronously. Returns `409` when the offload
-manager is not active.
+reconcile tick. The reconcile runs asynchronously. Returns `409` when the
+offload manager is not active.
 
 ```json
 {"status":"reconcile scheduled"}
@@ -210,8 +210,10 @@ JSON fields are rejected. Returns `409` when attack mode is not active.
 
 Atomically archive the current Ed25519 signing key into `previous_key_dir` and
 generate a new one. `previous_key_dir` must be configured. Live replicas that
-share both key paths refresh automatically. Retired keys accept only tokens
-issued before rotation, with a maximum token lifetime of seven days.
+share both key paths refresh automatically before issuing stateless challenges
+or accepting JWTs. A verifier fails closed if that refresh cannot read the
+shared key files. Retired keys accept only tokens issued before rotation, with
+a maximum token lifetime of seven days.
 Archives older than that verification horizon are ignored in memory (they are
 not automatically deleted from disk).
 
