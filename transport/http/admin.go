@@ -236,10 +236,20 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 // count plus action/reason-category counts over the recent-decisions window.
 // Long-horizon numbers live in /metrics; this is the "right now" view.
 func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
-	blocks, err := s.engine.ListBlocks(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
+	blocksActive := -1
+	if enf := s.engine.Enforcer(); enf != nil {
+		mirror := enf.Status().Mirror
+		if mirror.Seeded && mirror.Complete {
+			blocksActive = mirror.Entries
+		}
+	}
+	if blocksActive < 0 {
+		blocks, err := s.engine.ListBlocks(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		blocksActive = len(blocks)
 	}
 	recent := s.engine.RecentDecisions(0)
 	byAction := map[string]int{}
@@ -255,7 +265,7 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		byReason[cat]++
 	}
 	out := map[string]any{
-		"blocks_active": len(blocks),
+		"blocks_active": blocksActive,
 		"recent": map[string]any{
 			"total":     len(recent),
 			"by_action": byAction,

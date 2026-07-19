@@ -17,7 +17,7 @@ single embedded writer trails redis/valkey, unless
 | `allow` | plain request, full pipeline, ends in "default allow" | none on `bbolt`/`memory` once the mirror is seeded; 1 read on `redis` (read-through for cross-replica blocks) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | none |
-| `challenge` | issue a fresh PoW challenge per request | 1 synchronous **write** (CAS), plus coalesced background counter increments; under attack mode issuance is stateless (no write at issue, the single-spend write moves to redemption) |
+| `challenge` | issue a fresh PoW challenge per request | normally 1 synchronous **write** (CAS), plus coalesced background counter increments; under attack mode, or when that stateful write fails, issuance is stateless (no write at issue, the single-spend write moves to redemption) |
 
 ## Run it
 

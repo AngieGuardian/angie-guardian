@@ -437,20 +437,20 @@ func (a *AttackModeConfig) validate() error {
 		name string
 		v    float64
 	}{{"elevated_difficulty_raise", e.elevatedRaise()}, {"attack_difficulty_raise", e.attackRaise()}} {
-		if r.v < 0 || r.v > 2 {
+		if math.IsNaN(r.v) || math.IsInf(r.v, 0) || r.v < 0 || r.v > 2 {
 			return fmt.Errorf("attack_mode.effects.%s must be 0..2, got %v", r.name, r.v)
 		}
 		if math.Abs(r.v*4-math.Round(r.v*4)) > 1e-9 {
 			return fmt.Errorf("attack_mode.effects.%s must be a multiple of 0.25, got %v", r.name, r.v)
 		}
 	}
-	if c := e.cap(); c < 1 || c > 8 {
+	if c := e.cap(); math.IsNaN(c) || math.IsInf(c, 0) || c < 1 || c > 8 {
 		return fmt.Errorf("attack_mode.effects.difficulty_cap must be 1..8, got %v", c)
 	}
 	if e.ScoreboardFactor == 0 {
 		e.ScoreboardFactor = 1.0
 	}
-	if e.ScoreboardFactor <= 0 || e.ScoreboardFactor > 1 {
+	if math.IsNaN(e.ScoreboardFactor) || math.IsInf(e.ScoreboardFactor, 0) || e.ScoreboardFactor <= 0 || e.ScoreboardFactor > 1 {
 		return fmt.Errorf("attack_mode.effects.scoreboard_factor must be 0<f<=1, got %v", e.ScoreboardFactor)
 	}
 	if e.MaxInflight < 0 {

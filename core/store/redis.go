@@ -215,18 +215,57 @@ func globEscape(s string) string {
 }
 
 func (s *Redis) Scan(ctx context.Context, prefix string) ([]KV, error) {
+	out, _, err := s.ScanLimit(ctx, prefix, 0)
+	return out, err
+}
+
+// ScanLimit bounds the returned live set for background consumers whose own
+// state is capped. Redis SCAN order is unspecified, so complete explicitly
+// tells the caller whether the result was truncated.
+func (s *Redis) ScanLimit(ctx context.Context, prefix string, limit int) ([]KV, bool, error) {
 	// SCAN walks the whole keyspace and filters server-side; fine for an
 	// occasional admin read, unfit for the hot path (see the interface doc).
-	var keys []string
+	// Fetch each SCAN batch before advancing. Building one 2*N-command
+	// pipeline for the entire keyspace can consume unbounded client and Redis
+	// memory during reconciliation or an admin listing.
+	const batchSize = 512
+	keys := make([]string, 0, batchSize)
+	var out []KV
+	now := time.Now()
 	iter := s.rdb.Scan(ctx, 0, globEscape(prefix)+"*", 512).Iterator()
 	for iter.Next(ctx) {
 		keys = append(keys, iter.Val())
+		if len(keys) == batchSize {
+			batch, err := s.scanValues(ctx, keys, now)
+			if err != nil {
+				return nil, false, err
+			}
+			out = append(out, batch...)
+			if limit > 0 && len(out) > limit {
+				out = out[:limit]
+				slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+				return out, false, nil
+			}
+			keys = keys[:0]
+		}
 	}
 	if err := iter.Err(); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if len(keys) > 0 {
+		batch, err := s.scanValues(ctx, keys, now)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch...)
 	}
 
-	// Fetch values + TTLs in one pipelined round trip.
+	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+	return out, true, nil
+}
+
+// scanValues fetches one bounded batch of values and TTLs.
+func (s *Redis) scanValues(ctx context.Context, keys []string, now time.Time) ([]KV, error) {
 	gets := make([]*redis.StringCmd, len(keys))
 	ttls := make([]*redis.DurationCmd, len(keys))
 	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
@@ -240,8 +279,7 @@ func (s *Redis) Scan(ctx context.Context, prefix string) ([]KV, error) {
 		return nil, err
 	}
 
-	now := time.Now()
-	var out []KV
+	out := make([]KV, 0, len(keys))
 	for i, k := range keys {
 		v, err := gets[i].Bytes()
 		if errors.Is(err, redis.Nil) {
@@ -256,7 +294,6 @@ func (s *Redis) Scan(ctx context.Context, prefix string) ([]KV, error) {
 		}
 		out = append(out, KV{Key: k, Value: v, ExpiresAt: exp})
 	}
-	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
 	return out, nil
 }
 

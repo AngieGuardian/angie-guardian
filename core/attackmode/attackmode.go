@@ -147,6 +147,7 @@ type Detector struct {
 	log        *slog.Logger
 	store      store.Store // for posture sharing; may be nil
 	instanceID string      // per-process id for this instance's posture-share key
+	voteLive   atomic.Bool // this process may currently have a shared vote key
 
 	c        counters
 	prev     counters // last-tick totals, for deltas (ticker-only, no lock)
@@ -155,6 +156,10 @@ type Detector struct {
 	ringFull bool
 
 	state atomic.Pointer[State]
+	// shareMu serializes publishing and clearing this instance's store vote.
+	// Pin/SetConfig can otherwise delete just before an already-started tick
+	// republishes the stale level.
+	shareMu sync.Mutex
 
 	// evalMu serializes the whole evaluate/publish path, which runs on both
 	// the ticker goroutine and the admin goroutine (Pin/Unpin). It guards
@@ -229,6 +234,9 @@ func (d *Detector) SetConfig(cfg Config) {
 	d.mu.Lock()
 	d.applyConfig(cfg)
 	d.mu.Unlock()
+	if !cfg.Enabled || !cfg.SharePosture {
+		d.clearSharedVote()
+	}
 }
 
 // OnTransition registers a callback fired on every level change (logging,
@@ -324,6 +332,10 @@ func (d *Detector) Pin(level Level, ttl time.Duration) {
 	}
 	d.pinned.Store(true)
 	d.recompute()
+	// Pins are deliberately local hard overrides. Remove any previously
+	// published automatic vote immediately, otherwise peers keep adopting the
+	// stale value until its window TTL expires (defeating Pin(Normal)).
+	d.clearSharedVote()
 }
 
 // Unpin returns to automatic detection.
@@ -354,6 +366,7 @@ func (d *Detector) Close() {
 		d.cancel()
 	}
 	d.wg.Wait()
+	d.clearSharedVote()
 }
 
 func (d *Detector) run(ctx context.Context) {
@@ -403,6 +416,8 @@ func (d *Detector) tick() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		peer = d.sharePosture(ctx, cfg, d.localLevel())
 		cancel()
+	} else {
+		d.clearSharedVote()
 	}
 	d.evaluate(cfg, sig, peer)
 	if fn := d.onTick.Load(); fn != nil {
@@ -523,14 +538,33 @@ func (d *Detector) evaluate(cfg *Config, sig Signals, peer Level) {
 	}
 	d.localLvl = local
 
-	// The published posture is the fleet max. Adopting a peer's higher level
-	// records its dwell timestamp too, so an adopted level does not decay on
-	// the very next tick.
-	target, treason := local, reason
-	if peer > target {
-		target, treason = peer, "peer"
-		if d.lastAbove[peer] == 0 {
-			d.lastAbove[peer] = now.UnixNano()
+	// The published posture is the fleet max, with its own decay state. Keep
+	// localLvl separate because only local detection is published as this
+	// replica's vote; an adopted level must never be written back. While a peer
+	// vote is present, refresh its dwell timestamp. After it disappears, decay
+	// from the currently published fleet level rather than jumping straight to
+	// localLvl (usually Normal on a quiet replica).
+	desired, treason := local, reason
+	if peer > desired {
+		desired, treason = peer, "peer"
+	}
+	if peer > Normal {
+		d.lastAbove[peer] = now.UnixNano()
+	}
+	target := desired
+	currentState := d.state.Load()
+	published := currentState.Level
+	if desired < published && currentState.Reason != "forced" {
+		decayed, _ := d.decayFrom(cfg, published, now)
+		target = max(decayed, desired)
+		if target < published && target > Normal {
+			// A downward transition starts a fresh dwell at the intermediate
+			// posture; otherwise a peer-adopted Attack can fall through Elevated
+			// to Normal on consecutive ticks because Elevated was never observed.
+			d.lastAbove[target] = now.UnixNano()
+		}
+		if target == published {
+			treason = ""
 		}
 	}
 	d.publish(cfg, target, treason, now)
@@ -708,14 +742,27 @@ func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) L
 	if d.store == nil || !cfg.SharePosture {
 		return Normal
 	}
+	d.shareMu.Lock()
+	defer d.shareMu.Unlock()
+	// Re-check live state after taking the serialization lock: a pin or reload
+	// may have raced the tick's earlier eligibility check.
+	cfg = d.cfg.Load()
+	if d.pinned.Load() || !cfg.Enabled || !cfg.SharePosture {
+		d.clearSharedVoteLocked(ctx)
+		return Normal
+	}
 	// Publish our own level (or clear our key when back to Normal) under a
 	// key nobody else writes. A short floor keeps a Normal instance's key from
 	// lingering as a stale "0" vote.
 	key := posturePrefix + d.instanceID
 	if local > Normal {
-		_ = d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window)
+		if err := d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window); err == nil {
+			d.voteLive.Store(true)
+		}
 	} else {
-		_ = d.store.Delete(ctx, key)
+		if err := d.store.Delete(ctx, key); err == nil {
+			d.voteLive.Store(false)
+		}
 	}
 	// Adopt the max over every OTHER instance's key.
 	kvs, err := d.store.Scan(ctx, posturePrefix)
@@ -732,4 +779,28 @@ func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) L
 		}
 	}
 	return peer
+}
+
+// clearSharedVote best-effort deletes this process's posture key. It is used
+// when sharing becomes inactive (pin, hot-disable, shutdown) so peers never
+// keep acting on a stale automatic vote. The atomic flag avoids a store call
+// every tick for instances that never published a non-Normal level.
+func (d *Detector) clearSharedVote() {
+	if d == nil || d.store == nil {
+		return
+	}
+	d.shareMu.Lock()
+	defer d.shareMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	d.clearSharedVoteLocked(ctx)
+	cancel()
+}
+
+func (d *Detector) clearSharedVoteLocked(ctx context.Context) {
+	if !d.voteLive.Load() {
+		return
+	}
+	if err := d.store.Delete(ctx, posturePrefix+d.instanceID); err == nil {
+		d.voteLive.Store(false)
+	}
 }

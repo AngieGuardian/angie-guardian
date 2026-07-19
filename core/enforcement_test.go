@@ -137,6 +137,35 @@ func TestMirrorEnforcesThroughStoreOutage(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeMirrorOverflowFallsBackToStore(t *testing.T) {
+	e, _ := enforcedEngine(t, `
+store: { backend: memory }
+enforcement:
+  mirror: { mode: authoritative, max_entries: 32, reconcile_interval: 1h }
+`)
+	ctx := t.Context()
+	var dropped string
+	for i := range 2048 {
+		ip := netip.AddrFrom4([4]byte{198, 18, byte(i >> 8), byte(i)}).String()
+		if err := e.BlockIP(ctx, ip, "capacity-test", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := e.Enforcer().Lookup(ip); !ok {
+			dropped = ip
+			break
+		}
+	}
+	if dropped == "" {
+		t.Fatal("test did not overflow a mirror shard")
+	}
+	if !e.Enforcer().ReadThrough() {
+		t.Fatal("capacity-incomplete authoritative mirror did not enable store fallback")
+	}
+	if d := e.Evaluate(ctx, req("x.test", dropped, "/", "Mozilla")); d.Action != ActionDeny {
+		t.Fatalf("persisted block dropped by mirror failed open: %s/%s", d.Action, d.Reason)
+	}
+}
+
 func TestScoreboardBlocksReachTheMirror(t *testing.T) {
 	// A threshold crossing (not just admin BlockIP) must write through.
 	ctx := context.Background()

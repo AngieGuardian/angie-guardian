@@ -94,9 +94,10 @@ Fail-open is the behaviour when Guardian is *down or erroring*, not the only
 answer to overload. When the daemon itself is saturated,
 [attack mode](/guide/attack-mode)'s optional load-shedding bound
 (`attack_mode.effects.max_inflight`) is the middle ground: clients holding a
-valid token still pass (a cheap stateless check), everyone else gets a fast
-`503` with `Retry-After`, and the backend sees only vouched traffic instead of
-the whole flood.
+valid token pass only after the store-free deny, WAF, honeypot and spoof checks
+clear and a complete authoritative mirror can prove there is no behavioural
+block. Everyone else gets a fast `503` with `Retry-After` (or the terminal
+deny), so overload never turns a token into a policy or shared-block bypass.
 
 ## Reporting a vulnerability
 

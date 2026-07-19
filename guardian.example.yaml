@@ -63,7 +63,7 @@ store:
 #     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
 #     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
 #   effects:
-#     max_inflight: 0                 # >0 sheds excess load (503) while token holders pass
+#     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
 
 # Block enforcement offload. The in-process mirror is always on (it makes the
 # per-request block check a memory lookup, no store read) and needs no config;
@@ -95,9 +95,10 @@ store:
 # External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
 # line, '#'/';' comments), like the FireHOL netsets or a local file you
 # maintain. URL feeds refresh in the background: a slow or down mirror never
-# blocks startup, and the last good list keeps serving. cache_dir persists
-# fetched feeds so a restart enforces yesterday's list immediately. Feeds are
-# defined once here; each domain opts in via `reputation.enabled` below.
+# blocks startup, and the last good list keeps serving (including across a hot
+# reload when name+URL are unchanged). cache_dir persists fetched feeds so a
+# restart enforces yesterday's list immediately. Feeds are defined once here;
+# each domain opts in via `reputation.enabled` below.
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds
 #   feeds:

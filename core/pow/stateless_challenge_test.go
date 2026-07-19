@@ -183,6 +183,17 @@ func TestStatelessSpendCASFailureStillMints(t *testing.T) {
 	if res.Token == "" || res.SoftError == nil {
 		t.Fatalf("expected a minted token with a SoftError, got %+v", res)
 	}
+	// The local fallback cache still enforces single-spend within this process,
+	// including attempts to mint a differently fingerprinted token by changing
+	// the User-Agent while keeping the challenge's bound IP.
+	_, err = m.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+		Host: "a.test", IP: "203.0.113.7", UserAgent: "different-UA",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	})
+	if !errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("store-down local replay err = %v, want ErrChallengeUnknown", err)
+	}
 }
 
 func TestStatefulStillRedeemsAlongsideStateless(t *testing.T) {

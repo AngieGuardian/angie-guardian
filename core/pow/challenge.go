@@ -40,6 +40,7 @@ type Manager struct {
 	hmacSecrets [][]byte     // per-key derived secrets; hmacSecrets[i] pairs keys[i]
 	store       store.Store
 	cache       *tokenCache
+	spent       *tokenCache         // local replay guard when the shared spent CAS is down
 	counters    *store.CounterCache // escalation counts, off the write hot path
 
 	reloadMu           sync.Mutex
@@ -108,6 +109,7 @@ func newManagerWithRetiredKeys(current ed25519.PrivateKey, previous []RetiredKey
 		hmacSecrets:  secrets,
 		store:        st,
 		cache:        newTokenCache(),
+		spent:        newTokenCache(),
 		counters:     store.NewCounterCache(st),
 		NoJSMinDelay: 5 * time.Second,
 		now:          time.Now,

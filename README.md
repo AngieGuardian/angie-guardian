@@ -167,7 +167,7 @@ write-heavy path):
 | `allow` | plain request, full pipeline, ends in "default allow" | none on `bbolt`/`memory` once the block mirror is seeded; 1 read on `redis` (read-through, so another replica's blocks apply immediately) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | no store I/O |
-| `challenge` | issue a fresh PoW challenge per request | 1 **write** (challenge CAS); under [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode) issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
+| `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
 same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the

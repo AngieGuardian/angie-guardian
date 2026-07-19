@@ -79,10 +79,16 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 	if err != nil {
 		return nil, err
 	}
-	// Issue with the current signing key's secret (index 0).
+	// A quiet file-backed replica may not have observed a peer's rotation yet.
+	// Perform the rate-limited key refresh before issuing, while keeping the
+	// attack hot path free of a per-challenge file lock/read. A challenge minted
+	// during the short refresh interval is still accepted through the archived
+	// key; the refresh prevents indefinite issuance with a stale key.
+	_, _ = m.refreshKeys(false)
 	secret := m.issuingSecret()
-	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(statelessMAC(secret, payload))
-	return &Challenge{ID: id, Challenge: statelessSolve(secret, payload), Difficulty: difficulty}, nil
+	mac, solve := statelessMAC(secret, payload), statelessSolve(secret, payload)
+	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(mac)
+	return &Challenge{ID: id, Challenge: solve, Difficulty: difficulty}, nil
 }
 
 // issuingSecret returns the current signing key's HMAC secret (a snapshot; the
@@ -214,18 +220,26 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	if remaining <= 0 {
 		remaining = time.Minute
 	}
-	spentKey := statelessSpentKey(challenge)
+	spentDigest := sha256.Sum256([]byte(challenge))
+	if m.spent.get(spentDigest, now) {
+		return nil, ErrChallengeUnknown
+	}
+	spentKey := "spent1:" + hex.EncodeToString(spentDigest[:16])
 	swapped, err := m.store.CompareAndSwap(ctx, spentKey, nil, []byte{1}, remaining)
 	if err != nil {
-		// Store is down: mint anyway (fail open). A replay only re-mints an
-		// equivalent token for the same {host, ip, ua} fingerprint, granting
-		// no extra access, and is strictly better than trapping a human on the
-		// interstitial when the store dies. The caller counts this.
+		// Store is down: claim the challenge in a bounded local replay cache,
+		// then mint fail-open. This preserves availability without letting the
+		// same process repeatedly mint from one solved challenge; the shared CAS
+		// remains the cross-replica guarantee and the caller exposes its failure.
+		if !m.spent.claim(spentDigest, now.Add(remaining), now) {
+			return nil, ErrChallengeUnknown
+		}
 		return m.finishStateless(&p, req, tokenTTL, errSpentCASFailed)
 	}
 	if !swapped {
 		return nil, ErrChallengeUnknown // already spent (replay)
 	}
+	_ = m.spent.claim(spentDigest, now.Add(remaining), now)
 	return m.finishStateless(&p, req, tokenTTL, nil)
 }
 
@@ -240,9 +254,4 @@ func (m *Manager) finishStateless(p *statelessPayload, req *RedeemRequest, token
 		return nil, err
 	}
 	return &RedeemResult{Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr}, nil
-}
-
-func statelessSpentKey(challenge string) string {
-	sum := sha256.Sum256([]byte(challenge))
-	return "spent1:" + hex.EncodeToString(sum[:16])
 }

@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,6 +75,57 @@ func TestEngineReload(t *testing.T) {
 	}
 	if _, blocked, err := e.BlockStatus(ctx, "192.0.2.55"); err != nil || !blocked {
 		t.Errorf("block did not survive reload: blocked=%v err=%v", blocked, err)
+	}
+}
+
+func TestEngineReloadPreservesLoadedURLReputationFeed(t *testing.T) {
+	var available atomic.Bool
+	available.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !available.Load() {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("203.0.113.0/24\n"))
+	}))
+	defer srv.Close()
+
+	cfg := loadTestConfig(t, fmt.Sprintf(`
+store: { backend: memory }
+reputation:
+  feeds:
+    - { name: remote-deny, url: %q, refresh: 1m, action: deny }
+defaults:
+  reputation: { enabled: true }
+`, srv.URL))
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	e, err := NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+
+	r := req("x.test", "203.0.113.7", "/", "Mozilla")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if d := e.Evaluate(t.Context(), r); d.Action == ActionDeny && d.Reason == "reputation:remote-deny" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial URL reputation feed never loaded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A reload must not replace the loaded deny set with an empty provider just
+	// because URL refresh is asynchronous and the source is currently down.
+	available.Store(false)
+	if err := e.Reload(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Evaluate(t.Context(), r); d.Action != ActionDeny || d.Reason != "reputation:remote-deny" {
+		t.Fatalf("reload dropped last good URL feed: got %s/%s", d.Action, d.Reason)
 	}
 }
 

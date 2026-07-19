@@ -7,8 +7,10 @@ package pow
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,5 +141,60 @@ func TestStatelessRedeemAcrossFileRotation(t *testing.T) {
 	}
 	if res.Token == "" {
 		t.Fatal("no token minted across file rotation")
+	}
+}
+
+func TestPeerRefreshesCurrentKeyBeforeStatelessIssue(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+
+	rotator, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_900_000_000, 0).UTC()
+	rotator.now = func() time.Time { return base.Add(900 * time.Millisecond) }
+	if err := rotator.Rotate(keyPath, prevDir); err != nil {
+		t.Fatal(err)
+	}
+
+	issueTime := base.Add(1050 * time.Millisecond)
+	peer.lastRefresh = base
+	peer.now = func() time.Time { return issueTime }
+	rotator.now = func() time.Time { return issueTime }
+	ch, err := peer.IssueStateless("a.test", "203.0.113.10", "/", 8, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest := strings.TrimPrefix(ch.ID, statelessPrefix)
+	payloadB64, macB64, ok := strings.Cut(rest, ".")
+	if !ok {
+		t.Fatalf("malformed stateless id %q", ch.ID)
+	}
+	payload, err := b64.DecodeString(payloadB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac, err := b64.DecodeString(macB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hmac.Equal(mac, statelessMAC(rotator.issuingSecret(), payload)) {
+		t.Fatal("quiet peer issued with the stale key instead of refreshing the current key")
+	}
+	res, err := rotator.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+		Host: "a.test", IP: "203.0.113.10", UserAgent: "Mozilla/5.0",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	})
+	if err != nil || res.Token == "" {
+		t.Fatalf("peer issued stateless challenge with an already-retired key: token=%t err=%v", res != nil && res.Token != "", err)
 	}
 }

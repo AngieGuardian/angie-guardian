@@ -140,6 +140,36 @@ func (p *Provider) Start() {
 	go p.pollLoop()
 }
 
+// SeedURLFeedsFrom carries forward the last good immutable state for URL feeds
+// whose name and source are unchanged across an engine config reload. URL
+// refresh is intentionally asynchronous so a slow remote never blocks reload;
+// without this handoff the new provider would temporarily (or, while the
+// remote is down, indefinitely) forget a deny feed that the old snapshot had
+// already loaded. Call before Start, while the new provider is not live yet.
+func (p *Provider) SeedURLFeedsFrom(old *Provider) {
+	if p == nil || old == nil {
+		return
+	}
+	type feedKey struct{ name, url string }
+	loaded := make(map[feedKey]*feedState, len(old.feeds))
+	for _, f := range old.feeds {
+		if f.cfg.URL == "" {
+			continue
+		}
+		if st := f.state.Load(); st != nil {
+			loaded[feedKey{f.cfg.Name, f.cfg.URL}] = st
+		}
+	}
+	for _, f := range p.feeds {
+		if f.cfg.URL == "" || f.state.Load() != nil {
+			continue
+		}
+		if st := loaded[feedKey{f.cfg.Name, f.cfg.URL}]; st != nil {
+			f.state.Store(st)
+		}
+	}
+}
+
 // Close stops the background work (cancelling any in-flight feed fetch) and
 // releases the databases.
 func (p *Provider) Close() {

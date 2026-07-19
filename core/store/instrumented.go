@@ -101,4 +101,19 @@ func (s *Instrumented) Scan(ctx context.Context, prefix string) ([]KV, error) {
 	return kvs, err
 }
 
+func (s *Instrumented) ScanLimit(ctx context.Context, prefix string, limit int) ([]KV, bool, error) {
+	start := time.Now()
+	if inner, ok := s.inner.(LimitedScanner); ok {
+		kvs, complete, err := inner.ScanLimit(ctx, prefix, limit)
+		s.observe("scan", start, err)
+		return kvs, complete, err
+	}
+	kvs, err := s.inner.Scan(ctx, prefix)
+	s.observe("scan", start, err)
+	if err != nil || limit <= 0 || len(kvs) <= limit {
+		return kvs, true, err
+	}
+	return kvs[:limit], false, nil
+}
+
 func (s *Instrumented) Close() error { return s.inner.Close() }

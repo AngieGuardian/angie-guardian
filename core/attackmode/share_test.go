@@ -82,6 +82,58 @@ func TestPinNormalDefeatsPeerAdoption(t *testing.T) {
 	}
 }
 
+// TestPinClearsOwnSharedVote covers the source-replica side of the kill
+// switch. Once this instance has published Attack, pinning it must delete that
+// vote immediately; otherwise quiet peers keep adopting the stale Attack value
+// until its window TTL expires.
+func TestPinClearsOwnSharedVote(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	// First tick detects Attack; the next publishes the already-detected local
+	// level under this instance's key.
+	issueAndTick(d, c, 6000, 0)
+	issueAndTick(d, c, 6000, 0)
+	key := posturePrefix + d.instanceID
+	if _, ok, err := st.Get(t.Context(), key); err != nil || !ok {
+		t.Fatalf("setup: shared Attack vote missing: ok=%v err=%v", ok, err)
+	}
+
+	d.Pin(Normal, 0)
+	if _, ok, err := st.Get(t.Context(), key); err != nil || ok {
+		t.Fatalf("Pin(Normal) left own shared vote live: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDisablingSharingClearsOwnVote(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+	issueAndTick(d, c, 6000, 0)
+	issueAndTick(d, c, 6000, 0)
+	key := posturePrefix + d.instanceID
+	if _, ok, _ := st.Get(t.Context(), key); !ok {
+		t.Fatal("setup: shared vote missing")
+	}
+
+	cfg.SharePosture = false
+	d.SetConfig(cfg)
+	if _, ok, err := st.Get(t.Context(), key); err != nil || ok {
+		t.Fatalf("disabling share_posture left own vote live: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestAdoptedPeerLevelDoesNotDecayImmediately: a level adopted from a peer must
 // honor min_dwell, not drop on the very next tick.
 func TestAdoptedPeerLevelDoesNotDecayImmediately(t *testing.T) {
@@ -108,6 +160,48 @@ func TestAdoptedPeerLevelDoesNotDecayImmediately(t *testing.T) {
 	d.TickForTest()
 	if d.State().Level != Attack {
 		t.Fatalf("adopted level decayed immediately: level = %s", d.State().Level)
+	}
+}
+
+func TestAdoptedPeerLevelDwellsAndDecaysOneStepAfterVoteDisappears(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	peerKey := posturePrefix + "peer-abc"
+	if err := st.Set(t.Context(), peerKey, []byte("2"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Attack {
+		t.Fatalf("setup: level = %s", d.State().Level)
+	}
+	if err := st.Delete(t.Context(), peerKey); err != nil {
+		t.Fatal(err)
+	}
+
+	// The adopted level must not vanish as soon as the peer key does.
+	for elapsed := bucketWidth; elapsed < cfg.MinDwell; elapsed += bucketWidth {
+		c.add(bucketWidth)
+		d.TickForTest()
+		if d.State().Level != Attack {
+			t.Fatalf("adopted Attack decayed before min_dwell at %v: %s", elapsed, d.State().Level)
+		}
+	}
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Elevated {
+		t.Fatalf("adopted Attack did not decay exactly one step: %s", d.State().Level)
+	}
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Elevated {
+		t.Fatalf("intermediate Elevated posture skipped its own dwell: %s", d.State().Level)
 	}
 }
 

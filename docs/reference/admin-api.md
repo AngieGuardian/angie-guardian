@@ -145,12 +145,15 @@ denied".
 ### `GET /admin/offload`
 
 The state of the [block enforcement offload](/guide/block-offload): the
-in-process mirror (mode, entry count, seed status, last reconcile, drop count)
-and every external sink's health. Returns `{"enabled": false}` when the
-offload manager is not wired.
+in-process mirror (mode, entry count, seed/completeness status, last reconcile,
+drop count) and every external sink's health. `complete: false` means a mirror
+miss must read through to the store, even if its configured mode is
+`authoritative`, because startup seeding is unfinished or capacity omitted an
+active block. Returns `{"enabled": false}` when the offload manager is not
+wired.
 
 ```json
-{"mirror":{"entries":12,"mode":"authoritative","seeded":true,
+{"mirror":{"entries":12,"mode":"authoritative","seeded":true,"complete":true,
            "last_reconcile":"2026-07-19T10:00:00Z","reconcile_errors":0,"dropped":0},
  "sinks":[{"name":"nftables","mode":"managed","healthy":true,
            "elements":12,"last_error":""}]}
@@ -187,8 +190,10 @@ signal rates. Returns `{"enabled": false}` when attack mode is not active.
 
 Pin or unpin the posture. Body `{"level": "normal"|"elevated"|"attack"|"auto", "ttl": "10m"}`.
 `auto` returns to automatic detection; any other level pins (a pin wins in
-both directions, so pinning `normal` is a kill switch). `ttl` is optional
-(no expiry when omitted). Returns `409` when attack mode is not active.
+both directions, so pinning `normal` is a local kill switch). A pin ignores
+peer posture and clears this instance's shared automatic vote; apply it to
+every replica for a fleet-wide override. `ttl` is optional (no expiry when
+omitted). Returns `409` when attack mode is not active.
 
 ```json
 {"pinned":true,"level":"attack"}
@@ -258,4 +263,6 @@ The built-in reporting page (only when `admin.dashboard: true`). On startup
 guardiand logs a ready-to-open login URL carrying the token in the URL
 fragment; opening the bare URL shows a paste-the-token gate instead. Every
 data call the page makes goes to the token-guarded `/admin/*` endpoints. See
-[the reporting dashboard](/guide/admin#the-reporting-dashboard).
+[the reporting dashboard](/guide/admin#the-reporting-dashboard). Headline and
+recent-decision data refresh every five seconds; the active-block list is
+cached for one minute and refreshed immediately after a block/unblock action.

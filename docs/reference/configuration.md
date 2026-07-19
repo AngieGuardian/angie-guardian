@@ -81,7 +81,7 @@ Fleet-wide attack posture. Off when absent. See the
 | `attack_mode.enabled` | bool | `false` | Enable the posture state machine. |
 | `attack_mode.window` | duration | `30s` | Sliding measurement window (5s buckets). Range 10s..10m. |
 | `attack_mode.min_dwell` | duration | `60s` | Minimum time at a level before it decays one step. Must be >= window. |
-| `attack_mode.share_posture` | bool | `true` | Publish/adopt the level through the shared store so replicas move together. |
+| `attack_mode.share_posture` | bool | `true` | Publish an expiring per-replica vote and adopt the maximum live level through the shared store. Manual pins are local, ignore peers, and clear that replica's automatic vote. |
 | `attack_mode.signals.challenge_rate` | rate | `200/s` | Issuance rate entering elevated. |
 | `attack_mode.signals.attack_challenge_rate` | rate | `1000/s` | Issuance rate entering attack (with the solve-ratio qualifier). Must be >= challenge_rate. |
 | `attack_mode.signals.min_solve_ratio` | float | `0.2` | Attack entry requires solved/issued below this (separates a flood from a flash crowd). |
@@ -94,7 +94,7 @@ Fleet-wide attack posture. Off when absent. See the
 | `attack_mode.effects.force_always` | bool | `true` | At attack, `pow.mode: suspicion` behaves as `always`. |
 | `attack_mode.effects.stateless_issuance` | bool | `true` | At attack, issue store-free HMAC challenges. |
 | `attack_mode.effects.scoreboard_factor` | float | `1.0` | At attack, multiply behavioural thresholds (0 < f <= 1). |
-| `attack_mode.effects.max_inflight` | int | `0` | Bound on concurrent auth evaluations for load-shedding; 0 = off. |
+| `attack_mode.effects.max_inflight` | int | `0` | Bound on concurrent auth evaluations for load-shedding; 0 = off. Store-free terminal policy still applies. A clean token fast-passes only when the block mirror is seeded, complete, and authoritative; otherwise the request is shed rather than performing a store read. |
 
 ## geoip
 
@@ -126,7 +126,7 @@ Each feed entry:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | **required** | Label in decision reasons (`reputation:<name>`), metrics, and the cache file name. 1..64 chars of `[a-zA-Z0-9._-]`, unique. |
-| `url` | string | | Fetched in the background every `refresh` interval. A slow or down remote never blocks startup; a failed refresh keeps the last good list and retries within 5 minutes. Exactly one of `url`/`file`. |
+| `url` | string | | Fetched in the background every `refresh` interval. A slow or down remote never blocks startup; a failed refresh keeps the last good list and retries within 5 minutes. Hot reload preserves the in-memory last-good state when the feed name and URL are unchanged. Exactly one of `url`/`file`. |
 | `file` | string | | Local list. Must exist at startup (fail-fast, like the WAF rules files); hot-reloaded on change. |
 | `refresh` | Duration | `12h` | URL feeds only. Minimum `1m`. |
 | `action` | `deny` \| `challenge` | `deny` | `deny` rejects matching IPs outright; `challenge` makes them solve PoW first, one full step (+4 bits = 16x) above base, like a WAF signature hit. Challenge feeds are inert on a PoW-disabled domain. |
