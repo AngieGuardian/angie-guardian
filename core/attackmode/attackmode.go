@@ -497,10 +497,16 @@ func (d *Detector) evaluate(cfg *Config, sig Signals, peer Level) {
 
 	elevatedHit, elevatedReason := d.elevatedSignal(cfg, sig)
 	attackHit, attackReason := d.attackSignal(cfg, sig)
-	if elevatedHit {
+	// lastAbove tracks the last time any entry signal for a level was at or
+	// above HALF its threshold, which is the documented exit condition:
+	// a level decays only after every signal has stayed below half for
+	// min_dwell. Tracking the half-crossing (not the full entry threshold) is
+	// what makes sustained load between 50% and 100% hold the level instead of
+	// decaying.
+	if elevatedHit || d.elevatedHalf(cfg, sig) {
 		d.lastAbove[Elevated] = now.UnixNano()
 	}
-	if attackHit {
+	if attackHit || d.attackHalf(cfg, sig) {
 		d.lastAbove[Attack] = now.UnixNano()
 	}
 
@@ -568,8 +574,33 @@ func (d *Detector) attackSignal(cfg *Config, sig Signals) (bool, string) {
 	return false, ""
 }
 
-// decayFrom lowers a level one step when it has dwelled long enough below
-// every entry signal for MinDwell; otherwise it holds. Caller holds evalMu.
+// elevatedHalf reports whether any elevated entry signal is at or above HALF
+// its threshold. The exit hysteresis holds the level until every signal has
+// stayed strictly below half for min_dwell, so this is the "not yet safe to
+// decay" test (the solve-ratio qualifier is intentionally NOT halved: it is a
+// direction flag, not a magnitude).
+func (d *Detector) elevatedHalf(cfg *Config, sig Signals) bool {
+	return (cfg.ChallengeRate > 0 && sig.ChallengeRate >= cfg.ChallengeRate/2) ||
+		(cfg.RequestRate > 0 && sig.RequestRate >= cfg.RequestRate/2) ||
+		(cfg.StoreErrorRatio > 0 && sig.StoreErrorRatio >= cfg.StoreErrorRatio/2) ||
+		(cfg.StoreSlowRatio > 0 && sig.StoreSlowRatio >= cfg.StoreSlowRatio/2)
+}
+
+// attackHalf reports whether any attack entry signal is at or above HALF its
+// threshold. The issuance rate keeps its solve-ratio qualifier (a low ratio is
+// what makes issuance an attack rather than a crowd), so a fully-solved flood
+// does not hold the attack level.
+func (d *Detector) attackHalf(cfg *Config, sig Signals) bool {
+	return (cfg.AttackChallengeRate > 0 && sig.ChallengeRate >= cfg.AttackChallengeRate/2 && sig.SolveRatio < cfg.MinSolveRatio) ||
+		(cfg.StoreErrorRatio > 0 && sig.StoreErrorRatio >= 3*cfg.StoreErrorRatio/2)
+}
+
+// decayFrom lowers a level one step only after every entry signal has stayed
+// below HALF its threshold for MinDwell; otherwise it holds. lastAbove[cur] is
+// refreshed each tick a signal is at or above half (see evaluate), so this
+// time check implements the documented half-threshold exit hysteresis: load
+// sustained between 50% and 100% keeps refreshing lastAbove and holds the
+// level. Caller holds evalMu.
 func (d *Detector) decayFrom(cfg *Config, cur Level, now time.Time) (Level, string) {
 	if cur == Normal {
 		return Normal, ""

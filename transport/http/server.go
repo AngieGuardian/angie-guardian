@@ -129,9 +129,16 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			default:
+				// Shed. This is an auth subrequest, and Angie's auth_request
+				// module only forwards 2xx/401/403 from it; any other status
+				// (a bare 503) becomes a 500 for the main request, which the
+				// fail-open error_page then routes to the backend, defeating
+				// the shed. So return 403 with a distinguishing action header:
+				// the Angie glue maps action=shed to a real 503 + Retry-After
+				// (see deploy/angie-guardian.conf @guardian_denied).
 				s.metrics.Shed("shed")
-				w.Header().Set("Retry-After", "2")
-				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Header().Set("X-Guardian-Action", "shed")
+				w.WriteHeader(http.StatusForbidden)
 				return
 			}
 		}

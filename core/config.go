@@ -320,16 +320,33 @@ type AttackSignalsConfig struct {
 
 // AttackEffectsConfig are the independently-toggleable effects. Difficulty
 // raises are on the historical 1..8 quarter-step scale (each 0.25 = 1 bit).
+// The raises and the cap are pointers so an explicit 0 (raise nothing) is
+// distinguishable from an omitted field (use the default); the accessors below
+// resolve them.
 type AttackEffectsConfig struct {
-	ElevatedDifficultyRaise float64 `yaml:"elevated_difficulty_raise"`
-	AttackDifficultyRaise   float64 `yaml:"attack_difficulty_raise"`
-	DifficultyCap           float64 `yaml:"difficulty_cap"` // ceiling for the shifted window
-	ForceAlways             *bool   `yaml:"force_always"`   // attack: suspicion behaves as always
-	StatelessIssuance       *bool   `yaml:"stateless_issuance"`
-	ScoreboardFactor        float64 `yaml:"scoreboard_factor"` // attack: multiply thresholds (0<f<=1)
+	ElevatedDifficultyRaise *float64 `yaml:"elevated_difficulty_raise"`
+	AttackDifficultyRaise   *float64 `yaml:"attack_difficulty_raise"`
+	DifficultyCap           *float64 `yaml:"difficulty_cap"` // ceiling for the shifted window
+	ForceAlways             *bool    `yaml:"force_always"`   // attack: suspicion behaves as always
+	StatelessIssuance       *bool    `yaml:"stateless_issuance"`
+	ScoreboardFactor        float64  `yaml:"scoreboard_factor"` // attack: multiply thresholds (0<f<=1)
 	// MaxInflight bounds concurrent Evaluate calls (Part C load-shedding);
 	// over the bound, token holders still pass and others get 503. 0 = off.
 	MaxInflight int `yaml:"max_inflight"`
+}
+
+// elevatedRaise/attackRaise/cap resolve the *float64 fields to their value,
+// applying the default only when the operator omitted the field entirely. An
+// explicit 0 raise is honoured (raise nothing at that level).
+func (e *AttackEffectsConfig) elevatedRaise() float64 { return floatOr(e.ElevatedDifficultyRaise, 0.5) }
+func (e *AttackEffectsConfig) attackRaise() float64   { return floatOr(e.AttackDifficultyRaise, 1.0) }
+func (e *AttackEffectsConfig) cap() float64           { return floatOr(e.DifficultyCap, 7.0) }
+
+func floatOr(p *float64, def float64) float64 {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // ExtraBits returns the fleet difficulty raise in leading-zero bits for the
@@ -337,16 +354,16 @@ type AttackEffectsConfig struct {
 func (a *AttackModeConfig) ExtraBits(level int) int {
 	switch level {
 	case 1:
-		return difficultyBits(a.Effects.ElevatedDifficultyRaise)
+		return difficultyBits(a.Effects.elevatedRaise())
 	case 2:
-		return difficultyBits(a.Effects.AttackDifficultyRaise)
+		return difficultyBits(a.Effects.attackRaise())
 	default:
 		return 0
 	}
 }
 
 // CapBits is the ceiling for the shifted difficulty window, in bits.
-func (a *AttackModeConfig) CapBits() int { return difficultyBits(a.Effects.DifficultyCap) }
+func (a *AttackModeConfig) CapBits() int { return difficultyBits(a.Effects.cap()) }
 
 // SharePostureEnabled resolves the *bool default (true).
 func (a *AttackModeConfig) SharePostureEnabled() bool {
@@ -414,19 +431,12 @@ func (a *AttackModeConfig) validate() error {
 		}
 	}
 	e := &a.Effects
-	if (AttackEffectsConfig{}) == *e {
-		e.ElevatedDifficultyRaise = 0.5
-		e.AttackDifficultyRaise = 1.0
-		e.DifficultyCap = 7.0
-	}
-	// difficulty_cap has no "disabled" meaning; it must be a real ceiling.
-	if e.DifficultyCap == 0 {
-		e.DifficultyCap = 7.0
-	}
+	// Raises are pointers, so an explicit 0 (raise nothing) is honoured while
+	// an omitted field takes the default. Validate the RESOLVED values.
 	for _, r := range []struct {
 		name string
 		v    float64
-	}{{"elevated_difficulty_raise", e.ElevatedDifficultyRaise}, {"attack_difficulty_raise", e.AttackDifficultyRaise}} {
+	}{{"elevated_difficulty_raise", e.elevatedRaise()}, {"attack_difficulty_raise", e.attackRaise()}} {
 		if r.v < 0 || r.v > 2 {
 			return fmt.Errorf("attack_mode.effects.%s must be 0..2, got %v", r.name, r.v)
 		}
@@ -434,8 +444,8 @@ func (a *AttackModeConfig) validate() error {
 			return fmt.Errorf("attack_mode.effects.%s must be a multiple of 0.25, got %v", r.name, r.v)
 		}
 	}
-	if e.DifficultyCap < 1 || e.DifficultyCap > 8 {
-		return fmt.Errorf("attack_mode.effects.difficulty_cap must be 1..8, got %v", e.DifficultyCap)
+	if c := e.cap(); c < 1 || c > 8 {
+		return fmt.Errorf("attack_mode.effects.difficulty_cap must be 1..8, got %v", c)
 	}
 	if e.ScoreboardFactor == 0 {
 		e.ScoreboardFactor = 1.0
@@ -1024,7 +1034,7 @@ func (c *Config) validateAttackDifficultyCap() error {
 	check := func(label string, dc *DomainConfig) error {
 		if dc.PoW.Enabled && dc.PoW.BaseBits() > capBits {
 			return fmt.Errorf("%s: pow.base_difficulty (%v = %d bits) exceeds attack_mode.effects.difficulty_cap (%v = %d bits); raise the cap so attack mode can never issue below the domain base",
-				label, dc.PoW.BaseDifficulty, dc.PoW.BaseBits(), c.AttackMode.Effects.DifficultyCap, capBits)
+				label, dc.PoW.BaseDifficulty, dc.PoW.BaseBits(), c.AttackMode.Effects.cap(), capBits)
 		}
 		return nil
 	}

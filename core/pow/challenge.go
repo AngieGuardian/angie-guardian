@@ -27,15 +27,20 @@ import (
 //
 // The signing key can be rotated at runtime: keys is guarded by mu, holding
 // the current signing key at index 0 followed by retired keys still accepted
-// for verification. hmacSecret stays pinned to the key the Manager started
-// with so challenges issued around a rotation remain redeemable.
+// for verification. Each key has a derived HMAC secret in hmacSecrets at the
+// same index: index 0 signs (issues) challenges, and stateless redemption
+// verifies against ALL of them, so an s1. challenge issued by a peer that
+// rotated to a different current key (its old key is retired here) still
+// redeems. Stateful challenges are unaffected: their challenge string is
+// stored, not recomputed.
 type Manager struct {
-	mu         sync.RWMutex
-	keys       []managerKey // keys[0] signs; all verify
-	hmacSecret []byte
-	store      store.Store
-	cache      *tokenCache
-	counters   *store.CounterCache // escalation counts, off the write hot path
+	mu          sync.RWMutex
+	keys        []managerKey // keys[0] signs; all verify
+	hmacSecret  []byte       // == hmacSecrets[0]; the issuing secret
+	hmacSecrets [][]byte     // per-key derived secrets; hmacSecrets[i] pairs keys[i]
+	store       store.Store
+	cache       *tokenCache
+	counters    *store.CounterCache // escalation counts, off the write hot path
 
 	reloadMu           sync.Mutex
 	keyPath            string
@@ -91,24 +96,34 @@ func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKe
 }
 
 func newManagerWithRetiredKeys(current ed25519.PrivateKey, previous []RetiredKey, st store.Store) *Manager {
-	// The HMAC secret for challenge derivation is derived from the signing
-	// key's seed, so one persistent secret file serves both purposes and all
-	// instances sharing the key derive the same challenges.
-	sum := sha256.Sum256(append([]byte("guardian-hmac-v1\x00"), current.Seed()...))
 	keys := make([]managerKey, 1, 1+len(previous))
 	keys[0] = managerKey{private: current}
 	for _, key := range previous {
 		keys = append(keys, managerKey{private: key.Key, retiredAt: key.RetiredAt})
 	}
+	secrets := deriveHMACSecrets(keys)
 	return &Manager{
 		keys:         keys,
-		hmacSecret:   sum[:],
+		hmacSecret:   secrets[0],
+		hmacSecrets:  secrets,
 		store:        st,
 		cache:        newTokenCache(),
 		counters:     store.NewCounterCache(st),
 		NoJSMinDelay: 5 * time.Second,
 		now:          time.Now,
 	}
+}
+
+// deriveHMACSecrets computes one HMAC secret per key, from that key's seed, so
+// all instances sharing a key derive the same secret and can verify each
+// other's stateless challenges across a rotation.
+func deriveHMACSecrets(keys []managerKey) [][]byte {
+	secrets := make([][]byte, len(keys))
+	for i, k := range keys {
+		sum := sha256.Sum256(append([]byte("guardian-hmac-v1\x00"), k.private.Seed()...))
+		secrets[i] = sum[:]
+	}
+	return secrets
 }
 
 // SetKeys atomically replaces the key set (current at index 0). Called after
@@ -129,8 +144,11 @@ func (m *Manager) setRetiredKeys(current ed25519.PrivateKey, previous []RetiredK
 	for _, key := range previous {
 		keys = append(keys, managerKey{private: key.Key, retiredAt: key.RetiredAt})
 	}
+	secrets := deriveHMACSecrets(keys)
 	m.mu.Lock()
 	m.keys = keys
+	m.hmacSecret = secrets[0]
+	m.hmacSecrets = secrets
 	m.mu.Unlock()
 	m.cache.reset()
 }
@@ -247,8 +265,11 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 
 	// challenge = HMAC(secret, host || ip || time_bucket || id): opaque to the
 	// client, deterministic for us, rotates with the hourly bucket (plan §5.1).
+	// Stateful challenges store this string in the record, so cross-rotation
+	// redemption reads it back rather than recomputing; the issuing secret is
+	// sufficient here.
 	bucket := m.now().Unix() / 3600
-	mac := hmac.New(sha256.New, m.hmacSecret)
+	mac := hmac.New(sha256.New, m.issuingSecret())
 	fmt.Fprintf(mac, "%s\x00%s\x00%d\x00%s", strings.ToLower(host), ip, bucket, id)
 	challenge := hex.EncodeToString(mac.Sum(nil))
 

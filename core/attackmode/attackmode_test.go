@@ -169,6 +169,40 @@ func TestHysteresisAndDwell(t *testing.T) {
 	}
 }
 
+// TestHalfThresholdExitHolds is the review regression: load sustained between
+// 50% and 100% of the entry threshold must HOLD the level (not decay), per the
+// documented "stay below half for min_dwell" hysteresis.
+func TestHalfThresholdExitHolds(t *testing.T) {
+	d, c := newTestDetector(t, testConfig())
+	// challenge_rate threshold is 200/s. Trip elevated at 300/s.
+	for range 3 {
+		issueAndTick(d, c, 1500, 1500) // 300/s
+	}
+	if d.State().Level != Elevated {
+		t.Fatalf("setup: level = %s", d.State().Level)
+	}
+	// Settle at 75% of threshold: 150/s (750 issued/tick). Above half (100/s),
+	// below full (200/s). This must HOLD elevated indefinitely.
+	for range 20 {
+		issueAndTick(d, c, 750, 750) // 150/s, all solved
+		if d.State().Level != Elevated {
+			t.Fatalf("level decayed under sustained 75%% load: %s (must hold above half)", d.State().Level)
+		}
+	}
+	// Drop below half (25/s = 125 issued/tick) and it eventually decays.
+	decayed := false
+	for range 20 {
+		issueAndTick(d, c, 125, 125) // 25/s, below half
+		if d.State().Level == Normal {
+			decayed = true
+			break
+		}
+	}
+	if !decayed {
+		t.Fatal("level never decayed after signals dropped below half")
+	}
+}
+
 func TestOneStepDecay(t *testing.T) {
 	d, c := newTestDetector(t, testConfig())
 	for range 3 {

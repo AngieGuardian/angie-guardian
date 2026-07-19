@@ -505,11 +505,14 @@ domains:
 	h.inflight.Add(1)
 	defer h.inflight.Add(-1)
 
-	// A tokenless request is shed with 503 + Retry-After.
+	// A tokenless request is shed. On the auth subrequest that is a 403 with
+	// X-Guardian-Action: shed (Angie maps that to a real 503 + Retry-After;
+	// auth_request would turn a bare 503 into a 500 and route it to the
+	// backend, so the sidecar must speak a status auth_request forwards).
 	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", "203.0.113.50", "/page", ua), nil)
-	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
-		t.Fatalf("tokenless under saturation: status = %d retry-after = %q, want 503 + Retry-After",
-			resp.StatusCode, resp.Header.Get("Retry-After"))
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Action") != "shed" {
+		t.Fatalf("tokenless under saturation: status = %d action = %q, want 403 + action=shed",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Action"))
 	}
 
 	// A token holder still passes (cheap stateless check, no store).

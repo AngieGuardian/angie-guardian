@@ -43,6 +43,14 @@ attack_mode:
     challenge_rate: 15/s
     attack_challenge_rate: 30/s
     min_solve_ratio: 0.2
+  effects:
+    # This is a PARTIAL effects block, so omitted raises stay at their zero
+    # value (no default is applied). The attack-mode e2e test asserts a +4-bit
+    # raise, so set it explicitly.
+    attack_difficulty_raise: 1.0
+    # Low enough that a concurrent burst in the shed e2e test saturates it,
+    # high enough that the sequential tests never hit it.
+    max_inflight: 4
 
 defaults:
   waf:

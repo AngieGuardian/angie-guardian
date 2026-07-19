@@ -88,7 +88,7 @@ Fleet-wide attack posture. Off when absent. See the
 | `attack_mode.signals.request_rate` | rate | (omitted = disabled) | Global Evaluate rate entering elevated. Omit to disable (a rate cannot be `0/s`). In a partial signals block, an omitted signal stays disabled; a fully-omitted block gets all defaults. |
 | `attack_mode.signals.store_error_ratio` | float | `0.05` | Store op error fraction entering elevated (3x enters attack). |
 | `attack_mode.signals.store_slow_ratio` | float | `0.25` | Fraction of store ops slower than 25ms entering elevated. |
-| `attack_mode.effects.elevated_difficulty_raise` | float | `0.5` | Fleet difficulty raise at elevated, in 1..8 quarter steps (+2 bits). Range 0..2, multiples of 0.25. |
+| `attack_mode.effects.elevated_difficulty_raise` | float | `0.5` | Fleet difficulty raise at elevated, in 1..8 quarter steps (+2 bits). Range 0..2, multiples of 0.25. An explicit `0.0` raises nothing at elevated; omitting the field uses the default. |
 | `attack_mode.effects.attack_difficulty_raise` | float | `1.0` | Fleet difficulty raise at attack (+4 bits). |
 | `attack_mode.effects.difficulty_cap` | float | `7.0` | Ceiling for the shifted window (28 bits). Range 1..8. |
 | `attack_mode.effects.force_always` | bool | `true` | At attack, `pow.mode: suspicion` behaves as `always`. |

@@ -103,12 +103,11 @@ func TestAttackModeValidation(t *testing.T) {
 	}
 }
 
-// TestAttackModePartialBlockDisablesOmitted: in a PARTIAL signals/effects
-// block, fields the operator omits stay at zero (disabled / no raise) instead
-// of being silently rewritten to the standard defaults. Rates cannot be
-// written as "0/s" (the parser rejects a zero count), so "disabled" is
-// expressed by omission once the block is otherwise present.
-func TestAttackModePartialBlockDisablesOmitted(t *testing.T) {
+// TestAttackModePartialSignalsBlockDisablesOmitted: SIGNALS use omit-to-disable
+// within a partial block (a rate cannot be written "0/s"), while EFFECTS use
+// pointer presence (an omitted raise defaults, an explicit 0 disables). This
+// pins both semantics.
+func TestAttackModePartialSignalsBlockDisablesOmitted(t *testing.T) {
 	cfg := loadTestConfig(t, `
 store: { backend: memory }
 attack_mode:
@@ -118,7 +117,7 @@ attack_mode:
 `)
 	s := cfg.AttackMode.Signals
 	if s.ChallengeRate.Count != 0 {
-		t.Fatalf("omitted challenge_rate was defaulted to %+v (partial block should leave it disabled)", s.ChallengeRate)
+		t.Fatalf("omitted challenge_rate was defaulted to %+v (partial signals block should leave it disabled)", s.ChallengeRate)
 	}
 	if s.AttackChallengeRate.Count != 500 {
 		t.Fatalf("attack_challenge_rate = %+v, want 500/s", s.AttackChallengeRate)
@@ -126,13 +125,52 @@ attack_mode:
 	if s.StoreSlowRatio != 0 {
 		t.Fatalf("omitted store_slow_ratio should stay disabled (0), got %v", s.StoreSlowRatio)
 	}
-	if cfg.AttackMode.ExtraBits(1) != 0 {
-		t.Fatalf("omitted elevated raise was defaulted: extra bits = %d, want 0", cfg.AttackMode.ExtraBits(1))
+	// Effects: an OMITTED raise defaults (pointer nil), unlike signals.
+	if cfg.AttackMode.ExtraBits(1) != 2 {
+		t.Fatalf("omitted elevated raise = %d, want default 2 (effects omit -> default)", cfg.AttackMode.ExtraBits(1))
+	}
+	if cfg.AttackMode.ExtraBits(2) != 4 {
+		t.Fatalf("attack_difficulty_raise 1.0 = %d bits, want 4", cfg.AttackMode.ExtraBits(2))
 	}
 	// Whole-block-absent still gets full defaults.
 	full := loadTestConfig(t, "store: { backend: memory }\nattack_mode: { enabled: true }\n")
 	if full.AttackMode.Signals.ChallengeRate.Count != 200 || full.AttackMode.ExtraBits(1) != 2 {
 		t.Fatalf("absent block did not get defaults: %+v", full.AttackMode)
+	}
+}
+
+// TestAttackEffectsExplicitZeroRaise: an explicit 0 raise is honoured even as
+// the ONLY field in the effects block (the pointer distinguishes it from an
+// omitted field, so it is not defaulted to 0.5/1.0). This is the review
+// finding's direct-zero case.
+func TestAttackEffectsExplicitZeroRaise(t *testing.T) {
+	// attack_difficulty_raise: 0 alone must stay 0, not become 1.0.
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+attack_mode: { enabled: true, effects: { attack_difficulty_raise: 0.0 } }
+`)
+	if cfg.AttackMode.ExtraBits(2) != 0 {
+		t.Fatalf("explicit attack_difficulty_raise 0 was defaulted: attack bits = %d, want 0", cfg.AttackMode.ExtraBits(2))
+	}
+	// The omitted elevated raise in the same block still defaults, since it is
+	// a distinct field (pointer nil vs set).
+	if cfg.AttackMode.ExtraBits(1) != 2 {
+		t.Fatalf("omitted elevated raise = %d, want its default 2 bits", cfg.AttackMode.ExtraBits(1))
+	}
+	// difficulty_cap omitted -> default 7.0 (28 bits).
+	if cfg.AttackMode.CapBits() != 28 {
+		t.Fatalf("cap = %d, want default 28 bits", cfg.AttackMode.CapBits())
+	}
+	// elevated_difficulty_raise: 0 alone must stay 0.
+	cfg2 := loadTestConfig(t, `
+store: { backend: memory }
+attack_mode: { enabled: true, effects: { elevated_difficulty_raise: 0.0 } }
+`)
+	if cfg2.AttackMode.ExtraBits(1) != 0 {
+		t.Fatalf("explicit elevated_difficulty_raise 0 was defaulted: elevated bits = %d, want 0", cfg2.AttackMode.ExtraBits(1))
+	}
+	if cfg2.AttackMode.ExtraBits(2) != 4 {
+		t.Fatalf("omitted attack raise = %d, want its default 4 bits", cfg2.AttackMode.ExtraBits(2))
 	}
 }
 

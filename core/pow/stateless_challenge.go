@@ -79,14 +79,33 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 	if err != nil {
 		return nil, err
 	}
-	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(m.statelessMAC(payload))
-	return &Challenge{ID: id, Challenge: m.statelessSolve(payload), Difficulty: difficulty}, nil
+	// Issue with the current signing key's secret (index 0).
+	secret := m.issuingSecret()
+	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(statelessMAC(secret, payload))
+	return &Challenge{ID: id, Challenge: statelessSolve(secret, payload), Difficulty: difficulty}, nil
+}
+
+// issuingSecret returns the current signing key's HMAC secret (a snapshot; the
+// slice is never mutated in place, so the pointer is safe to read after the
+// lock is released).
+func (m *Manager) issuingSecret() []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hmacSecret
+}
+
+// verifySecrets snapshots every key's HMAC secret (current + retired), so a
+// stateless challenge signed by any live key in the fleet verifies.
+func (m *Manager) verifySecrets() [][]byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hmacSecrets
 }
 
 // statelessMAC authenticates the payload (16-byte truncated HMAC is ample for
 // a short-lived, client-bound token).
-func (m *Manager) statelessMAC(payload []byte) []byte {
-	mac := hmac.New(sha256.New, m.hmacSecret)
+func statelessMAC(secret, payload []byte) []byte {
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte("guardian-stateless-v1\x00"))
 	mac.Write(payload)
 	return mac.Sum(nil)[:16]
@@ -94,8 +113,8 @@ func (m *Manager) statelessMAC(payload []byte) []byte {
 
 // statelessSolve derives the string the client hashes against, from the same
 // secret, so it need not be transmitted inside the ID.
-func (m *Manager) statelessSolve(payload []byte) string {
-	mac := hmac.New(sha256.New, m.hmacSecret)
+func statelessSolve(secret, payload []byte) string {
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte("guardian-stateless-chal-v1\x00"))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
@@ -125,7 +144,17 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	if err != nil {
 		return nil, ErrChallengeUnknown
 	}
-	if !hmac.Equal(gotMAC, m.statelessMAC(payload)) {
+	// Try every live key's secret (current + retired), so a challenge issued
+	// by a peer that has since rotated to a different current key still
+	// verifies. The matching secret is reused for the solve-string check.
+	var secret []byte
+	for _, s := range m.verifySecrets() {
+		if hmac.Equal(gotMAC, statelessMAC(s, payload)) {
+			secret = s
+			break
+		}
+	}
+	if secret == nil {
 		return nil, ErrChallengeUnknown
 	}
 	var p statelessPayload
@@ -150,7 +179,7 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		return nil, ErrBindingMismatch
 	}
 
-	challenge := m.statelessSolve(payload)
+	challenge := statelessSolve(secret, payload)
 	if req.NoJS {
 		if p.NoJS != 1 {
 			return nil, ErrNoJSDisabled
