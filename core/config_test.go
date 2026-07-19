@@ -226,6 +226,7 @@ defaults:
 }
 
 func TestConfigValidation(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "")
 	for name, yaml := range map[string]string{
 		"bad backend":                            "store: { backend: etcd }",
 		"bbolt sans path":                        "store: { backend: bbolt }",
@@ -245,6 +246,10 @@ func TestConfigValidation(t *testing.T) {
 		"unknown nested field in domain overlay": "domains: { a.test: { pow: { enabeld: true } } }",
 		"duplicate host":                         "domains: { a.test: , \"A.test:443\": }",
 		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
+		"malformed trusted proxy listen":         "listen: malformed\ntrusted_proxy: true",
+		"nonnumeric trusted proxy port":          "listen: 0.0.0.0:http\ntrusted_proxy: true",
+		"malformed admin listen":                 "admin: { listen: malformed, token: secret }",
+		"nonloopback admin without token":        "admin: { listen: 0.0.0.0:8072 }",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
 		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
 		"oversized max_block_ttl":                "defaults: { waf: { ip_behaviour: { max_block_ttl: 8761h } } }",

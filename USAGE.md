@@ -375,6 +375,13 @@ whether the token cookie may carry the `Secure` flag; without it a plain-http
 site would loop on the challenge. If you wrote your own glue before these
 lines existed, copy them over.
 
+If Angie is behind a CDN, ingress, or load balancer, restore the real client
+address before including Guardian (`set_real_ip_from` for only the proxy's
+trusted networks plus the provider's `real_ip_header`, or PROXY protocol).
+Otherwise `$remote_addr` is the proxy for every visitor and one attacker can
+trigger a block or rate limit affecting all of them. Never trust forwarded-IP
+headers from arbitrary internet sources.
+
 To feed the anomaly trainer, switch protected vhosts to the JSON access log
 from `deploy/angie-json-log.conf`:
 
@@ -457,9 +464,10 @@ A=http://127.0.0.1:8072
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # {"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
 
-# List every currently active block, with reasons and expiry.
-curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks
-# {"count":2,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
+# List a bounded page of active blocks. Default 1000, maximum 10000;
+# complete=false means additional blocks exist.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
+# {"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
 #                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
 
 # What did the guardian just challenge or deny? Newest first, from an
@@ -524,16 +532,15 @@ curl -s $A/metrics | grep guardian_
 
 ### The reporting dashboard
 
-Set `admin.dashboard: true`, start guardiand, and open the login link it
-prints:
+Set `admin.dashboard: true`, start guardiand, and open the URL it prints:
 
 ```
-INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard#token=9f2c…
+INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard
 ```
 
-The token rides the URL **fragment**, which browsers never send over the
-network; the page moves it into the tab's sessionStorage and scrubs it from
-the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
+Paste the token from `admin.token_file` (or your configured secret) into the
+login gate. Configured and persistent bearer credentials are never embedded
+in process logs; the page keeps the token in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
@@ -638,8 +645,18 @@ store:
   addr: 127.0.0.1:6379
   # password: ""          # or the REDIS_PASSWORD env var
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # shared, e.g. NFS or synced
+previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
 ```
+
+Use a dedicated Redis/Valkey database or cluster per Guardian deployment and
+keep the plaintext connection on loopback/private networking or inside a
+verified TLS/mTLS tunnel. Guardian keys are not deployment-prefixed, so sharing
+one database across unrelated sites mixes their security state.
+
+The signing paths must share cross-host advisory locks and atomic renames.
+Asynchronous rsync/Syncthing copies do not share the rotation `flock`; when
+asynchronous distribution is unavoidable, designate exactly one rotator and
+finish distribution before another rotation.
 
 ## WASM module (optional)
 

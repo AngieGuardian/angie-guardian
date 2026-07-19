@@ -47,7 +47,9 @@ type Manager struct {
 	keyPath            string
 	prevDir            string
 	lastRefresh        time.Time
+	lastRefreshErr     error
 	lastFailureRefresh time.Time
+	lastFailureErr     error
 
 	// NoJSMinDelay is the minimum wall-clock wait before a meta-refresh
 	// (no-JS) redemption is accepted. Overridable for tests.
@@ -200,6 +202,8 @@ func (m *Manager) reloadKeysLocked() error {
 	}
 	m.setRetiredKeys(current, previous)
 	m.lastRefresh = m.now()
+	m.lastRefreshErr = nil
+	m.lastFailureErr = nil
 	return nil
 }
 
@@ -215,16 +219,21 @@ func (m *Manager) refreshKeys(afterVerificationFailure bool) (bool, error) {
 	now := m.now()
 	if afterVerificationFailure {
 		if !m.lastFailureRefresh.IsZero() && now.Sub(m.lastFailureRefresh) < keyRefreshInterval {
-			return false, nil
+			return false, m.lastFailureErr
 		}
 		m.lastFailureRefresh = now
 	} else {
 		if !m.lastRefresh.IsZero() && now.Sub(m.lastRefresh) < keyRefreshInterval {
-			return false, nil
+			return false, m.lastRefreshErr
 		}
 		m.lastRefresh = now // throttle repeated read failures too
 	}
 	if err := m.reloadKeysLocked(); err != nil {
+		if afterVerificationFailure {
+			m.lastFailureErr = err
+		} else {
+			m.lastRefreshErr = err
+		}
 		return false, err
 	}
 	return true, nil

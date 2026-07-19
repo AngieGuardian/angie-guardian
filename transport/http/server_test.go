@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,6 +92,23 @@ func (s unavailableCASStore) CompareAndSwap(context.Context, string, []byte, []b
 	return false, errors.New("store unavailable")
 }
 
+type blockingGetStore struct {
+	store.Store
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingGetStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return s.Store.Get(ctx, key)
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+}
+
 // client that does not follow redirects, so the no-JS 303 can be inspected.
 var noRedirect = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -115,6 +133,17 @@ func do(t *testing.T, method, url string, headers map[string]string, body []byte
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 	return resp
+}
+
+func TestRequestContextExposesEffectiveHostAsHeader(t *testing.T) {
+	h := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "http://internal/auth", nil)
+	req.Host = "internal"
+	req.Header.Set("X-Guardian-Host", "public.example")
+	ctx := h.requestContext(req)
+	if got := ctx.Header("Host"); len(got) != 1 || got[0] != "public.example" {
+		t.Fatalf("header:host = %v, want public.example", got)
+	}
 }
 
 func guardianHeaders(host, ip, uri, ua string) map[string]string {
@@ -602,6 +631,67 @@ domains:
 	resp = do(t, "GET", ts.URL+"/auth", dh, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denylisted token holder under saturation: status = %d, want 403 (shed must not bypass the denylist)", resp.StatusCode)
+	}
+}
+
+func TestHotEnabledMaxInflightCountsExistingEvaluation(t *testing.T) {
+	base := store.NewMemory()
+	st := &blockingGetStore{Store: base, entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(st.release) }) }
+	t.Cleanup(release)
+	ts, h := testServerAndHandlerWithStore(t, `
+store: { backend: memory }
+attack_mode: { enabled: true, effects: { max_inflight: 0 } }
+`, st)
+
+	firstDone := make(chan *http.Response, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth", nil)
+		for k, v := range guardianHeaders("site.test", "198.51.100.1", "/", "test") {
+			req.Header.Set(k, v)
+		}
+		resp, _ := noRedirect.Do(req)
+		firstDone <- resp
+	}()
+	<-st.entered
+
+	nextPath := filepath.Join(t.TempDir(), "next.yaml")
+	if err := os.WriteFile(nextPath, []byte(`
+store: { backend: memory }
+attack_mode: { enabled: true, effects: { max_inflight: 1 } }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := core.LoadConfig(nextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Reload(next); err != nil {
+		t.Fatal(err)
+	}
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth", nil)
+		for k, v := range guardianHeaders("site.test", "198.51.100.2", "/", "test") {
+			req.Header.Set(k, v)
+		}
+		resp, _ := noRedirect.Do(req)
+		respCh <- resp
+	}()
+	select {
+	case resp := <-respCh:
+		if resp == nil || resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Action") != "shed" {
+			t.Fatalf("request after hot-enable was not shed: %#v", resp)
+		}
+		resp.Body.Close()
+	case <-time.After(time.Second):
+		t.Fatal("request after hot-enable entered Evaluate instead of being shed")
+	}
+	release()
+	if resp := <-firstDone; resp != nil {
+		resp.Body.Close()
 	}
 }
 

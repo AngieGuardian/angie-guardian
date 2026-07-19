@@ -497,6 +497,12 @@ func (d *Detector) evaluate(cfg *Config, sig Signals, peer Level) {
 	d.evalMu.Lock()
 	defer d.evalMu.Unlock()
 	now := d.now()
+	// Shared posture values cross a trust boundary. Keep the state machine
+	// defensive even if a future store implementation bypasses sharePosture's
+	// parser: lastAbove is indexed only by the three valid enum values.
+	if peer < Normal || peer > Attack {
+		peer = Normal
+	}
 
 	// Manual pin overrides detection in both directions (kill switch).
 	if lvl, pinned := d.resolvePin(now); pinned {
@@ -756,9 +762,11 @@ func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) L
 	// lingering as a stale "0" vote.
 	key := posturePrefix + d.instanceID
 	if local > Normal {
-		if err := d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window); err == nil {
-			d.voteLive.Store(true)
-		}
+		// SET may have reached a remote store even when the client reports a
+		// timeout. Record that the vote may exist before attempting the write,
+		// so pin/disable/shutdown will always issue the compensating DELETE.
+		d.voteLive.Store(true)
+		_ = d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window)
 	} else {
 		if err := d.store.Delete(ctx, key); err == nil {
 			d.voteLive.Store(false)
@@ -774,7 +782,7 @@ func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) L
 		if kv.Key == key {
 			continue // our own vote is already reflected in local
 		}
-		if n, perr := strconv.Atoi(string(kv.Value)); perr == nil && Level(n) > peer {
+		if n, perr := strconv.Atoi(string(kv.Value)); perr == nil && n >= int(Elevated) && n <= int(Attack) && Level(n) > peer {
 			peer = Level(n)
 		}
 	}

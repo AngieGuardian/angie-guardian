@@ -349,3 +349,28 @@ func TestRedisScanLimitBoundsResultAndReportsCompleteness(t *testing.T) {
 		t.Fatalf("complete scan: len=%d complete=%v, want 600/true", len(kvs), complete)
 	}
 }
+
+func TestAllBackendsBoundLimitedScans(t *testing.T) {
+	ctx := context.Background()
+	for name, be := range backends(t) {
+		t.Run(name, func(t *testing.T) {
+			defer be.store.Close()
+			limited, ok := be.store.(LimitedScanner)
+			if !ok {
+				t.Fatal("backend does not implement LimitedScanner")
+			}
+			for i := range 3 {
+				if err := be.store.Set(ctx, fmt.Sprintf("bounded:%d", i), []byte("x"), time.Hour); err != nil {
+					t.Fatal(err)
+				}
+			}
+			kvs, complete, err := limited.ScanLimit(ctx, "bounded:", 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if complete || len(kvs) != 2 {
+				t.Fatalf("ScanLimit = len %d complete %v, want 2/false", len(kvs), complete)
+			}
+		})
+	}
+}

@@ -41,6 +41,12 @@ const statelessMaxURI = 512
 // instances that share the signing key.
 const statelessSkew = 30 * time.Second
 
+// A peer can legitimately issue with the old key until its throttled refresh
+// notices the rotation. Add the existing cross-replica clock-skew allowance
+// (and one second for second-granularity archive names), but reject anything
+// minted with a retired key after this tightly bounded rolling grace.
+const statelessRetirementGrace = statelessSkew + keyRefreshInterval + time.Second
+
 // statelessPayload is the authenticated content of a stateless challenge ID.
 // Field names are short because the whole thing is base64'd into the ID.
 type statelessPayload struct {
@@ -60,6 +66,13 @@ var b64 = base64.RawURLEncoding
 // self-authenticating; the solve string is derived from the same secret and
 // returned for the client's solver but never embedded in the ID.
 func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS bool) (*Challenge, error) {
+	// A quiet file-backed replica may not have observed a peer's rotation yet.
+	// Refresh before taking the issue timestamp and selecting the secret. If
+	// disk refresh fails, fail closed instead of minting indefinitely with a
+	// stale key whose retirement time this process does not know.
+	if _, err := m.refreshKeys(false); err != nil {
+		return nil, fmt.Errorf("refresh stateless signing keys: %w", err)
+	}
 	if len(uri) > statelessMaxURI {
 		uri = "/"
 	}
@@ -79,12 +92,6 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 	if err != nil {
 		return nil, err
 	}
-	// A quiet file-backed replica may not have observed a peer's rotation yet.
-	// Perform the rate-limited key refresh before issuing, while keeping the
-	// attack hot path free of a per-challenge file lock/read. A challenge minted
-	// during the short refresh interval is still accepted through the archived
-	// key; the refresh prevents indefinite issuance with a stale key.
-	_, _ = m.refreshKeys(false)
 	secret := m.issuingSecret()
 	mac, solve := statelessMAC(secret, payload), statelessSolve(secret, payload)
 	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(mac)
@@ -100,23 +107,31 @@ func (m *Manager) issuingSecret() []byte {
 	return m.hmacSecret
 }
 
-// verifySecrets snapshots every key's HMAC secret (current + retired), so a
-// stateless challenge signed by any live key in the fleet verifies.
-func (m *Manager) verifySecrets() [][]byte {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.hmacSecrets
+type statelessVerifySecret struct {
+	secret    []byte
+	retiredAt time.Time
 }
 
 // matchStatelessSecret returns the first live HMAC secret whose MAC over
-// payload equals gotMAC, or nil if none match.
-func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) []byte {
-	for _, s := range m.verifySecrets() {
-		if hmac.Equal(gotMAC, statelessMAC(s, payload)) {
-			return s
+// payload equals gotMAC, including its retirement boundary. It walks the
+// immutable key slices under the read lock to avoid allocating on redemption.
+func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) (statelessVerifySecret, bool) {
+	now := m.now()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i, secret := range m.hmacSecrets {
+		if i >= len(m.keys) {
+			break
+		}
+		retiredAt := m.keys[i].retiredAt
+		if !retiredAt.IsZero() && now.After(retiredAt.Add(maxAcceptedTokenLifetime)) {
+			continue
+		}
+		if hmac.Equal(gotMAC, statelessMAC(secret, payload)) {
+			return statelessVerifySecret{secret: secret, retiredAt: retiredAt}, true
 		}
 	}
-	return nil
+	return statelessVerifySecret{}, false
 }
 
 // statelessMAC authenticates the payload (16-byte truncated HMAC is ample for
@@ -161,20 +176,30 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	if err != nil {
 		return nil, ErrChallengeUnknown
 	}
+	// Refresh even before a MAC match: otherwise a compromised retired key
+	// still looks current forever to a quiet replica and bypasses all retirement
+	// checks. Redemption is paid-work traffic, and the disk read is throttled.
+	if _, err := m.refreshKeys(false); err != nil {
+		return nil, fmt.Errorf("refresh stateless verification keys: %w", err)
+	}
 	// Try every live key's secret (current + retired), so a challenge issued
 	// by a peer that has since rotated to a different current key still
 	// verifies. The matching secret is reused for the solve-string check.
-	secret := m.matchStatelessSecret(gotMAC, payload)
-	if secret == nil {
+	matched, ok := m.matchStatelessSecret(gotMAC, payload)
+	if !ok {
 		// A peer may have rotated to a key this file-backed instance has not
 		// yet re-read (rolling restart). Do the same rate-limited disk refresh
 		// as VerifyToken, then retry the MAC once against the refreshed
 		// secrets. A no-op for in-memory managers (no keyPath).
-		if refreshed, _ := m.refreshKeys(true); refreshed {
-			secret = m.matchStatelessSecret(gotMAC, payload)
+		refreshed, refreshErr := m.refreshKeys(true)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("refresh stateless verification keys after MAC miss: %w", refreshErr)
+		}
+		if refreshed {
+			matched, ok = m.matchStatelessSecret(gotMAC, payload)
 		}
 	}
-	if secret == nil {
+	if !ok {
 		return nil, ErrChallengeUnknown
 	}
 	var p statelessPayload
@@ -193,13 +218,16 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	if now.Sub(issued) > challengeTTL || issued.Sub(now) > statelessSkew {
 		return nil, ErrChallengeUnknown
 	}
+	if !matched.retiredAt.IsZero() && issued.After(matched.retiredAt.Add(statelessRetirementGrace)) {
+		return nil, ErrChallengeUnknown
+	}
 
 	// Binding.
 	if !strings.EqualFold(p.Host, req.Host) || p.IP != req.IP {
 		return nil, ErrBindingMismatch
 	}
 
-	challenge := statelessSolve(secret, payload)
+	challenge := statelessSolve(matched.secret, payload)
 	if req.NoJS {
 		if p.NoJS != 1 {
 			return nil, ErrNoJSDisabled

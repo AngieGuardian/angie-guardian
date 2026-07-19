@@ -2,7 +2,7 @@ default:
   # Pinned (not golang:latest) so builds are reproducible and the toolchain
   # picks up stdlib security fixes deliberately. Bump when a newer patch
   # release lands, especially when govulncheck flags a std vuln fixed in it.
-  image: golang:1.26.5-trixie
+  image: golang:1.26.5-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43
 
   cache:
     key:
@@ -40,7 +40,7 @@ format:
     # gofmt must leave nothing to change. Scope it to our own source dirs, not
     # the module cache (GOPATH lives under $CI_PROJECT_DIR/.go, and gofmt -l .
     # would otherwise flag unformatted files inside vendored dependencies).
-    - GOFMT_OUT=$(gofmt -l cmd core transport web test) || true
+    - GOFMT_OUT=$(gofmt -l cmd core internal transport web test) || true
     - test -z "$GOFMT_OUT" || { echo 'gofmt needed on:'; echo "$GOFMT_OUT"; exit 1; }
     - go vet ./...
     # Also vet the e2e-tagged suite so it can never silently fail to compile
@@ -58,11 +58,9 @@ test:
 # pinned for reproducibility; bump it deliberately.
 govulncheck:
   stage: test
-  # Advisory, not a hard gate: a reported vuln (often in the Go stdlib, fixed
-  # on Go's release schedule rather than ours) surfaces the finding in the job
-  # but does not red the pipeline. Bump the pinned Go image above to clear a
-  # stdlib finding; update deps to clear one in an imported package.
-  allow_failure: true
+  # A reachable vulnerability is a release blocker. Clear a stdlib finding by
+  # bumping the pinned Go image; clear an imported-package finding by updating
+  # the dependency (or add an explicit, reviewed, expiring exception).
   script:
     - go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
     - $GOPATH/bin/govulncheck ./...
@@ -72,7 +70,7 @@ govulncheck:
 # Pages deploy on main. VitePress link checking runs as part of the build.
 docs:
   stage: test
-  image: node:24
+  image: node:24@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
   cache:
     key: vitepress
     paths:
@@ -130,7 +128,7 @@ e2e:
       -w "$CI_PROJECT_DIR"
       -v angie-guardian-e2e-gomod:/go/pkg/mod
       -v angie-guardian-e2e-gocache:/root/.cache
-      golang:1.26-trixie
+      golang:1.26-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43
       make e2e
 
 # NOTE: the fuzz targets (see `make fuzz`) are intentionally NOT a CI job.
@@ -252,7 +250,7 @@ docker-release:
 # (https://host/angie-guardian/) or a root domain.
 pages:
   stage: deploy
-  image: node:24
+  image: node:24@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
   cache:
     key: vitepress
     paths:

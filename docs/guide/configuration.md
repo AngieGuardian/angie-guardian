@@ -62,7 +62,10 @@ in the reference for the exact matching and inheritance rules.
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
 loads and validates the file (YAML syntax, unknown fields, and semantic
 checks) plus every startup-required local artifact: WAF rules, anomaly models,
-GeoIP databases, and file-based reputation feeds. It then exits: `0` and `ok`
+GeoIP databases, and file-based reputation feeds. Listener `host:port` syntax
+and the non-loopback admin-token requirement are checked here too, so a config
+cannot pass preflight and then fail that policy during restart. It then exits:
+`0` and `ok`
 when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
 
 ```sh
@@ -205,7 +208,11 @@ Not reloadable (fixed at startup; a reload that changes one is rejected):
 
 WAF rules files, anomaly model artifacts, `.mmdb` databases and file-based
 reputation feeds are also watched on disk and reload on change by themselves;
-you only need SIGHUP/`/admin/reload` for edits to `guardian.yaml` itself.
+you only need SIGHUP/`/admin/reload` for edits to `guardian.yaml` itself. Reads
+are bounded to prevent an accidental or compromised artifact publisher from
+exhausting daemon memory: `guardian.yaml` 4 MiB, WAF rules 8 MiB, and anomaly
+models plus reputation feeds/caches 64 MiB each. An oversized hot update is
+rejected while the last-good artifact remains active.
 
 ## Next steps
 

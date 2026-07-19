@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,16 @@ func TestDisplayAddrPreservesWildcardAddressFamily(t *testing.T) {
 		if got := displayAddr(tc.in); got != tc.want {
 			t.Errorf("displayAddr(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestAdminDashboardURLContainsNoCredential(t *testing.T) {
+	got := adminDashboardURL("127.0.0.1:8072")
+	if got != "http://127.0.0.1:8072/admin/dashboard" {
+		t.Fatalf("dashboard URL = %q", got)
+	}
+	if strings.Contains(got, "token") || strings.Contains(got, "#") {
+		t.Fatalf("dashboard URL contains credential material: %q", got)
 	}
 }
 

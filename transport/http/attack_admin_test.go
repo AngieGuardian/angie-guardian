@@ -81,6 +81,17 @@ func TestAdminAttackStatusAndPin(t *testing.T) {
 	if resp := adminReq(t, ts, "POST", "/admin/attack", adminToken, `{"level":"sideways"}`); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad level: %d, want 400", resp.StatusCode)
 	}
+	for _, body := range []string{
+		`{"level":"attack","ttl":"-1s"}`,
+		`{"level":"attack","ttl":"0s"}`,
+		`{"level":"attack","ttl":"8761h"}`,
+		`{"level":"attack","unexpected":true}`,
+		`{"level":"attack"}{"level":"normal"}`,
+	} {
+		if resp := adminReq(t, ts, "POST", "/admin/attack", adminToken, body); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid pin %s: %d, want 400", body, resp.StatusCode)
+		}
+	}
 }
 
 func TestAdminStatsIncludesAttack(t *testing.T) {

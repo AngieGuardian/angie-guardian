@@ -115,6 +115,13 @@ verdicts) in a pluggable store. Signing keys remain in
   Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which
   is a drop-in replacement (same wire protocol, same `backend: redis` value).
 
+Guardian's Redis client currently uses plaintext TCP and its keys are not
+prefixed per deployment. Put Redis/Valkey on loopback or a private, authenticated
+network (or reach it through a verified TLS/mTLS tunnel), and allocate a
+dedicated logical database or cluster to each Guardian deployment. Never point
+unrelated staging/production sites at the same database: blocks, challenges,
+counters, bot verdicts, and fleet posture would collide.
+
 The rule of thumb from the
 [measured numbers](/guide/what-is-guardian#performance): the backend choice
 hinges on your *new-client* rate, i.e. the clients that trigger a challenge
@@ -190,8 +197,16 @@ store:
   addr: 127.0.0.1:6379
   # password: ""            # or the REDIS_PASSWORD env var
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # shared, e.g. NFS or synced
+previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
 ```
+
+Both key paths must be on one filesystem that provides cross-host advisory
+locking and atomic rename semantics (verify those properties for your NFS or
+distributed filesystem). Asynchronous copies such as rsync or Syncthing are
+not safe with multiple rotators: replicas do not share Guardian's `flock` and
+can create competing keys. If files must be distributed asynchronously,
+designate exactly one instance as the rotator and complete distribution before
+allowing another rotation.
 
 ## Metrics and dashboards
 

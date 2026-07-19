@@ -188,14 +188,28 @@ func canonicalAdminIP(w http.ResponseWriter, raw string) (string, bool) {
 	return addr.Unmap().String(), true
 }
 
-// handleBlockList returns every currently active behavioural block.
+const (
+	defaultBlockListLimit = 1000
+	maxBlockListLimit     = 10000
+)
+
+// handleBlockList returns a bounded page of active behavioural blocks.
 func (s *AdminServer) handleBlockList(w http.ResponseWriter, r *http.Request) {
-	blocks, err := s.engine.ListBlocks(r.Context())
+	limit := defaultBlockListLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxBlockListLimit {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be an integer from 1 through 10000"})
+			return
+		}
+		limit = n
+	}
+	blocks, complete, err := s.engine.ListBlocksLimit(r.Context(), limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(blocks), "blocks": blocks})
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(blocks), "complete": complete, "blocks": blocks})
 }
 
 // handleDecisions returns the engine's recent non-allow decisions, newest
@@ -237,19 +251,13 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 // Long-horizon numbers live in /metrics; this is the "right now" view.
 func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	blocksActive := -1
+	blocksComplete := false
 	if enf := s.engine.Enforcer(); enf != nil {
 		mirror := enf.Status().Mirror
-		if mirror.Seeded && mirror.Complete {
+		if mirror.Seeded {
 			blocksActive = mirror.Entries
+			blocksComplete = mirror.Complete
 		}
-	}
-	if blocksActive < 0 {
-		blocks, err := s.engine.ListBlocks(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		blocksActive = len(blocks)
 	}
 	recent := s.engine.RecentDecisions(0)
 	byAction := map[string]int{}
@@ -265,7 +273,8 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		byReason[cat]++
 	}
 	out := map[string]any{
-		"blocks_active": blocksActive,
+		"blocks_active":   blocksActive,
+		"blocks_complete": blocksComplete,
 		"recent": map[string]any{
 			"total":     len(recent),
 			"by_action": byAction,
@@ -436,8 +445,19 @@ func (s *AdminServer) handleAttackSet(w http.ResponseWriter, r *http.Request) {
 		Level string `json:"level"`
 		TTL   string `json:"ttl"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
+		return
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: trailing JSON value"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
+		}
 		return
 	}
 	level, auto, ok := attackmode.ParseLevel(body.Level)
@@ -455,6 +475,14 @@ func (s *AdminServer) handleAttackSet(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if ttl, err = time.ParseDuration(body.TTL); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ttl: " + err.Error()})
+			return
+		}
+		if ttl <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ttl must be positive when supplied"})
+			return
+		}
+		if ttl > core.MaxStateTTL {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ttl must be at most " + core.MaxStateTTL.String()})
 			return
 		}
 	}

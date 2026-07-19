@@ -5,12 +5,23 @@
 package attackmode
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
+
+type applyThenErrorStore struct{ store.Store }
+
+func (s *applyThenErrorStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := s.Store.Set(ctx, key, value, ttl); err != nil {
+		return err
+	}
+	return errors.New("ambiguous write timeout")
+}
 
 func TestSharePostureAdoptsPeerLevel(t *testing.T) {
 	st := store.NewMemory()
@@ -53,6 +64,26 @@ func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 	d.TickForTest()
 	if d.State().Level != Normal {
 		t.Fatalf("share_posture off but adopted peer: %s", d.State().Level)
+	}
+}
+
+func TestSharePostureIgnoresOutOfRangePeerLevel(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	cfg := testConfig()
+	cfg.SharePosture = true
+	if err := st.Set(t.Context(), posturePrefix+"peer-corrupt", []byte("999"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	c.add(bucketWidth)
+	d.TickForTest()
+	if d.State().Level != Normal {
+		t.Fatalf("adopted invalid peer posture: %s", d.State().Level)
 	}
 }
 
@@ -108,6 +139,30 @@ func TestPinClearsOwnSharedVote(t *testing.T) {
 	d.Pin(Normal, 0)
 	if _, ok, err := st.Get(t.Context(), key); err != nil || ok {
 		t.Fatalf("Pin(Normal) left own shared vote live: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPinClearsVoteAfterAmbiguousSetError(t *testing.T) {
+	base := store.NewMemory()
+	t.Cleanup(func() { base.Close() })
+	st := &applyThenErrorStore{Store: base}
+	cfg := testConfig()
+	cfg.SharePosture = true
+	c := &clock{}
+	c.t.Store(time.Now().UnixNano())
+	d := New(cfg, st, slog.New(slog.DiscardHandler))
+	d.SetClockForTest(c.now)
+
+	issueAndTick(d, c, 6000, 0)
+	issueAndTick(d, c, 6000, 0)
+	key := posturePrefix + d.instanceID
+	if _, ok, err := base.Get(t.Context(), key); err != nil || !ok {
+		t.Fatalf("setup: ambiguous SET did not apply: ok=%v err=%v", ok, err)
+	}
+
+	d.Pin(Normal, 0)
+	if _, ok, err := base.Get(t.Context(), key); err != nil || ok {
+		t.Fatalf("pin left ambiguously-applied vote live: ok=%v err=%v", ok, err)
 	}
 }
 

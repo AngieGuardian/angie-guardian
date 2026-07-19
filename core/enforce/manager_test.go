@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,86 @@ func TestManagerQueueOverflowNeverBlocks(t *testing.T) {
 type scanFailStore struct {
 	store.Store
 	fail bool
+}
+
+// blockingSnapshotStore takes the authoritative snapshot, then pauses before
+// returning it. Tests can deterministically place a block after the snapshot
+// but before reconcile publishes its completeness result.
+type blockingSnapshotStore struct {
+	store.Store
+	entered chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSnapshotStore) ScanLimit(ctx context.Context, prefix string, limit int) ([]store.KV, bool, error) {
+	kvs, err := s.Store.Scan(ctx, prefix)
+	if err != nil {
+		return nil, false, err
+	}
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.resume:
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+	complete := len(kvs) <= limit
+	if !complete {
+		kvs = kvs[:limit]
+	}
+	return kvs, complete, nil
+}
+
+func TestManagerReconcileCannotOverwriteConcurrentCapacityDrop(t *testing.T) {
+	ctx := t.Context()
+	base := store.NewMemory()
+	t.Cleanup(func() { base.Close() })
+	st := &blockingSnapshotStore{
+		Store: base, entered: make(chan struct{}), resume: make(chan struct{}),
+	}
+	m := New(Config{ReconcileInterval: time.Second, MaxEntries: shardCount, Mode: ModeAuthoritative},
+		st, nil, slog.New(slog.DiscardHandler))
+	t.Cleanup(func() { _ = m.Close() })
+
+	done := make(chan struct{})
+	go func() {
+		m.reconcileOnce(ctx)
+		close(done)
+	}()
+	<-st.entered // the empty store snapshot is now fixed
+
+	// Fill every one-entry shard after the snapshot, then place one more
+	// persisted block. Its mirror insertion must drop due to capacity.
+	var perShard [shardCount]netip.Addr
+	found := 0
+	for i := 0; found < shardCount; i++ {
+		a := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
+		shard := shardOf(a)
+		if !perShard[shard].IsValid() {
+			perShard[shard] = a
+			found++
+		}
+	}
+	for _, a := range perShard {
+		if err := st.Set(ctx, "block:"+a.String(), []byte("fill"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		m.Notify(BlockEvent{IP: a, Reason: "fill", TTL: time.Hour})
+	}
+	target := addr(t, "203.0.113.200")
+	if err := st.Set(ctx, "block:"+target.String(), []byte("target"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	m.Notify(BlockEvent{IP: target, Reason: "target", TTL: time.Hour})
+	if _, ok := m.Lookup(target.String()); ok {
+		t.Fatal("setup: target unexpectedly fit in the full mirror")
+	}
+
+	close(st.resume)
+	<-done
+	if !m.ReadThrough() || m.Status().Mirror.Complete {
+		t.Fatal("stale reconcile marked a capacity-dropped mirror complete")
+	}
 }
 
 func (s *scanFailStore) Scan(ctx context.Context, prefix string) ([]store.KV, error) {

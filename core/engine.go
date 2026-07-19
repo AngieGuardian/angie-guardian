@@ -435,9 +435,28 @@ type BlockEntry struct {
 // ListBlocks returns every currently active block (admin API / dashboard).
 // It scans the store, so it is an occasional admin read, not a hot-path call.
 func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
-	kvs, err := e.store.Scan(ctx, blockKeyPrefix)
+	blocks, _, err := e.ListBlocksLimit(ctx, 0)
+	return blocks, err
+}
+
+// ListBlocksLimit returns at most limit active blocks and reports whether the
+// result contains the whole set. A non-positive limit requests the full set.
+func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, bool, error) {
+	var (
+		kvs      []store.KV
+		complete = true
+		err      error
+	)
+	if limited, ok := e.store.(store.LimitedScanner); ok {
+		kvs, complete, err = limited.ScanLimit(ctx, blockKeyPrefix, limit)
+	} else {
+		kvs, err = e.store.Scan(ctx, blockKeyPrefix)
+		if err == nil && limit > 0 && len(kvs) > limit {
+			kvs, complete = kvs[:limit], false
+		}
+	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	out := make([]BlockEntry, 0, len(kvs))
 	for _, kv := range kvs {
@@ -448,7 +467,7 @@ func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
 		}
 		out = append(out, b)
 	}
-	return out, nil
+	return out, complete, nil
 }
 
 // ScoreRequest runs the anomaly scorer for a hypothetical request against the

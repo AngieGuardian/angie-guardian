@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core"
@@ -31,16 +32,28 @@ defaults:
     ips: [ "203.0.113.0/24" ]
 `
 
+type scanCountingStore struct {
+	store.Store
+	scans atomic.Int64
+}
+
+func (s *scanCountingStore) Scan(ctx context.Context, prefix string) ([]store.KV, error) {
+	s.scans.Add(1)
+	return s.Store.Scan(ctx, prefix)
+}
+
+func (s *scanCountingStore) ScanLimit(ctx context.Context, prefix string, limit int) ([]store.KV, bool, error) {
+	s.scans.Add(1)
+	if limited, ok := s.Store.(store.LimitedScanner); ok {
+		return limited.ScanLimit(ctx, prefix, limit)
+	}
+	kvs, err := s.Store.Scan(ctx, prefix)
+	return kvs, true, err
+}
+
 func reportServer(t *testing.T, yaml string) (*httptest.Server, *core.Engine) {
 	t.Helper()
-	cfgPath := filepath.Join(t.TempDir(), "guardian.yaml")
-	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := core.LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := loadAdminReportConfig(t, yaml)
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
 	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
@@ -53,6 +66,19 @@ func reportServer(t *testing.T, yaml string) (*httptest.Server, *core.Engine) {
 	return ts, engine
 }
 
+func loadAdminReportConfig(t *testing.T, yaml string) *core.Config {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
 func TestAdminBlockList(t *testing.T) {
 	ts, _ := reportServer(t, reportYAML)
 
@@ -60,6 +86,9 @@ func TestAdminBlockList(t *testing.T) {
 	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/blocks", adminToken, ""))
 	if m["count"] != float64(0) {
 		t.Fatalf("initial list count = %v, want 0", m["count"])
+	}
+	if m["complete"] != true {
+		t.Fatalf("initial list complete = %v, want true", m["complete"])
 	}
 
 	// Two blocks (one TTL'd, one via the admin PUT default) → listed sorted with reasons.
@@ -77,6 +106,16 @@ func TestAdminBlockList(t *testing.T) {
 	}
 	if first["expires_at"] == nil {
 		t.Error("TTL'd block should carry expires_at")
+	}
+
+	// The endpoint is bounded and reports truncation instead of materializing
+	// an attacker-inflated store in the daemon and dashboard.
+	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/blocks?limit=1", adminToken, ""))
+	if m["count"] != float64(1) || m["complete"] != false {
+		t.Fatalf("bounded list = %v, want count=1 complete=false", m)
+	}
+	if resp := adminReq(t, ts, "GET", "/admin/blocks?limit=10001", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized limit status = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -136,6 +175,28 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	}
 	if byReason := recent["by_reason"].(map[string]any); byReason["denylist"] != float64(3) {
 		t.Fatalf("stats by_reason = %v, want denylist:3 (category, not full reason)", byReason)
+	}
+}
+
+func TestAdminStatsNeverFallsBackToStoreScan(t *testing.T) {
+	cfg := loadAdminReportConfig(t, reportYAML)
+	base := store.NewMemory()
+	st := &scanCountingStore{Store: base}
+	t.Cleanup(func() { base.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, nil, adminToken, "", "", nil, slog.Default()))
+	t.Cleanup(ts.Close)
+
+	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/stats", adminToken, ""))
+	if got := st.scans.Load(); got != 0 {
+		t.Fatalf("stats performed %d store scans", got)
+	}
+	if m["blocks_active"] != float64(-1) || m["blocks_complete"] != false {
+		t.Fatalf("unseeded block status = %v", m)
 	}
 }
 

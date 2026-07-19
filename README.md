@@ -77,7 +77,7 @@ ride past the WAF.
   solve-time and anomaly-score histograms, blocks placed, store op latency,
   and end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json`.
 - **Admin API**: bearer-token JSON API on the same listener: inspect/place/
-  clear IP blocks (`/admin/blocks/{ip}`), list all active blocks
+  clear IP blocks (`/admin/blocks/{ip}`), list a bounded page of active blocks
   (`/admin/blocks`), read the recent deny/challenge feed (`/admin/decisions`)
   and its rollup (`/admin/stats`), score a hypothetical request against the
   anomaly model (`GET /admin/score`), rotate the signing key, and view the
@@ -85,8 +85,8 @@ ride past the WAF.
   without a token.
 - **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
   internal page at `/admin/dashboard`, driven entirely by the token-guarded
-  admin API; guardiand prints a ready-to-open login link at startup (the
-  admin token is auto-generated, see `admin.token_file`). It shows active
+  admin API; guardiand prints the bare login URL at startup and never embeds a
+  configured/persistent token in logs (see `admin.token_file`). It shows active
   blocks with one-click block/unblock, the filterable recent decisions feed,
   challenge/solve counters, and per-domain status. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` atomically archives the current

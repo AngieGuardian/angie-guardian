@@ -159,9 +159,9 @@ admin:
   token_file: /etc/guardian/admin.token
   # Built-in reporting page at GET /admin/dashboard (active blocks with
   # one-click block/unblock, recent deny/challenge decisions with filters,
-  # challenge stats, per-domain config). On startup guardiand logs a
-  # ready-to-open login URL ("admin dashboard ready") carrying the token in
-  # the URL fragment; the page moves it into sessionStorage. Off by default.
+  # challenge stats, per-domain config). On startup guardiand logs the bare
+  # login URL ("admin dashboard ready"). Read the token from token_file and
+  # paste it into the page; persistent secrets are never logged. Off by default.
   dashboard: true
 
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
@@ -416,7 +416,7 @@ store:
   addr: 127.0.0.1:6379
   # password: ""            # or the REDIS_PASSWORD env var
 signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # shared, e.g. NFS or synced
+previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
 # Retired archives verify pre-rotation tokens for at most 7 days; older files
 # may be retained on disk but are ignored by the active verifier.
 ```
