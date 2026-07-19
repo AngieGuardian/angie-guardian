@@ -13,10 +13,10 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
 
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo.svg` }]],
+  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo_small.svg` }]],
 
   themeConfig: {
-    logo: '/logo.svg',
+    logo: '/logo_small.svg',
 
     nav: [
       { text: 'Guide', link: '/guide/what-is-guardian', activeMatch: '/guide/' },
