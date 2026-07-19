@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -42,6 +42,17 @@ e2e:
 .PHONY: e2e-nft
 e2e-nft:
 	go test -tags e2e_nft -count=1 -timeout 15m ./test/e2e/...
+
+# Store-engine benchmark harness: compares Memory / ShardedMemory{16,64,256} /
+# bbolt on Guardian's real write workload (single-spend CAS flood, TTL counters,
+# mixed read/write, expiry reclaim). Manual, not a CI job: benchmarks want a
+# quiet machine, and a red build on benchmark variance is worse than a manual run.
+# To compare two runs with benchstat (not vendored; go run it directly):
+#   make bench-store > new.txt   # and a baseline old.txt from another commit
+#   go run golang.org/x/perf/cmd/benchstat old.txt new.txt
+bench-store:
+	go test -run '^$$' -bench '^Benchmark(SpentFlood|TTLCounter|MixedReadWrite|ExpiryReclaim)$$' \
+		-benchmem -benchtime 2s -count 6 ./core/store/
 
 # Run every fuzz target for FUZZTIME each. `go test -fuzz` fuzzes exactly one
 # target per package invocation, so discover them with `-list` and loop. Any
