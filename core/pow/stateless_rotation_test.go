@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,10 +24,10 @@ func genKey(t *testing.T) ed25519.PrivateKey {
 	return k
 }
 
-// TestStatelessRedeemAcrossRotation is the review regression: a stateless
-// challenge issued by an instance still holding the OLD key must redeem on a
-// peer that has rotated to a NEW current key and holds the old key as retired.
-// Both share a store (as replicas behind a load balancer do).
+// TestStatelessRedeemAcrossRotation: a stateless challenge issued by an
+// instance still holding the OLD key must redeem on a peer that has rotated to
+// a NEW current key and holds the old key as retired. Both share a store (as
+// replicas behind a load balancer do).
 func TestStatelessRedeemAcrossRotation(t *testing.T) {
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
@@ -57,8 +58,11 @@ func TestStatelessRedeemAcrossRotation(t *testing.T) {
 	}
 
 	// And the reverse: a challenge the rotated peer issues (keyB) must redeem
-	// on the old instance ONLY after it learns keyB. Before that it is unknown,
-	// which is correct (the old instance cannot verify a secret it never had).
+	// on the old instance ONLY after it learns keyB. These are in-memory
+	// managers with no key files, so there is nothing to refresh from disk;
+	// SetKeys is the only way they learn a peer's key. The file-backed rolling
+	// path, where a redeeming replica DOES pick up the new key from disk
+	// automatically, is covered by TestStatelessRedeemAcrossFileRotation.
 	ch2, _ := newMgr.IssueStateless("a.test", "203.0.113.8", "/", 8, false)
 	if _, err := oldMgr.Redeem(ctx, &RedeemRequest{
 		ChallengeID: ch2.ID, Nonce: solve(t, ch2.Challenge, 8),
@@ -75,5 +79,65 @@ func TestStatelessRedeemAcrossRotation(t *testing.T) {
 		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
 	}); err != nil {
 		t.Fatalf("after adopting keyB, redemption still failed: %v", err)
+	}
+}
+
+// TestStatelessRedeemAcrossFileRotation covers the file-backed rolling
+// topology: two replicas share the same key files. One rotates, issues a
+// stateless challenge with the NEW key, and its solve POST lands on a
+// still-running peer that has NOT yet re-read the new key. Redeem refreshes the
+// keys off disk (rate-limited, like VerifyToken) and verifies, with no manual
+// SetKeys.
+func TestStatelessRedeemAcrossFileRotation(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+
+	rotator, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Unix(1_900_000_000, 0).UTC()
+	rotationTime := base.Add(900 * time.Millisecond)
+	redeemTime := base.Add(1050 * time.Millisecond)
+
+	// Rotate the shared files: NEW key current, old key retired.
+	rotator.now = func() time.Time { return rotationTime }
+	if err := rotator.Rotate(keyPath, prevDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The rotator issues a stateless challenge under the NEW current key.
+	rotator.now = func() time.Time { return redeemTime }
+	ch, err := rotator.IssueStateless("a.test", "203.0.113.9", "/", 8, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The peer's routine signing-refresh timestamp is inside the throttle
+	// window, so the failure-path refresh (lastFailureRefresh) must fire on its
+	// own throttle even though a routine refresh just happened. The peer has
+	// never seen the new key in memory.
+	peer.lastRefresh = base.Add(950 * time.Millisecond)
+	peer.now = func() time.Time { return redeemTime }
+
+	res, err := peer.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+		Host: "a.test", IP: "203.0.113.9", UserAgent: "Mozilla/5.0",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("file-backed peer rejected a rotated-key stateless challenge without a manual SetKeys: %v", err)
+	}
+	if res.Token == "" {
+		t.Fatal("no token minted across file rotation")
 	}
 }

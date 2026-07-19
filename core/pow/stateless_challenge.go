@@ -102,6 +102,17 @@ func (m *Manager) verifySecrets() [][]byte {
 	return m.hmacSecrets
 }
 
+// matchStatelessSecret returns the first live HMAC secret whose MAC over
+// payload equals gotMAC, or nil if none match.
+func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) []byte {
+	for _, s := range m.verifySecrets() {
+		if hmac.Equal(gotMAC, statelessMAC(s, payload)) {
+			return s
+		}
+	}
+	return nil
+}
+
 // statelessMAC authenticates the payload (16-byte truncated HMAC is ample for
 // a short-lived, client-bound token).
 func statelessMAC(secret, payload []byte) []byte {
@@ -147,11 +158,14 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	// Try every live key's secret (current + retired), so a challenge issued
 	// by a peer that has since rotated to a different current key still
 	// verifies. The matching secret is reused for the solve-string check.
-	var secret []byte
-	for _, s := range m.verifySecrets() {
-		if hmac.Equal(gotMAC, statelessMAC(s, payload)) {
-			secret = s
-			break
+	secret := m.matchStatelessSecret(gotMAC, payload)
+	if secret == nil {
+		// A peer may have rotated to a key this file-backed instance has not
+		// yet re-read (rolling restart). Do the same rate-limited disk refresh
+		// as VerifyToken, then retry the MAC once against the refreshed
+		// secrets. A no-op for in-memory managers (no keyPath).
+		if refreshed, _ := m.refreshKeys(true); refreshed {
+			secret = m.matchStatelessSecret(gotMAC, payload)
 		}
 	}
 	if secret == nil {
