@@ -141,8 +141,7 @@ attack_mode:
 
 // TestAttackEffectsExplicitZeroRaise: an explicit 0 raise is honoured even as
 // the ONLY field in the effects block (the pointer distinguishes it from an
-// omitted field, so it is not defaulted to 0.5/1.0). This is the review
-// finding's direct-zero case.
+// omitted field, so it is not defaulted to 0.5/1.0).
 func TestAttackEffectsExplicitZeroRaise(t *testing.T) {
 	// attack_difficulty_raise: 0 alone must stay 0, not become 1.0.
 	cfg := loadTestConfig(t, `

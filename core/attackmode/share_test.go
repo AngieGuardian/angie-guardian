@@ -56,9 +56,9 @@ func TestSharePostureDisabledIgnoresPeer(t *testing.T) {
 	}
 }
 
-// TestPinNormalDefeatsPeerAdoption is the review regression: with sharing on
-// and a peer reporting Attack, an operator's Pin(Normal) kill switch must
-// hold, not flap back to Attack every tick.
+// TestPinNormalDefeatsPeerAdoption: with sharing on and a peer reporting
+// Attack, an operator's Pin(Normal) kill switch must hold, not flap back to
+// Attack every tick.
 func TestPinNormalDefeatsPeerAdoption(t *testing.T) {
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })

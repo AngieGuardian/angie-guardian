@@ -524,9 +524,9 @@ domains:
 	}
 
 	// A denylisted IP is DENIED even holding a token: the shed fast path must
-	// not bypass the terminal pre-token checks (regression for the review
-	// finding). Craft a token bound to the denylisted IP so the only thing
-	// that could wave it through is the token check.
+	// not bypass the terminal pre-token checks. Craft a token bound to the
+	// denylisted IP so the only thing that could wave it through is the token
+	// check.
 	dIP := "203.0.113.66"
 	dID, dCh, dDiff := fetchChallenge(t, ts, dIP, ua)
 	dBody, _ := json.Marshal(map[string]any{"challenge_id": dID, "nonce": solve(t, dCh, dDiff)})

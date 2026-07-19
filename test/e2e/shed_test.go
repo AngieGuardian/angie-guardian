@@ -57,9 +57,9 @@ func TestLoadShedThroughAngie(t *testing.T) {
 	if !shedHadRetryAfter {
 		t.Error("a shed response (503) was missing Retry-After")
 	}
-	// The old bug surfaced as a 500 reaching the client (auth_request turned the
-	// sidecar's bare 503 into a 500). With the fix, sheds are 503 and nothing
-	// is a 500.
+	// auth_request would turn a sidecar's bare 503 into a 500 reaching the
+	// client; sheds must come back as 503 (via the action header + Angie glue)
+	// so nothing is a 500.
 	if n := codes[http.StatusInternalServerError]; n > 0 {
 		t.Errorf("%d requests got 500 (auth_request mangled the shed status; the flood would route to the backend)", n)
 	}

@@ -26,8 +26,7 @@ domains:
 
 // TestForgedChallengeIDIsScoredAndBlocks drives the real HTTP redeem path with
 // an unknown (forged) challenge ID and asserts the IP is behaviourally blocked
-// at /auth once the tamper threshold is crossed. This is the end-to-end proof
-// of issue #21 finding 6: the previously-dropped tamper path now reaches the
+// at /auth once the tamper threshold is crossed: the tamper path reaches the
 // scoreboard with no feature toggle.
 func TestForgedChallengeIDIsScoredAndBlocks(t *testing.T) {
 	ts := testServerWithYAML(t, tamperYAML)

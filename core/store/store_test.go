@@ -286,10 +286,10 @@ func TestBoltRejectsTTLThatWouldBecomePermanent(t *testing.T) {
 	}
 }
 
-// TestRedisSubMillisecondTTL is the regression for MR review 9181: a positive
-// sub-millisecond TTL must not truncate to the 0 "no expiry" sentinel and make
-// the counter permanent. IncrBy and CompareAndSwap both go through the TTL-aware
-// Lua scripts, so both must keep a finite expiry for a tiny positive TTL.
+// TestRedisSubMillisecondTTL: a positive sub-millisecond TTL must not truncate
+// to the 0 "no expiry" sentinel and make the counter permanent. IncrBy and
+// CompareAndSwap both go through the TTL-aware Lua scripts, so both must keep a
+// finite expiry for a tiny positive TTL.
 func TestRedisSubMillisecondTTL(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})

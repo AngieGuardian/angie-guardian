@@ -169,9 +169,9 @@ func TestHysteresisAndDwell(t *testing.T) {
 	}
 }
 
-// TestHalfThresholdExitHolds is the review regression: load sustained between
-// 50% and 100% of the entry threshold must HOLD the level (not decay), per the
-// documented "stay below half for min_dwell" hysteresis.
+// TestHalfThresholdExitHolds: load sustained between 50% and 100% of the entry
+// threshold must HOLD the level (not decay), per the documented "stay below
+// half for min_dwell" hysteresis.
 func TestHalfThresholdExitHolds(t *testing.T) {
 	d, c := newTestDetector(t, testConfig())
 	// challenge_rate threshold is 200/s. Trip elevated at 300/s.
