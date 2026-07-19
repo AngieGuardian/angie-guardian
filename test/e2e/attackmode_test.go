@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,22 +39,35 @@ func TestAttackModeTrips(t *testing.T) {
 
 	// Hammer /challenge from rotating synthetic IPs. The e2e config trips
 	// attack at 30 issued/s with a low solve ratio; we issue fast and solve
-	// none, so the ratio stays ~0.
-	deadline := time.Now().Add(30 * time.Second)
+	// none, so the ratio stays ~0. Each batch fires concurrently so the issuance
+	// rate clears the attack threshold decisively regardless of per-request
+	// latency on a loaded CI runner (sequential round-trips through Docker
+	// networking could dip the sustained rate toward the threshold and stall at
+	// elevated). The detector aggregates over a 10s window, so we keep issuing
+	// across several windows until it trips.
+	deadline := time.Now().Add(45 * time.Second)
 	var level string
 	for time.Now().Before(deadline) {
-		for i := range 60 {
-			ip := fmt.Sprintf("198.51.100.%d", i%254+1)
-			resp := authChallenge(t, ip)
-			resp.Body.Close()
+		var wg sync.WaitGroup
+		for i := range 120 {
+			wg.Add(1)
+			go func(n int) {
+				defer wg.Done()
+				resp := authChallenge(t, fmt.Sprintf("198.51.100.%d", n%254+1))
+				resp.Body.Close()
+			}(i)
 		}
+		wg.Wait()
 		if level = attackLevel(t); level == "attack" {
 			break
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	if level != "attack" {
-		t.Fatalf("posture never reached attack (last = %q)", level)
+		// Dump the last-observed window signals so a CI stall (rate below the
+		// attack threshold, or an unexpectedly high solve ratio) is diagnosable
+		// rather than just "stuck at elevated".
+		t.Fatalf("posture never reached attack (last = %q); signals: %s", level, attackSignals(t))
 	}
 
 	// The metrics gauge agrees. Match the bare metric line (a trailing space
@@ -111,6 +125,18 @@ func attackLevel(t *testing.T) string {
 	}
 	json.NewDecoder(resp.Body).Decode(&out)
 	return out.Level
+}
+
+// attackSignals returns the raw signals block from /admin/attack, for failure
+// diagnostics (the current window's challenge/solve rates).
+func attackSignals(t *testing.T) string {
+	t.Helper()
+	resp := adminReq(t, http.MethodGet, "/admin/attack", nil)
+	var out struct {
+		Signals json.RawMessage `json:"signals"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return string(out.Signals)
 }
 
 func parseChallenge(t *testing.T, resp *http.Response) (id, challenge string, difficulty int) {
