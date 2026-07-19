@@ -34,11 +34,15 @@ func TestLargePOSTPassesThrough(t *testing.T) {
 	const size = 512 << 10 // 512 KiB: large, but under the default 1 MiB cap
 	body := strings.Repeat("A", size)
 
-	resp := req(t, http.MethodPost, site+"/api", map[string]string{
+	// A 502/503 here is a transient upstream hiccup in the shared compose stack
+	// (Angie momentarily could not reach the backend or the auth sidecar), not a
+	// body-passthrough failure, so retry a few times before failing. The body
+	// reader is rebuilt each attempt since it is consumed on the first send.
+	resp := postWithRetry(t, site+"/api", map[string]string{
 		"Host":         wafOnlyHost,
 		"User-Agent":   "Mozilla/5.0",
 		"Content-Type": "application/octet-stream",
-	}, strings.NewReader(body))
+	}, body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("large POST: status %d, want 200 (allowed through to backend)", resp.StatusCode)

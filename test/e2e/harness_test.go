@@ -191,6 +191,26 @@ func req(t *testing.T, method, url string, headers map[string]string, body io.Re
 	return resp
 }
 
+// postWithRetry POSTs body (rebuilt each attempt, since it is consumed on send)
+// and retries on a transient upstream status (502/503) from the shared compose
+// stack, which is not a passthrough failure but a momentary backend/sidecar
+// hiccup. Returns the last response.
+func postWithRetry(t *testing.T, url string, headers map[string]string, body string) *http.Response {
+	t.Helper()
+	var resp *http.Response
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		resp = req(t, http.MethodPost, url, headers, strings.NewReader(body))
+		if resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusServiceUnavailable {
+			return resp
+		}
+		t.Logf("transient upstream status %d on attempt %d; retrying", resp.StatusCode, attempt+1)
+	}
+	return resp
+}
+
 // get is a GET through Angie to the protected site, with a Host and User-Agent.
 func get(t *testing.T, path, host, ua string, extra map[string]string) *http.Response {
 	t.Helper()

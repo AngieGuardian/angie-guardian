@@ -9,6 +9,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -39,30 +40,43 @@ func TestAttackModeTrips(t *testing.T) {
 
 	// Hammer /challenge from rotating synthetic IPs. The e2e config trips
 	// attack at 30 issued/s with a low solve ratio; we issue fast and solve
-	// none, so the ratio stays ~0. Each batch fires concurrently so the issuance
-	// rate clears the attack threshold decisively regardless of per-request
-	// latency on a loaded CI runner (sequential round-trips through Docker
-	// networking could dip the sustained rate toward the threshold and stall at
-	// elevated). The detector aggregates over a 10s window, so we keep issuing
-	// across several windows until it trips.
+	// none, so the ratio stays ~0. A bounded pool of workers keeps a steady,
+	// concurrent issuance rate well above the threshold, without the connection
+	// spike an unbounded per-batch fan-out (120 goroutines at once) would inflict
+	// on the shared compose stack, which could leave a sibling test's upstream
+	// momentarily unreachable. Sequential single-request issuance instead risked
+	// dipping below the threshold on a loaded CI runner and stalling at elevated.
+	// The detector aggregates over a 10s window, so we keep issuing across
+	// several windows until it trips.
+	const floodWorkers = 16
 	deadline := time.Now().Add(45 * time.Second)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := range floodWorkers {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for n := base; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				floodChallenge(t, fmt.Sprintf("198.51.100.%d", n%254+1))
+			}
+		}(w * 16)
+	}
+
 	var level string
 	for time.Now().Before(deadline) {
-		var wg sync.WaitGroup
-		for i := range 120 {
-			wg.Add(1)
-			go func(n int) {
-				defer wg.Done()
-				resp := authChallenge(t, fmt.Sprintf("198.51.100.%d", n%254+1))
-				resp.Body.Close()
-			}(i)
-		}
-		wg.Wait()
 		if level = attackLevel(t); level == "attack" {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
+	close(stop)
+	wg.Wait()
+
 	if level != "attack" {
 		// Dump the last-observed window signals so a CI stall (rate below the
 		// attack threshold, or an unexpectedly high solve ratio) is diagnosable
@@ -78,8 +92,12 @@ func TestAttackModeTrips(t *testing.T) {
 	}
 
 	// A freshly issued challenge is stateless (s1. prefix) and at the raised
-	// difficulty: base 16 bits + 4 (attack_difficulty_raise 1.0) = 20.
-	id, challenge, difficulty := parseChallenge(t, authChallenge(t, "198.51.100.200"))
+	// difficulty: base 16 bits + 4 (attack_difficulty_raise 1.0) = 20. The probe
+	// IP is deliberately OUTSIDE the flood range (198.51.100.0/24) so it carries
+	// only the fleet-wide raise, with no per-IP challenge-farming escalation
+	// stacked on top (which would push the difficulty above 20).
+	const probeIP = "203.0.113.222"
+	id, challenge, difficulty := parseChallenge(t, authChallenge(t, probeIP))
 	if !strings.HasPrefix(id, "s1.") {
 		t.Fatalf("challenge id %q is not stateless under attack", id)
 	}
@@ -89,10 +107,10 @@ func TestAttackModeTrips(t *testing.T) {
 
 	// The stateless challenge round-trips, and replaying it is rejected.
 	nonce := solve(t, challenge, difficulty)
-	if !redeemAuth(t, "198.51.100.200", id, nonce) {
+	if !redeemAuth(t, probeIP, id, nonce) {
 		t.Fatal("stateless challenge did not redeem")
 	}
-	if redeemAuth(t, "198.51.100.200", id, nonce) {
+	if redeemAuth(t, probeIP, id, nonce) {
 		t.Fatal("stateless challenge replay was accepted")
 	}
 
@@ -106,6 +124,28 @@ func TestAttackModeTrips(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("pre-attack token rejected under attack: status %d", resp.StatusCode)
 	}
+}
+
+// floodChallenge issues one challenge for the load flood and drains+closes the
+// body so the connection is reused rather than leaked. It does NOT register a
+// t.Cleanup (the flood makes thousands of calls) and tolerates transient errors
+// (the point is sustained issuance rate, not any single request succeeding).
+func floodChallenge(t *testing.T, ip string) {
+	t.Helper()
+	r, err := http.NewRequest(http.MethodGet, auth+"/challenge", nil)
+	if err != nil {
+		return
+	}
+	r.Header.Set("X-Guardian-Host", powHost)
+	r.Header.Set("X-Guardian-IP", ip)
+	r.Header.Set("X-Guardian-UA", "Mozilla/5.0")
+	r.Header.Set("X-Guardian-URI", "/page")
+	resp, err := noRedirect.Do(r)
+	if err != nil {
+		return
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 }
 
 // authChallenge issues a challenge from the direct auth port as client ip.
