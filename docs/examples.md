@@ -201,7 +201,7 @@ store:
 # the "Block Enforcement Offload" guide for the full story.
 # enforcement:
 #   mirror:
-#     reconcile_interval: 10s   # store scan cadence; also repairs sink drift
+#     reconcile_interval: 10s   # bounded active-block index read; repairs sink drift
 #     max_entries: 1048576      # overflow falls back to store reads
 #     mode: auto                # auto | authoritative | read_through
 #   # Kernel sink: drop blocked clients in nftables before Angie sees them.

@@ -20,8 +20,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -148,6 +148,9 @@ type Detector struct {
 	store      store.Store // for posture sharing; may be nil
 	instanceID string      // per-process id for this instance's posture-share key
 	voteLive   atomic.Bool // this process may currently have a shared vote key
+	// unsupportedShareWarn emits once when a third-party store silently loses
+	// fleet posture sharing. Built-in stores all implement PostureVotes.
+	unsupportedShareWarn sync.Once
 
 	c        counters
 	prev     counters // last-tick totals, for deltas (ticker-only, no lock)
@@ -735,17 +738,20 @@ func EffectiveBits(st *State, baseBits, maxBits, capBits int) (effBase, effMax i
 
 // --- posture sharing (store, tick-only, off the hot path) -------------------
 
-const posturePrefix = "attack:posture:"
-
-// sharePosture publishes this instance's own level under its own key and
+// sharePosture publishes this instance's own level as an expiring vote and
 // returns the maximum level any OTHER live instance is reporting. Per-instance
-// keys avoid the last-writer-wins clobber a single shared key suffers: a
+// votes avoid the last-writer-wins clobber a single shared value suffers: a
 // decayed replica writing "1" can never overwrite an attacking replica's "2".
-// Each key self-expires after the window, so a crashed instance stops voting.
-// The scan and set run tick-only (every bucketWidth), off the request path; a
-// failing store degrades to local-only (and the failure is itself a trigger).
+// Each vote self-expires after the window, so a crashed instance stops voting.
+// Backend-native vote indexes keep the tick independent of the general store
+// keyspace; a failing or unsupported store degrades to local-only.
 func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) Level {
 	if d.store == nil || !cfg.SharePosture {
+		return Normal
+	}
+	votes, ok := d.store.(store.PostureVotes)
+	if !ok {
+		d.warnUnsupportedPostureSharing()
 		return Normal
 	}
 	d.shareMu.Lock()
@@ -757,36 +763,46 @@ func (d *Detector) sharePosture(ctx context.Context, cfg *Config, local Level) L
 		d.clearSharedVoteLocked(ctx)
 		return Normal
 	}
-	// Publish our own level (or clear our key when back to Normal) under a
-	// key nobody else writes. A short floor keeps a Normal instance's key from
-	// lingering as a stale "0" vote.
-	key := posturePrefix + d.instanceID
+	// Publish our own level (or clear our vote when back to Normal).
 	if local > Normal {
 		// SET may have reached a remote store even when the client reports a
 		// timeout. Record that the vote may exist before attempting the write,
 		// so pin/disable/shutdown will always issue the compensating DELETE.
 		d.voteLive.Store(true)
-		_ = d.store.Set(ctx, key, []byte(strconv.Itoa(int(local))), cfg.Window)
-	} else {
-		if err := d.store.Delete(ctx, key); err == nil {
+		if err := votes.SetPostureVote(ctx, d.instanceID, int(local), cfg.Window); errors.Is(err, store.ErrCapabilityUnsupported) {
+			// Unlike a transport failure, unsupported guarantees no ambiguous
+			// remote write, so do not retry a compensating delete every tick.
 			d.voteLive.Store(false)
+			d.warnUnsupportedPostureSharing()
+		}
+	} else {
+		if err := votes.DeletePostureVote(ctx, d.instanceID); err == nil {
+			d.voteLive.Store(false)
+		} else if errors.Is(err, store.ErrCapabilityUnsupported) {
+			d.voteLive.Store(false)
+			d.warnUnsupportedPostureSharing()
 		}
 	}
-	// Adopt the max over every OTHER instance's key.
-	kvs, err := d.store.Scan(ctx, posturePrefix)
+	// Adopt the max over every OTHER instance's vote. Excluding our own vote is
+	// essential: feeding yesterday's local level back into the detector would
+	// prevent hysteresis from ever decaying.
+	level, err := votes.MaxPostureVote(ctx, d.instanceID)
 	if err != nil {
+		if errors.Is(err, store.ErrCapabilityUnsupported) {
+			d.warnUnsupportedPostureSharing()
+		}
 		return Normal
 	}
-	peer := Normal
-	for _, kv := range kvs {
-		if kv.Key == key {
-			continue // our own vote is already reflected in local
-		}
-		if n, perr := strconv.Atoi(string(kv.Value)); perr == nil && n >= int(Elevated) && n <= int(Attack) && Level(n) > peer {
-			peer = Level(n)
-		}
+	if level < int(Elevated) || level > int(Attack) {
+		return Normal
 	}
-	return peer
+	return Level(level)
+}
+
+func (d *Detector) warnUnsupportedPostureSharing() {
+	d.unsupportedShareWarn.Do(func() {
+		d.log.Warn("store does not support fleet posture votes; attack detection is local to this replica")
+	})
 }
 
 // clearSharedVote best-effort deletes this process's posture key. It is used
@@ -808,7 +824,11 @@ func (d *Detector) clearSharedVoteLocked(ctx context.Context) {
 	if !d.voteLive.Load() {
 		return
 	}
-	if err := d.store.Delete(ctx, posturePrefix+d.instanceID); err == nil {
+	votes, ok := d.store.(store.PostureVotes)
+	if !ok {
+		return
+	}
+	if err := votes.DeletePostureVote(ctx, d.instanceID); err == nil {
 		d.voteLive.Store(false)
 	}
 }

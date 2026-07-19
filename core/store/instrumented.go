@@ -116,4 +116,52 @@ func (s *Instrumented) ScanLimit(ctx context.Context, prefix string, limit int) 
 	return kvs[:limit], false, nil
 }
 
+func (s *Instrumented) ScanActiveBlocks(ctx context.Context, prefix string, limit int) ([]KV, bool, error) {
+	start := time.Now()
+	inner, ok := s.inner.(ActiveBlockScanner)
+	if !ok {
+		s.observe("block_index_scan", start, ErrCapabilityUnsupported)
+		return nil, false, ErrCapabilityUnsupported
+	}
+	kvs, complete, err := inner.ScanActiveBlocks(ctx, prefix, limit)
+	s.observe("block_index_scan", start, err)
+	return kvs, complete, err
+}
+
+func (s *Instrumented) SetPostureVote(ctx context.Context, instanceID string, level int, ttl time.Duration) error {
+	start := time.Now()
+	inner, ok := s.inner.(PostureVotes)
+	if !ok {
+		s.observe("posture_set", start, ErrCapabilityUnsupported)
+		return ErrCapabilityUnsupported
+	}
+	err := inner.SetPostureVote(ctx, instanceID, level, ttl)
+	s.observe("posture_set", start, err)
+	return err
+}
+
+func (s *Instrumented) DeletePostureVote(ctx context.Context, instanceID string) error {
+	start := time.Now()
+	inner, ok := s.inner.(PostureVotes)
+	if !ok {
+		s.observe("posture_delete", start, ErrCapabilityUnsupported)
+		return ErrCapabilityUnsupported
+	}
+	err := inner.DeletePostureVote(ctx, instanceID)
+	s.observe("posture_delete", start, err)
+	return err
+}
+
+func (s *Instrumented) MaxPostureVote(ctx context.Context, excludeInstanceID string) (int, error) {
+	start := time.Now()
+	inner, ok := s.inner.(PostureVotes)
+	if !ok {
+		s.observe("posture_max", start, ErrCapabilityUnsupported)
+		return 0, ErrCapabilityUnsupported
+	}
+	level, err := inner.MaxPostureVote(ctx, excludeInstanceID)
+	s.observe("posture_max", start, err)
+	return level, err
+}
+
 func (s *Instrumented) Close() error { return s.inner.Close() }

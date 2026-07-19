@@ -16,7 +16,7 @@ import (
 )
 
 // blockKeyPrefix namespaces active behavioural blocks in the store; the
-// admin API's ListBlocks enumerates it with Store.Scan.
+// admin API and enforcement reconciler enumerate its dedicated store index.
 const blockKeyPrefix = "block:"
 
 // BlockKey is the store key holding an active behavioural block for an IP.

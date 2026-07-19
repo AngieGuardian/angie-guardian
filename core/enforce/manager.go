@@ -6,6 +6,7 @@ package enforce
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"strings"
@@ -22,7 +23,7 @@ import (
 // event with a metric and the next reconcile repairs the sink.
 const sinkQueueCap = 4096
 
-// reconcileTimeout caps one authoritative scan so a dead store cannot wedge
+// reconcileTimeout caps one indexed reconcile so a dead store cannot wedge
 // the reconcile loop; the mirror keeps its last state until the next tick.
 const reconcileTimeout = 30 * time.Second
 
@@ -33,6 +34,7 @@ const errLogInterval = time.Minute
 type sinkRunner struct {
 	sink       Sink
 	ch         chan BlockEvent
+	mu         sync.Mutex // serializes Apply with destructive replace-all Reconcile
 	lastErrLog atomic.Int64
 	suppressed atomic.Uint64
 }
@@ -57,9 +59,10 @@ type Manager struct {
 	// while the generation it scanned under is unchanged. This prevents a
 	// concurrent capacity drop from being overwritten by a stale "complete"
 	// result after the scan took its store snapshot.
-	mirrorState   atomic.Uint64
-	lastReconcile atomic.Int64
-	reconcileErrs atomic.Uint64
+	mirrorState    atomic.Uint64
+	sinkGeneration atomic.Uint64
+	lastReconcile  atomic.Int64
+	reconcileErrs  atomic.Uint64
 
 	now    func() time.Time
 	kick   chan struct{}
@@ -223,6 +226,10 @@ func (m *Manager) Notify(ev BlockEvent) {
 		}
 	}
 	m.metrics.OffloadEntries("mirror", m.mir.count())
+	// Publish a generation before queueing. Reconcile uses it together with the
+	// runner mutex to ensure a replace-all snapshot can never land after an
+	// event newer than that snapshot.
+	m.sinkGeneration.Add(1)
 	for _, sr := range m.sinks {
 		select {
 		case sr.ch <- ev:
@@ -307,20 +314,25 @@ func (m *Manager) runReconcile(ctx context.Context) {
 func (m *Manager) reconcileOnce(ctx context.Context) {
 	scanStart := m.now()
 	scanGeneration := m.mirrorState.Load() >> 1
+	sinkScanGeneration := m.sinkGeneration.Load()
 	sctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	var (
 		kvs        []store.KV
 		scannedAll = true
 		err        error
 	)
-	if scanner, ok := m.st.(store.LimitedScanner); ok {
-		kvs, scannedAll, err = scanner.ScanLimit(sctx, m.cfg.KeyPrefix, m.cfg.MaxEntries)
-	} else {
-		kvs, err = m.st.Scan(sctx, m.cfg.KeyPrefix)
-		if len(kvs) > m.cfg.MaxEntries {
-			kvs = kvs[:m.cfg.MaxEntries]
-			scannedAll = false
+	_, indexed := m.st.(store.ActiveBlockScanner)
+	if scanner, ok := m.st.(store.ActiveBlockScanner); ok {
+		kvs, scannedAll, err = scanner.ScanActiveBlocks(sctx, m.cfg.KeyPrefix, m.cfg.MaxEntries)
+		if errors.Is(err, store.ErrCapabilityUnsupported) {
+			indexed = false
+			err = nil
 		}
+	}
+	if !indexed {
+		// Compatibility path for third-party stores. Built-in stores all expose
+		// the dedicated index and never reach this broad scan on a tick.
+		kvs, scannedAll, err = m.scanBlocksFallback(sctx)
 	}
 	cancel()
 	if err != nil {
@@ -328,7 +340,7 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 		m.metrics.OffloadReconcile(false)
 		// Mirror hits keep denying while the store is down; entries expire by
 		// their own TTLs, so stale state is bounded even during a long outage.
-		m.log.Warn("block reconcile scan failed, keeping last mirror state", "err", err)
+		m.log.Warn("block index reconcile failed, keeping last mirror state", "err", err)
 		return
 	}
 	active := make(map[netip.Addr]entry, len(kvs))
@@ -351,14 +363,52 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 	m.lastReconcile.Store(scanStart.UnixNano())
 	m.metrics.OffloadReconcile(true)
 	m.metrics.OffloadEntries("mirror", m.mir.count())
+	// Reconcile is a replace-all operation for external sinks. Never feed it a
+	// capped or concurrently changing snapshot: doing so would remove valid
+	// kernel blocks that were outside the partial result.
+	if !scannedAll {
+		if len(m.sinks) > 0 {
+			m.metrics.OffloadReconcileSkipped("incomplete_snapshot")
+		}
+		return
+	}
+	skippedStale := false
 	for _, sr := range m.sinks {
-		if err := sr.sink.Reconcile(list); err != nil {
+		sr.mu.Lock()
+		// A newer Notify is either already applied or waiting on this same mutex.
+		// In the former case this snapshot is stale; in the latter case it will
+		// apply immediately after a safe reconcile.
+		if m.sinkGeneration.Load() != sinkScanGeneration {
+			skippedStale = true
+			sr.mu.Unlock()
+			continue
+		}
+		err := sr.sink.Reconcile(list)
+		sr.mu.Unlock()
+		if err != nil {
 			m.logSinkErr(sr, "reconcile", err)
 		}
 		st := sr.sink.Status()
 		m.metrics.OffloadHealthy(st.Name, st.Healthy)
 		m.metrics.OffloadEntries(st.Name, st.Elements)
 	}
+	if skippedStale {
+		m.metrics.OffloadReconcileSkipped("concurrent_event")
+	}
+}
+
+// scanBlocksFallback is the bounded compatibility path for stores without the
+// backend-native active-block index (including wrappers that explicitly
+// report ErrCapabilityUnsupported).
+func (m *Manager) scanBlocksFallback(ctx context.Context) ([]store.KV, bool, error) {
+	if scanner, ok := m.st.(store.LimitedScanner); ok {
+		return scanner.ScanLimit(ctx, m.cfg.KeyPrefix, m.cfg.MaxEntries)
+	}
+	kvs, err := m.st.Scan(ctx, m.cfg.KeyPrefix)
+	if err != nil || len(kvs) <= m.cfg.MaxEntries {
+		return kvs, true, err
+	}
+	return kvs[:m.cfg.MaxEntries], false, nil
 }
 
 func (m *Manager) runSink(ctx context.Context, sr *sinkRunner) {
@@ -368,7 +418,10 @@ func (m *Manager) runSink(ctx context.Context, sr *sinkRunner) {
 		case <-ctx.Done():
 			return
 		case ev := <-sr.ch:
-			if err := sr.sink.Apply(ev); err != nil {
+			sr.mu.Lock()
+			err := sr.sink.Apply(ev)
+			sr.mu.Unlock()
+			if err != nil {
 				m.metrics.OffloadOp(sr.sink.Name(), opOf(ev), "error")
 				m.logSinkErr(sr, opOf(ev), err)
 			} else {

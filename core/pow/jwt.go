@@ -77,7 +77,6 @@ func (m *Manager) signToken(token *jwt.Token) (string, error) {
 		}
 		m.setRetiredKeys(current, previous)
 	}
-	m.lastRefresh = m.now()
 	return token.SignedString(current)
 }
 
@@ -111,6 +110,12 @@ const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 // verification keys, so tokens minted before a rotation stay valid until they
 // age out via exp (plan §7).
 func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, maxAge time.Duration) error {
+	// Refresh before consulting the cache as well as before signature
+	// verification. A cached or signature-valid token from a key this replica
+	// still thinks is current must not suppress learning that a peer retired it.
+	if err := m.refreshKeysBeforeTokenAccept(); err != nil {
+		return fmt.Errorf("refresh token verification keys: %w", err)
+	}
 	now := m.now()
 	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent + "\x00" + strconv.Itoa(minBits) + "\x00" + strconv.FormatInt(int64(maxAge), 10)))
 	if m.cache.get(cacheKey, now) {
@@ -118,7 +123,11 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 	}
 	claims, err := m.verifyTokenOnce(token, host, ip, userAgent)
 	if err != nil {
-		if refreshed, _ := m.refreshKeys(true); refreshed {
+		refreshed, refreshErr := m.refreshKeys(true)
+		if refreshErr != nil {
+			return fmt.Errorf("refresh token verification keys after signature miss: %w", refreshErr)
+		}
+		if refreshed {
 			claims, err = m.verifyTokenOnce(token, host, ip, userAgent)
 		}
 	}

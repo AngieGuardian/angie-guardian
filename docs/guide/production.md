@@ -116,11 +116,18 @@ verdicts) in a pluggable store. Signing keys remain in
   is a drop-in replacement (same wire protocol, same `backend: redis` value).
 
 Guardian's Redis client currently uses plaintext TCP and its keys are not
-prefixed per deployment. Put Redis/Valkey on loopback or a private, authenticated
-network (or reach it through a verified TLS/mTLS tunnel), and allocate a
-dedicated logical database or cluster to each Guardian deployment. Never point
-unrelated staging/production sites at the same database: blocks, challenges,
-counters, bot verdicts, and fleet posture would collide.
+prefixed per deployment. Put Redis/Valkey on loopback or a private,
+authenticated network (or reach it through a verified TLS/mTLS tunnel), and
+allocate a fresh, dedicated logical database on a Redis/Valkey server to each
+Guardian deployment. Never point unrelated staging/production sites at the
+same database: blocks, challenges, counters, bot verdicts, and fleet posture
+would collide.
+
+`store.addr` uses the standalone Redis protocol client; Redis Cluster is not
+currently supported. Guardian's atomic active-block maintenance touches a
+block key and the shared index in one script, which is not a cross-slot Cluster
+operation. Use a stable TCP endpoint in front of your replicated Redis/Valkey
+service when you need server failover.
 
 The rule of thumb from the
 [measured numbers](/guide/what-is-guardian#performance): the backend choice
@@ -208,6 +215,12 @@ can create competing keys. If files must be distributed asynchronously,
 designate exactly one instance as the rotator and complete distribution before
 allowing another rotation.
 
+Key refresh and token minting deliberately fail closed while either key path
+is unreadable. Prefer local disk for a single-host deployment. For multiple
+hosts, use a low-latency, reliably mounted shared filesystem and include mount
+interruption/recovery in the soak: a flaky NFS or distributed mount can cause
+a brief fleet-wide challenge/token outage.
+
 ## Metrics and dashboards
 
 Prometheus metrics live at `/metrics` on the admin listener (open to
@@ -234,3 +247,6 @@ Retired keys accept only tokens issued before rotation, and no accepted token
 may have a lifetime longer than seven days.
 Older archive files may remain for operator retention, but Guardian drops them
 from the in-memory verification set once that seven-day horizon has elapsed.
+Each replica still enumerates the archive directory during refresh, so archive
+or delete files beyond the horizon to bound directory-scan cost. Expired
+timestamped key contents are skipped before file reads and key parsing.

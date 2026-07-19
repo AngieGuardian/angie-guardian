@@ -59,7 +59,7 @@ full picture. Every field is restart-required.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enforcement.mirror.reconcile_interval` | duration | `10s` | Cadence of the store scan that seeds the mirror, corrects entries and repairs sink drift. Minimum `1s`. |
+| `enforcement.mirror.reconcile_interval` | duration | `10s` | Cadence of the bounded active-block index read that seeds the mirror, corrects entries and repairs sink drift. Minimum `1s`. |
 | `enforcement.mirror.max_entries` | int | `1048576` | Mirror capacity. Overflow entries fall back to the store read path (never lost, just not cached). |
 | `enforcement.mirror.mode` | string | `auto` | `auto` (authoritative for `memory`/`bbolt`, read-through for `redis`), `authoritative`, or `read_through`. |
 | `enforcement.nftables.enabled` | bool | `false` | Enable the kernel sink. Linux only; needs `CAP_NET_ADMIN`. |

@@ -40,6 +40,28 @@ func LoadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	}
 }
 
+// loadKeySetSnapshot reads the current key and retirement archive while
+// holding the same cross-process lock as RotateKey. Without one snapshot lock,
+// a verifier can observe the old current file after it has been archived but
+// before the atomic replacement and incorrectly reinstall a retired key as
+// current.
+func loadKeySetSnapshot(keyPath, prevDir string, now time.Time) (ed25519.PrivateKey, []RetiredKey, error) {
+	unlock, err := lockRotation(keyPath + ".rotate.lock")
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock key snapshot: %w", err)
+	}
+	defer unlock()
+	current, err := loadKey(keyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	previous, err := loadRetiredKeysAt(prevDir, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return current, previous, nil
+}
+
 func loadKey(path string) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -145,6 +167,18 @@ func loadRetiredKeysAt(dir string, now time.Time) ([]RetiredKey, error) {
 	byFingerprint := make(map[[32]byte]int, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
+		retiredAt := retirementTimeFromName(name)
+		if retiredAt.IsZero() {
+			if info, err := os.Stat(path); err == nil {
+				retiredAt = info.ModTime()
+			}
+		}
+		// Rotation archives carry a trusted retirement timestamp in their
+		// filename. Check the horizon before reading/parsing the key so archive
+		// retention does not make refresh crypto work grow without bound.
+		if !retiredAt.IsZero() && now.After(retiredAt.Add(maxAcceptedTokenLifetime)) {
+			continue
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -152,20 +186,6 @@ func loadRetiredKeysAt(dir string, now time.Time) ([]RetiredKey, error) {
 		k, err := parseKey(raw, path)
 		if err != nil {
 			return nil, err
-		}
-		retiredAt := time.Time{}
-		if stamp, _, ok := strings.Cut(name, "-"); ok {
-			if unix, err := strconv.ParseInt(stamp, 10, 64); err == nil && unix > 0 {
-				retiredAt = time.Unix(unix, 0)
-			}
-		}
-		if retiredAt.IsZero() {
-			if info, err := os.Stat(path); err == nil {
-				retiredAt = info.ModTime()
-			}
-		}
-		if !retiredAt.IsZero() && now.After(retiredAt.Add(maxAcceptedTokenLifetime)) {
-			continue
 		}
 		fingerprint := sha256.Sum256(k.Public().(ed25519.PublicKey))
 		if i, ok := byFingerprint[fingerprint]; ok {
@@ -178,6 +198,18 @@ func loadRetiredKeysAt(dir string, now time.Time) ([]RetiredKey, error) {
 		keys = append(keys, RetiredKey{Key: k, RetiredAt: retiredAt})
 	}
 	return keys, nil
+}
+
+func retirementTimeFromName(name string) time.Time {
+	stamp, _, ok := strings.Cut(name, "-")
+	if !ok {
+		return time.Time{}
+	}
+	unix, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0)
 }
 
 // LoadPreviousKeys is the compatibility view used by callers that only need

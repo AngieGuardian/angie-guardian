@@ -36,6 +36,7 @@ type Metrics struct {
 	offloadEntries   *prometheus.GaugeVec   // by sink (mirror|nftables)
 	offloadOps       *prometheus.CounterVec // by sink, op (add|remove), status (ok|error|dropped)
 	offloadReconcile *prometheus.CounterVec // by status (ok|error)
+	offloadSkipped   *prometheus.CounterVec // by reason (incomplete_snapshot|concurrent_event)
 	offloadHealthy   *prometheus.GaugeVec   // by sink; 1 = enforcing, 0 = degraded to in-daemon
 
 	attackMode        prometheus.Gauge       // 0 normal, 1 elevated, 2 attack
@@ -120,6 +121,10 @@ func New() *Metrics {
 			Namespace: "guardian", Name: "offload_reconcile_total",
 			Help: "Block-set reconciliation scans by status (ok|error).",
 		}, []string{"status"}),
+		offloadSkipped: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "offload_reconcile_skipped_total",
+			Help: "External-sink replace-all reconciles skipped because the store snapshot was incomplete or a newer event made it stale.",
+		}, []string{"reason"}),
 		offloadHealthy: f.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "guardian", Name: "offload_healthy",
 			Help: "Whether an enforcement sink is healthy (1) or degraded to in-daemon enforcement (0).",
@@ -257,6 +262,15 @@ func (m *Metrics) OffloadReconcile(ok bool) {
 		status = "error"
 	}
 	m.offloadReconcile.WithLabelValues(status).Inc()
+}
+
+// OffloadReconcileSkipped records why a successful mirror scan could not be
+// used for destructive replace-all repair of external enforcement sinks.
+func (m *Metrics) OffloadReconcileSkipped(reason string) {
+	if m == nil {
+		return
+	}
+	m.offloadSkipped.WithLabelValues(reason).Inc()
 }
 
 func (m *Metrics) OffloadHealthy(sink string, healthy bool) {

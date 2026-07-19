@@ -7,6 +7,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,9 +18,11 @@ import (
 // Memory is an in-process Store for development, testing and single-instance
 // setups that can afford to lose state on restart.
 type Memory struct {
-	mu   sync.Mutex
-	m    map[string]entry
-	done chan struct{}
+	mu           sync.Mutex
+	m            map[string]entry
+	activeBlocks map[string]struct{}
+	postureVotes map[string]postureVote
+	done         chan struct{}
 }
 
 type entry struct {
@@ -27,12 +30,22 @@ type entry struct {
 	expiresAt time.Time // zero = no expiry
 }
 
+type postureVote struct {
+	level     int
+	expiresAt time.Time
+}
+
 func (e entry) expired(now time.Time) bool {
 	return !e.expiresAt.IsZero() && now.After(e.expiresAt)
 }
 
 func NewMemory() *Memory {
-	s := &Memory{m: make(map[string]entry), done: make(chan struct{})}
+	s := &Memory{
+		m:            make(map[string]entry),
+		activeBlocks: make(map[string]struct{}),
+		postureVotes: make(map[string]postureVote),
+		done:         make(chan struct{}),
+	}
 	go s.janitor()
 	return s
 }
@@ -49,6 +62,12 @@ func (s *Memory) janitor() {
 			for k, e := range s.m {
 				if e.expired(now) {
 					delete(s.m, k)
+					delete(s.activeBlocks, k)
+				}
+			}
+			for id, vote := range s.postureVotes {
+				if !vote.expiresAt.IsZero() && now.After(vote.expiresAt) {
+					delete(s.postureVotes, id)
 				}
 			}
 			s.mu.Unlock()
@@ -60,6 +79,7 @@ func (s *Memory) get(key string) (entry, bool) {
 	e, ok := s.m[key]
 	if !ok || e.expired(time.Now()) {
 		delete(s.m, key)
+		delete(s.activeBlocks, key)
 		return entry{}, false
 	}
 	return e, true
@@ -86,6 +106,9 @@ func (s *Memory) Set(_ context.Context, key string, value []byte, ttl time.Durat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[key] = entry{value: bytes.Clone(value), expiresAt: expiry(ttl)}
+	if strings.HasPrefix(key, "block:") {
+		s.activeBlocks[key] = struct{}{}
+	}
 	return nil
 }
 
@@ -93,6 +116,7 @@ func (s *Memory) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, key)
+	delete(s.activeBlocks, key)
 	return nil
 }
 
@@ -181,6 +205,69 @@ func (s *Memory) ScanLimit(_ context.Context, prefix string, limit int) ([]KV, b
 	}
 	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
 	return out, true, nil
+}
+
+// ScanActiveBlocks walks only the block index, so its cost is independent of
+// unrelated keys in the in-memory store.
+func (s *Memory) ScanActiveBlocks(_ context.Context, prefix string, limit int) ([]KV, bool, error) {
+	if prefix != "block:" {
+		return nil, false, ErrCapabilityUnsupported
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	out := make([]KV, 0, min(len(s.activeBlocks), max(limit, 0)))
+	complete := true
+	for key := range s.activeBlocks {
+		e, ok := s.m[key]
+		if !ok || e.expired(now) {
+			delete(s.activeBlocks, key)
+			delete(s.m, key)
+			continue
+		}
+		out = append(out, KV{Key: key, Value: bytes.Clone(e.value), ExpiresAt: e.expiresAt})
+		if limit > 0 && len(out) > limit {
+			out = out[:limit]
+			complete = false
+			break
+		}
+	}
+	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+	return out, complete, nil
+}
+
+func (s *Memory) SetPostureVote(_ context.Context, instanceID string, level int, ttl time.Duration) error {
+	if level < 1 || level > 2 || ttl <= 0 {
+		return fmt.Errorf("invalid posture vote level=%d ttl=%v", level, ttl)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.postureVotes[instanceID] = postureVote{level: level, expiresAt: time.Now().Add(ttl)}
+	return nil
+}
+
+func (s *Memory) DeletePostureVote(_ context.Context, instanceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.postureVotes, instanceID)
+	return nil
+}
+
+func (s *Memory) MaxPostureVote(_ context.Context, excludeInstanceID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	maxLevel := 0
+	for id, vote := range s.postureVotes {
+		if !vote.expiresAt.IsZero() && now.After(vote.expiresAt) {
+			delete(s.postureVotes, id)
+			continue
+		}
+		if id != excludeInstanceID && vote.level > maxLevel {
+			maxLevel = vote.level
+		}
+	}
+	return maxLevel, nil
 }
 
 func (s *Memory) Close() error {

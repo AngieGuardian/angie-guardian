@@ -26,11 +26,12 @@ path. The mirror is a bounded in-memory copy of the active block set:
 
 - **Write-through.** Every block and unblock (scoreboard, WAF, admin API)
   updates the mirror synchronously, so enforcement is immediate.
-- **Reconciled and bounded.** A periodic store scan (`reconcile_interval`,
-  default 10s) seeds the mirror at startup, corrects entries and picks up
-  blocks placed by another instance. Reconciliation retains at most
-  `max_entries`; Redis fetches values/TTLs in bounded batches rather than one
-  command pipeline proportional to the full block keyspace.
+- **Reconciled and bounded.** A periodic active-block index read
+  (`reconcile_interval`, default 10s) seeds the mirror at startup, corrects
+  entries and picks up blocks placed by another instance. Reconciliation
+  retains at most `max_entries`. Memory has a dedicated block map, bbolt seeks
+  directly to its ordered `block:` range, and Redis reads a fixed sorted-set
+  index, so unrelated challenge/counter keys never increase tick cost.
 - **Store-outage safe.** A mirror hit denies even while the store is down, so
   an outage no longer silently drops behavioural blocks.
 
@@ -51,9 +52,9 @@ deliberate: paying that read is what makes a block placed on one replica apply
 on the others within microseconds instead of up to one `reconcile_interval`.
 If you would rather have the speed and can accept that cross-replica lag, set
 `enforcement.mirror.mode: authoritative` explicitly on redis; blocks placed by
-other replicas then apply only after the next reconcile scan (measured ~168k
+other replicas then apply only after the next indexed reconcile (measured ~168k
 vs ~77k req/s on the allow path). A shorter `reconcile_interval` narrows that
-lag at the cost of a periodic full store scan per instance.
+lag at the cost of more frequent bounded active-block reads.
 
 If the mirror fills past `max_entries` (default ~1M), its status becomes
 `complete: false` and misses fall back to the store read path—even when the
@@ -161,7 +162,7 @@ configuration.
 
 `GET /admin/offload` reports the mirror (mode, entry count, seed and
 `complete` state, last reconcile) and every sink's health, and
-`POST /admin/offload/reconcile` forces an immediate reconcile scan for drift
+`POST /admin/offload/reconcile` forces an immediate indexed reconcile for drift
 repair after a manual `nft flush`.
 
 Metrics (all bounded-cardinality):
@@ -171,11 +172,15 @@ Metrics (all bounded-cardinality):
 | `guardian_block_lookups_total{source,outcome}` | mirror vs store hits/misses: proves the fast path works |
 | `guardian_offload_entries{sink}` | active entries in the mirror and each sink |
 | `guardian_offload_ops_total{sink,op,status}` | add/remove operations and drops |
-| `guardian_offload_reconcile_total{status}` | reconcile scans, ok vs error |
+| `guardian_offload_reconcile_total{status}` | indexed reconciles, ok vs error |
+| `guardian_offload_reconcile_skipped_total{reason}` | sink replace-all repair skipped for an incomplete snapshot or concurrent event |
 | `guardian_offload_healthy{sink}` | 1 = sink enforcing, 0 = degraded to in-daemon |
 
 Alert on `guardian_offload_healthy{sink="nftables"} == 0`: it means kernel
 enforcement broke and you are back to in-daemon enforcement.
+Also alert when `rate(guardian_offload_reconcile_skipped_total[5m])` remains
+non-zero while `guardian_offload_ops_total{status="dropped"}` increases: event
+queue drift is then waiting for a quiet, complete replace-all repair.
 
 ## Configuration reference
 
