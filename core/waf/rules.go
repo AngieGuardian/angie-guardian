@@ -11,15 +11,17 @@ import (
 	"hash/fnv"
 	"io"
 	"log/slog"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/melroy89/angie-guardian/internal/safefile"
 	"gopkg.in/yaml.v3"
 )
+
+const maxRulesBytes = 8 << 20
 
 // Action is what a matching rule asks the pipeline to do.
 type Action string
@@ -321,7 +323,7 @@ func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
 // load reads, compiles and installs the rules file, returning its content
 // hash so the poller can record what it loaded.
 func (f *ruleFile) load() (uint64, error) {
-	raw, err := os.ReadFile(f.path)
+	raw, err := safefile.Read(f.path, maxRulesBytes)
 	if err != nil {
 		return 0, err
 	}
@@ -366,7 +368,7 @@ func (c *RuleCache) Start(interval time.Duration) {
 
 func (c *RuleCache) reloadChanged() {
 	for _, f := range c.files {
-		raw, err := os.ReadFile(f.path)
+		raw, err := safefile.Read(f.path, maxRulesBytes)
 		if err != nil {
 			c.log.Warn("rules file unreadable, keeping loaded rules", "file", f.path, "err", err)
 			continue

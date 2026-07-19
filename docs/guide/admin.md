@@ -19,6 +19,11 @@ A non-loopback bind refuses to start without an explicitly configured token
 (option 1 or 2 above).
 :::
 
+The admin listener is plain HTTP. Keep it on loopback or a strictly firewalled
+management network. If it must cross a host or network boundary, place it
+behind a TLS/mTLS reverse proxy or service mesh; a bearer token sent over
+plaintext can be captured and replayed.
+
 ## Everyday operations
 
 ```sh
@@ -29,8 +34,9 @@ A=http://127.0.0.1:8072
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # {"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
 
-# List every currently active block, with reasons and expiry.
-curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks
+# List a bounded page of active blocks, with reasons and expiry. The default
+# is 1000 and the hard maximum is 10000; complete=false means more exist.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
 # What did the guardian just challenge or deny? Newest first, from an
 # in-process ring buffer (per instance, cleared on restart).
@@ -90,16 +96,15 @@ The full endpoint list with request/response shapes is in the
 
 ## The reporting dashboard
 
-Set `admin.dashboard: true`, start guardiand, and open the login link it
-prints:
+Set `admin.dashboard: true`, start guardiand, and open the URL it prints:
 
 ```
-INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard#token=9f2c…
+INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard
 ```
 
-The token rides the URL **fragment**, which browsers never send over the
-network; the page moves it into the tab's sessionStorage and scrubs it from
-the address bar. (Opening the bare URL instead shows a paste-the-token gate.)
+Paste the token from `admin.token_file` (or your configured secret) into the
+login gate. Guardian never puts configured or persistent bearer credentials
+in process logs. The page keeps the token only in the tab's sessionStorage.
 
 ![The Guardian admin dashboard](/dashboard.png)
 
@@ -108,9 +113,11 @@ form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, IP intelligence health (loaded GeoIP databases plus each reputation
 feed's entries, refresh age and last error), and headline counters,
-auto-refreshing every 5 seconds. The potentially large active-block list is
-cached for one minute (and refreshed immediately after a block/unblock action)
-so leaving the dashboard open does not force a full store scan every tick.
+auto-refreshing every 5 seconds. The active-block table is capped at 1000 rows
+and cached for one minute (and refreshed immediately after a block/unblock
+action). The headline count comes from the bounded in-process mirror and is
+shown as a lower bound when that mirror is capacity-incomplete, so leaving the
+dashboard open never triggers an unbounded store scan.
 
 The page is a static shell: it stores no secrets, stays off unless enabled,
 and every data call goes to the token-guarded `/admin/*` endpoints. The shell

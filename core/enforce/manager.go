@@ -51,8 +51,13 @@ type Manager struct {
 	// seeded flips after the first successful scan. Until then the mirror
 	// may be missing blocks persisted before this process started (bbolt),
 	// so lookups fall back to the store even in authoritative mode.
-	seeded        atomic.Bool
-	complete      atomic.Bool // false when capacity dropped any authoritative entry
+	seeded atomic.Bool
+	// mirrorState packs a monotonic drop generation in the upper bits and the
+	// completeness flag in bit zero. A reconcile may only publish its result
+	// while the generation it scanned under is unchanged. This prevents a
+	// concurrent capacity drop from being overwritten by a stale "complete"
+	// result after the scan took its store snapshot.
+	mirrorState   atomic.Uint64
 	lastReconcile atomic.Int64
 	reconcileErrs atomic.Uint64
 
@@ -159,7 +164,41 @@ func (m *Manager) ReadThrough() bool {
 	if m == nil {
 		return true
 	}
-	return m.cfg.Mode == ModeReadThrough || !m.seeded.Load() || !m.complete.Load()
+	return m.cfg.Mode == ModeReadThrough || !m.seeded.Load() || !m.mirrorComplete()
+}
+
+func (m *Manager) mirrorComplete() bool { return m.mirrorState.Load()&1 != 0 }
+
+// markMirrorIncomplete advances the generation as well as clearing complete.
+// The generation is what makes the clear linearizable with a reconcile that
+// is concurrently preparing to publish a successful scan.
+func (m *Manager) markMirrorIncomplete() {
+	for {
+		old := m.mirrorState.Load()
+		next := ((old >> 1) + 1) << 1
+		if m.mirrorState.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+// publishMirrorReconcile publishes only if no capacity drop happened since
+// the scan started. A later drop always advances the generation and clears
+// complete, regardless of whether it races before or after this CAS.
+func (m *Manager) publishMirrorReconcile(generation uint64, complete bool) {
+	for {
+		old := m.mirrorState.Load()
+		if old>>1 != generation {
+			return
+		}
+		next := old &^ uint64(1)
+		if complete {
+			next |= 1
+		}
+		if m.mirrorState.CompareAndSwap(old, next) {
+			return
+		}
+	}
 }
 
 // Notify applies one block change: mirror synchronously (nanoseconds), sinks
@@ -178,7 +217,7 @@ func (m *Manager) Notify(ev BlockEvent) {
 			exp = now.Add(ev.TTL).UnixNano()
 		}
 		if !m.mir.set(ev.IP, entry{reason: ev.Reason, expiresAt: exp, insertedAt: now.UnixNano()}) {
-			m.complete.Store(false)
+			m.markMirrorIncomplete()
 			m.metrics.OffloadOp("mirror", "add", "dropped")
 			m.log.Warn("block mirror full, entry falls back to store enforcement", "ip", ev.IP.String())
 		}
@@ -211,7 +250,7 @@ func (m *Manager) Learn(ip, reason string) {
 		expiresAt:  now.Add(2 * m.cfg.ReconcileInterval).UnixNano(),
 		insertedAt: now.UnixNano(),
 	}) {
-		m.complete.Store(false)
+		m.markMirrorIncomplete()
 	}
 }
 
@@ -235,7 +274,7 @@ func (m *Manager) Status() Status {
 		Entries:         m.mir.count(),
 		Mode:            m.cfg.Mode,
 		Seeded:          m.seeded.Load(),
-		Complete:        m.complete.Load(),
+		Complete:        m.mirrorComplete(),
 		ReconcileErrors: m.reconcileErrs.Load(),
 		Dropped:         m.mir.dropped.Load(),
 	}}
@@ -267,6 +306,7 @@ func (m *Manager) runReconcile(ctx context.Context) {
 
 func (m *Manager) reconcileOnce(ctx context.Context) {
 	scanStart := m.now()
+	scanGeneration := m.mirrorState.Load() >> 1
 	sctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	var (
 		kvs        []store.KV
@@ -306,7 +346,7 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 		active[a] = entry{reason: string(kv.Value), expiresAt: exp, insertedAt: scanStart.UnixNano()}
 		list = append(list, ActiveBlock{Addr: a, Reason: string(kv.Value), ExpiresAt: kv.ExpiresAt})
 	}
-	m.complete.Store(m.mir.reconcile(active, scanStart.UnixNano(), scannedAll))
+	m.publishMirrorReconcile(scanGeneration, m.mir.reconcile(active, scanStart.UnixNano(), scannedAll))
 	m.seeded.Store(true)
 	m.lastReconcile.Store(scanStart.UnixNano())
 	m.metrics.OffloadReconcile(true)

@@ -9,6 +9,8 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,5 +198,81 @@ func TestPeerRefreshesCurrentKeyBeforeStatelessIssue(t *testing.T) {
 	})
 	if err != nil || res.Token == "" {
 		t.Fatalf("peer issued stateless challenge with an already-retired key: token=%t err=%v", res != nil && res.Token != "", err)
+	}
+}
+
+func TestStatelessIssueAndRedeemFailClosedOnKeyRefreshError(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ed25519.key")
+	prevDir := filepath.Join(dir, "previous")
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	m, err := NewManagerFromFiles(keyPath, prevDir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := m.IssueStateless("a.test", "203.0.113.11", "/", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	m.lastRefresh = time.Time{}
+	if _, err := m.IssueStateless("a.test", "203.0.113.12", "/", 0, false); err == nil {
+		t.Fatal("stateless issuance continued after key refresh failed")
+	}
+	if _, err := m.IssueStateless("a.test", "203.0.113.12", "/", 0, false); err == nil {
+		t.Fatal("throttled stateless issuance forgot the preceding refresh failure")
+	}
+	if _, err := m.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Host: "a.test", IP: "203.0.113.11", UserAgent: "x",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	}); err == nil || errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("redemption did not surface key refresh failure: %v", err)
+	}
+	if _, err := m.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Host: "a.test", IP: "203.0.113.11", UserAgent: "x",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	}); err == nil || errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("throttled redemption forgot the preceding refresh failure: %v", err)
+	}
+}
+
+func TestStatelessRejectsChallengeMintedAfterKeyRetirementGrace(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	oldKey, currentKey := genKey(t), genKey(t)
+	retiredAt := time.Unix(1_900_000_000, 0).UTC()
+	issuedAt := retiredAt.Add(statelessRetirementGrace + time.Millisecond)
+
+	compromised := NewManager(oldKey, st)
+	compromised.now = func() time.Time { return issuedAt }
+	ch, err := compromised.IssueStateless("a.test", "203.0.113.13", "/", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := newManagerWithRetiredKeys(currentKey, []RetiredKey{{Key: oldKey, RetiredAt: retiredAt}}, st)
+	verifier.now = func() time.Time { return issuedAt }
+	_, err = verifier.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Host: "a.test", IP: "203.0.113.13", UserAgent: "x",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	})
+	if !errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("post-retirement challenge err = %v, want ErrChallengeUnknown", err)
+	}
+}
+
+func TestStatelessRetiredSecretExpiresFromVerificationSet(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	oldKey, currentKey := genKey(t), genKey(t)
+	retiredAt := time.Unix(1_900_000_000, 0).UTC()
+	verifier := newManagerWithRetiredKeys(currentKey, []RetiredKey{{Key: oldKey, RetiredAt: retiredAt}}, st)
+	verifier.now = func() time.Time { return retiredAt.Add(maxAcceptedTokenLifetime + time.Second) }
+	payload := []byte(`{"v":1}`)
+	oldSecret := deriveHMACSecrets([]managerKey{{private: oldKey}})[0]
+	if _, ok := verifier.matchStatelessSecret(statelessMAC(oldSecret, payload), payload); ok {
+		t.Fatal("expired retired secret remained in stateless verification set")
 	}
 }

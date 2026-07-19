@@ -3,7 +3,8 @@
 Every field of `guardian.yaml`, with types and defaults. Unknown fields and
 trailing YAML documents are rejected, and semantic errors fail at startup or
 under `guardiand -t`. Preflight also opens every startup-required local rules,
-model, GeoIP, and reputation-feed artifact.
+model, GeoIP, and reputation-feed artifact. `guardian.yaml` itself is limited
+to 4 MiB.
 
 See the [Configuration guide](/guide/configuration) for the concepts and the
 [Examples page](/examples) for complete files.
@@ -19,7 +20,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `listen` | string | `127.0.0.1:8071` | The auth hot path (Angie's `auth_request` target). Must be loopback unless `trusted_proxy` is set. |
+| `listen` | string | `127.0.0.1:8071` | Numeric `host:port` for the auth hot path (Angie's `auth_request` target). Must be loopback unless `trusted_proxy` is set. Listener syntax is checked by `guardiand -t`. |
 | `log_level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `trusted_proxy` | bool | `false` | Allow a non-loopback `listen`. The hot path trusts the `X-Guardian-*` client-identity headers from its caller, so only set this when the listener is isolated to Angie (private network, firewall, or mTLS). |
 | `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Required when any effective domain enables PoW. Generated on first run if missing; never regenerated on restart. |
@@ -35,10 +36,10 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `admin.listen` | string | (empty = disabled) | Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics`, `/healthz`, and the optional static dashboard shell are open; every JSON/data `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is refused at startup. |
+| `admin.listen` | string | (empty = disabled) | Numeric `host:port` for the Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics`, `/healthz`, and the optional static dashboard shell are open; every JSON/data `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is rejected by preflight. |
 | `admin.token` | string | `$ADMIN_TOKEN` | Bearer token for `/admin/*` routes. Falls back to the `ADMIN_TOKEN` env var when empty. |
 | `admin.token_file` | string | | Persists an auto-generated bearer token (created 0600 on first start, never regenerated, like the signing key). Used when `token` and `ADMIN_TOKEN` are unset. With neither `token` nor `token_file`, a loopback listener gets a fresh ephemeral token per start, printed in the startup log. |
-| `admin.dashboard` | bool | `false` | Serve the built-in reporting page at `GET /admin/dashboard`. On startup guardiand logs a ready-to-open login URL carrying the token in the URL fragment. |
+| `admin.dashboard` | bool | `false` | Serve the built-in reporting page at `GET /admin/dashboard`. On startup guardiand logs the bare URL; paste the token into the login gate. Configured and persistent bearer tokens are never embedded in logs. |
 
 ## store
 
@@ -126,8 +127,8 @@ Each feed entry:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | **required** | Label in decision reasons (`reputation:<name>`), metrics, and the cache file name. 1..64 chars of `[a-zA-Z0-9._-]`, unique. |
-| `url` | string | | Fetched in the background every `refresh` interval. A slow or down remote never blocks startup; a failed refresh keeps the last good list and retries within 5 minutes. Hot reload preserves the in-memory last-good state when the feed name and URL are unchanged. Exactly one of `url`/`file`. |
-| `file` | string | | Local list. Must exist at startup (fail-fast, like the WAF rules files); hot-reloaded on change. |
+| `url` | string | | Fetched in the background every `refresh` interval, with a 64 MiB response/cache limit. A slow, oversized, or down remote keeps the last good list and retries within 5 minutes. Hot reload preserves the in-memory last-good state when the feed name and URL are unchanged. Exactly one of `url`/`file`. |
+| `file` | string | | Local list, limited to 64 MiB. Must exist at startup (fail-fast, like the WAF rules files); hot-reloaded on change and keeps the last-good list after an invalid/oversized update. |
 | `refresh` | Duration | `12h` | URL feeds only. Minimum `1m`. |
 | `action` | `deny` \| `challenge` | `deny` | `deny` rejects matching IPs outright; `challenge` makes them solve PoW first, one full step (+4 bits = 16x) above base, like a WAF signature hit. Challenge feeds are inert on a PoW-disabled domain. |
 
@@ -258,15 +259,15 @@ Behavioural IP blocking with exponential backoff.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer`). All inputs are lowercased; paths, queries, and targeted header values are also percent-decoded, while User-Agent values are not decoded. Every physical value of a duplicate header is inspected, and the first matching rule in file order wins. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. In the sidecar, a valid bound PoW token satisfies an `action: challenge` match; without PoW that action denies. `deny` always terminates, while `block` persists only when `waf.ip_behaviour.enabled`. The stateless WASM guest has no challenge or block state, so all three matching actions return a deny. Empty or whitespace-only keywords and regexes are rejected. |
-| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must contain exactly one YAML document and exist when enabled (fail-fast); hot-reloaded on change. |
+| `enabled` | bool | `false` | Enable keyword/regex threat signatures. Requires `rules_file`. Rules match the targets they name: `path`, `query` (the default pair), `ua`, or `header:<name>` (e.g. `header:referer` or `header:host`; Host uses Angie's effective `X-Guardian-Host`). All inputs are lowercased; paths, queries, and targeted header values are also percent-decoded, while User-Agent values are not decoded. Every physical value of a duplicate header is inspected, and the first matching rule in file order wins. `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods. In the sidecar, a valid bound PoW token satisfies an `action: challenge` match; without PoW that action denies. `deny` always terminates, while `block` persists only when `waf.ip_behaviour.enabled`. The stateless WASM guest has no challenge or block state, so all three matching actions return a deny. Empty or whitespace-only keywords and regexes are rejected. |
+| `rules_file` | string | | Rules file (start from `deploy/rules-common.yaml`, which documents every field). Must contain exactly one YAML document, be no larger than 8 MiB, and exist when enabled (fail-fast); hot-reloaded on change. An oversized or invalid update keeps the last-good rules active. |
 
 ### waf.anomaly
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable statistical anomaly scoring. Requires a non-empty `model` trained from your own logs; see [Train the Anomaly Model](/guide/anomaly). |
-| `model` | string | | Path to the model artifact from `guardian-train`. Required when enabled; hot-swapped when the file changes. |
+| `model` | string | | Path to the model artifact from `guardian-train`. Required when enabled, limited to 64 MiB, and hot-swapped when the file changes. An oversized or invalid update keeps the last-good model active. |
 | `challenge_at` | float | | Score at or above this triggers a PoW challenge when PoW is enabled, with difficulty scaled by the score; otherwise it falls through until `deny_at`. Both thresholds must be finite and satisfy `0 < challenge_at < deny_at <= 1`. |
 | `deny_at` | float | | Score at or above this denies outright. |
 

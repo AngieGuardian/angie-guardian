@@ -24,6 +24,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
+	"github.com/melroy89/angie-guardian/internal/safefile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,7 +123,8 @@ type AdminConfig struct {
 	// key: created 0600 on first start, never regenerated). Used when Token
 	// and ADMIN_TOKEN are unset, so the operator never invents a token by
 	// hand. With neither token nor token_file, a loopback admin listener gets
-	// a fresh ephemeral token per start (printed in the startup log).
+	// a fresh ephemeral token per start. It is printed once at startup; the
+	// dashboard URL itself never contains configured or persistent secrets.
 	TokenFile string `yaml:"token_file"`
 
 	// Dashboard serves the built-in reporting page at GET /admin/dashboard.
@@ -844,7 +846,8 @@ type ListConfig = stateless.ListConfig
 // LoadConfig reads, validates and resolves guardian.yaml. Per-domain configs
 // are precomputed here so the request hot path is a single map lookup.
 func LoadConfig(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	const maxConfigBytes = 4 << 20
+	raw, err := safefile.Read(path, maxConfigBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -887,6 +890,9 @@ func (c *Config) finalize() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8071"
 	}
+	if err := validateListenAddress("listen", c.Listen); err != nil {
+		return err
+	}
 	if !c.TrustedProxy && !listenIsLoopback(c.Listen) {
 		return fmt.Errorf("listen %s is not loopback: the auth hot path trusts client-identity headers from its caller, so a non-loopback bind lets clients spoof them. Isolate the listener to Angie and set trusted_proxy: true to allow this", c.Listen)
 	}
@@ -899,6 +905,14 @@ func (c *Config) finalize() error {
 	}
 	if c.Admin.Token == "" {
 		c.Admin.Token = os.Getenv("ADMIN_TOKEN")
+	}
+	if c.Admin.Listen != "" {
+		if err := validateListenAddress("admin.listen", c.Admin.Listen); err != nil {
+			return err
+		}
+		if !listenIsLoopback(c.Admin.Listen) && c.Admin.Token == "" && c.Admin.TokenFile == "" {
+			return fmt.Errorf("admin.listen %s is not loopback but no admin.token or admin.token_file is set; refusing to expose an unauthenticated admin API", c.Admin.Listen)
+		}
 	}
 	switch c.Store.Backend {
 	case "":
@@ -1639,6 +1653,20 @@ func (c *Config) DomainLabel(host string) string {
 }
 
 func normalizeHost(host string) string { return stateless.NormalizeHost(host) }
+
+func validateListenAddress(field, addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s must be a host:port listen address: %w", field, err)
+	}
+	if port == "" {
+		return fmt.Errorf("%s must include a numeric port", field)
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("%s port must be a number from 0 through 65535, got %q", field, port)
+	}
+	return nil
+}
 
 // listenIsLoopback reports whether a listen address binds only the loopback
 // interface. A wildcard bind ("0.0.0.0", "::", or an empty host) is NOT

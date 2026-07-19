@@ -43,10 +43,12 @@ equivalent spellings (including expanded or uppercase IPv6) to the same block.
 
 ### `GET /admin/blocks`
 
-List every currently active block, with reasons and expiry.
+List a bounded page of active blocks, with reasons and expiry. `limit` defaults
+to `1000`, must be `1..10000`, and `complete:false` means additional blocks
+exist beyond the returned page.
 
 ```json
-{"count":2,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
+{"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
                       "expires_at":"2026-07-05T18:30:00Z"}]}
 ```
 
@@ -92,9 +94,11 @@ Query parameters:
 
 ### `GET /admin/stats`
 
-A small "right now" rollup: active blocks, recent counts by action and reason
-category, and the PoW lifecycle (challenges issued/solved/failed plus average
-solve seconds). Long-horizon numbers live in `/metrics`.
+A small "right now" rollup: the mirror's active-block count, recent counts by
+action and reason category, and the PoW lifecycle. `blocks_complete:false`
+means `blocks_active` is a lower bound (or `-1` while the mirror has not seeded),
+never the result of an expensive fallback scan. Long-horizon numbers live in
+`/metrics`.
 
 ## Scoring
 
@@ -193,7 +197,8 @@ Pin or unpin the posture. Body `{"level": "normal"|"elevated"|"attack"|"auto", "
 both directions, so pinning `normal` is a local kill switch). A pin ignores
 peer posture and clears this instance's shared automatic vote; apply it to
 every replica for a fleet-wide override. `ttl` is optional (no expiry when
-omitted). Returns `409` when attack mode is not active.
+omitted); when present it must be positive and no more than one year. Unknown
+JSON fields are rejected. Returns `409` when attack mode is not active.
 
 ```json
 {"pinned":true,"level":"attack"}
@@ -260,9 +265,12 @@ setup are fixed at startup; changing those fields still requires a restart
 ### `GET /admin/dashboard`
 
 The built-in reporting page (only when `admin.dashboard: true`). On startup
-guardiand logs a ready-to-open login URL carrying the token in the URL
-fragment; opening the bare URL shows a paste-the-token gate instead. Every
-data call the page makes goes to the token-guarded `/admin/*` endpoints. See
+guardiand logs only the bare URL; paste the token from `admin.token_file` (or
+your configured secret) into the login gate. Configured and persistent tokens
+are never embedded in process logs. Every data call the page makes goes to the
+token-guarded `/admin/*` endpoints. See
 [the reporting dashboard](/guide/admin#the-reporting-dashboard). Headline and
 recent-decision data refresh every five seconds; the active-block list is
-cached for one minute and refreshed immediately after a block/unblock action.
+capped at 1000 rows, cached for one minute, and refreshed immediately after a
+block/unblock action. Incomplete mirror counts are reported as lower bounds
+without a fallback full-store scan.

@@ -222,8 +222,14 @@ func (s *Bolt) CompareAndSwap(_ context.Context, key string, old, new []byte, tt
 	return swapped, err
 }
 
-func (s *Bolt) Scan(_ context.Context, prefix string) ([]KV, error) {
+func (s *Bolt) Scan(ctx context.Context, prefix string) ([]KV, error) {
+	out, _, err := s.ScanLimit(ctx, prefix, 0)
+	return out, err
+}
+
+func (s *Bolt) ScanLimit(_ context.Context, prefix string, limit int) ([]KV, bool, error) {
 	var out []KV
+	complete := true
 	err := s.db.View(func(tx *bolt.Tx) error {
 		now := time.Now()
 		p := []byte(prefix)
@@ -238,10 +244,15 @@ func (s *Bolt) Scan(_ context.Context, prefix string) ([]KV, error) {
 				exp = time.Unix(0, int64(nano))
 			}
 			out = append(out, KV{Key: string(k), Value: bytes.Clone(v), ExpiresAt: exp})
+			if limit > 0 && len(out) > limit {
+				out = out[:limit]
+				complete = false
+				break
+			}
 		}
 		return nil
 	})
-	return out, err // cursor iteration is already key-ordered
+	return out, complete, err // cursor iteration is already key-ordered
 }
 
 func (s *Bolt) Close() error {

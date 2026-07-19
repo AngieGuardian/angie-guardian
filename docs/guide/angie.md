@@ -26,6 +26,29 @@ include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
 `deploy/angie-guardian.conf` documents the fail-open toggle (what happens when
 the sidecar is down) and the challenge/pass/denied routes.
 
+## Preserve the real client IP behind a proxy or CDN
+
+The shipped snippet deliberately sends Angie's `$remote_addr` to Guardian.
+If Angie itself sits behind a load balancer, CDN, ingress, or another reverse
+proxy, configure Angie's real-IP module first so `$remote_addr` is restored to
+the actual client address. Otherwise every visitor appears to be the proxy:
+one attacker can score a behavioural block or rate limit that affects everyone.
+
+```nginx
+# http {} context — use only the exact networks owned by your proxy/CDN.
+set_real_ip_from 10.20.0.0/16;
+set_real_ip_from 2001:db8:1234::/48;
+real_ip_header X-Forwarded-For;       # or your provider's authenticated header
+real_ip_recursive on;
+```
+
+For PROXY protocol deployments, configure the listener and use
+`real_ip_header proxy_protocol` instead. Never trust `X-Forwarded-For` from
+arbitrary internet clients: an over-broad `set_real_ip_from` lets attackers
+choose the identity Guardian blocks, rate-limits, and binds tokens to. Verify
+the result in access logs before enabling behavioural blocking or nftables
+offload.
+
 ::: info Fail-open by default
 If the sidecar is unreachable, traffic passes through unprotected rather than
 taking your site down. The toggle is documented in the snippet itself.

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"github.com/melroy89/angie-guardian/internal/safefile"
 )
 
 // Feed actions. A deny feed rejects matching IPs outright; a challenge feed
@@ -178,7 +180,7 @@ func (f *feed) loadCache(cacheDir string) time.Time {
 	if path == "" {
 		return time.Time{}
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := safefile.Read(path, maxFeedBody)
 	if err != nil {
 		return time.Time{}
 	}
@@ -196,7 +198,7 @@ func (f *feed) loadCache(cacheDir string) time.Time {
 // load (force=true) propagates errors so a missing file fails startup, like
 // the WAF rules files do.
 func (f *feed) loadFile(force bool, log *slog.Logger) error {
-	raw, err := os.ReadFile(f.cfg.File)
+	raw, err := safefile.Read(f.cfg.File, maxFeedBody)
 	if err != nil {
 		if !force {
 			log.Warn("feed file unreadable, keeping loaded entries", "feed", f.cfg.Name, "err", err)

@@ -293,7 +293,7 @@
 
   const render = async (refreshBlocks = false) => {
     const blocksRequest = refreshBlocks || Date.now() - lastBlocksAt >= 60000
-      ? api("/admin/blocks").then((blocks) => {
+      ? api("/admin/blocks?limit=1000").then((blocks) => {
           lastBlocks = blocks;
           lastBlocksAt = Date.now();
           return blocks;
@@ -316,7 +316,8 @@
     }
 
     // KPI tiles.
-    $("t-blocks").textContent = stats.blocks_active;
+    $("t-blocks").textContent = stats.blocks_active < 0 ? "unknown" :
+      (stats.blocks_complete ? stats.blocks_active : "≥" + stats.blocks_active);
     const byAction = stats.recent.by_action || {};
     $("t-denies").textContent = byAction.deny || 0;
     $("t-challenges").textContent = byAction.challenge || 0;

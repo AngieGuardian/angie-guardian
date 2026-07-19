@@ -259,6 +259,11 @@ func (s *Redis) ScanLimit(ctx context.Context, prefix string, limit int) ([]KV, 
 		}
 		out = append(out, batch...)
 	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+		slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+		return out, false, nil
+	}
 
 	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
 	return out, true, nil

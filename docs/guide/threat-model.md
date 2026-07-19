@@ -77,7 +77,9 @@ wrong and the protections above weaken or invert:
   that promise (loopback, private network, firewall, or mTLS).
 - **The admin API is bearer-token protected and should stay off the public
   internet.** Bind `admin.listen` to loopback or a management interface.
-  Guardian refuses a non-loopback admin bind without a token.
+  Guardian refuses a non-loopback admin bind without a token. The listener is
+  plain HTTP; use a TLS/mTLS proxy or service mesh for any cross-network hop so
+  the bearer credential cannot be observed and replayed.
 
 ## Fail-open by design
 

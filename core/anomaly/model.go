@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/internal/safefile"
+
 	"github.com/melroy89/angie-guardian/core/stateless"
 )
 
@@ -168,7 +170,7 @@ func pathPrefix(path string) string {
 // --- artifact I/O -----------------------------------------------------------
 
 func Load(path string) (*Model, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := safefile.Read(path, maxModelBytes)
 	if err != nil {
 		return nil, err
 	}

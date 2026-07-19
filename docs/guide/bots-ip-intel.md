@@ -159,7 +159,9 @@ URL feed keeps the same name and URL, before the replacement provider starts
 its asynchronous refresh. This avoids a temporary enforcement gap even when
 `cache_dir` is unset and the remote is down during reload. A local `file:`
 feed must exist at startup (fail-fast, like the WAF rules files) and is
-hot-reloaded on change. Matching is a binary search over merged ranges, so
+hot-reloaded on change. URL responses, local files, and persisted caches are
+limited to 64 MiB; an oversized update keeps the last-good list. Matching is a
+binary search over merged ranges, so
 six-figure feeds are fine on the hot path.
 
 An `action: deny` feed rejects matching IPs outright; `action: challenge`

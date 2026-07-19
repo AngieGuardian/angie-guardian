@@ -158,7 +158,12 @@ func (s *Memory) CompareAndSwap(_ context.Context, key string, old, new []byte, 
 	return true, nil
 }
 
-func (s *Memory) Scan(_ context.Context, prefix string) ([]KV, error) {
+func (s *Memory) Scan(ctx context.Context, prefix string) ([]KV, error) {
+	out, _, err := s.ScanLimit(ctx, prefix, 0)
+	return out, err
+}
+
+func (s *Memory) ScanLimit(_ context.Context, prefix string, limit int) ([]KV, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -168,9 +173,14 @@ func (s *Memory) Scan(_ context.Context, prefix string) ([]KV, error) {
 			continue
 		}
 		out = append(out, KV{Key: k, Value: bytes.Clone(e.value), ExpiresAt: e.expiresAt})
+		if limit > 0 && len(out) > limit {
+			out = out[:limit]
+			slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
+			return out, false, nil
+		}
 	}
 	slices.SortFunc(out, func(a, b KV) int { return strings.Compare(a.Key, b.Key) })
-	return out, nil
+	return out, true, nil
 }
 
 func (s *Memory) Close() error {

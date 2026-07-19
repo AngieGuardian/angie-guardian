@@ -83,16 +83,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 // Angie snippet sets on the subrequest, falling back to the subrequest's own
 // fields so Guardian also behaves sanely when probed directly.
 func (s *Server) requestContext(r *http.Request) *core.RequestContext {
+	host := headerOr(r, "X-Guardian-Host", r.Host)
 	return &core.RequestContext{
-		Host:       headerOr(r, "X-Guardian-Host", r.Host),
+		Host:       host,
 		Method:     headerOr(r, "X-Guardian-Method", r.Method),
 		URI:        headerOr(r, "X-Guardian-URI", r.URL.RequestURI()),
 		RemoteAddr: headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr)),
 		UserAgent:  headerOr(r, "X-Guardian-UA", r.UserAgent()),
 		Cookie:     headerOr(r, "X-Guardian-Cookie", r.Header.Get("Cookie")),
-		// The auth subrequest inherits the client's request headers, so
-		// header-targeting WAF rules read them straight off the subrequest.
-		Header: r.Header.Values,
+		// The auth subrequest inherits the client's request headers. Host is
+		// special in net/http: it lives in Request.Host, not Header, so expose
+		// the effective Guardian host explicitly to header:host WAF targets.
+		Header: func(name string) []string {
+			if strings.EqualFold(name, "host") {
+				return []string{host}
+			}
+			return r.Header.Values(name)
+		},
 	}
 }
 
@@ -110,8 +117,9 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	// The bound is read live from the config, so a hot reload of
 	// attack_mode.effects.max_inflight (including toggling it on or off) takes
 	// effect immediately.
+	current := s.inflight.Add(1)
 	if bound := s.engine.Config().AttackMode.Effects.MaxInflight; bound > 0 {
-		if s.inflight.Add(1) > int64(bound) {
+		if current > int64(bound) {
 			s.inflight.Add(-1)
 			// Saturated: run only the cheap store-free terminal checks. A
 			// blocked or denylisted IP is still denied (never fast-passed on a
@@ -142,9 +150,10 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// Admitted under the bound: hold the slot for the duration of Evaluate.
-		defer s.inflight.Add(-1)
 	}
+	// Count every evaluation, even while the bound is disabled, so enabling
+	// max_inflight by hot reload immediately accounts for work already running.
+	defer s.inflight.Add(-1)
 
 	d := s.engine.Evaluate(r.Context(), req)
 
@@ -391,7 +400,11 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		s.log.Warn("stateless spend cas failed, token minted fail-open",
 			"host", host, "ip", ip, "err", res.SoftError)
 	}
-	if elapsedMS > 0 {
+	// elapsed_ms is browser telemetry, not authenticated challenge state. Only
+	// accept values that fit inside the actual path's challenge lifetime so a
+	// successful client cannot poison the process-lifetime histogram.
+	maxElapsedMS := cfg.ConfigFor(host, res.RedirectURI).PoW.ChallengeTTL.Std().Milliseconds()
+	if elapsedMS > 0 && elapsedMS <= maxElapsedMS {
 		s.metrics.SolveTime(float64(elapsedMS) / 1000)
 	}
 	s.log.Info("challenge solved",

@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -183,7 +184,10 @@ func run(configPath string) error {
 	// Triggered by SIGHUP and POST /admin/reload. A config that fails to load
 	// or validate leaves the running config active. Listener addresses, the
 	// store, signing keys and the admin token are fixed at startup.
+	var reloadMu sync.Mutex
 	reload := func() error {
+		reloadMu.Lock()
+		defer reloadMu.Unlock()
 		next, err := core.LoadConfig(configPath)
 		if err != nil {
 			return err
@@ -254,13 +258,11 @@ func run(configPath string) error {
 		go func() {
 			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen)
 			if cfg.Admin.Dashboard {
-				// Ready-to-open login link. The token rides the URL fragment,
-				// which browsers never send over the network or write to
-				// server logs; the page moves it into sessionStorage and
-				// strips it from the address bar on load.
+				// Never put configured or persistent bearer credentials in
+				// process logs. The dashboard prompts for the token and stores
+				// it only in this browser tab's sessionStorage.
 				log.Info("admin dashboard ready",
-					"url", fmt.Sprintf("http://%s/admin/dashboard#token=%s",
-						displayAddr(cfg.Admin.Listen), cfg.Admin.Token))
+					"url", adminDashboardURL(cfg.Admin.Listen))
 			}
 			errCh <- admin.ListenAndServe()
 		}()
@@ -378,6 +380,10 @@ func displayAddr(addr string) string {
 		return net.JoinHostPort("127.0.0.1", port)
 	}
 	return addr
+}
+
+func adminDashboardURL(listen string) string {
+	return fmt.Sprintf("http://%s/admin/dashboard", displayAddr(listen))
 }
 
 // isLoopback reports whether a listen address binds only to the loopback

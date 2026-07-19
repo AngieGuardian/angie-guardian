@@ -7,10 +7,13 @@ package anomaly
 import (
 	"hash/fnv"
 	"log/slog"
-	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/melroy89/angie-guardian/internal/safefile"
 )
+
+const maxModelBytes = 64 << 20
 
 // ModelCache serves the current model for each configured artifact path and
 // hot-swaps it when guardian-train writes a new version. Change detection is
@@ -50,7 +53,7 @@ func NewModelCache(paths []string, log *slog.Logger) (*ModelCache, error) {
 }
 
 func (f *modelFile) load() error {
-	raw, err := os.ReadFile(f.path)
+	raw, err := safefile.Read(f.path, maxModelBytes)
 	if err != nil {
 		return err
 	}
@@ -92,7 +95,7 @@ func (c *ModelCache) Start(interval time.Duration) {
 
 func (c *ModelCache) reloadChanged() {
 	for _, f := range c.files {
-		raw, err := os.ReadFile(f.path)
+		raw, err := safefile.Read(f.path, maxModelBytes)
 		if err != nil {
 			c.log.Warn("model unreadable, keeping loaded model", "file", f.path, "err", err)
 			continue
