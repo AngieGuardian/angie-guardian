@@ -4,6 +4,12 @@ A step-by-step guide to configuring, deploying and operating Angie Guardian.
 For an overview of what Guardian is and how it works, see the
 [README](README.md).
 
+For a first host installation, start with the release-first
+[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started):
+it selects a prebuilt archive and installs the config, rules, Angie snippet,
+and systemd unit at the exact paths used below. This file is the deeper
+configuration and operations reference after that initial flow.
+
 ## Contents
 
 1. [Configure Guardian](#1-configure-guardian) (including
@@ -474,8 +480,9 @@ listener answers `/healthz`, then services the systemd watchdog. The distroless
 Compose deployment uses `guardiand -healthcheck` for the same readiness
 contract.
 
-Prefer containers? Every release publishes a prebuilt image (distroless,
-nonroot): `docker pull registry.melroy.org/melroy/angie-guardian:latest`.
+Prefer containers? Every release publishes a prebuilt image (distroless and
+nonroot). Pull the same pinned tag selected for the deployment, for example
+`docker pull registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION}`.
 See the production guide on the docs site for a compose service with
 persistent volumes, or `deploy/docker/` for the full demo stack.
 
