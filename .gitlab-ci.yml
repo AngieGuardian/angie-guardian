@@ -188,6 +188,35 @@ upload_and_release:
         cp -r README.md USAGE.md LICENSE guardian.example.yaml deploy "$PKG/"
         tar -czf "${PKG}.tar.gz" "$PKG"
       done
+    # Smoke the exact host-install inputs before publishing them. This catches
+    # packaging drift (missing config/rules/unit) and prevents a release from
+    # regressing the read-only /etc + writable /var/lib layout documented by
+    # Getting Started. The runner is amd64, so execute that archive's daemon;
+    # the arm64 archive is assembled by the identical loop above.
+    - |
+      ARCHIVE_PKG="angie-guardian-${CI_COMMIT_TAG}-linux-amd64"
+      SMOKE_ROOT="$(mktemp -d)"
+      tar -xzf "${ARCHIVE_PKG}.tar.gz" -C "$SMOKE_ROOT"
+      PKG="$SMOKE_ROOT/$ARCHIVE_PKG"
+      test -x "$PKG/guardiand"
+      test -f "$PKG/guardian.example.yaml"
+      test -f "$PKG/deploy/rules-common.yaml"
+      test -f "$PKG/deploy/angie-guardian.conf"
+      test -f "$PKG/deploy/guardiand.service"
+      grep -q '^signing_key_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
+      grep -q '^  token_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
+      grep -q 'rules_file: /etc/guardian/rules.d/common.yaml' "$PKG/guardian.example.yaml"
+      grep -q '^StateDirectoryMode=0700$' "$PKG/deploy/guardiand.service"
+      grep -q '^ConfigurationDirectoryMode=0710$' "$PKG/deploy/guardiand.service"
+      ! grep -q '^ReadWritePaths=/etc/guardian' "$PKG/deploy/guardiand.service"
+
+      RUNTIME_ROOT="$SMOKE_ROOT/runtime"
+      mkdir -p "$RUNTIME_ROOT/etc/guardian/rules.d" "$RUNTIME_ROOT/var/lib/guardian"
+      cp "$PKG/deploy/rules-common.yaml" "$RUNTIME_ROOT/etc/guardian/rules.d/common.yaml"
+      sed -e "s#/etc/guardian/#$RUNTIME_ROOT/etc/guardian/#g" \
+          -e "s#/var/lib/guardian/#$RUNTIME_ROOT/var/lib/guardian/#g" \
+          "$PKG/guardian.example.yaml" > "$RUNTIME_ROOT/guardian.yaml"
+      "$PKG/guardiand" -config "$RUNTIME_ROOT/guardian.yaml" -t
     # Upload each archive to the generic package registry.
     - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --upload-file angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz

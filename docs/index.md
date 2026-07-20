@@ -51,25 +51,17 @@ features:
 
 ## Quick start
 
-Build the daemon and use the local-path configuration from the
-[Getting Started guide](/guide/getting-started):
+For a normal Linux host, install a pinned `amd64` or `arm64` archive from the
+[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases).
+It includes the binaries, canonical annotated config, starter WAF rules, Angie
+snippet, and systemd unit; no repository checkout or Go toolchain is required.
 
 ```sh
-go build ./cmd/guardiand
-mkdir -p .guardian
-./guardiand -config guardian.yaml
+# After selecting, downloading, and extracting a versioned release:
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
 ```
 
-```nginx
-# http {} context: keepalive upstream to the sidecar.
-upstream guardian {
-    server 127.0.0.1:8071;
-    keepalive 64;
-}
-
-# each protected server {} block, after replacing both your_backend placeholders
-# and merging Guardian directives into any existing location /:
-include /etc/angie/angie-guardian.conf;
-```
-
-Continue with the [Getting Started guide](/guide/getting-started).
+The [Getting Started guide](/guide/getting-started) gives the complete
+copy/paste flow: choose the correct archive, install the config and rules,
+wire the existing Angie vhost, start systemd, and verify a real request. Source
+builds and the Docker demo are kept as explicitly separate paths.

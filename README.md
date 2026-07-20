@@ -265,33 +265,26 @@ scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/
 
 ## Quick start
 
-```sh
-go build ./cmd/guardiand
-mkdir -p .guardian
-sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
-    -e 's#/etc/guardian/#.guardian/#g' \
-    -e 's#/var/lib/guardian/#.guardian/#g' \
-    guardian.example.yaml > guardian.local.yaml
-./guardiand -config guardian.local.yaml
-```
-
-Or skip the build and use the prebuilt image every release publishes
-(distroless, nonroot):
+Normal operators should install a pinned, prebuilt release: choose the
+`linux-amd64` or `linux-arm64` package under **Assets > Packages** on the
+[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
+extract it, then follow the release-first
+[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started).
+The archive contains the binaries, `guardian.example.yaml`, the starter WAF
+rules, Angie snippet, and systemd unit, so the primary installation needs
+neither a repository checkout nor Go.
 
 ```sh
-docker run --rm --network host \
-  -v ./guardian.example.yaml:/etc/guardian/guardian.yaml:ro \
-  -v ./deploy/rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro \
-  registry.melroy.org/melroy/angie-guardian:latest
+# After downloading and extracting the pinned release:
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
 ```
 
-(`--network host` so Angie on the same box reaches the loopback listeners;
-see [the production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production)
-for a proper compose setup with persistent volumes.)
-
-Then copy/adapt `deploy/angie-guardian.conf` for each protected vhost: replace
-both `http://your_backend` placeholders and merge its Guardian directives into
-an existing `location /` instead of declaring a duplicate.
+The guide then installs the canonical config and required rules, wires Angie,
+and starts the hardened systemd unit with consistent production paths. Source
+builds are documented there as an optional contributor/advanced path. For a
+prebuilt container with persistent state, use the separate
+[production Docker guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#docker);
+`deploy/docker` is the demo/developer harness and builds the working tree.
 
 ## Documentation
 

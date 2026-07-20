@@ -189,6 +189,8 @@ annotated. It is the **host/systemd profile**: loopback listeners, root-owned
 read-only config under `/etc/guardian`, generated keys and state under
 `/var/lib/guardian` (see
 [Filesystem layout and ownership](/guide/production#filesystem-layout-and-ownership)).
+The [Getting Started guide](/guide/getting-started#_2-configure-guardian)
+installs this file and its required starter rules at those exact paths.
 For containers, follow the
 [Docker section of the production guide](/guide/production#docker), which
 adapts the listeners (`0.0.0.0` + `trusted_proxy` behind loopback-only port

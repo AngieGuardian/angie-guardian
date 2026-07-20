@@ -1,116 +1,246 @@
 # Getting Started
 
-This walks you from a fresh checkout to a protected site in four steps:
-build, configure, wire into Angie, verify.
+This guide installs a pinned, prebuilt Guardian release on a Linux host, wires
+it into an existing Angie site, and verifies the complete request path. The
+primary path needs no repository checkout or Go toolchain.
 
 ## Prerequisites
 
-- [Angie](https://en.angie.software/) serving your site(s).
-- Go (to build from source), or a [release tarball with prebuilt binaries](https://gitlab.melroy.org/melroy/angie-guardian/-/releases).
+- [Angie](https://en.angie.software/) already serving the site you want to
+  protect.
+- A Linux `amd64` (`x86_64`) or `arm64` (`aarch64`) host.
+- Root or `sudo` access, plus `wget` and `tar`.
 
-::: tip Just want to see it work?
-The repo ships a Docker demo stack under `deploy/docker`: Angie in front of
-guardiand in front of a demo backend, with realistic PoW difficulty, WAF rules,
-behavioural blocking and the admin dashboard already wired up.
+Running Guardian in containers instead? Follow the
+[production Docker guide](/guide/production#docker). The repository's Compose
+stack is a demo/developer harness that builds the current checkout; it is not
+the host installation described here.
+
+## 1. Install a prebuilt release
+
+Choose a pinned version on the
+[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
+under **Assets > Packages**. Most Intel and AMD servers use `linux-amd64`; an
+ARM server uses `linux-arm64` instead. For example, to download and extract
+version `1.0.0` for amd64:
 
 ```sh
-cd deploy/docker
-docker compose up --build -d
+wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/1.0.0/angie-guardian-1.0.0-linux-amd64.tar.gz
+tar -xzf angie-guardian-1.0.0-linux-amd64.tar.gz
+cd angie-guardian-1.0.0-linux-amd64
 ```
 
-Browse `http://127.0.0.1:8080` to hit the interstitial, then open the
-dashboard at `http://127.0.0.1:8072/admin/dashboard#token=harness-admin-token`.
-`docker compose down -v` tears it back down; `deploy/docker/README.md` has the
-details. The sidecar's hot path is intentionally not published on the host,
-mirroring production.
+Substitute the version you selected. On ARM64, also replace `amd64` with
+`arm64` in the URL, archive name, and directory name.
+
+The extracted directory contains `guardiand`, the `guardian-train` and
+`guardian-loadtest` companion tools, the optional `guardian.wasm`, the
+canonical `guardian.example.yaml`, and the complete `deploy/` directory. The
+installation below uses the binary, systemd unit, Angie snippet, and starter
+rules directly from that directory.
+
+::: warning Release verification is not available yet
+[Issue #7](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/7) tracks
+publishing signed checksums. Once those assets are available, verify the
+archive before extracting or installing it. Do not substitute an unpinned
+`latest` download for the explicit version above.
 :::
 
-## 1. Build
+Install the daemon and create its dedicated service identity:
 
 ```sh
-go build ./cmd/guardiand
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
+getent group guardian >/dev/null || sudo groupadd --system guardian
+id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
+  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
 ```
 
-Or grab a release archive from the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases);
-it contains `guardiand`, `guardian-train`, `guardian-loadtest`, the optional
-`guardian.wasm`, and the deploy snippets.
+### Build from source (optional)
 
-Running containerized? Each release also publishes a prebuilt sidecar image:
+Source builds are for contributors or operators who intentionally need a
+custom build. They require a repository checkout and the Go toolchain selected
+by `go.mod` (currently Go 1.26.5):
 
 ```sh
-docker pull registry.melroy.org/melroy/angie-guardian:latest
+git clone https://gitlab.melroy.org/melroy/angie-guardian.git
+cd angie-guardian
+go build -o guardiand ./cmd/guardiand
 ```
 
-## 2. Configure
+After building, continue from the `install` command above. All remaining
+commands use `/usr/local/bin/guardiand`, so the installation path is identical.
 
-Copy `guardian.example.yaml` and adjust it. The minimum viable config is tiny;
-everything else inherits from `defaults`:
+## 2. Configure Guardian
 
-```yaml
-listen: 127.0.0.1:8071            # Angie's auth_request target
-signing_key_file: .guardian/ed25519.key
-store:
-  backend: pebble               # memory | buntdb | pebble | redis
-  path: .guardian/pebble        # a directory for pebble (a file for buntdb)
+The release archive already contains the
+[canonical `guardian.example.yaml`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/guardian.example.yaml).
+It is the recommended, thoroughly annotated host/systemd profile; the same
+file is rendered as the [full annotated example](/examples#the-full-annotated-example).
+Install it together with the starter signature rules it actively references:
 
+```sh
+# Immutable policy: root-owned, readable but not writable by guardiand.
+sudo install -d -o root -g guardian -m710 /etc/guardian
+sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
+sudo install -o root -g guardian -m640 guardian.example.yaml \
+  /etc/guardian/guardian.yaml
+sudo install -o root -g guardian -m640 deploy/rules-common.yaml \
+  /etc/guardian/rules.d/common.yaml
+```
+
+Every later command uses `/etc/guardian/guardian.yaml`. The rules file is
+equally required: the example enables it with fail-fast loading, so validation
+correctly fails if it was not installed.
+
+Before starting Guardian, edit `/etc/guardian/guardian.yaml` as root and:
+
+- replace or remove the exact `example.com`, `api.example.com`, and
+  `static.example.com` domain entries so they match real Angie vhosts;
+- review the defaults and starter WAF rules against the site's legitimate
+  paths and clients;
+- choose the appropriate [store backend](/guide/production#choosing-a-store-backend);
+- keep the listeners on loopback for a same-host Angie deployment; and
+- reject unknown hosts in Angie's `default_server`, because unknown hostnames
+  inherit Guardian's `defaults` rather than a named domain profile.
+
+```sh
+sudoedit /etc/guardian/guardian.yaml
+```
+
+The signing key, retired keys, admin token, and Pebble store paths in this
+profile deliberately point to `/var/lib/guardian`. The systemd unit creates
+that service-owned state directory; policy under `/etc/guardian` remains
+read-only. See [Filesystem layout and ownership](/guide/production#filesystem-layout-and-ownership)
+for the security model.
+
+Validate the YAML and every referenced local artifact, including the rules
+file, before installing the service:
+
+```sh
+sudo -u guardian /usr/local/bin/guardiand \
+  -config /etc/guardian/guardian.yaml -t
+# config /etc/guardian/guardian.yaml: ok
+```
+
+Continue with the [configuration guide](/guide/configuration), the
+[configuration reference](/reference/configuration), and the
+[signature-rules walkthrough](/guide/configuration#signature-rules-waf-keywords)
+when adapting the annotated profile.
+
+### Minimal evaluation config (alternative)
+
+The full annotated profile above is the recommended host starting point. If
+you only want a disposable foreground evaluation, create a separate config
+such as `/tmp/guardian-evaluation/guardian.yaml` instead. This example uses an
+in-memory store, no admin listener, and no signature rules; do not feed it into
+the production systemd steps below:
+
+```sh
+install -d -m700 /tmp/guardian-evaluation
+cat >/tmp/guardian-evaluation/guardian.yaml <<'YAML'
+listen: 127.0.0.1:8071
+signing_key_file: /tmp/guardian-evaluation/ed25519.key
+store: { backend: memory }
 defaults:
   pow: { enabled: true, base_difficulty: 5 }
-  waf:
-    ip_behaviour: { enabled: true }
-
 domains:
-  example.com: {}                 # inherits all defaults
+  localhost: {}
+YAML
+guardiand -config /tmp/guardian-evaluation/guardian.yaml -t
 ```
 
-Validate it without starting the daemon (like `angie -t`):
+Run it in one terminal with
+`guardiand -config /tmp/guardian-evaluation/guardian.yaml`. Use a second
+terminal for health checks, then stop the foreground daemon with Ctrl-C and
+remove `/tmp/guardian-evaluation`. The rest of this guide assumes the
+recommended annotated profile instead.
+
+## 3. Install and wire the Angie configuration
+
+Install the shipped per-server snippet at the path used by the examples:
 
 ```sh
-mkdir -p .guardian
-./guardiand -config guardian.yaml -t
-# config guardian.yaml: ok
+sudo install -Dm644 deploy/angie-guardian.conf \
+  /etc/angie/angie-guardian.conf
 ```
 
-See the [Configuration guide](/guide/configuration) for the per-domain model
-and difficulty tuning, and the
-[Configuration Options reference](/reference/configuration) for every field.
+Edit that installed file and replace **both**
+`proxy_pass http://your_backend` placeholders with the upstream for the real
+site. If its existing configuration already declares `location /`, merge the
+Guardian directives from the shipped block into it; Angie rejects duplicate
+locations.
 
-## 3. Wire it into Angie
+```sh
+sudoedit /etc/angie/angie-guardian.conf
+```
 
-Add the keepalive upstream once in the `http {}` context. Copy/adapt the
-per-server snippet, replace both `proxy_pass http://your_backend` placeholders,
-and merge its Guardian directives into an existing `location /` rather than
-declaring a second one:
+Add the keepalive upstream once inside Angie's `http {}` context (either in
+`/etc/angie/angie.conf` or a file it includes there):
 
 ```nginx
-# http {} context, REQUIRED for throughput (connection reuse to the sidecar):
 upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;
 }
-
-# each protected server {} block:
-include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
 ```
 
-See [Wire it into Angie](/guide/angie) for the fail-open toggle, JSON access
-logs, and rate limiting.
+Then include the installed snippet inside each protected `server {}` block:
 
-## 4. Run and verify
+```nginx
+include /etc/angie/angie-guardian.conf;
+```
+
+The [full Angie guide](/guide/angie) explains real client-IP restoration,
+fail-open versus fail-closed operation, request and connection limits, logging,
+and request-body limitations. Review those choices before production use.
+
+Do not reload Angie yet: Guardian should be healthy first. Validate the edited
+configuration now so syntax or duplicate-location errors are caught safely:
 
 ```sh
-mkdir -p .guardian
-./guardiand -config guardian.yaml
-curl -s localhost:8071/healthz     # -> ok
+sudo angie -t
 ```
 
-(`8071` is the auth hot path from the config above; the separate admin
-listener, and its own `/healthz`, only exist once you set `admin.listen`.)
+## 4. Start and verify
 
-Visit your site in a browser: the first request gets a brief interstitial
-while the proof-of-work is solved, then a signed cookie keeps subsequent
-requests on the fast path. A `curl` without the cookie sees the challenge
-response instead.
+Install the shipped systemd unit, start Guardian, and inspect its readiness:
 
-For a permanent setup (systemd unit, store choice, multi-instance), continue
-with [Run it in Production](/guide/production).
+```sh
+sudo install -Dm644 deploy/guardiand.service \
+  /etc/systemd/system/guardiand.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now guardiand
+sudo systemctl --no-pager --full status guardiand
+sudo journalctl -u guardiand -n 50 --no-pager
+```
+
+The unit repeats config validation in `ExecStartPre` and creates
+`/var/lib/guardian` as `guardian:guardian` with mode `0700`. Both configured
+listeners expose their own health endpoint:
+
+```sh
+curl --fail http://127.0.0.1:8071/healthz   # auth listener
+curl --fail http://127.0.0.1:8072/healthz   # admin listener
+```
+
+Now apply the Angie configuration that already passed `angie -t`:
+
+```sh
+sudo systemctl reload angie
+```
+
+Request the real protected URL through Angie. A raw `curl` has no Guardian
+cookie, so it should receive the challenge page rather than silently reaching
+the backend:
+
+```sh
+curl -i https://example.com/
+```
+
+Replace `example.com` with the hostname you configured. Finally, open that URL
+in a browser: the first visit should solve proof of work, while a subsequent
+visit should reuse the signed cookie and pass without another challenge.
+
+For backups, monitoring, store durability, secret ownership, resource tuning,
+containers, multi-instance deployments, and future upgrades, continue with
+[Run it in Production](/guide/production).

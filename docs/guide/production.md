@@ -32,7 +32,9 @@ config file described above.
 
 ### systemd
 
-Grab the latest release archive from the
+For the complete first-install sequence, start with the release-first
+[Getting Started guide](/guide/getting-started). In short, choose a pinned
+release archive from the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
 (under **Assets -> Packages**) and unpack it; it contains the binaries,
 `guardian.example.yaml`, and the `deploy/` directory (unit file and starter
@@ -124,7 +126,8 @@ version-stamped) to the project container registry, so you don't have to
 build anything:
 
 ```sh
-docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.7.0
+export GUARDIAN_VERSION=REPLACE_WITH_RELEASE_TAG
+docker pull "registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION}"
 ```
 
 A minimal production compose service, with the store and signing key on
@@ -133,7 +136,7 @@ named volumes so blocks and issued tokens survive restarts:
 ```yaml
 services:
   guardiand:
-    image: registry.melroy.org/melroy/angie-guardian:0.7.0
+    image: registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION to a release tag}
     restart: unless-stopped
     # Publish the two listeners on the host loopback only: Angie (on the
     # host or another container) talks to 8071; you talk to 8072.
