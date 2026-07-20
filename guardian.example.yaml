@@ -1,9 +1,21 @@
-# Angie Guardian example configuration.
+# Angie Guardian example configuration: the host/systemd profile (loopback
+# listeners, root-owned read-only config under /etc/guardian, generated keys
+# and state under /var/lib/guardian; the production guide documents that
+# layout and the matching install commands). Running in containers instead?
+# Follow the Docker section of the production guide (docs/guide/production.md)
+# for a production compose shape. deploy/docker/guardian.docker.yaml is the
+# runnable DEMO harness only: it ships a fixed admin token and demo-only
+# allowlist/crawler exceptions, so it is not a production starting point.
 #
 # Per-domain settings are merged over `defaults` field-by-field: a domain only
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
 listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
+# At `info`, every challenge and deny is logged with the client IP, User-Agent,
+# method and the FULL raw URI, query string included. With pow.mode: always
+# that covers the first request of essentially every visitor, so reset tokens,
+# OAuth codes and other query-string secrets can land in your logs: mind log
+# access control and retention, or use `warn` if you don't need that detail.
 log_level: info
 
 # The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
@@ -16,7 +28,11 @@ log_level: info
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
 # /metrics, /healthz, and the optional static dashboard shell are open; every
 # JSON/data /admin route requires the bearer token. A non-loopback bind without
-# a configured token is refused at startup. Leave admin.listen empty to
+# a configured token is refused at startup, but a bearer token alone does not
+# make a remote bind safe: the listener speaks plain HTTP (the token would
+# cross the wire in clear) and /metrics stays unauthenticated. Keep it on
+# loopback or a firewalled management network, and put a TLS/mTLS reverse
+# proxy in front for any cross-network hop. Leave admin.listen empty to
 # disable it.
 admin:
   listen: 127.0.0.1:8072
@@ -26,7 +42,9 @@ admin:
   # With neither set, a loopback listener gets a fresh token each start,
   # printed in the startup log.
   token: ""                   # or set the ADMIN_TOKEN env var
-  token_file: /etc/guardian/admin.token
+  token_file: /var/lib/guardian/admin.token   # generated at runtime, so it
+                              # lives in the service-writable state dir, not
+                              # the root-owned read-only /etc/guardian
   # Built-in reporting page at GET /admin/dashboard: active blocks (one-click
   # block/unblock), the recent deny/challenge feed with filters, activity and
   # distribution graphs, a top-offenders panel, challenge stats, and per-domain
@@ -47,18 +65,32 @@ admin:
 # missing; NEVER regenerated on restart, so restarts don't log clients out
 # and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
 # archived here and accept only pre-rotation tokens with lifetimes up to 7 days;
-# older archive files are ignored in memory, not auto-deleted.
-signing_key_file: /etc/guardian/ed25519.key
-previous_key_dir: /etc/guardian/keys.d
+# older archive files are ignored in memory, not auto-deleted. Both are
+# GENERATED state, so they live under /var/lib/guardian (writable for the
+# service user), never under the root-owned read-only /etc/guardian.
+signing_key_file: /var/lib/guardian/ed25519.key
+previous_key_dir: /var/lib/guardian/keys.d
 
 store:
   backend: pebble             # memory | buntdb | pebble | redis
   path: /var/lib/guardian/pebble  # a file for buntdb; a directory for pebble
-  # sync: false               # pebble/buntdb: fsync every write (durable, slower) when true
-  # redis backend (multi-instance): all replicas share one server.
+  # sync: fsync every write when true (pebble ONLY; buntdb refuses it at load,
+  # its single writer makes fsync-per-commit ~100x slower). The async default
+  # is not just faster: a power/OS crash can lose the unflushed tail, including
+  # spent-challenge markers (a solved challenge could be replayed until its
+  # challenge_ttl expires) and the newest blocks and counters. Set true when
+  # crash-consistent single-spend and block state matters more than write
+  # latency.
+  # sync: false
+  # redis backend (multi-instance): all replicas OF THE SAME DEPLOYMENT share
+  # one server. Keys are not prefixed per installation, so give staging,
+  # production and any unrelated Guardian install its own logical db (or
+  # server), or they will mix blocks, challenges, counters, bot verdicts and
+  # attack posture. The connection is plaintext Redis TCP: keep it on
+  # loopback/private authenticated networking or a verified TLS tunnel.
   # addr: 127.0.0.1:6379
   # password: ""              # or the REDIS_PASSWORD env var
-  # db: 0
+  # db: 0                     # dedicate one logical db per deployment
 
 # Fleet-wide attack posture. Off when absent. When aggregate signals (issuance
 # rate with a low solve ratio, store degradation) cross a threshold, Guardian
@@ -74,6 +106,8 @@ store:
 #     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
 #   effects:
 #     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
+#     difficulty_cap: 7               # ceiling of the SHIFTED window: during an attack this,
+#                                     # not the per-domain max_difficulty, bounds issued work
 
 # Block enforcement offload. The in-process mirror is always on (it makes the
 # per-request block check a memory lookup, no store read) and needs no config;
@@ -109,6 +143,14 @@ store:
 # reload when name+URL are unchanged). cache_dir persists fetched feeds so a
 # restart enforces yesterday's list immediately. Feeds are defined once here;
 # each domain opts in via `reputation.enabled` below.
+#
+# Cold-start caveat for URL feeds: on a first boot with no cache yet, a feed
+# enforces NOTHING until its first successful fetch, and a failing mirror
+# keeps it empty while the daemon stays healthy. Watch guardian_feed_entries
+# and guardian_feed_refresh_total{status="error"} in Prometheus, seed
+# cache_dir (or use a local file: feed you curate) where continuous
+# enforcement matters, and stage a new third-party feed as action: challenge
+# before promoting it to a hard deny.
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds
 #   feeds:
@@ -150,6 +192,13 @@ defaults:
     signed_id: { enabled: false }
   pow:
     enabled: true
+    # `always` challenges every unvouched request REGARDLESS of HTTP method,
+    # and the challenge redirect cannot carry a request body: a first-contact
+    # (or token-expired) POST/PUT/DELETE, a webhook, an upload or a direct
+    # form submission gets diverted and its body is lost. It assumes a
+    # GET-first browser flow; exempt state-changing machine endpoints with a
+    # per-path `pow: { enabled: false }` overlay or a separate host (both
+    # shown below), or use `suspicion` there.
     mode: always              # always: challenge every unvouched request
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
@@ -157,12 +206,33 @@ defaults:
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
     # See docs/guide/configuration.md, "Measured solve times", before changing these.
     base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
-    max_difficulty: 6         # escalation ceiling: only reached when a request is
-                              # scored suspicious (anomaly model, WAF/reputation hit,
-                              # or attack mode). Clean visitors always pay base.
+    max_difficulty: 6         # normal-operation ceiling: reached when a request
+                              # is scored suspicious (anomaly model, WAF/
+                              # reputation hit) or an IP keeps requesting
+                              # challenges without solving them (challenge
+                              # farming). base is the normal floor, not a
+                              # guarantee: attack mode shifts the WHOLE
+                              # [base, max] window up for everyone, so with
+                              # attack_mode enabled the true ceiling is
+                              # attack_mode.effects.difficulty_cap (default 7),
+                              # not this value. Farming is scored per host+IP,
+                              # so a clean visitor behind the same CGNAT/proxy
+                              # IP as a farmer can inherit above-base work.
     token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m         # must be positive; 7d maximum
-    noscript_fallback: true   # 5s wait instead of hash work; weaker than PoW
+    # Per-IP challenge issuance throttle (the default). PoW taxes clients that
+    # solve; a raw flood that never solves still costs Angie an auth_request
+    # each hit and can cost the store a write per issued challenge, and the
+    # shipped Angie glue FAILS OPEN when the sidecar is unreachable. Always
+    # pair Guardian with Angie's own limit_req/limit_conn ahead of the auth
+    # subrequest: ready-made snippets are in deploy/angie-guardian.conf and
+    # the "Rate limiting" section of the Angie guide.
+    # issuance_rate_limit: 60/min
+    # noscript_fallback serves no-JS clients a meta-refresh page: a minimum 5s
+    # wait substitutes for hash work. The wait costs an attacker no computation
+    # and parallelizes cheaply, so leave it off (the default) unless no-JS
+    # visitors matter more to you than that weakening.
+    # noscript_fallback: true
   geo:
     enabled: false            # needs the geoip: databases above
     # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
@@ -177,73 +247,146 @@ defaults:
     enabled: false            # set true after configuring at least one feed
                               # above; enabled-without-feeds is rejected
   allowlist:
-    ips: [ "127.0.0.1", "::1" ]
+    # ips match the CLIENT address Angie reports (X-Guardian-IP), NOT the
+    # Angie-to-Guardian loopback hop, so normal wiring needs nothing here.
+    # Allowlisting 127.0.0.1/::1 turns a broken real-IP setup into a total
+    # bypass; add them only if you deliberately trust local-origin HTTP
+    # clients (e.g. an on-box monitor requesting the site through Angie).
+    ips: []
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
     # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
     # everything by claiming to be Googlebot. Use verified_bots below instead
     # (Guardian refuses a config where the two overlap). Reserve uas for
     # UAs you control, e.g. your own uptime monitor.
     uas: []
-    paths:
-      - /robots.txt
-      - /favicon.ico
-      - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
+    # A path entry ends the pipeline at stage 0: denylist, behaviour blocks,
+    # GeoIP, honeypots, signatures and PoW are all skipped for it. Reserve it
+    # for endpoints that must keep working even for otherwise-blocked clients,
+    # keep every entry as narrow as possible (trailing slash = prefix match),
+    # and scope it to the domain that needs it, not defaults: an entry here is
+    # inherited by every host, known or not. ACME http-01 is the classic case;
+    # terminate it in a dedicated Angie location BEFORE auth_request (commented
+    # snippet in deploy/angie-guardian.conf) so it never reaches Guardian, or
+    # allowlist "/.well-known/acme-challenge/" only on the domains whose
+    # certificates you renew that way. To merely skip the PoW interstitial for
+    # public assets like /robots.txt, use a per-path overlay instead
+    # (example.com below): the rest of the pipeline still runs there.
+    paths: []
   denylist:
     ips: []
-  # Crawlers allowlisted by PROVEN identity, not by their UA string: a client
-  # claiming a listed bot's User-Agent is admitted only if its IP reverse-DNS
-  # resolves under the bot's published domains AND that hostname resolves back
-  # to the same IP (the verification Google/Bing/Apple document). Results are
-  # cached in the store, so DNS is paid once per crawler IP, not per request.
-  verified_bots:
-    bots:
-      - name: googlebot       # built-in presets: googlebot, google-special,
-      - name: bingbot         #   bingbot, applebot, yandexbot, baiduspider
-      # googlebot verifies under googlebot.com ONLY (Google's common-crawler
-      # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
-      # APIs-Google) verify under google.com via the google-special preset;
-      # enable it if you run Google Ads:
-      # - name: google-special
-      # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
-      # preset: third parties can aim them at your site on demand.
-      # Custom bots: give the UA needles and rDNS domains yourself.
-      # - name: mybot
-      #   uas: [ "MyBot/1.0" ]
-      #   domains: [ "crawler.example.net" ]
-    # spoof_action: what happens to a client that claims a listed UA but
-    # definitively fails verification (no PTR, or rDNS owned by someone else):
-    #   deny (default) - reject and score a bot_spoof event (see thresholds)
-    #   continue       - just withhold the allowlist skip; the WAF/PoW
-    #                    pipeline handles the request like any other client
-    spoof_action: deny
-    dns_timeout: 1s           # DNS budget for a first-sight verification
-    cache_ttl: 12h            # confirmed identities; max 8760h
-    negative_ttl: 1h          # proven impostors; max 8760h
-    # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
+  # Verified crawler allowlisting (verified_bots) is deliberately NOT set in
+  # defaults: a confirmed crawler identity is a terminal allow that skips
+  # GeoIP, reputation, behaviour blocks, signatures and PoW alike, and a
+  # search crawler has no business on an API or static-assets vhost. Grant it
+  # per domain instead; see example.com below.
 
+# Host keys are EXACT matches: www.example.com, redirect aliases and every
+# other Host value are NOT covered by the example.com entry below; an
+# unlisted host silently gets `defaults` (this passes validation). Enumerate
+# every hostname you actually serve, and give Angie a default_server that
+# rejects unknown Hosts instead of proxying them into Guardian's fallback.
 domains:
-  # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
-  # Fractional difficulty: 5.25 is exactly 2x the work of the default 5.
+  # HTML site with a PHP/Node.js backend: every Guardian layer, i.e. PoW plus
+  # the URI/header WAF. (auth_request forwards no request body, so payload
+  # validation still belongs to the backend or a full inline WAF.)
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
-    waf: { honeypot: { enabled: true } }
+    # base_difficulty is what a clean visitor normally pays, once, per
+    # token_ttl; max_difficulty is the normal-operation ceiling escalation can
+    # reach when a request is scored suspicious (anomaly/WAF/reputation hit)
+    # or an IP keeps requesting challenges without solving them (challenge
+    # farming). Attack mode shifts the whole [base, max] window up for
+    # everyone, so with attack_mode enabled the ceiling becomes its
+    # difficulty_cap (default 7), not this 6. Fractional steps allowed: each
+    # +0.25 doubles the work, so 5.5 is 4x the default 5.
+    # token_ttl is omitted, so it inherits the 4h default.
+    pow: { enabled: true, base_difficulty: 5.5, max_difficulty: 6 }
+    # honeypot: one hit on a trap path denies and, with ip_behaviour on,
+    # persistently blocks the source IP, which behind CGNAT is a whole
+    # population. NO universal trap path is safe to ship enabled: any URL
+    # guessable enough to put in an example (an old admin panel, a backup
+    # dir) is plausible as a real route or a curious visitor's typo on some
+    # estate. Invent paths specific to YOUR site that nothing links to,
+    # Disallow them in robots.txt, and avoid paths the starter WAF rules
+    # already block (/.env etc. never reach the honeypot). Then enable:
+    # waf: { honeypot: { enabled: true, paths: [ "/your-own-trap/" ] } }
+    # Crawlers allowlisted by PROVEN identity, not by their UA string: a
+    # client claiming a listed bot's User-Agent is admitted only if its IP
+    # reverse-DNS resolves under the bot's published domains AND that hostname
+    # resolves back to the same IP (the verification Google/Bing/Apple
+    # document). Results are cached in the store, so DNS is paid once per
+    # crawler IP, not per request. Scoped to this public HTML site on purpose:
+    # verified identity is not authorization for every vhost.
+    verified_bots:
+      bots:
+        - name: googlebot     # built-in presets: googlebot, google-special,
+        - name: bingbot       #   bingbot, applebot, yandexbot, baiduspider
+        # googlebot verifies under googlebot.com ONLY (Google's common-crawler
+        # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
+        # APIs-Google) verify under google.com via the google-special preset;
+        # enable it if you run Google Ads:
+        # - name: google-special
+        # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
+        # preset: third parties can aim them at your site on demand.
+        # Custom bots: give the UA needles and rDNS domains yourself.
+        # - name: mybot
+        #   uas: [ "MyBot/1.0" ]
+        #   domains: [ "crawler.example.net" ]
+      # spoof_action: what happens to a client that claims a listed UA but
+      # definitively fails verification (no PTR, or rDNS owned by someone
+      # else):
+      #   deny (default) - reject and score a bot_spoof event (see thresholds)
+      #   continue       - just withhold the allowlist skip; the WAF/PoW
+      #                    pipeline handles the request like any other client
+      spoof_action: deny
+      dns_timeout: 1s         # DNS budget for a first-sight verification
+      cache_ttl: 12h          # confirmed identities; max 8760h
+      negative_ttl: 1h        # proven impostors; max 8760h
+      # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
     # Per-path overlays: scope any setting to a URI prefix within this host.
     # Keys are exact paths, or prefixes when they end with "/"; the most
     # specific key wins, matched against the percent-decoded path. Each entry
     # only overrides the fields it mentions (defaults, then domain, then
-    # path). Here the machine-facing API skips the interstitial while the WAF
-    # stays on, and the login area demands harder work:
-    # paths:
-    #   "/api/v1/":
-    #     pow: { enabled: false }
-    #   "/account/login":
-    #     pow: { base_difficulty: 6 }
+    # path). CAUTION when an overlay weakens policy: matching percent-decodes
+    # but deliberately does NOT resolve ../ segments, collapse repeated
+    # slashes or fold case, while many backends canonicalize before routing,
+    # so a crafted path could select the weaker overlay yet route elsewhere.
+    # Keep the starter path-traversal rule on (it denies dot segments), make
+    # Angie reject ambiguous paths, or prefer a separate host (like
+    # api.example.com below) as the safer security boundary.
+    paths:
+      # Public assets skip only the interstitial here; unlike a stage-0
+      # allowlist entry, blocks, GeoIP and the WAF still apply.
+      "/robots.txt": { pow: { enabled: false } }
+      "/favicon.ico": { pow: { enabled: false } }
+      # The machine-facing API could skip the interstitial while the WAF
+      # stays on (challenge-action rules degrade to deny, see the API host
+      # below), and the login area can demand harder work. Overlays inherit
+      # everything else from the domain, INCLUDING verified_bots: clear it
+      # with an empty list, or a verified crawler identity would terminally
+      # allow past the API's blocks and WAF too. A separate host (like
+      # api.example.com below) that never grants the bots stays the safer
+      # pattern:
+      # "/api/v1/":
+      #   pow: { enabled: false }
+      #   verified_bots: { bots: [] }   # do not inherit crawler authorization
+      # "/account/login":
+      #   pow: { base_difficulty: 6 }
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.
+  # NOTE: with PoW off, WAF rules whose action is `challenge` (like the
+  # starter sqli-basic heuristic) degrade to deny: there is no challenge to
+  # send. Give APIs their own rules file if hard denies on challenge-grade
+  # heuristics are not acceptable there.
+  # NOTE: Guardian sees the request line and headers ONLY. Angie's
+  # auth_request never forwards a body, so JSON/form payloads (where most API
+  # injection lives) are invisible here by design; body validation belongs to
+  # the backend or a full inline WAF. "WAF only" is not payload protection.
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets host: keep it light.
+  # Static assets host: no PoW interstitial, no behavioural scoring. The
+  # signature WAF still applies from defaults; override waf.keywords too if
+  # you want a truly minimal policy here.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }

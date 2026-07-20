@@ -24,15 +24,16 @@ way the search engines themselves document:
    attacker who controls the PTR of their own IP space can't fake step 2.
 
 ```yaml
-defaults:
-  verified_bots:
-    bots:
-      - name: googlebot            # presets: googlebot, google-special,
-      - name: bingbot              #   bingbot, applebot, yandexbot, baiduspider
-      - name: mybot                # custom bots: spell out both fields
-        uas: [ "MyBot/1.0" ]
-        domains: [ "crawler.example.net" ]
-    spoof_action: deny             # or: continue
+domains:
+  example.com:                     # scope to the domains you want crawled: a
+    verified_bots:                 # confirmed identity is a terminal allow,
+      bots:                        # not authorization for every vhost
+        - name: googlebot          # presets: googlebot, google-special,
+        - name: bingbot            #   bingbot, applebot, yandexbot, baiduspider
+        - name: mybot              # custom bots: spell out both fields
+          uas: [ "MyBot/1.0" ]
+          domains: [ "crawler.example.net" ]
+      spoof_action: deny           # or: continue
 ```
 
 ::: tip Google's three crawler categories

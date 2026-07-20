@@ -12,17 +12,25 @@ with its default.
 
 ```yaml
 domains:
-  # HTML site behind PHP/Node: full protection. Difficulty takes quarter
-  # steps: 5.25 is exactly 2x the work of 5 (see the difficulty table below).
+  # HTML site behind PHP/Node: all Guardian layers, PoW + the URI/header
+  # WAF (request bodies never reach Guardian; payload validation stays with
+  # the backend). Difficulty takes quarter steps: 5.25 is exactly 2x the
+  # work of 5 (see the difficulty table below).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25, token_ttl: 2h }
-    waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 4h
+    # Honeypot: no generic trap path is safe to copy (one hit persistently
+    # blocks the source IP when ip_behaviour is on). Invent a path specific
+    # to YOUR site that nothing links to, then enable:
+    # waf: { honeypot: { enabled: true, paths: [ "/your-own-trap/" ] } }
 
-  # API host: WAF only, no interstitial a machine client can't solve.
+  # API host: WAF only, no interstitial a machine client can't solve. With
+  # PoW off, challenge-action rules degrade to deny (nothing to challenge
+  # with); give APIs their own rules file if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: keep it light.
+  # Static assets: no PoW, no behavioural scoring. Signature rules still
+  # apply from defaults; override waf.keywords too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -49,13 +57,69 @@ domains:
     pow: { enabled: true }
     paths:
       "/api/v1/":
-        pow: { enabled: false }   # no interstitial; the WAF stays on
+        pow: { enabled: false }   # no interstitial; the WAF stays on, but
+                                  # challenge-action rules degrade to deny here
       "/account/login":
         pow: { base_difficulty: 6 }
 ```
 
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.
+
+## Signature rules (waf.keywords)
+
+The signature WAF matches keyword and regex rules against the request line and
+headers. Getting from the shipped starter file to a running configuration
+takes three explicit steps; none of them happen automatically:
+
+1. **Install a rules file.** The release archive (and the repo) ships
+   `deploy/rules-common.yaml`, a commented starter set (dotfile probes,
+   path traversal, SQLi heuristics, scanner UAs). The
+   [production install recipe](/guide/production#systemd) copies it to
+   `/etc/guardian/rules.d/common.yaml`; nothing is auto-discovered from that
+   directory, it is just the conventional location.
+2. **Point the config at it** and enable matching:
+
+   ```yaml
+   defaults:
+     waf:
+       keywords:
+         enabled: true
+         rules_file: /etc/guardian/rules.d/common.yaml
+   ```
+3. **Validate**: `guardiand -config guardian.yaml -t`. A `rules_file` that
+   does not exist while `enabled: true` fails fast, at preflight and at
+   startup, rather than silently matching nothing.
+
+Inside a rules file, each rule has an `id`, an `action`
+(`deny` | `challenge` | `block`), optional `targets` (`path`, `query`, `ua`,
+`header:<name>`; default `[path, query]`), optional `methods`, and `keywords`
+(case-insensitive literals) and/or `regexes` (Go RE2, linear-time). Rules are
+evaluated **in file order and the first match wins**, so put narrow or
+terminal rules before broad challenge rules. The `id` is a label, not a
+switch: a hit is logged and counted as `waf:<id>`, but IDs cannot be enabled
+or disabled individually from `guardian.yaml`. The starter file documents
+every field; the [reference](/reference/configuration#waf-keywords) lists the
+exact matching semantics.
+
+Like every `waf` setting, `defaults.waf.keywords` is inherited by **every
+domain and path overlay** that does not override it, so the file above applies
+to your whole estate, including unknown Hosts that fall back to `defaults`.
+Today scoping works at file granularity, in two ways:
+
+- Point a domain (or path overlay) at a **different file** with its own
+  `rules_file`, e.g. an API set without challenge-action heuristics (which
+  degrade to deny where PoW is off).
+- Turn matching off for a scope with `enabled: false`.
+
+The [examples page](/examples#signature-rules-one-starter-file-scoped-per-domain)
+has a complete copyable config showing both.
+
+Rules files hot-reload two ways: they are watched on disk (edits apply within
+seconds, no signal needed), and a SIGHUP/`/admin/reload` re-reads
+`guardian.yaml` including any changed `rules_file` paths. A file that fails to
+parse, or exceeds the 8 MiB bound, keeps the previous rules active; only a
+cold start hard-fails on a bad file.
 
 ## Validating a config
 
@@ -79,8 +143,13 @@ when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
 ## base_difficulty and max_difficulty
 
 `base_difficulty` is the baseline for an issued challenge;
-`max_difficulty` is the ceiling. Anomaly score, WAF/reputation policy, and
-challenge-farming escalation can raise work within `[base, max]`.
+`max_difficulty` is the normal-operation ceiling. Anomaly score,
+WAF/reputation policy, and challenge-farming escalation can raise work within
+`[base, max]`. One exception: [attack mode](/guide/attack-mode) shifts the
+whole `[base, max]` window up fleet-wide, so with `attack_mode` enabled the
+absolute ceiling is `attack_mode.effects.difficulty_cap` (default `7`), not
+`max_difficulty`. Pick the cap, not the domain max, as your "worst case a
+visitor can ever be asked" number.
 
 A difficulty of `N` requires `4 * N` leading zero **bits** in the SHA-256, so
 a full step (+1) is 16x the work, and the scale takes **quarter steps**: each
@@ -96,7 +165,9 @@ Which value fires:
   token lifetime must be at least one second and at most seven days.
 - **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`). A valid bound token satisfies rules whose action is
-  `challenge`; it never bypasses `deny` or `block` rules.
+  `challenge`; it never bypasses `deny` or `block` rules. On a domain or path
+  where PoW is disabled there is nothing to challenge with, so
+  challenge-action rules degrade to deny there.
 - **The anomaly scorer:** scales the difficulty across the `[base, max]`
   range with the score, so a more bot-like client pays more. Requires
   `waf.anomaly` enabled with a trained model.

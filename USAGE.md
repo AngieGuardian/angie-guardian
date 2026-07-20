@@ -25,7 +25,7 @@ everything else inherits from `defaults`:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
-signing_key_file: /etc/guardian/ed25519.key
+signing_key_file: /var/lib/guardian/ed25519.key   # generated state, not /etc
 store:
   backend: pebble
   path: /var/lib/guardian/pebble
@@ -44,17 +44,26 @@ names what it changes. Unknown hosts fall back to `defaults`.
 
 ```yaml
 domains:
-  # HTML site behind PHP/Node: full protection. Difficulty takes quarter
-  # steps: 5.25 is exactly 2x the work of 5 (see the difficulty table below).
+  # HTML site behind PHP/Node: all Guardian layers, PoW + the URI/header
+  # WAF (request bodies never reach Guardian; payload validation stays with
+  # the backend). Difficulty takes quarter steps: each +0.25 doubles the
+  # work, so 5.5 is 4x the default 5 (see the difficulty table below).
+  # token_ttl inherits the 4h default.
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25, token_ttl: 2h }
-    waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
+    pow: { enabled: true, base_difficulty: 5.5 }
+    # Honeypot: no generic trap path is safe to copy (one hit persistently
+    # blocks the source IP when ip_behaviour is on). Invent a path specific
+    # to YOUR site that nothing links to, then enable:
+    # waf: { honeypot: { enabled: true, paths: [ "/your-own-trap/" ] } }
 
-  # API host: WAF only, no interstitial a machine client can't solve.
+  # API host: WAF only, no interstitial a machine client can't solve. With
+  # PoW off, challenge-action rules degrade to deny (nothing to challenge
+  # with); give APIs their own rules file if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: keep it light.
+  # Static assets: no PoW, no behavioural scoring. Signature rules still
+  # apply from defaults; override waf.keywords too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -102,6 +111,16 @@ valid bound token satisfies `challenge`; without PoW, `challenge` denies.
 - `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods, and a
   rule with only `methods` fires on the method alone.
 
+The file must be installed and named explicitly (the systemd recipe in step 3
+does both): nothing under `/etc/guardian/rules.d/` is auto-discovered, and a
+configured `rules_file` that is missing fails `-t` and startup rather than
+silently matching nothing. `defaults.waf.keywords` is inherited by every
+domain and path overlay unless overridden there; scoping works per FILE, by
+pointing a domain (or path overlay) at a different `rules_file` or setting
+`enabled: false` for that scope. The `id` is a log/reason label (`waf:<id>`),
+not a switch: individual rule IDs cannot be enabled or disabled from
+`guardian.yaml`.
+
 **Request bodies are never inspected.** Angie's `auth_request` subrequest
 carries only the request line and headers, never the body, so no rule can see
 POST payloads. That is a deliberate design boundary, not a missing feature:
@@ -121,8 +140,11 @@ is enabled, persist an IP block.
 ### base_difficulty and max_difficulty
 
 `base_difficulty` is the baseline for an issued challenge; `max_difficulty` is
-the ceiling. Anomaly score, WAF/reputation policy, and challenge-farming
-escalation decide where in `[base, max]` a request lands.
+the normal-operation ceiling. Anomaly score, WAF/reputation policy, and
+challenge-farming escalation decide where in `[base, max]` a request lands.
+One exception: attack mode shifts the whole `[base, max]` window up
+fleet-wide, so with `attack_mode` enabled the absolute ceiling is
+`attack_mode.effects.difficulty_cap` (default `7`), not `max_difficulty`.
 
 A difficulty of `N` requires `4 * N` leading zero **bits** in the SHA-256, so a
 full step (+1) is 16x the work, and the scale takes **quarter steps**: each
@@ -216,15 +238,16 @@ way the search engines themselves document:
    attacker who controls the PTR of their own IP space can't fake step 2.
 
 ```yaml
-defaults:
-  verified_bots:
-    bots:
-      - name: googlebot            # presets: googlebot, google-special,
-      - name: bingbot              #   bingbot, applebot, yandexbot, baiduspider
-      - name: mybot                # custom bots: spell out both fields
-        uas: [ "MyBot/1.0" ]
-        domains: [ "crawler.example.net" ]
-    spoof_action: deny             # or: continue
+domains:
+  example.com:                     # scope to the domains you want crawled: a
+    verified_bots:                 # confirmed identity is a terminal allow,
+      bots:                        # not authorization for every vhost
+        - name: googlebot          # presets: googlebot, google-special,
+        - name: bingbot            #   bingbot, applebot, yandexbot, baiduspider
+        - name: mybot              # custom bots: spell out both fields
+          uas: [ "MyBot/1.0" ]
+          domains: [ "crawler.example.net" ]
+      spoof_action: deny           # or: continue
 ```
 
 Google splits its traffic into three rDNS categories, and the presets keep
@@ -422,12 +445,29 @@ sudo install -Dm755 guardiand /usr/local/bin/guardiand
 getent group guardian >/dev/null || sudo groupadd --system guardian
 id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
   --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
-sudo install -D -o guardian -g guardian -m600 guardian.yaml /etc/guardian/guardian.yaml
+
+# Immutable config: root-owned, service-READABLE only (the group must be set
+# by hand; systemd's ConfigurationDirectory= never chowns /etc/guardian).
+sudo install -d -o root -g guardian -m710 /etc/guardian
+sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
+sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
+# The starter WAF rules the example config enables; without this file the
+# unit's ExecStartPre `-t` preflight fails on the missing rules_file.
+sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
+
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
+
+Generated state (the signing key, retired-key archive, admin token, and the
+store) lives under `/var/lib/guardian`, which the unit's `StateDirectory=`
+creates and owns for the service user; nothing there needs manual setup. The
+split is deliberate: config under `/etc/guardian` stays read-only for the
+daemon, so a compromised process cannot rewrite its own policy. See
+"Filesystem layout and ownership" in the production guide on the docs site
+for the full reasoning and exact ownership details.
 
 The shipped `Type=notify` unit reports `READY=1` only after every configured
 listener answers `/healthz`, then services the systemd watchdog. The distroless
@@ -457,7 +497,7 @@ You never have to invent that token yourself. It resolves in this order:
    an explicitly configured token (1 or 2).
 
 ```sh
-TOKEN=$(cat /etc/guardian/admin.token)   # or your admin.token value
+TOKEN=$(sudo cat /var/lib/guardian/admin.token)   # or your admin.token value
 A=http://127.0.0.1:8072
 
 # Is an IP currently blocked, and why?
@@ -651,8 +691,8 @@ store:
   backend: redis            # same value for both Redis and Valkey
   addr: 127.0.0.1:6379
   # password: ""          # or the REDIS_PASSWORD env var
-signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
+signing_key_file: /var/lib/guardian/ed25519.key   # same file on every replica
+previous_key_dir: /var/lib/guardian/keys.d        # same lock-capable shared filesystem
 ```
 
 Use a fresh, dedicated logical database on a Redis/Valkey server per Guardian
@@ -708,7 +748,10 @@ wasm_modules {
         domains:
           example.com:
             allowlist: { paths: [ "/robots.txt" ] }
-            honeypot:  { enabled: true, paths: [ "/wp-login.php" ] }
+            # invent your own trap path; a guest honeypot hit denies only
+            # that request (no persistent block), but a copied generic path
+            # can still deny a route your site really serves
+            honeypot:  { enabled: true, paths: [ "/your-own-trap/" ] }
             rules:
               - { id: dotfile, action: deny, keywords: [ "/.env", "/.git/" ] }
       ';

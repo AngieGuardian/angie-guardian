@@ -159,10 +159,12 @@ type StoreConfig struct {
 	Addr     string `yaml:"addr"`     // redis host:port
 	Password string `yaml:"password"` // redis password (or use REDIS_PASSWORD)
 	DB       int    `yaml:"db"`       // redis database number
-	// Sync makes the buntdb and pebble backends fsync every write (fully durable,
-	// slower). When false (default), writes are flushed without a per-write fsync,
-	// much faster, at the cost of losing the unflushed tail on a power/OS crash
-	// (a bounded, <=challenge_ttl replay window). Ignored by other backends.
+	// Sync makes the pebble backend fsync every write (fully durable, slower).
+	// When false (default), writes are flushed without a per-write fsync, much
+	// faster, at the cost of losing the unflushed tail on a power/OS crash (a
+	// bounded, <=challenge_ttl replay window). buntdb REJECTS sync: true at
+	// load (single writer, fsync-per-commit is ~100x slower; see applyDefaults);
+	// other backends ignore it.
 	Sync bool `yaml:"sync"`
 }
 
@@ -1334,6 +1336,24 @@ func (dc *DomainConfig) validate() error {
 	if b.BlockTTL.Std() > MaxStateTTL || b.MaxBlockTTL.Std() > MaxStateTTL {
 		return fmt.Errorf("waf.ip_behaviour: block_ttl and max_block_ttl must be <= %v", MaxStateTTL)
 	}
+	// Honeypot trap paths must be absolute and non-trivial. CheckHoneypot
+	// matches them (MatchPathList semantics) against the percent-decoded
+	// request path, which always starts with "/": an empty, whitespace-only or
+	// relative entry can never match anything (a silently inert trap), while a
+	// bare "/" prefix-matches every URL, so the first request would deny and,
+	// with ip_behaviour on, persistently block that visitor. All are
+	// copied-config mistakes; reject them at load, enabled or not, so a parked
+	// honeypot block cannot go live with a broken trap list.
+	for _, hpPath := range dc.WAF.Honeypot.Paths {
+		switch {
+		case strings.TrimSpace(hpPath) == "":
+			return fmt.Errorf("waf.honeypot.paths: empty or whitespace-only entry; every trap must be an absolute path like /old-admin/")
+		case !strings.HasPrefix(hpPath, "/"):
+			return fmt.Errorf("waf.honeypot.paths entry %q is not absolute: request paths always start with /, so it could never match", hpPath)
+		case hpPath == "/":
+			return fmt.Errorf("waf.honeypot.paths entry \"/\" would match every request: the first visitor would be denied (and blocked when ip_behaviour is on); use a specific trap path")
+		}
+	}
 	g := &dc.Geo
 	switch g.DefaultAction {
 	case "":
@@ -1625,6 +1645,40 @@ func (c *Config) ModelFiles() []string {
 // admin inspection. The map is the engine's own; callers must not mutate it.
 func (c *Config) DomainViews() map[string]*DomainConfig {
 	return c.resolved
+}
+
+// Warnings returns human-readable notes about config that is valid but almost
+// certainly not what the operator intended, so guardiand can log them at startup
+// (and on reload) without failing. These are not errors: the daemon runs fine,
+// the setting just does nothing. Kept out of validate() because that returns a
+// single fatal error; this returns a list the caller logs individually.
+func (c *Config) Warnings() []string {
+	var out []string
+	// A honeypot with no trap paths is a no-op: CheckHoneypot returns "no match"
+	// when len(Paths) == 0, so enabled: true without paths silently protects
+	// nothing. Flag every scope it appears in (defaults, each domain, each path
+	// overlay) so a copied example.com block does not sit enabled-but-inert.
+	check := func(scope string, dc *DomainConfig) {
+		if hp := dc.WAF.Honeypot; hp.Enabled && len(hp.Paths) == 0 {
+			out = append(out, "waf.honeypot enabled but no paths configured for "+scope+": it has no effect (add paths, or set enabled: false)")
+		}
+	}
+	check("defaults", &c.Defaults)
+	// Sort hosts so the warning order is stable across runs (map iteration is not).
+	hosts := make([]string, 0, len(c.resolved))
+	for host := range c.resolved {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	for _, host := range hosts {
+		dc := c.resolved[host]
+		check("domain "+host, dc)
+		for i := range dc.pathOverrides {
+			o := &dc.pathOverrides[i]
+			check("domain "+host+" path "+o.key, o.cfg)
+		}
+	}
+	return out
 }
 
 // DomainFor returns the resolved config for a host, falling back to Defaults

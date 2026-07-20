@@ -5,9 +5,12 @@
 Guardian is driven by a single YAML file. There is no auto-detected default
 location: `guardiand` requires `-config <path>`, and everything on this page
 (the systemd unit, the Docker mounts, the healthcheck) uses the conventional
-path **`/etc/guardian/guardian.yaml`**. Keep it `0600` and owned by the service
-user; it holds no secrets by default, but the signing key and admin token it
-points at do.
+path **`/etc/guardian/guardian.yaml`**. Keep it root-owned and merely
+*readable* by the service (`root:guardian`, mode `0640`), never writable: the
+config is policy, and a compromised daemon must not be able to rewrite its own
+policy. The file holds no secrets by default; the signing key and admin token
+it points at do, and those live in the service-owned state directory (see
+[Filesystem layout and ownership](#filesystem-layout-and-ownership)).
 
 Two references cover the file itself, so this guide does not repeat them:
 
@@ -29,21 +32,70 @@ config file described above.
 
 ### systemd
 
-Grab the latest `guardiand` binary from the
+Grab the latest release archive from the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
-(under **Assets -> Packages**), then install it as a service:
+(under **Assets -> Packages**) and unpack it; it contains the binaries,
+`guardian.example.yaml`, and the `deploy/` directory (unit file and starter
+WAF rules) used below. Then install it as a service:
 
 ```sh
 sudo install -Dm755 guardiand /usr/local/bin/guardiand
 getent group guardian >/dev/null || sudo groupadd --system guardian
 id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
   --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
-sudo install -D -o guardian -g guardian -m600 guardian.yaml /etc/guardian/guardian.yaml
+
+# Immutable config: root-owned, service-readable, never service-writable.
+# The dir group must be set explicitly (systemd's ConfigurationDirectory=
+# applies the 0710 mode but always leaves ownership at root:root).
+sudo install -d -o root -g guardian -m710 /etc/guardian
+sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
+sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
+# The starter signature rules the example config enables; without this file,
+# `guardiand -t` (and so the unit's ExecStartPre) fails with
+# "open /etc/guardian/rules.d/common.yaml: no such file or directory".
+sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
+
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
+
+`guardian.yaml` here is your edited copy of the shipped
+`guardian.example.yaml`. Nothing under `/var/lib/guardian` needs manual setup:
+the unit's `StateDirectory=` creates it owned by the service user, and
+guardiand generates the signing key and admin token there on first start.
+
+#### Filesystem layout and ownership
+
+The unit and the install commands above deliberately split the two directories
+by who may write them:
+
+| Path | Contents | Owner | Mode |
+|---|---|---|---|
+| `/etc/guardian/` | immutable configuration: `guardian.yaml`, `rules.d/` | `root:guardian` | dir `0710`, subdirs `0750`, files `0640` |
+| `/var/lib/guardian/` | generated state: `ed25519.key`, `keys.d/`, `admin.token`, the store | `guardian:guardian` | dir `0700`, secrets `0600` |
+
+Configuration is **read-only for the service**: the daemon runs as `guardian`
+and reaches config files through group permissions alone, so even a fully
+compromised guardiand cannot rewrite its own policy, rules, or unit-visible
+paths. Directory mode `0710` gives the group traverse-only access: it can open
+the known file paths the config names but cannot list the directory or create
+files in it. Generated state, which the daemon must create and rotate (the
+Ed25519 signing key, the retired-key archive, the auto-generated admin token,
+the pebble/buntdb store), lives under the `StateDirectory` that systemd
+creates and chowns to the service user.
+
+Two systemd details make the explicit `install`/`chown` steps above
+load-bearing rather than decorative. First, systemd applies
+`ConfigurationDirectoryMode=` but **excludes `ConfigurationDirectory=` from
+the automatic chown** it performs for `StateDirectory=`, so `/etc/guardian`
+stays `root:root` unless installation sets the group; with mode `0710` and the
+wrong group, the service user cannot even traverse to `guardian.yaml` and the
+unit fails at `ExecStartPre`. Second, `ReadWritePaths=` is **not** a
+substitute for ownership: it only relaxes the systemd sandbox
+(`ProtectSystem=strict`) and never overrides normal Unix ownership and mode
+checks, which is why the unit grants write access to nothing under `/etc`.
 
 #### Readiness and watchdog
 
@@ -203,8 +255,8 @@ store:
   backend: redis            # same value for both Redis and Valkey
   addr: 127.0.0.1:6379
   # password: ""            # or the REDIS_PASSWORD env var
-signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
+signing_key_file: /var/lib/guardian/ed25519.key   # same file on every replica
+previous_key_dir: /var/lib/guardian/keys.d        # same lock-capable shared filesystem
 ```
 
 Both key paths must be on one filesystem that provides cross-host advisory

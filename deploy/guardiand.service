@@ -27,17 +27,27 @@ RestartSec=2
 
 User=guardian
 Group=guardian
+# Generated state (signing key, rotated-key archive, admin token, the store)
+# lives under /var/lib/guardian, created and owned guardian:guardian by
+# StateDirectory. Mode 0700: the state dir holds the signing key.
 StateDirectory=guardian
+StateDirectoryMode=0700
+# /etc/guardian is immutable configuration: READ-ONLY for the service, so a
+# compromised daemon cannot rewrite its own policy. Mode 0710 gives the
+# service group traverse-only access (no listing, no writes); the files
+# themselves are root:guardian 0640. systemd applies this mode but leaves the
+# directory owned root:root, so installation must set the group explicitly:
+# chown root:guardian /etc/guardian (the install commands in the production
+# guide do this). Note ReadWritePaths would NOT be a substitute for write
+# access here: it only relaxes the systemd sandbox and never overrides normal
+# Unix ownership/mode checks.
 ConfigurationDirectory=guardian
-# guardiand writes the signing key + rotated-key archive under /etc/guardian;
-# grant write to that config dir (default mode is read-only for the service).
-ConfigurationDirectoryMode=0750
-ReadWritePaths=/etc/guardian
+ConfigurationDirectoryMode=0710
 
 # Admin API bearer token: simplest is admin.token_file in guardian.yaml
-# (auto-generated 0600 on first start; ReadWritePaths above already allows
-# it). To manage the token yourself instead, keep it out of the YAML and
-# inject via env:
+# (auto-generated 0600 on first start; point it into /var/lib/guardian, the
+# example config does). To manage the token yourself instead, keep it out of
+# the YAML and inject via env:
 # Environment=ADMIN_TOKEN=...    (better: EnvironmentFile=/etc/guardian/env)
 # Environment=REDIS_PASSWORD=... (when using the redis store backend)
 

@@ -205,11 +205,11 @@ Restrictions and behavior notes:
 | `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. Requires top-level `signing_key_file`. |
 | `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: disable that catch-all and let anomaly or explicit WAF/GeoIP/reputation challenge policies select requests (requires `waf.anomaly.enabled`). |
 | `pow.base_difficulty` | float | `5` | Baseline for an issued challenge. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
-| `pow.max_difficulty` | float | `6` | Ceiling for escalation above `base_difficulty`. A clean visitor always pays `base_difficulty` and never reaches this; a challenge only climbs toward `max_difficulty` when the request is scored more suspicious: by the anomaly model (score `challenge_at`→`1.0` maps to `base`→`max`), by a WAF-signature or reputation-feed hit (+1 step, capped here), or fleet-wide under attack mode. With none of those active, `max_difficulty` is never used. Must be finite and in range `base_difficulty`..8, in quarter steps. |
-| `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. Must be between `1s` and seven days when PoW is enabled. |
+| `pow.max_difficulty` | float | `6` | Ceiling for escalation above `base_difficulty`. `base_difficulty` is the normal floor, not a guarantee: a challenge climbs toward `max_difficulty` when the request is scored more suspicious, by the anomaly model (score `challenge_at`→`1.0` maps to `base`→`max`), by a WAF-signature or reputation-feed hit (+1 step, capped here), or by challenge farming (escalation is scored per host+IP, so a clean visitor behind the same CGNAT/proxy IP as a farmer can inherit above-base work). This is the *normal-operation* ceiling: [attack mode](/guide/attack-mode) shifts the whole `[base, max]` window up fleet-wide, so with `attack_mode` enabled the absolute ceiling is `attack_mode.effects.difficulty_cap` (default `7`), which can exceed this value. Must be finite and in range `base_difficulty`..8, in quarter steps. |
+| `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns: how long a clean visitor rides one solve before being challenged again. Two levers shape the work economy: `base_difficulty` sets the cost of one solve, `token_ttl` sets how often anyone still visiting, a legitimate client or a persistent scraper alike, pays that cost again, and it also bounds how long a captured cookie stays replayable. The token is fingerprint-bound to IP + User-Agent, so replay needs the same source IP and UA; that binding is weakest behind shared IPs (CGNAT, mobile carriers, corporate proxies), where any client on the same IP that copies the cookie and UA can ride it. A shorter TTL re-challenges legitimate visitors more often, but raises a continuing scraper's amortized cost and shrinks that replay window: the classic UX-versus-abuse-resistance trade-off. `4h` is a sensible middle for most sites; consider `1h`-`2h` when shared-IP replay worries you. Must be between `1s` and seven days when PoW is enabled; if you rotate signing keys, keep it well under seven days so a rotation does not invalidate live tokens. |
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. Must be greater than zero when PoW is enabled and no more than seven days. |
 | `pow.issuance_rate_limit` | rate | `60/min` | Per-IP cap on challenge issuance, so the interstitial cannot be used to flood the store. Inherited by domains and path overlays. |
-| `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. It substitutes a minimum five-second wait for hash work, so it is weaker and more parallelizable than PoW. |
+| `pow.noscript_fallback` | bool | `false` | Serve a meta-refresh fallback for clients without JavaScript. It substitutes a minimum five-second wait for hash work; the wait costs an attacker no computation and parallelizes cheaply, so it is strictly weaker than PoW. Leave it `false` in production unless no-JS accessibility is a deliberate trade-off you accept. |
 
 See [base_difficulty and max_difficulty](/guide/configuration#base-difficulty-and-max-difficulty)
 for which value fires when.
@@ -280,8 +280,8 @@ Behavioural IP blocking with exponential backoff.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Enable honeypot trap paths: one hit denies immediately and, when `waf.ip_behaviour.enabled`, places a persistent IP block. |
-| `paths` | list | `[]` | URL-decoded exact paths or prefixes no legitimate client visits, e.g. `["/admin-old/"]`. Percent-encoded equivalents match the same trap. Also `Disallow` them in robots.txt. |
+| `enabled` | bool | `false` | Enable honeypot trap paths: one hit denies immediately and, when `waf.ip_behaviour.enabled`, places a persistent IP block. Has no effect without `paths`; guardiand logs a warning at startup if enabled with none. |
+| `paths` | list | `[]` | URL-decoded exact paths or prefixes no legitimate client visits, e.g. `["/admin-old/"]`. Percent-encoded equivalents match the same trap. Required for the honeypot to do anything. Entries must be absolute and specific: empty/whitespace or relative entries (which could never match) and a bare `/` (which would trap every visitor) are rejected at load. Invent paths specific to your site rather than copying generic ones, and `Disallow` them in robots.txt. |
 
 ### waf.signed_id
 
@@ -299,7 +299,18 @@ challenge IDs always emit a tamper event, whether or not this is enabled; the
 
 ### allowlist / denylist
 
-Static lists, evaluated before everything else. The allowlist supports:
+Static lists, evaluated before everything else. An allowlist match is
+terminal: denylist, behaviour blocks, GeoIP, honeypots, signatures and PoW
+are all skipped for it, so reserve it for endpoints that must keep working
+even for otherwise-blocked clients (ACME renewal, say) and keep every entry
+as narrow as possible. To merely skip the PoW interstitial for public assets
+like `/robots.txt`, prefer a
+[per-path overlay](#per-path-overrides-domains-host-paths) with
+`pow: { enabled: false }`: the rest of the pipeline still runs there. `ips`
+match the client address Angie reports (`X-Guardian-IP`), not the
+Angie-to-Guardian connection, so normal wiring needs no loopback entries;
+allowlisting `127.0.0.1`/`::1` would turn a broken real-IP setup into a
+total bypass. The allowlist supports:
 
 | Option | Type | Matching |
 |---|---|---|
@@ -320,12 +331,10 @@ overlaps a configured bot fails fast for exactly this reason.
 
 ```yaml
 allowlist:
-  ips: [ "127.0.0.1", "::1" ]
+  ips: []
   uas: []
   paths:
-    - /robots.txt
-    - /favicon.ico
-    - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
+    - /.well-known/acme-challenge/   # ACME http-01 only, NOT all of /.well-known/
 denylist:
   ips: []
 ```
@@ -338,6 +347,12 @@ only after its IP reverse-DNS (PTR) resolves under the bot's published
 domains **and** that hostname forward-resolves back to the same IP, the
 verification Google/Bing/Apple themselves document. Results are cached in
 the shared store, so DNS runs once per crawler IP, not per request.
+
+A confirmed identity is a **terminal allow**: it skips GeoIP, reputation,
+behaviour blocks, signatures and PoW for that request. Verified identity is
+not authorization for every vhost, so configure `verified_bots` per domain
+(the public HTML sites you want crawled) rather than in `defaults`, where an
+API host, a static-assets host and every unknown host would inherit it.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -361,14 +376,16 @@ parties can aim them at any site on demand; add a custom bot entry if you
 really want them allowlisted.
 
 ```yaml
-verified_bots:
-  bots:
-    - name: googlebot
-    - name: bingbot
-    - name: mybot                 # custom bots: spell out both fields
-      uas: [ "MyBot/1.0" ]
-      domains: [ "crawler.example.net" ]
-  spoof_action: deny
+domains:
+  example.com:                    # the public HTML site you want crawled
+    verified_bots:
+      bots:
+        - name: googlebot
+        - name: bingbot
+        - name: mybot             # custom bots: spell out both fields
+          uas: [ "MyBot/1.0" ]
+          domains: [ "crawler.example.net" ]
+      spoof_action: deny
 ```
 
 A transient DNS failure proves nothing and falls through unverified: it

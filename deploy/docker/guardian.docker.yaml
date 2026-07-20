@@ -8,7 +8,7 @@
 # difficulty so the suite stays fast. Keep the two structurally in sync.
 #
 # NOTE: binding the hot path to 0.0.0.0 is exactly the "direct-reach" exposure
-# the security review flagged — safe here only because the port is NOT
+# the security review flagged; safe here only because the port is NOT
 # published to the host (see compose.yaml). In production keep it on loopback
 # or an isolated network.
 listen: 0.0.0.0:8071
@@ -64,37 +64,49 @@ defaults:
   pow:
     enabled: true
     mode: always
-    # One quarter-step above the production default (5) so the interstitial
-    # is actually perceptible on a fast desktop when demoing (about half a
-    # second; 5 solves in ~0.1s there). The e2e suite uses guardian.e2e.yaml
-    # with a lower value instead.
+    # Two quarter-steps above the default (5), i.e. 4x the work, so the
+    # interstitial is actually perceptible on a fast desktop when demoing
+    # (about half a second; 5 solves in ~0.1s there). The e2e suite uses
+    # guardian.e2e.yaml with a lower value instead.
     base_difficulty: 5.5
     max_difficulty: 6
     token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m         # must be positive; 7d maximum
-    noscript_fallback: true
+    # noscript_fallback stays off like production: the 5s no-JS wait costs an
+    # attacker no computation. Enable it only to demo the no-JS flow.
+    # noscript_fallback: true
   allowlist:
-    ips: [ "127.0.0.1", "::1" ]
+    # ips match the CLIENT address Angie reports, not the container hop;
+    # loopback entries would bypass Guardian for a broken real-IP setup.
+    ips: []
     # No crawler names in uas: a UA string is forgeable. See verified_bots.
     uas: []
     paths:
+      # robots.txt stays a terminal allowlist entry here (unlike the
+      # production example, which uses a per-path pow overlay): the compose
+      # healthcheck fetches it before any challenge flow.
       - /robots.txt
       - /favicon.ico
-      - /.well-known/
+      - /.well-known/acme-challenge/   # narrowest possible: allowlisted paths
+                                       # skip the entire pipeline
   denylist:
     ips: []
-  # Crawlers allowlisted by reverse-DNS + forward-confirmed identity, never by
-  # their forgeable User-Agent string. See guardian.example.yaml and USAGE.md.
-  verified_bots:
-    bots:
-      - name: googlebot
-      - name: bingbot
+  # verified_bots is granted per domain (below), never in defaults: a
+  # confirmed crawler identity is a terminal allow and is not authorization
+  # for every vhost. See guardian.example.yaml and USAGE.md.
 
 domains:
   # The harness site. PoW on so we can exercise the challenge flow, with a
-  # per-path overlay disabling PoW under /api/ (the WAF stays active there).
+  # per-path overlay disabling PoW under /api/ (the WAF stays active there;
+  # challenge-action rules degrade to deny where PoW is off).
   localhost:
     pow: { enabled: true }
+    # Crawlers allowlisted by reverse-DNS + forward-confirmed identity, never
+    # by their forgeable User-Agent string.
+    verified_bots:
+      bots:
+        - name: googlebot
+        - name: bingbot
     paths:
       "/api/":
         pow: { enabled: false }
