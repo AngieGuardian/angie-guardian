@@ -57,6 +57,7 @@
            border: 1px solid var(--border); border-radius: 6px;
            padding: 0.25rem 0.7rem; cursor: pointer; }
   button:hover { border-color: var(--muted); }
+  button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
 
   /* KPI stat tiles */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
@@ -98,6 +99,9 @@
     font: inherit; color: var(--ink); background: var(--surface);
     border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem; }
   .toolbar .err { color: var(--critical); font-size: 0.8rem; }
+  /* Pager footer: centre the controls under the table, count trailing.
+     Symmetric top/bottom margin so it doesn't butt against the card edge. */
+  .toolbar.pager { justify-content: center; margin: 0.75rem 0; }
 
   /* Token gate */
   #gate { max-width: 26rem; margin: 15vh auto 0; background: var(--surface);
@@ -166,6 +170,11 @@
       <tbody id="blocks"></tbody>
     </table>
     <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
+    <div class="toolbar pager" id="blk-pager" hidden>
+      <button id="blk-prev" type="button">‹ Prev</button>
+      <button id="blk-next" type="button">Next ›</button>
+      <span class="meta" id="blk-page"></span>
+    </div>
   </div>
 
   <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
@@ -185,6 +194,11 @@
       <tbody id="decisions"></tbody>
     </table>
     <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
+    <div class="toolbar pager" id="dec-pager" hidden>
+      <button id="dec-prev" type="button">‹ Prev</button>
+      <button id="dec-next" type="button">Next ›</button>
+      <span class="meta" id="dec-page"></span>
+    </div>
   </div>
 
   <div class="cols">
@@ -269,6 +283,18 @@
   let lastBlocks = { blocks: [] };
   let lastBlocksAt = 0;
 
+  // Client-side pagination over the filtered decisions. The list is bounded by
+  // the engine's recent-decisions ring and refetched every tick, so paging in
+  // the browser keeps the whole thing self-contained. decPage is 0-based.
+  const DEC_PAGE_SIZE = 25;
+  let decPage = 0;
+
+  // Active blocks paginate the same way. Blocks can pile up under a
+  // behavioural attack, and the list is only refetched every 60s, so page
+  // state persists across ticks and clamps when an unblock shrinks the set.
+  const BLK_PAGE_SIZE = 25;
+  let blkPage = 0;
+
   const renderDecisions = () => {
     const action = $("f-action").value;
     const needle = $("f-text").value.trim().toLowerCase();
@@ -278,8 +304,14 @@
       return [d.host, d.ip, d.uri, d.reason, d.ua, d.method]
         .some((f) => (f || "").toLowerCase().includes(needle));
     });
+
+    const pages = Math.max(1, Math.ceil(rows.length / DEC_PAGE_SIZE));
+    if (decPage >= pages) decPage = pages - 1; // clamp after filtering/refresh shrinks the set
+    const start = decPage * DEC_PAGE_SIZE;
+    const pageRows = rows.slice(start, start + DEC_PAGE_SIZE);
+
     const dt = $("decisions");
-    dt.replaceChildren(...rows.map((d) => {
+    dt.replaceChildren(...pageRows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
       return row(td("time", clock(d.time)), action, td("wrap", d.reason),
@@ -289,6 +321,45 @@
     $("decisions-empty").hidden = rows.length > 0;
     $("f-count").textContent = (action || needle)
       ? rows.length + " of " + lastDecisions.length : "";
+
+    // Pager: hidden when everything fits on one page.
+    $("dec-pager").hidden = rows.length <= DEC_PAGE_SIZE;
+    $("dec-prev").disabled = decPage === 0;
+    $("dec-next").disabled = decPage >= pages - 1;
+    $("dec-page").textContent = rows.length
+      ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
+        " of " + rows.length + " (page " + (decPage + 1) + " of " + pages + ")"
+      : "";
+  };
+
+  const renderBlocks = () => {
+    const all = lastBlocks.blocks || [];
+    const pages = Math.max(1, Math.ceil(all.length / BLK_PAGE_SIZE));
+    if (blkPage >= pages) blkPage = pages - 1; // clamp after an unblock shrinks the set
+    const start = blkPage * BLK_PAGE_SIZE;
+    const pageRows = all.slice(start, start + BLK_PAGE_SIZE);
+
+    const bt = $("blocks");
+    bt.replaceChildren(...pageRows.map((b) => {
+      const unblock = el("button", null, "Unblock");
+      unblock.addEventListener("click", async () => {
+        await api("/admin/blocks/" + encodeURIComponent(b.ip), { method: "DELETE" });
+        lastBlocksAt = 0;
+        render(true).catch(() => {});
+      });
+      const act = td(null, ""); act.appendChild(unblock);
+      return row(td("num", b.ip), td("wrap", b.reason),
+        td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
+    }));
+    $("blocks-empty").hidden = all.length > 0;
+
+    $("blk-pager").hidden = all.length <= BLK_PAGE_SIZE;
+    $("blk-prev").disabled = blkPage === 0;
+    $("blk-next").disabled = blkPage >= pages - 1;
+    $("blk-page").textContent = all.length
+      ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
+        " of " + all.length + " (page " + (blkPage + 1) + " of " + pages + ")"
+      : "";
   };
 
   const render = async (refreshBlocks = false) => {
@@ -299,9 +370,11 @@
           return blocks;
         })
       : Promise.resolve(lastBlocks);
-    const [stats, blocks, decisions, config, intel] = await Promise.all([
+    // blocksRequest is awaited for its side effect (it sets lastBlocks, which
+    // renderBlocks reads); the resolved value itself is not needed here.
+    const [stats, , decisions, config, intel] = await Promise.all([
       api("/admin/stats"), blocksRequest,
-      api("/admin/decisions?limit=100"), api("/admin/config"),
+      api("/admin/decisions?limit=512"), api("/admin/config"),
       api("/admin/intel"),
     ]);
 
@@ -335,20 +408,9 @@
     $("t-window").textContent = stats.recent.oldest
       ? "since " + clock(stats.recent.oldest) : "in the recent window";
 
-    // Active blocks.
-    const bt = $("blocks");
-    bt.replaceChildren(...blocks.blocks.map((b) => {
-      const unblock = el("button", null, "Unblock");
-      unblock.addEventListener("click", async () => {
-        await api("/admin/blocks/" + encodeURIComponent(b.ip), { method: "DELETE" });
-        lastBlocksAt = 0;
-        render(true).catch(() => {});
-      });
-      const act = td(null, ""); act.appendChild(unblock);
-      return row(td("num", b.ip), td("wrap", b.reason),
-        td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
-    }));
-    $("blocks-empty").hidden = blocks.blocks.length > 0;
+    // Active blocks (rendered through the pager). lastBlocks is already set by
+    // the blocksRequest above (or kept from cache), so renderBlocks reads it.
+    renderBlocks();
 
     // Recent decisions (rendered through the active filters).
     lastDecisions = decisions.decisions;
@@ -446,9 +508,19 @@
     }
   });
 
-  // Decision filters re-render locally, no refetch.
-  $("f-action").addEventListener("change", renderDecisions);
-  $("f-text").addEventListener("input", renderDecisions);
+  // Decision filters re-render locally, no refetch. A filter change resets to
+  // the first page so results aren't hidden on a stale page number.
+  const refilter = () => { decPage = 0; renderDecisions(); };
+  $("f-action").addEventListener("change", refilter);
+  $("f-text").addEventListener("input", refilter);
+
+  // Pager: step within the filtered decisions, re-render locally.
+  $("dec-prev").addEventListener("click", () => { if (decPage > 0) { decPage--; renderDecisions(); } });
+  $("dec-next").addEventListener("click", () => { decPage++; renderDecisions(); });
+
+  // Active-blocks pager: step within the cached block list, re-render locally.
+  $("blk-prev").addEventListener("click", () => { if (blkPage > 0) { blkPage--; renderBlocks(); } });
+  $("blk-next").addEventListener("click", () => { blkPage++; renderBlocks(); });
 
   // Theme: auto (follow the OS) → dark → light, persisted per browser. A
   // preference is plain UI state, so localStorage (not the token's
