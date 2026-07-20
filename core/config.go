@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"runtime"
 	"sort"
@@ -132,6 +133,24 @@ type AdminConfig struct {
 	// token-guarded /admin/* endpoints), but it stays off by default so the
 	// admin surface exposes nothing extra unless asked to.
 	Dashboard bool `yaml:"dashboard"`
+
+	// AngieAPI, when set, lets the dashboard show real traffic (per-domain
+	// requests, in-flight connections, response codes, bandwidth) that Guardian
+	// itself never sees, by reading Angie's own HTTP API. Off when unset.
+	AngieAPI AngieAPIConfig `yaml:"angie_api"`
+}
+
+// AngieAPIConfig points guardiand at Angie's HTTP API location so the admin
+// server can proxy its status zones to the dashboard. This is a read of another
+// service; it never touches Guardian's hot path.
+type AngieAPIConfig struct {
+	// URL is the base of Angie's http_api location (e.g. http://127.0.0.1:81/status).
+	// Empty disables the integration. guardiand only ever appends fixed,
+	// known-safe suffixes (/http/server_zones, /http/location_zones) to it, so
+	// there is no client-controlled request target.
+	URL string `yaml:"url"`
+	// Timeout bounds each fetch from Angie's API. Default 2s.
+	Timeout Duration `yaml:"timeout"`
 }
 
 type StoreConfig struct {
@@ -917,6 +936,24 @@ func (c *Config) finalize() error {
 		}
 		if !listenIsLoopback(c.Admin.Listen) && c.Admin.Token == "" && c.Admin.TokenFile == "" {
 			return fmt.Errorf("admin.listen %s is not loopback but no admin.token or admin.token_file is set; refusing to expose an unauthenticated admin API", c.Admin.Listen)
+		}
+	}
+	if c.Admin.AngieAPI.URL != "" {
+		u, err := url.Parse(c.Admin.AngieAPI.URL)
+		if err != nil {
+			return fmt.Errorf("admin.angie_api.url is not a valid URL: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("admin.angie_api.url must be an http or https URL, got %q", c.Admin.AngieAPI.URL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("admin.angie_api.url must include a host, got %q", c.Admin.AngieAPI.URL)
+		}
+		if c.Admin.AngieAPI.Timeout < 0 {
+			return fmt.Errorf("admin.angie_api.timeout must be positive, got %v", c.Admin.AngieAPI.Timeout.Std())
+		}
+		if c.Admin.AngieAPI.Timeout == 0 {
+			c.Admin.AngieAPI.Timeout = Duration(2 * time.Second)
 		}
 	}
 	switch c.Store.Backend {

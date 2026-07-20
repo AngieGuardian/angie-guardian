@@ -41,6 +41,19 @@ ReadWritePaths=/etc/guardian
 # Environment=ADMIN_TOKEN=...    (better: EnvironmentFile=/etc/guardian/env)
 # Environment=REDIS_PASSWORD=... (when using the redis store backend)
 
+# Throughput tuning (optional). At tens of thousands of req/s the read paths
+# are GC-bound; a higher GOGC runs the GC less often (~20% more read throughput
+# in benchmarks) at the cost of a larger heap. On a host or container where
+# guardiand owns the memory, pair it with GOMEMLIMIT as a safety cap so the
+# bigger heap can't OOM: the runtime does extra GC only if it approaches the
+# limit. GOMEMLIMIT is a SOFT limit; leave 5-10% headroom for memory the runtime
+# doesn't track, and never set it to total RAM (a too-tight limit can thrash the
+# GC into a slowdown worse than an OOM). Skip GOMEMLIMIT if this host's memory is
+# shared with other processes. Measure with guardian-loadtest; the default is
+# fine at typical rates. See docs "GC tuning for peak throughput".
+# Environment=GOGC=800
+# Environment=GOMEMLIMIT=2GiB     (set to ~90% of guardiand's memory budget)
+
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict

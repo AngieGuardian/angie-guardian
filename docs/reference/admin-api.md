@@ -100,6 +100,42 @@ means `blocks_active` is a lower bound (or `-1` while the mirror has not seeded)
 never the result of an expensive fallback scan. Long-horizon numbers live in
 `/metrics`.
 
+### `GET /admin/distributions`
+
+Registry-derived data the recent-decisions ring cannot supply, in one pass: the
+solve-time and anomaly-score histograms (as ready-to-plot per-bucket counts, not
+cumulative) and per-domain decision totals from `decisions_total` (allow-
+inclusive, since the ring holds no allows). It reads metrics that already exist, adds
+no cardinality, and never touches the hot path. Feeds the dashboard's
+distribution charts.
+
+```json
+{
+  "solve_time": {"buckets":[{"le":"0.25","count":140},{"le":"+Inf","count":3}],"sum":41.2,"count":143},
+  "anomaly":    {"buckets":[{"le":"0.1","count":10}],"sum":3.1,"count":10},
+  "per_domain": {"example.com":{"allow":349472,"challenge":30}}
+}
+```
+
+### `GET /admin/offenders`
+
+The heaviest sources of non-allow decisions in the recent window: top IPs,
+reason categories and request paths, plus a country rollup when GeoIP is loaded.
+Counts the in-process decision ring exactly (bounded, microseconds per request,
+no hot-path cost). The window is the ring, so it covers challenged/denied
+traffic, not allows. Paths are query-stripped; GeoIP/ASN is merged for the top
+IPs only, and the country rollup is omitted when no databases are loaded.
+
+```json
+{
+  "window": 512,
+  "ips": [{"ip":"203.0.113.10","count":30,"country":"RU","asn":64500,"as_org":"Example Carrier"}],
+  "reasons": [{"key":"denylist","count":50}],
+  "paths": [{"key":"/wp-login.php","count":30}],
+  "countries": [{"key":"RU","count":30}]
+}
+```
+
 ## Scoring
 
 ### `GET /admin/score`
@@ -142,6 +178,38 @@ denied".
 {"ip":"203.0.113.9","enabled":true,
  "info":{"country":"RU","asn":64500,"as_org":"Example Carrier"},
  "feeds":[{"feed":"firehol-level1","action":"deny"}]}
+```
+
+## Server traffic
+
+### `GET /admin/angie`
+
+Relays Angie's own [HTTP API][angie-api] status zones: real per-domain
+requests, in-flight connections, response codes and bandwidth that Guardian
+never sees on its stateless allow path. Requires
+[`admin.angie_api`](/reference/configuration#admin); returns
+`{"enabled": false}` when unconfigured.
+
+[angie-api]: https://en.angie.software/angie/docs/configuration/modules/http/http_api/
+
+guardiand fetches Angie's API server-side (keep it on loopback) and relays only
+the fixed traffic-zone endpoints. It degrades rather than fails: the response
+always carries `enabled`, and an `error` string appears only when no zone
+endpoint is reachable; a missing `location_zones` (no location has a
+`status_zone`) still returns the server zones. See
+[Enabling the Angie API](/guide/admin#enabling-the-angie-api).
+
+```json
+{"enabled":true,
+ "server_zones":{"example.com":{"requests":{"total":152340,"processing":7},
+   "responses":{"200":140100,"404":8900},"data":{"received":48219000,"sent":1329000000}}},
+ "location_zones":{"/api/":{"requests":{"total":88010}}}}
+```
+
+When Angie's API is unreachable:
+
+```json
+{"enabled":true,"error":"angie api returned status Not Found"}
 ```
 
 ## Enforcement offload

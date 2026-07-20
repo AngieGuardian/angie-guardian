@@ -48,7 +48,7 @@ That read-through consult is one store round-trip per request, and on a
 networked store it is the dominant cost of the allow/token path: it is why
 a single-instance embedded backend (authoritative, zero reads) measures roughly
 twice the read throughput of redis (see the
-[performance numbers](/guide/load-testing#reference-numbers)). The trade is
+[performance numbers](/guide/load-testing#benchmark-results)). The trade is
 deliberate: paying that read is what makes a block placed on one replica apply
 on the others within microseconds instead of up to one `reconcile_interval`.
 If you would rather have the speed and can accept that cross-replica lag, set

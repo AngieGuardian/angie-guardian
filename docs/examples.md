@@ -19,7 +19,7 @@ store:
   path: /var/lib/guardian/pebble
 
 defaults:
-  pow: { enabled: true, base_difficulty: 5 }
+  pow: { enabled: true, base_difficulty: 5.5 }   # recommended default (22 bits)
   waf:
     ip_behaviour: { enabled: true }
 
@@ -32,9 +32,9 @@ domains:
 ```yaml
 domains:
   # HTML site behind PHP/Node: full protection. Difficulty takes quarter
-  # steps: 5.25 is exactly 2x the work of 5.
+  # steps: each +0.25 doubles the work (so 5.75 is 2x the work of 5.5).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25, token_ttl: 2h }
+    pow: { enabled: true, base_difficulty: 5.5, token_ttl: 2h }
     waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
 
   # API host: WAF only, no interstitial a machine client can't solve.
@@ -77,7 +77,7 @@ model](/guide/anomaly) and a top-level signing key.
 ```yaml
 domains:
   shop.example.com:
-    pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
+    pow: { enabled: true, mode: suspicion, base_difficulty: 5.5, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
                  challenge_at: 0.5, deny_at: 0.85 }
@@ -275,10 +275,12 @@ defaults:
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
-    # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
+    # steps are allowed: each +0.25 doubles it (5.75 = 2x harder than 5.5).
     # See docs/guide/configuration.md, "Measured solve times", before changing these.
-    base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
-    max_difficulty: 6         # ceiling for all challenge escalation
+    base_difficulty: 5.5      # recommended default; ~2s on a mid-range phone, near instant on desktop
+    max_difficulty: 6         # escalation ceiling: only reached when a request is
+                              # scored suspicious (anomaly model, WAF/reputation hit,
+                              # or attack mode). Clean visitors always pay base.
     token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m         # must be positive; 7d maximum
     noscript_fallback: true   # 5s wait instead of hash work; weaker than PoW
@@ -342,9 +344,9 @@ defaults:
 
 domains:
   # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
-  # Fractional difficulty: 5.25 is exactly 2x the work of the default 5.
+  # Fractional difficulty: quarter steps are allowed, each +0.25 doubles the work.
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6, token_ttl: 2h }
+    pow: { enabled: true, base_difficulty: 5.5, max_difficulty: 6, token_ttl: 2h }
     waf: { honeypot: { enabled: true } }
     # Per-path overlays: scope any setting to a URI prefix within this host.
     # Keys are exact paths, or prefixes when they end with "/"; the most

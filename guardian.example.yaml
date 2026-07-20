@@ -27,12 +27,21 @@ admin:
   # printed in the startup log.
   token: ""                   # or set the ADMIN_TOKEN env var
   token_file: /etc/guardian/admin.token
-  # Built-in reporting page at GET /admin/dashboard (active blocks with
-  # one-click block/unblock, recent deny/challenge decisions with filters,
-  # challenge stats, per-domain config). On startup guardiand logs the bare
-  # login URL ("admin dashboard ready"). Read the token from token_file and
-  # paste it into the page; persistent secrets are never logged. Off by default.
+  # Built-in reporting page at GET /admin/dashboard: active blocks (one-click
+  # block/unblock), the recent deny/challenge feed with filters, activity and
+  # distribution graphs, a top-offenders panel, challenge stats, and per-domain
+  # config. On startup guardiand logs the bare login URL ("admin dashboard
+  # ready"). Read the token from token_file and paste it into the page;
+  # persistent secrets are never logged. Off by default.
   dashboard: true
+  # Show real server traffic on the dashboard (per-domain requests, in-flight
+  # connections, response codes, bandwidth) by reading Angie's own HTTP API:
+  # data Guardian never sees on its stateless allow path. guardiand fetches it
+  # server-side and relays it behind the admin token, so keep Angie's API on
+  # loopback (see deploy/angie-status.conf for the Angie side). Off when unset.
+  # angie_api:
+  #   url: http://127.0.0.1:81/status   # Angie's api location
+  #   timeout: 2s                        # per-fetch cap (default 2s)
 
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
 # missing; NEVER regenerated on restart, so restarts don't log clients out
@@ -148,7 +157,9 @@ defaults:
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
     # See docs/guide/configuration.md, "Measured solve times", before changing these.
     base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
-    max_difficulty: 6         # ceiling for all challenge escalation
+    max_difficulty: 6         # escalation ceiling: only reached when a request is
+                              # scored suspicious (anomaly model, WAF/reputation hit,
+                              # or attack mode). Clean visitors always pay base.
     token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m         # must be positive; 7d maximum
     noscript_fallback: true   # 5s wait instead of hash work; weaker than PoW
