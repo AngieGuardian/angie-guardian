@@ -135,7 +135,7 @@ const reloadInterval = 10 * time.Second
 // loadSnapshot constructs the config-derived caches without starting their
 // background watchers. On error nothing is left open or running.
 func loadSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
-	rules, err := waf.NewRuleCache(cfg.RuleFiles(), log)
+	rules, err := waf.NewRuleCacheVariants(cfg.RuleVariants(), log)
 	if err != nil {
 		return nil, err
 	}

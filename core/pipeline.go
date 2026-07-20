@@ -307,7 +307,9 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	if !kw.Enabled || env.rules == nil {
 		return nil, nil
 	}
-	rs := env.rules.Get(kw.RulesFile)
+	// ruleKey resolves this scope's precompiled (rules_file, disabled_rule_ids)
+	// variant; exclusions cost nothing here.
+	rs := env.rules.Get(kw.ruleKey)
 	if rs == nil {
 		return nil, nil
 	}

@@ -1,10 +1,17 @@
 # Starter WAF signature rules for Angie Guardian.
 # Copy to /etc/guardian/rules.d/common.yaml (or wherever waf.keywords.rules_file
 # points) and tune per site. The file is hot-reloaded: edits apply within
-# seconds, and a file that fails to parse keeps the previous rules active.
+# seconds, and a file that fails to parse keeps the previous rules active. An
+# update that removes or renames a rule id still listed in some scope's
+# waf.keywords.disabled_rule_ids is rejected the same way (last-good rules
+# stay active): drop the id from guardian.yaml and reload first, then delete
+# the rule here.
 #
 # Rule fields:
-#   id:          unique name, shows up in logs as waf:<id>
+#   id:          unique name, shows up in logs as waf:<id>. Also the exact,
+#                case-sensitive selector for waf.keywords.disabled_rule_ids in
+#                guardian.yaml, which disables the rule for one domain or path
+#                scope instead of copying this file.
 #   action:      deny (default) | challenge (a valid bound token satisfies it;
 #                without PoW it denies) | block (deny + persist the IP only
 #                when waf.ip_behaviour is enabled)
@@ -32,7 +39,7 @@ rules:
     keywords: [ "/.env", "/.git/", "/.aws/", "/.ssh/", "/.htpasswd", "/.svn/" ]
 
   - id: wp-probe
-    description: WordPress probes — REMOVE on actual WordPress sites!
+    description: WordPress probes; on a real WordPress site, disable this rule via waf.keywords.disabled_rule_ids
     action: deny
     targets: [ path ]
     keywords: [ "/wp-login.php", "/xmlrpc.php", "/wp-config", "/wp-json/wp/v2/users" ]

@@ -91,12 +91,15 @@ configured file that is missing fails validation (and so startup) rather than
 silently matching nothing.
 
 `defaults.waf.keywords` is inherited by every domain and path overlay unless
-overridden there. Scoping works at file granularity: point a domain (or path
-overlay) at a *different* rules file, or disable matching for that scope. The
-`id` inside a rules file is a log/reason label (a hit reports `waf:<id>`),
-**not** a selector; rules are evaluated in file order, first match wins, and
-individual IDs cannot currently be enabled or disabled from `guardian.yaml`.
-To vary rules per domain, maintain separate files:
+overridden there. Scoping works three ways: point a domain (or path overlay)
+at a *different* rules file, disable matching for that scope, or disable
+selected rules from the effective file by their exact `id` with
+`disabled_rule_ids` (no need to copy the file for one exception). The `id`
+inside a rules file is both the log/reason label (a hit reports `waf:<id>`)
+and the case-sensitive selector for exclusions; rules are evaluated in file
+order, first match wins, and a disabled rule simply falls through to the next
+matching rule. Separate files remain fully supported for genuinely different
+rule sets:
 
 ```yaml
 defaults:
@@ -106,14 +109,23 @@ defaults:
       rules_file: /etc/guardian/rules.d/common.yaml
 
 domains:
+  # A real WordPress site: keep the shared starter set but drop its
+  # wp-probe rule, which would flag legitimate wp-login traffic.
+  wordpress.example.com:
+    waf:
+      keywords:
+        disabled_rule_ids: [ wp-probe ]
+
   # APIs get their own, stricter-or-looser file instead of the shared one
   # (e.g. drop challenge-action heuristics, which degrade to deny where PoW
-  # is off).
+  # is off). Exclusions always select from the scope's own effective file,
+  # here api.yaml.
   api.example.com:
     waf:
       keywords:
         enabled: true
         rules_file: /etc/guardian/rules.d/api.yaml
+        disabled_rule_ids: [ scanner-ua ]
 
   # No signature matching at all on the assets host.
   static.example.com:
@@ -121,6 +133,14 @@ domains:
       keywords:
         enabled: false
 ```
+
+`disabled_rule_ids` overlays like every list: omitted inherits the parent's
+resolved list, `[]` clears inherited exclusions, and a non-empty list replaces
+them wholesale. Unknown, empty or duplicate ids are rejected at `-t`, startup
+and reload, and a rules-file update that removes a still-excluded id keeps the
+last-good rules active, so a typo or rename can never silently re-enable a
+rule. `GET /admin/config` shows each scope's effective `rules_file` and
+exclusions together.
 
 See [the signature-rules walkthrough](/guide/configuration#signature-rules-waf-keywords)
 for the file format, inheritance, and hot-reload behavior, and the

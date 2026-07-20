@@ -292,7 +292,9 @@ not automatically deleted from disk).
 ### `GET /admin/config`
 
 The active per-domain configuration: which features are enabled where,
-including PoW base/max difficulty and, when a domain defines
+including PoW base/max difficulty, each scope's effective signature-rule
+selection (`waf_rules_file` plus `waf_disabled_rule_ids`, both omitted when
+empty) and, when a domain defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
 a `paths` object with the same view per overlay:
 
@@ -305,6 +307,9 @@ a `paths` object with the same view per overlay:
       "pow_enabled": true,
       "pow_base_difficulty": 5,
       "pow_max_difficulty": 6,
+      "waf_keywords": true,
+      "waf_rules_file": "/etc/guardian/rules.d/common.yaml",
+      "waf_disabled_rule_ids": ["wp-probe"],
       "paths": {
         "/api/v1/": { "pow_enabled": false, "...": "..." }
       }

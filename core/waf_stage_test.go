@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -193,6 +194,147 @@ func TestVouchedClientStillPassesWAF(t *testing.T) {
 	r.Cookie = pow.CookieName + "=" + token
 	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
 		t.Fatalf("vouched challenge-rule request: got %s/%s, want allow/pow:token", d.Action, d.Reason)
+	}
+}
+
+const disabledRulesYAML = `
+store: { backend: memory }
+defaults:
+  waf:
+    keywords: { enabled: true, rules_file: %q }
+domains:
+  excl.test:
+    waf: { keywords: { disabled_rule_ids: [ dotfile ] } }
+  pathed.test:
+    paths:
+      "/legacy/":
+        waf: { keywords: { disabled_rule_ids: [ scanner ] } }
+`
+
+func disabledRulesEngine(t *testing.T) *Engine {
+	t.Helper()
+	rules := filepath.Join(t.TempDir(), "rules.yaml")
+	if err := os.WriteFile(rules, []byte(stageRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadTestConfig(t, fmt.Sprintf(disabledRulesYAML, rules))
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	e, err := NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	return e
+}
+
+// TestWAFDisabledRuleIDs: an excluded rule produces no decision for its scope
+// only; file order among the remaining rules is preserved, so the next
+// matching rule still decides the request.
+func TestWAFDisabledRuleIDs(t *testing.T) {
+	ctx := context.Background()
+	e := disabledRulesEngine(t)
+
+	cases := []struct {
+		name   string
+		req    *RequestContext
+		action Action
+		reason string
+	}{
+		{"defaults keep the full rule set",
+			req("plain.test", "198.51.100.30", "/backup/.env", "curl"), ActionDeny, "waf:dotfile"},
+		{"excluded rule produces no decision",
+			req("excl.test", "198.51.100.31", "/backup/.env", "curl"), ActionAllow, "default"},
+		{"disabled first match falls through to the next matching rule",
+			req("excl.test", "198.51.100.32", "/.env?q=1+union+all+select+pw", "curl"), ActionDeny, "waf:sqli"},
+		{"domain scope unaffected by its path overlay",
+			req("pathed.test", "198.51.100.33", "/", "sqlmap/1.7"), ActionDeny, "waf:scanner"},
+		{"path overlay exclusion applies on its path",
+			req("pathed.test", "198.51.100.34", "/legacy/x", "sqlmap/1.7"), ActionAllow, "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := e.Evaluate(ctx, tc.req)
+			if d.Action != tc.action || d.Reason != tc.reason {
+				t.Errorf("got %s/%s, want %s/%s", d.Action, d.Reason, tc.action, tc.reason)
+			}
+		})
+	}
+}
+
+// TestUnknownDisabledRuleIDFailsEverywhere: an exclusion naming a rule the
+// effective file does not contain must be rejected at engine construction,
+// artifact preflight (guardiand -t) and hot reload, with the running engine
+// keeping its current rule sets on a failed reload.
+func TestUnknownDisabledRuleIDFailsEverywhere(t *testing.T) {
+	ctx := context.Background()
+	rules := filepath.Join(t.TempDir(), "rules.yaml")
+	if err := os.WriteFile(rules, []byte(stageRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badYAML := fmt.Sprintf(`
+store: { backend: memory }
+defaults:
+  waf:
+    keywords: { enabled: true, rules_file: %q }
+domains:
+  excl.test:
+    waf: { keywords: { disabled_rule_ids: [ nope ] } }
+`, rules)
+	badCfg := loadTestConfig(t, badYAML)
+
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	if _, err := NewEngine(badCfg, st, nil, slog.Default()); err == nil {
+		t.Fatal("engine construction must reject an unknown disabled rule id")
+	} else {
+		for _, want := range []string{"nope", "domain excl.test", rules} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q must mention %q", err, want)
+			}
+		}
+	}
+	if err := ValidateConfigArtifacts(badCfg, slog.Default()); err == nil {
+		t.Fatal("artifact preflight (-t) must reject an unknown disabled rule id")
+	}
+
+	e := disabledRulesEngine(t)
+	if err := e.Reload(badCfg); err == nil {
+		t.Fatal("reload must reject an unknown disabled rule id")
+	}
+	// The failed reload keeps the current config and rule sets serving.
+	if d := e.Evaluate(ctx, req("plain.test", "198.51.100.40", "/backup/.env", "curl")); d.Reason != "waf:dotfile" {
+		t.Fatalf("after failed reload: got %s/%s, want the old rules active", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(ctx, req("excl.test", "198.51.100.41", "/backup/.env", "curl")); d.Action != ActionAllow {
+		t.Fatalf("after failed reload: got %s/%s, want the old exclusion active", d.Action, d.Reason)
+	}
+}
+
+// TestWAFExclusionsAddNoPerRequestAllocations: the effective filtered sets are
+// precompiled at load time, so the signature stage must allocate exactly as
+// much per request with exclusions configured as without.
+func TestWAFExclusionsAddNoPerRequestAllocations(t *testing.T) {
+	ctx := context.Background()
+	measure := func(e *Engine, host string) float64 {
+		snap := e.snap.Load()
+		env := &stageEnv{domain: snap.cfg.ConfigFor(host, "/blog/post"), rules: snap.rules}
+		r := req(host, "198.51.100.50", "/blog/post?page=2", "Mozilla/5.0")
+		stage := wafSignatureStage{}
+		return testing.AllocsPerRun(1000, func() {
+			if _, err := stage.Evaluate(ctx, r, env); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	plain, _ := wafEngine(t) // no exclusions anywhere
+	excl := disabledRulesEngine(t)
+	base := measure(plain, "plain.test")
+	if got := measure(excl, "excl.test"); got != base {
+		t.Errorf("allocs/request with exclusions = %v, want %v (same as without)", got, base)
+	}
+	if got := measure(excl, "pathed.test"); got != base {
+		t.Errorf("allocs/request on path-overlay domain = %v, want %v", got, base)
 	}
 }
 

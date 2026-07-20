@@ -37,13 +37,33 @@ domains:
         pow: { enabled: false }
 `
 
+const adminRulesYAML = `
+rules:
+  - id: probe
+    keywords: [ "/.env" ]
+  - id: scanner
+    targets: [ ua ]
+    keywords: [ "sqlmap" ]
+`
+
 const adminToken = "s3cret-admin-token"
 
 func adminServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	if err := os.WriteFile(rulesPath, []byte(adminRulesYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// adminServer's config additionally carries a keywords domain with a rule
+	// exclusion, so the config view can be asserted end to end (the other
+	// adminYAML users construct their engines without a rules file on disk).
+	cfgYAML := adminYAML + fmt.Sprintf(`  waf.test:
+    waf:
+      keywords: { enabled: true, rules_file: %q, disabled_rule_ids: [ probe ] }
+`, rulesPath)
 	cfgPath := filepath.Join(dir, "guardian.yaml")
-	if err := os.WriteFile(cfgPath, []byte(adminYAML), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := core.LoadConfig(cfgPath)
@@ -414,6 +434,26 @@ func TestAdminConfigView(t *testing.T) {
 	}
 	if _, nested := api["paths"]; nested {
 		t.Error("path overlay view must not carry a nested paths field")
+	}
+
+	// The effective rules file and its exclusions are inspectable together.
+	waf, ok := m["domains"].(map[string]any)["waf.test"].(map[string]any)
+	if !ok {
+		t.Fatalf("config view missing waf.test: %v", m["domains"])
+	}
+	if waf["waf_keywords"] != true {
+		t.Errorf("waf.test waf_keywords = %v, want true", waf["waf_keywords"])
+	}
+	if file, _ := waf["waf_rules_file"].(string); !strings.HasSuffix(file, "rules.yaml") {
+		t.Errorf("waf.test waf_rules_file = %v, want the configured rules file", waf["waf_rules_file"])
+	}
+	ids, ok := waf["waf_disabled_rule_ids"].([]any)
+	if !ok || len(ids) != 1 || ids[0] != "probe" {
+		t.Errorf("waf.test waf_disabled_rule_ids = %v, want [probe]", waf["waf_disabled_rule_ids"])
+	}
+	// Scopes without exclusions omit the field instead of showing null.
+	if _, present := shop["waf_disabled_rule_ids"]; present {
+		t.Error("shop.test must omit waf_disabled_rule_ids")
 	}
 }
 
