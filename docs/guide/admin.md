@@ -27,7 +27,7 @@ plaintext can be captured and replayed.
 ## Everyday operations
 
 ```sh
-TOKEN=$(cat /etc/guardian/admin.token)   # or your admin.token value
+TOKEN=$(sudo cat /var/lib/guardian/admin.token)   # or your admin.token value
 A=http://127.0.0.1:8072
 
 # Is an IP currently blocked, and why?

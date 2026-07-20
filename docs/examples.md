@@ -13,13 +13,14 @@ store:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
-signing_key_file: /etc/guardian/ed25519.key
+signing_key_file: /var/lib/guardian/ed25519.key   # generated state, not /etc
 store:
   backend: pebble
   path: /var/lib/guardian/pebble
 
 defaults:
-  pow: { enabled: true, base_difficulty: 5.5 }   # recommended default (22 bits)
+  pow: { enabled: true }          # base_difficulty defaults to 5; raise it to
+                                  # 5.25-5.5 when actively scraped
   waf:
     ip_behaviour: { enabled: true }
 
@@ -29,19 +30,30 @@ domains:
 
 ## Mixed estate: HTML site, API, static assets
 
+Guardian evaluates the request line and headers (Angie's `auth_request`
+forwards no body), so on every profile below, payload validation stays with
+the backend or a full inline WAF.
+
 ```yaml
 domains:
-  # HTML site behind PHP/Node: full protection. Difficulty takes quarter
-  # steps: each +0.25 doubles the work (so 5.75 is 2x the work of 5.5).
+  # HTML site behind PHP/Node: all Guardian layers, PoW + the URI/header WAF.
+  # Difficulty takes quarter steps: each +0.25 doubles the work (so 5.75 is
+  # 2x the work of 5.5).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.5, token_ttl: 2h }
-    waf: { honeypot: { enabled: true, paths: [ "/wp-admin-old/" ] } }
+    pow: { enabled: true, base_difficulty: 5.5 }   # token_ttl inherits 4h
+    # Honeypot: no generic trap path is safe to copy (one hit persistently
+    # blocks the source IP when ip_behaviour is on). Invent a path specific
+    # to YOUR site that nothing links to, then enable:
+    # waf: { honeypot: { enabled: true, paths: [ "/your-own-trap/" ] } }
 
-  # API host: WAF only, no interstitial a machine client can't solve.
+  # API host: WAF only, no interstitial a machine client can't solve. With
+  # PoW off, challenge-action rules degrade to deny (nothing to challenge
+  # with); give APIs their own rules file if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: keep it light.
+  # Static assets: no PoW, no behavioural scoring. Signature rules still
+  # apply from defaults; override waf.keywords too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -54,7 +66,8 @@ scopes any setting to a URI prefix within one host: the most specific key
 wins, and each entry only overrides the fields it mentions (see the
 [reference](/reference/configuration#per-path-overrides-domains-host-paths)).
 Here machine clients under `/api/v1/` skip the interstitial while the WAF
-keeps covering them, and the login page demands harder work:
+keeps covering them (note that challenge-action rules degrade to deny where
+PoW is off), and the login page demands harder work:
 
 ```yaml
 domains:
@@ -66,6 +79,52 @@ domains:
       "/account/login":
         pow: { base_difficulty: 6 }
 ```
+
+## Signature rules: one starter file, scoped per domain
+
+Signature rules are not auto-discovered: a rules file must be installed on
+disk and named by `waf.keywords.rules_file`, with `enabled: true`, or no
+signature matching happens at all. The install recipe in the
+[production guide](/guide/production#systemd) copies the shipped starter file
+`deploy/rules-common.yaml` to `/etc/guardian/rules.d/common.yaml`; a
+configured file that is missing fails validation (and so startup) rather than
+silently matching nothing.
+
+`defaults.waf.keywords` is inherited by every domain and path overlay unless
+overridden there. Scoping works at file granularity: point a domain (or path
+overlay) at a *different* rules file, or disable matching for that scope. The
+`id` inside a rules file is a log/reason label (a hit reports `waf:<id>`),
+**not** a selector; rules are evaluated in file order, first match wins, and
+individual IDs cannot currently be enabled or disabled from `guardian.yaml`.
+To vary rules per domain, maintain separate files:
+
+```yaml
+defaults:
+  waf:
+    keywords:
+      enabled: true
+      rules_file: /etc/guardian/rules.d/common.yaml
+
+domains:
+  # APIs get their own, stricter-or-looser file instead of the shared one
+  # (e.g. drop challenge-action heuristics, which degrade to deny where PoW
+  # is off).
+  api.example.com:
+    waf:
+      keywords:
+        enabled: true
+        rules_file: /etc/guardian/rules.d/api.yaml
+
+  # No signature matching at all on the assets host.
+  static.example.com:
+    waf:
+      keywords:
+        enabled: false
+```
+
+See [the signature-rules walkthrough](/guide/configuration#signature-rules-waf-keywords)
+for the file format, inheritance, and hot-reload behavior, and the
+[field reference](/reference/configuration#waf-keywords) for every rule field.
 
 ## Suspicion-only challenges (anomaly model)
 
@@ -90,7 +149,7 @@ Needs MaxMind-format databases on disk (GeoLite2 or DB-IP); see
 [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
 ```yaml
-signing_key_file: /etc/guardian/ed25519.key
+signing_key_file: /var/lib/guardian/ed25519.key
 
 defaults:
   pow: { enabled: true }
@@ -125,258 +184,21 @@ domains:
 
 ## The full annotated example
 
-The complete `guardian.example.yaml` shipped with the repository:
+The complete `guardian.example.yaml` shipped with every release, every option
+annotated. It is the **host/systemd profile**: loopback listeners, root-owned
+read-only config under `/etc/guardian`, generated keys and state under
+`/var/lib/guardian` (see
+[Filesystem layout and ownership](/guide/production#filesystem-layout-and-ownership)).
+For containers, follow the
+[Docker section of the production guide](/guide/production#docker), which
+adapts the listeners (`0.0.0.0` + `trusted_proxy` behind loopback-only port
+bindings) and puts keys and state on named volumes. The repo's
+`deploy/docker/guardian.docker.yaml` is the runnable **demo harness only**; it
+contains a fixed admin token and demo-only exceptions, so don't copy it into
+production.
 
-```yaml
-# Angie Guardian example configuration.
-#
-# Per-domain settings are merged over `defaults` field-by-field: a domain only
-# needs to mention what it changes. Unknown hosts fall back to `defaults`.
-
-listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
-log_level: info
-
-# The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
-# (client IP, host, cookie). Keep `listen` on loopback so no client can reach
-# it directly and forge them. To bind a non-loopback address (Angie on another
-# host), isolate the listener to Angie (private network / firewall / mTLS) and
-# set the line below, otherwise guardiand refuses to start.
-# trusted_proxy: true
-
-# Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
-# /metrics, /healthz, and the optional static dashboard shell are open; every
-# JSON/data /admin route requires the bearer token. A non-loopback bind without
-# a configured token is refused at startup. Leave admin.listen empty to
-# disable it.
-admin:
-  listen: 127.0.0.1:8072
-  # Bearer token resolution: `token` (or the ADMIN_TOKEN env var) wins;
-  # otherwise one is auto-generated into `token_file` on first start (0600,
-  # never regenerated, like the signing key) so you never invent one by hand.
-  # With neither set, a loopback listener gets a fresh token each start,
-  # printed in the startup log.
-  token: ""                   # or set the ADMIN_TOKEN env var
-  token_file: /etc/guardian/admin.token
-  # Built-in reporting page at GET /admin/dashboard (active blocks with
-  # one-click block/unblock, recent deny/challenge decisions with filters,
-  # challenge stats, per-domain config). On startup guardiand logs the bare
-  # login URL ("admin dashboard ready"). Read the token from token_file and
-  # paste it into the page; persistent secrets are never logged. Off by default.
-  dashboard: true
-
-# Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
-# missing; NEVER regenerated on restart, so restarts don't log clients out
-# and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
-# archived here and accept only pre-rotation tokens with lifetimes up to 7 days;
-# older archive files are ignored in memory, not auto-deleted.
-signing_key_file: /etc/guardian/ed25519.key
-previous_key_dir: /etc/guardian/keys.d
-
-store:
-  backend: pebble             # memory | buntdb | pebble | redis
-  path: /var/lib/guardian/pebble   # a file for buntdb, a directory for pebble
-  sync: false                 # true = fsync every write (pebble only; rejected on buntdb)
-  # redis backend (multi-instance): all replicas share one server.
-  # addr: 127.0.0.1:6379
-  # password: ""              # or the REDIS_PASSWORD env var
-  # db: 0
-
-# Fleet-wide attack posture. Off when absent. When aggregate signals (issuance
-# rate with a low solve ratio, store degradation) cross a threshold, Guardian
-# raises PoW difficulty fleet-wide and issues store-free challenges so a flood
-# of new clients stops saturating the store. Existing tokens stay valid. See
-# the "Attack Mode" guide before tuning; thresholds are per instance.
-# attack_mode:
-#   enabled: true
-#   window: 30s
-#   signals:
-#     challenge_rate: 200/s           # issuance/s entering elevated
-#     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
-#     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
-#   effects:
-#     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
-
-# Block enforcement offload. The in-process mirror is always on (it makes the
-# per-request block check a memory lookup, no store read) and needs no config;
-# the tunables below and the optional kernel sink are all you set here. See
-# the "Block Enforcement Offload" guide for the full story.
-# enforcement:
-#   mirror:
-#     reconcile_interval: 10s   # bounded active-block index read; repairs sink drift
-#     max_entries: 1048576      # overflow falls back to store reads
-#     mode: auto                # auto | authoritative | read_through
-#   # Kernel sink: drop blocked clients in nftables before Angie sees them.
-#   # Linux only, needs CAP_NET_ADMIN in the namespace where clients arrive.
-#   nftables:
-#     enabled: false
-#     mode: managed             # managed (own the drop rule) | sets_only
-#     ports: [80, 443]          # drop rule matches only these; keeps SSH/admin safe
-#     never_block:              # ALWAYS list your load balancer / CDN ranges
-#       - 203.0.113.0/24
-
-# GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
-# for the per-domain `geo` scoping below. Keep them updated with geoipupdate
-# or a scheduled download; guardiand hot-reloads the files when they are
-# replaced on disk, no restart needed. Omit a database you don't use; config
-# is refused if a geo rule needs one that isn't configured.
-# geoip:
-#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
-#   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
-
-# External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
-# line, '#'/';' comments), like the FireHOL netsets or a local file you
-# maintain. URL feeds refresh in the background: a slow or down mirror never
-# blocks startup, and the last good list keeps serving (including across a hot
-# reload when name+URL are unchanged). cache_dir persists fetched feeds so a
-# restart enforces yesterday's list immediately. Feeds are defined once here;
-# each domain opts in via `reputation.enabled` below.
-# reputation:
-#   cache_dir: /var/lib/guardian/feeds
-#   feeds:
-#     - name: firehol-level1  # names the reason ("reputation:firehol-level1")
-#       url: https://iplists.firehol.org/files/firehol_level1.netset
-#       refresh: 12h          # default 12h
-#       action: deny          # deny (default) | challenge (= solve PoW first)
-#     - name: local-badnets
-#       file: /etc/guardian/badnets.txt   # hot-reloaded like the rules files
-
-defaults:
-  waf:
-    ip_behaviour:
-      enabled: true
-      block_ttl: 15m          # first offense; doubles per repeat; max 8760h
-      max_block_ttl: 4h       # backoff cap; max 8760h
-      thresholds:             # bad events per window before the IP is blocked
-        signature: 10/min     # WAF signature hits
-        pow_fail: 10/min      # failed challenge solutions
-        tamper: 10/min        # forged/replayed challenge or signed IDs
-        bot_spoof: 5/min      # clients caught impersonating a verified bot
-    keywords:
-      enabled: true           # requires the rules file to exist (fail-fast);
-      rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
-    anomaly:
-      enabled: false          # requires a model trained from your own logs:
-      model: /etc/guardian/model.json   #   guardian-train -out model.json /var/log/angie/*.access.json
-      challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
-      deny_at: 0.9            # score >= this -> deny outright
-    honeypot:
-      enabled: false          # trap paths deny immediately and persist a block
-                              # when ip_behaviour is enabled. Add paths no
-      paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
-                              # Disallow them in robots.txt.
-    # signed_id reserves the signed-ID feature (opaque HMAC-bound identifiers);
-    # no flow mints them yet, so it is dormant. Forged/replayed PoW challenge
-    # IDs always emit a tamper event, with or without this toggle; the
-    # ip_behaviour threshold counts it only when behaviour is enabled.
-    signed_id: { enabled: false }
-  pow:
-    enabled: true
-    mode: always              # always: challenge every unvouched request
-                              # suspicion: no catch-all; explicit anomaly/WAF/
-                              # geo/reputation challenge policies still apply
-    # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
-    # steps are allowed: each +0.25 doubles it (5.75 = 2x harder than 5.5).
-    # See docs/guide/configuration.md, "Measured solve times", before changing these.
-    base_difficulty: 5.5      # recommended default; ~2s on a mid-range phone, near instant on desktop
-    max_difficulty: 6         # escalation ceiling: only reached when a request is
-                              # scored suspicious (anomaly model, WAF/reputation hit,
-                              # or attack mode). Clean visitors always pay base.
-    token_ttl: 4h             # 1s minimum, 7d maximum
-    challenge_ttl: 30m         # must be positive; 7d maximum
-    noscript_fallback: true   # 5s wait instead of hash work; weaker than PoW
-  geo:
-    enabled: false            # needs the geoip: databases above
-    # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
-    # deny beats challenge; allow exempts an origin from default_action.
-    # Origins with no database record (private ranges) match no selector and
-    # get default_action, so allowlist internal IPs before tightening it.
-    # challenge: { countries: [ CN, RU ], asns: [] }
-    # deny: { countries: [] }
-    # allow: { countries: [] }
-    # default_action: allow   # allow | challenge | deny for unlisted origins
-  reputation:
-    enabled: false            # set true after configuring at least one feed
-                              # above; enabled-without-feeds is rejected
-  allowlist:
-    ips: [ "127.0.0.1", "::1" ]
-    # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
-    # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
-    # everything by claiming to be Googlebot. Use verified_bots below instead
-    # (Guardian refuses a config where the two overlap). Reserve uas for
-    # UAs you control, e.g. your own uptime monitor.
-    uas: []
-    paths:
-      - /robots.txt
-      - /favicon.ico
-      - /.well-known/         # trailing slash = prefix match (ACME http-01 etc.)
-  denylist:
-    ips: []
-  # Crawlers allowlisted by PROVEN identity, not by their UA string: a client
-  # claiming a listed bot's User-Agent is admitted only if its IP reverse-DNS
-  # resolves under the bot's published domains AND that hostname resolves back
-  # to the same IP (the verification Google/Bing/Apple document). Results are
-  # cached in the store, so DNS is paid once per crawler IP, not per request.
-  verified_bots:
-    bots:
-      - name: googlebot       # built-in presets: googlebot, google-special,
-      - name: bingbot         #   bingbot, applebot, yandexbot, baiduspider
-      # googlebot verifies under googlebot.com ONLY (Google's common-crawler
-      # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
-      # APIs-Google) verify under google.com via the google-special preset;
-      # enable it if you run Google Ads:
-      # - name: google-special
-      # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
-      # preset: third parties can aim them at your site on demand.
-      # Custom bots: give the UA needles and rDNS domains yourself.
-      # - name: mybot
-      #   uas: [ "MyBot/1.0" ]
-      #   domains: [ "crawler.example.net" ]
-    # spoof_action: what happens to a client that claims a listed UA but
-    # definitively fails verification (no PTR, or rDNS owned by someone else):
-    #   deny (default) - reject and score a bot_spoof event (see thresholds)
-    #   continue       - just withhold the allowlist skip; the WAF/PoW
-    #                    pipeline handles the request like any other client
-    spoof_action: deny
-    dns_timeout: 1s           # DNS budget for a first-sight verification
-    cache_ttl: 12h            # confirmed identities; max 8760h
-    negative_ttl: 1h          # proven impostors; max 8760h
-    # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
-
-domains:
-  # HTML site with a PHP/Node.js backend: full protection, PoW + WAF.
-  # Fractional difficulty: quarter steps are allowed, each +0.25 doubles the work.
-  example.com:
-    pow: { enabled: true, base_difficulty: 5.5, max_difficulty: 6, token_ttl: 2h }
-    waf: { honeypot: { enabled: true } }
-    # Per-path overlays: scope any setting to a URI prefix within this host.
-    # Keys are exact paths, or prefixes when they end with "/"; the most
-    # specific key wins, matched against the percent-decoded path. Each entry
-    # only overrides the fields it mentions (defaults, then domain, then
-    # path). Here the machine-facing API skips the interstitial while the WAF
-    # stays on, and the login area demands harder work:
-    # paths:
-    #   "/api/v1/":
-    #     pow: { enabled: false }
-    #   "/account/login":
-    #     pow: { base_difficulty: 6 }
-
-  # API host: WAF only, no PoW interstitial a machine client can't solve.
-  api.example.com:
-    pow: { enabled: false }
-
-  # Static assets host: keep it light.
-  static.example.com:
-    pow: { enabled: false }
-    waf: { ip_behaviour: { enabled: false } }
-
-  # Home-market shop: serve NL/BE/DE normally, make everyone else prove work
-  # first (requires geoip.country_db and pow enabled).
-  # shop.example.nl:
-  #   geo:
-  #     enabled: true
-  #     allow: { countries: [ NL, BE, DE ] }
-  #     default_action: challenge
-```
+<!-- Included verbatim from the repo root; edit guardian.example.yaml, not this page. -->
+<<< ../guardian.example.yaml
 
 ## Angie: full wiring
 
@@ -418,8 +240,8 @@ store:
   backend: redis            # same value for both Redis and Valkey
   addr: 127.0.0.1:6379
   # password: ""            # or the REDIS_PASSWORD env var
-signing_key_file: /etc/guardian/ed25519.key   # same file on every replica
-previous_key_dir: /etc/guardian/keys.d        # same lock-capable shared filesystem
+signing_key_file: /var/lib/guardian/ed25519.key   # same file on every replica
+previous_key_dir: /var/lib/guardian/keys.d        # same lock-capable shared filesystem
 # Retired archives verify pre-rotation tokens for at most 7 days; older files
 # may be retained on disk but are ignored by the active verifier.
 ```
@@ -435,7 +257,10 @@ wasm_modules {
         domains:
           example.com:
             allowlist: { paths: [ "/robots.txt" ] }
-            honeypot:  { enabled: true, paths: [ "/wp-login.php" ] }
+            # invent your own trap path; in the WASM guest a hit denies only
+            # that request (no persistent block), but a copied generic path
+            # can still deny a route your site really serves
+            honeypot:  { enabled: true, paths: [ "/your-own-trap/" ] }
             rules:
               - { id: dotfile, action: deny, keywords: [ "/.env", "/.git/" ] }
       ';

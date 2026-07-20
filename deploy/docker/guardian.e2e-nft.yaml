@@ -66,29 +66,37 @@ defaults:
     max_difficulty: 6
     token_ttl: 4h
     challenge_ttl: 30m         # must be positive; 7d maximum
+    # On for TestNoJSMetaRefreshFallback; production default is off (the 5s
+    # no-JS wait is weaker than PoW, see guardian.example.yaml).
     noscript_fallback: true
   allowlist:
-    ips: [ "127.0.0.1", "::1" ]
+    # Empty like production: allowlisted ips/paths skip the entire pipeline.
+    ips: []
     # No crawler names in uas: a UA string is forgeable. See verified_bots.
     uas: []
     paths:
+      # robots.txt stays a terminal allowlist entry here (unlike the
+      # production example, which uses a per-path pow overlay): the compose
+      # healthcheck and several tests fetch it before any challenge flow.
       - /robots.txt
       - /favicon.ico
-      - /.well-known/
+      - /.well-known/acme-challenge/
   denylist:
     ips: []
-  # Kept in sync with guardian.docker.yaml. Inert in the e2e suite: no test
-  # claims a crawler UA, and the compose network has no real crawler rDNS.
-  verified_bots:
-    bots:
-      - name: googlebot
-      - name: bingbot
+  # verified_bots is granted per domain (below) like production, never in
+  # defaults: a confirmed crawler identity is a terminal allow.
 
 domains:
   # The harness site. PoW on so we can exercise the challenge flow, with a
   # per-path overlay disabling PoW under /api/ (the WAF stays active there).
   localhost:
     pow: { enabled: true }
+    # Kept in sync with guardian.docker.yaml. Inert in the e2e suite: no test
+    # claims a crawler UA, and the compose network has no real crawler rDNS.
+    verified_bots:
+      bots:
+        - name: googlebot
+        - name: bingbot
     paths:
       "/api/":
         pow: { enabled: false }

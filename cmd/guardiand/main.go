@@ -65,6 +65,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "config %s: FAILED\n%v\n", *configPath, err)
 			os.Exit(1)
 		}
+		for _, wmsg := range cfg.Warnings() {
+			fmt.Fprintf(os.Stderr, "config %s: warning: %s\n", *configPath, wmsg)
+		}
 		fmt.Printf("config %s: ok\n", *configPath)
 		return
 	}
@@ -162,6 +165,12 @@ func run(configPath string) error {
 		log.Warn("no signing_key_file configured: proof-of-work challenges are disabled")
 	}
 
+	// Surface valid-but-inert config (e.g. a honeypot enabled with no paths) so
+	// a copied example does not sit doing nothing unnoticed. Non-fatal.
+	for _, wmsg := range cfg.Warnings() {
+		log.Warn(wmsg)
+	}
+
 	engine, err := core.NewEngine(cfg, st, powMgr, log)
 	if err != nil {
 		return err
@@ -204,6 +213,9 @@ func run(configPath string) error {
 			return err
 		}
 		level.Set(levels[next.LogLevel])
+		for _, wmsg := range next.Warnings() {
+			log.Warn(wmsg)
+		}
 		return nil
 	}
 

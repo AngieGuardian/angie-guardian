@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -681,4 +682,113 @@ domains:
 	if got := cfg.DomainFor("b.test").PathOverrideViews(); got != nil {
 		t.Errorf("empty paths map must yield no overlays, got %v", got)
 	}
+}
+
+// TestWarningsHoneypotNoPaths: a honeypot enabled with no paths is a no-op, so
+// Warnings() flags it for every scope it appears in (defaults, domain, path
+// overlay), and stays silent when paths are present or the honeypot is off.
+func TestWarningsHoneypotNoPaths(t *testing.T) {
+	cfg := loadTestConfig(t, `
+listen: 127.0.0.1:9999
+signing_key_file: test-signing.key
+store:
+  backend: memory
+defaults:
+  waf:
+    honeypot: { enabled: true }        # no paths: inert, must warn
+domains:
+  good.test:
+    waf:
+      honeypot: { enabled: true, paths: [ "/trap/" ] }   # has paths: no warn
+  bad.test:
+    waf:
+      honeypot: { enabled: true, paths: [] }             # inert: must warn
+  off.test:
+    waf:
+      honeypot: { enabled: false }                       # disabled: no warn
+`)
+	ws := cfg.Warnings()
+
+	joined := ""
+	for _, w := range ws {
+		joined += w + "\n"
+	}
+	// defaults inherit to good/off too, but those override honeypot, so only the
+	// scopes with enabled+no-paths should appear: defaults, and bad.test.
+	mustContain := []string{"defaults", "domain bad.test"}
+	for _, want := range mustContain {
+		found := false
+		for _, w := range ws {
+			if containsAll(w, "waf.honeypot", want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected a honeypot warning for %q, got:\n%s", want, joined)
+		}
+	}
+	// good.test (has paths) and off.test (disabled) must NOT be warned about.
+	for _, notWant := range []string{"good.test", "off.test"} {
+		for _, w := range ws {
+			if containsAll(w, "waf.honeypot", notWant) {
+				t.Errorf("did not expect a honeypot warning for %q, got: %s", notWant, w)
+			}
+		}
+	}
+}
+
+// Honeypot trap paths that could never match (empty/whitespace/relative) or
+// that would match everything ("/") are copied-config mistakes and must be
+// rejected at load, in every scope and even while the honeypot is disabled.
+func TestHoneypotPathValidation(t *testing.T) {
+	load := func(pathsYAML, scope string) error {
+		var body string
+		switch scope {
+		case "defaults":
+			body = "defaults:\n  waf:\n    honeypot: { enabled: true, paths: " + pathsYAML + " }\n"
+		case "domain":
+			body = "domains:\n  bad.test:\n    waf:\n      honeypot: { enabled: true, paths: " + pathsYAML + " }\n"
+		case "overlay":
+			body = "domains:\n  bad.test:\n    paths:\n      \"/x/\":\n        waf:\n          honeypot: { enabled: true, paths: " + pathsYAML + " }\n"
+		case "disabled":
+			body = "defaults:\n  waf:\n    honeypot: { enabled: false, paths: " + pathsYAML + " }\n"
+		}
+		p := filepath.Join(t.TempDir(), "guardian.yaml")
+		if err := os.WriteFile(p, []byte("listen: 127.0.0.1:9999\nsigning_key_file: test-signing.key\nstore:\n  backend: memory\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadConfig(p)
+		return err
+	}
+	for _, tc := range []struct {
+		paths, wantErr string
+	}{
+		{`[ "" ]`, "empty or whitespace-only"},
+		{`[ "   " ]`, "empty or whitespace-only"},
+		{`[ "backup/" ]`, "not absolute"},
+		{`[ "/ok/", "backup/" ]`, "not absolute"}, // one bad entry poisons the list
+		{`[ "/" ]`, "match every request"},
+	} {
+		for _, scope := range []string{"defaults", "domain", "overlay", "disabled"} {
+			err := load(tc.paths, scope)
+			if err == nil {
+				t.Errorf("paths %s in %s: want load error containing %q, got nil", tc.paths, scope, tc.wantErr)
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("paths %s in %s: error %q does not contain %q", tc.paths, scope, err, tc.wantErr)
+			}
+		}
+	}
+	// Sane absolute traps still load, prefix and exact alike.
+	if err := load(`[ "/old-admin/", "/trap.txt" ]`, "domain"); err != nil {
+		t.Fatalf("valid trap paths rejected: %v", err)
+	}
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

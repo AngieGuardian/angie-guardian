@@ -36,7 +36,10 @@ wasm_modules {
         domains:
           example.com:
             allowlist: { paths: [ "/robots.txt" ] }
-            honeypot:  { enabled: true, paths: [ "/wp-login.php" ] }
+            # invent your own trap path; a guest honeypot hit denies only
+            # that request (no persistent block), but a copied generic path
+            # can still deny a route your site really serves
+            honeypot:  { enabled: true, paths: [ "/your-own-trap/" ] }
             rules:
               - { id: dotfile, action: deny, keywords: [ "/.env", "/.git/" ] }
       ';
