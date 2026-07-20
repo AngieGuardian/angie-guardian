@@ -15,7 +15,7 @@
 //	            minted cookie (the production common path)
 //	challenge — hammers /challenge, issuing a fresh PoW challenge per request.
 //	            Each issuance is a store write (CAS), so this is the write-heavy
-//	            path that separates the store backends (bbolt vs redis).
+//	            path that separates the store backends (embedded vs redis).
 package main
 
 import (

@@ -90,8 +90,8 @@ func TestAdminConfigReflectsDomains(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
 		t.Fatalf("decode /admin/config: %v", err)
 	}
-	if cfg.Store != "bbolt" {
-		t.Errorf("store = %q, want bbolt (harness config)", cfg.Store)
+	if cfg.Store != "pebble" {
+		t.Errorf("store = %q, want pebble (harness config)", cfg.Store)
 	}
 	if d, ok := cfg.Domains["localhost"]; !ok || !d.PoWEnabled {
 		t.Errorf("localhost pow_enabled = %+v, want present and true", d)

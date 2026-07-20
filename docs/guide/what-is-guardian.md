@@ -97,7 +97,7 @@ core/waf/        signature rules, signed IDs
 core/anomaly/    statistical baseline model, online scorer, hot-swap cache
 core/botverify/  rDNS + forward-confirm crawler identity, store-cached
 core/intel/      GeoIP country/ASN lookups + reputation feed sets
-core/store/      TTL'd shared state: memory | bbolt | redis
+core/store/      TTL'd shared state: memory | buntdb | pebble | redis
 core/metrics/    Prometheus instrumentation (private registry)
 transport/http/  auth_request sidecar + admin/metrics
 transport/wasm/  optional http-wasm guest (stateless WAF, runs inside Angie)
@@ -111,20 +111,24 @@ web/             challenge/denied pages (self-contained HTML + JS solver)
 
 Guardian must never be the bottleneck behind Angie. On a single node
 (loopback, 64 connections, AMD Ryzen Threadripper 7960X, load generator on the
-same CPU), the read-dominated paths clear the 50k req/s budget comfortably on
-both persistent backends:
+same CPU; Valkey 9 for the redis backend). Each cell is
+**throughput / p50 / p99** (req/s and per-request latency):
 
-| Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
-|---|---|---|
-| allow     | ~161k / 0.19 ms / 1.8 ms | ~78k / 0.77 ms / 1.7 ms |
-| token     | ~135k / 0.34 ms / 1.9 ms | ~77k / 0.78 ms / 1.8 ms |
-| deny      | ~125k / 0.41 ms / 1.8 ms | ~151k / 0.24 ms / 1.8 ms |
-| challenge (write) | **~4.5k / 14 ms / 16 ms** | **~21k / 1.5 ms / 33 ms** |
-| challenge, attack mode (stateless) | ~44k / 0.27 ms / 18 ms | ~26k / 0.38 ms / 25 ms |
+| Backend | allow | token | deny | challenge (write) |
+|---|---|---|---|---|
+| `memory` (ephemeral)              | 169k / 0.15ms / 1.8ms | 159k / 0.21ms / 1.7ms | 150k / 0.14ms / 2.4ms | **156k / 0.29ms / 1.7ms** |
+| `pebble` (async, default durable) | 177k / 0.14ms / 1.7ms | 154k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **39k / 0.73ms / 20ms** |
+| `pebble` (sync, fully durable)    | 172k / 0.14ms / 1.8ms | 155k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **25k / 2.6ms / 7.5ms** |
+| `buntdb` (async, single-file)     | 175k / 0.14ms / 1.7ms | 153k / 0.23ms / 1.8ms | 150k / 0.14ms / 2.4ms | **36k / 1.3ms / 17ms** |
+| `redis`·`valkey` (fleet)          | 96k / 0.62ms / 1.4ms  | 94k / 0.63ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **34k / 1.2ms / 21ms** |
 
-The one write-heavy path (issuing a fresh challenge) is where the backends
-differ; under [attack mode](/guide/attack-mode) issuance goes stateless and
-skips that write entirely. See
+The read paths clear the 50k req/s budget comfortably on every backend. On the
+embedded backends the block mirror serves the reads (no store I/O after the seed
+scan), which is why `allow`/`token` cluster at ~150–177k; `redis`/`valkey` stays
+read-through for cross-replica correctness, so its reads land lower. The one
+write-heavy path (issuing a fresh challenge) is where the backends differ; under
+[attack mode](/guide/attack-mode) issuance goes stateless and skips that write
+entirely. See
 [choosing a store backend](/guide/production#choosing-a-store-backend)
 for how to pick, and [Load Testing](/guide/load-testing) to reproduce the
 numbers on your own hardware.

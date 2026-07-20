@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/guardiand ./cmd/guardiand
 # Seed empty writable dirs; the final stage COPYs them with --chown so the
 # named volumes mounted over them inherit the nonroot uid (65532) on first
-# mount and the unprivileged daemon can write the bbolt db and signing key.
+# mount and the unprivileged daemon can write the store data and signing key.
 RUN mkdir -p /seed/var/lib/guardian /seed/etc/guardian/keys
 
 # gcr.io/distroless/static-debian12:nonroot

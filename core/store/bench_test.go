@@ -28,36 +28,47 @@ import (
 // Every benchmark runs each candidate as a sub-benchmark so one `go test -bench`
 // invocation yields comparable /Memory, /Sharded256, /Bolt lines.
 
-// benchStoreNames is the candidate ordering. The Sharded16/64/256 sweep is what
-// justifies the production default (NewShardedMemory(0) == 256 shards): the
-// diminishing return from 64->256 is the evidence for the shard count, not a
-// magic number. Bolt is the persistent baseline being replaced. Durable
-// candidates (BuntDB/Badger/NutsDB) slot in here + in newCandidate's switch when
-// that round runs. There is no separate unsharded "Memory" entry: NewMemory now
-// returns the sharded store, so it would duplicate Sharded256.
-var benchStoreNames = []string{"Sharded16", "Sharded64", "Sharded256", "Bolt"}
+// benchStoreNames is the shipped-backend comparison:
+//   - Sharded256 — the in-memory ceiling (production default = NewShardedMemory(0)).
+//   - each durable embedded backend in "-async" (fast, bounded replay window on
+//     crash) and "-sync" (fsync every write, fully durable) mode.
+//
+// Pebble and BuntDB are the two durable backends that ship. They won a bake-off
+// against Badger/NutsDB/goleveldb and bbolt (see testdata/durable-bakeoff.txt),
+// which is why bbolt was retired. The Sharded16/64/256 shard-count sweep that
+// justified the 256 default lives in git history.
+var benchStoreNames = []string{
+	"Sharded256",
+	"BuntDB-async",
+	"BuntDB-sync",
+	"Pebble-async",
+	"Pebble-sync",
+}
 
 // newCandidate builds a fresh store for one sub-benchmark and registers its
-// cleanup (Close stops the janitor/sweeper goroutine; b.TempDir is per-sub-bench
-// so each Bolt gets a fresh file that is closed before the next candidate runs).
+// cleanup (Close stops background goroutines; b.TempDir is per-sub-bench so each
+// disk store gets a fresh dir/file, closed before the next candidate runs).
 func newCandidate(b *testing.B, name string) Store {
 	b.Helper()
+	dir := b.TempDir()
 	var st Store
+	var err error
 	switch name {
-	case "Sharded16":
-		st = NewShardedMemory(16)
-	case "Sharded64":
-		st = NewShardedMemory(64)
 	case "Sharded256":
 		st = NewShardedMemory(256)
-	case "Bolt":
-		bolt, err := NewBolt(filepath.Join(b.TempDir(), "bench.db"))
-		if err != nil {
-			b.Fatal(err)
-		}
-		st = bolt
+	case "BuntDB-async":
+		st, err = NewBuntDB(filepath.Join(dir, "bench.db"), BuntDBOptions{Sync: false})
+	case "BuntDB-sync":
+		st, err = NewBuntDB(filepath.Join(dir, "bench.db"), BuntDBOptions{Sync: true})
+	case "Pebble-async":
+		st, err = NewPebble(dir, PebbleOptions{Sync: false})
+	case "Pebble-sync":
+		st, err = NewPebble(dir, PebbleOptions{Sync: true})
 	default:
 		b.Fatalf("unknown candidate %q", name)
+	}
+	if err != nil {
+		b.Fatal(err)
 	}
 	b.Cleanup(func() { st.Close() })
 	return st

@@ -51,8 +51,8 @@ everything else inherits from `defaults`:
 listen: 127.0.0.1:8071            # Angie's auth_request target
 signing_key_file: .guardian/ed25519.key
 store:
-  backend: bbolt
-  path: .guardian/guardian.db
+  backend: pebble               # memory | buntdb | pebble | redis
+  path: .guardian/pebble        # a directory for pebble (a file for buntdb)
 
 defaults:
   pow: { enabled: true, base_difficulty: 5 }

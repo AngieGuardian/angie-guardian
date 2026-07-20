@@ -14,8 +14,8 @@ import (
 // CounterCache fronts Store.Incr for the per-IP event counters on the
 // challenge hot path (issuance rate limit, farming escalation). Counting
 // through the store directly costs one blocking write round per counter per
-// request; on bbolt that is an fsync'd batch round, so every extra counter
-// visibly cuts challenge issuance throughput. Instead the count is bumped in
+// request; on a durable backend that write can include an fsync, so every extra
+// counter visibly cuts challenge issuance throughput. Instead the count is bumped in
 // an in-process map and returned immediately, and the shared store counter is
 // synced in the background: a flush pushes the accumulated local increments to
 // the store with IncrBy and merges the store's total back, so replicas

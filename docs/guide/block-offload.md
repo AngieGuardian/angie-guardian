@@ -29,13 +29,14 @@ path. The mirror is a bounded in-memory copy of the active block set:
 - **Reconciled and bounded.** A periodic active-block index read
   (`reconcile_interval`, default 10s) seeds the mirror at startup, corrects
   entries and picks up blocks placed by another instance. Reconciliation
-  retains at most `max_entries`. Memory has a dedicated block map, bbolt seeks
-  directly to its ordered `block:` range, and Redis reads a fixed sorted-set
-  index, so unrelated challenge/counter keys never increase tick cost.
+  retains at most `max_entries`. Memory has a dedicated block map, the embedded
+  backends (buntdb, pebble) seek directly to their ordered `block:` range, and
+  Redis reads a fixed sorted-set index, so unrelated challenge/counter keys
+  never increase tick cost.
 - **Store-outage safe.** A mirror hit denies even while the store is down, so
   an outage no longer silently drops behavioural blocks.
 
-For single-writer stores (`memory`, `bbolt`) the seeded mirror is
+For the embedded backends (`memory`, `buntdb`, `pebble`) the seeded mirror is
 **authoritative**: after the first scan the per-request store read disappears
 entirely, for blocked and clean traffic alike. For a shared store (`redis`)
 the mirror is **read-through**: a miss still consults the store so a block
@@ -45,8 +46,8 @@ block is cached back so the flood's next request is free. `mode: auto`
 
 That read-through consult is one store round-trip per request, and on a
 networked store it is the dominant cost of the allow/token path: it is why
-single-instance bbolt (authoritative, zero reads) measures roughly twice the
-read throughput of redis (see the
+a single-instance embedded backend (authoritative, zero reads) measures roughly
+twice the read throughput of redis (see the
 [performance numbers](/guide/load-testing#reference-numbers)). The trade is
 deliberate: paying that read is what makes a block placed on one replica apply
 on the others within microseconds instead of up to one `reconcile_interval`.
@@ -57,7 +58,7 @@ vs ~77k req/s on the allow path). A shorter `reconcile_interval` narrows that
 lag at the cost of more frequent bounded active-block reads.
 
 If the mirror fills past `max_entries` (default ~1M), its status becomes
-`complete: false` and misses fall back to the store read path—even when the
+`complete: false` and misses fall back to the store read path, even when the
 configured mode is `authoritative`. Reconciliation itself stops retaining
 results at that same bound. Enforcement is never lost, only the optimization,
 and each dropped insertion is counted in

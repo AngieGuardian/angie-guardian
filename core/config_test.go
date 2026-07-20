@@ -229,7 +229,8 @@ func TestConfigValidation(t *testing.T) {
 	t.Setenv("ADMIN_TOKEN", "")
 	for name, yaml := range map[string]string{
 		"bad backend":                            "store: { backend: etcd }",
-		"bbolt sans path":                        "store: { backend: bbolt }",
+		"pebble sans path":                       "store: { backend: pebble }",
+		"buntdb sync (footgun)":                  "store: { backend: buntdb, path: /tmp/x, sync: true }",
 		"bad difficulty":                         "defaults: { pow: { base_difficulty: 9 } }",
 		"max below base":                         "defaults: { pow: { base_difficulty: 5, max_difficulty: 4 } }",
 		"difficulty below one":                   "defaults: { pow: { base_difficulty: 0.5 } }",

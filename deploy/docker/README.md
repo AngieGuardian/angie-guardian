@@ -49,8 +49,8 @@ docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. 
 
 The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist
-`/var/lib/guardian` (bbolt store) and `/etc/guardian/keys` (signing key), as
-`compose.yaml` here does. Its distroless-safe healthcheck runs the built-in
+`/var/lib/guardian` (pebble store directory) and `/etc/guardian/keys` (signing
+key), as `compose.yaml` here does. Its distroless-safe healthcheck runs the built-in
 `-healthcheck` probe and requires every configured `/healthz` listener before
 Compose marks Guardian healthy or starts Angie.
 
@@ -71,10 +71,10 @@ docker compose down -v     # tear down + drop volumes
 
 ## Two guardian configs
 
-- `guardian.docker.yaml` — the manual demo harness (mounted by default):
+- `guardian.docker.yaml`: the manual demo harness (mounted by default):
   realistic PoW difficulty (5.5, so the interstitial is perceptible on a fast
   desktop).
-- `guardian.e2e.yaml` — the automated suite's config, selected via
+- `guardian.e2e.yaml`: the automated suite's config, selected via
   `GUARDIAN_CONFIG=./guardian.e2e.yaml`: identical except for a lower PoW
   difficulty (4), because the suite brute-forces every challenge in Go and
   asserts exact escalation values (16 bits + 4 = 20).

@@ -15,8 +15,8 @@ store:
 listen: 127.0.0.1:8071            # Angie's auth_request target
 signing_key_file: /etc/guardian/ed25519.key
 store:
-  backend: bbolt
-  path: /var/lib/guardian/guardian.db
+  backend: pebble
+  path: /var/lib/guardian/pebble
 
 defaults:
   pow: { enabled: true, base_difficulty: 5 }
@@ -173,8 +173,9 @@ signing_key_file: /etc/guardian/ed25519.key
 previous_key_dir: /etc/guardian/keys.d
 
 store:
-  backend: bbolt              # memory | bbolt | redis
-  path: /var/lib/guardian/guardian.db
+  backend: pebble             # memory | buntdb | pebble | redis
+  path: /var/lib/guardian/pebble   # a file for buntdb, a directory for pebble
+  sync: false                 # true = fsync every write (pebble only; rejected on buntdb)
   # redis backend (multi-instance): all replicas share one server.
   # addr: 127.0.0.1:6379
   # password: ""              # or the REDIS_PASSWORD env var

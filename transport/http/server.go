@@ -268,7 +268,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 			// store write. If the store is unavailable, falling back to the
 			// authenticated stateless format preserves the shipped fail-open
 			// availability contract for new visitors instead of trapping every
-			// unvouched client on a 503 until Redis/bbolt recovers.
+			// unvouched client on a 503 until Redis/the store backend recovers.
 			s.log.Warn("stateful challenge issuance failed; falling back to stateless",
 				"host", host, "ip", ip, "err", err)
 			ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)

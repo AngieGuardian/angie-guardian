@@ -18,9 +18,9 @@ import (
 )
 
 // Stateless challenge issuance. Under attack the ordinary Issue path writes a
-// store record per new client, and embedded bbolt's single fsync'd writer
-// tops out around 4k/s, so a flood of fresh clients saturates the store. A
-// stateless challenge instead carries its own authenticated state in the ID:
+// store record per new client, so a flood of fresh clients drives an unbounded,
+// attacker-triggered write rate that can saturate any store. A stateless
+// challenge instead carries its own authenticated state in the ID:
 // no store write at issue time. Single-spend still holds, moved to redeem
 // time (a spent marker keyed by the challenge, written only after the client
 // has actually paid the proof of work), so the only store write an attacker

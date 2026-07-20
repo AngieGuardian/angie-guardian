@@ -27,8 +27,8 @@ everything else inherits from `defaults`:
 listen: 127.0.0.1:8071            # Angie's auth_request target
 signing_key_file: /etc/guardian/ed25519.key
 store:
-  backend: bbolt
-  path: /var/lib/guardian/guardian.db
+  backend: pebble
+  path: /var/lib/guardian/pebble
 
 defaults:
   pow: { enabled: true, base_difficulty: 5 }
@@ -79,7 +79,7 @@ GeoIP, and file-feed artifact. Remote URL feeds are not fetched. It then exits:
 # config guardian.yaml: ok
 # ...or, on a bad config:
 # config guardian.yaml: FAILED
-# config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
+# config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
 ```
 
 ### Signature rules
@@ -598,7 +598,7 @@ guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
 
 The `allow` and `token` scenarios do one block lookup; a static `deny` match
 does no store I/O. `challenge` is write-heavy and is
-where bbolt's single embedded writer trails redis/valkey. See
+where a single-box durable backend trails redis/valkey. See
 [Choosing a store backend](#choosing-a-store-backend).
 
 In normal operation challenge issuance uses that stateful write. If it fails,
@@ -610,15 +610,20 @@ the `issued_stateless_fallback` challenge metric outcome.
 
 - **memory**: single instance, state lost on restart. Fine for dev or a small
   site that can re-learn blocks after a restart.
-- **bbolt**: single instance, persistent. The recommended single-box production
-  choice (the configuration default is `memory`). Writes are coalesced
-  (`db.Batch`) so concurrent challenge/event writes share fsyncs, but it is
-  still one embedded writer: under a very high sustained rate of *new* clients
-  (each of which triggers a challenge write in `pow.mode: always`), the single
-  writer becomes the ceiling. Load-test with `guardian-loadtest` at your
-  expected new-client rate before relying on it near 50k req/s; if the writer
-  saturates, switch to the `redis` backend or set `pow.mode: suspicion` (no
-  catch-all challenge, so only explicit policies cause challenge writes).
+- **buntdb**: single instance, persistent. Stores state in a single file
+  (`store.path` is that file). `store.sync: true` is rejected on buntdb (it is
+  single-writer); leave `sync: false` for fast async durability, or use
+  `pebble` when you need synchronous fsync-per-write.
+- **pebble**: single instance, persistent, and the recommended single-box
+  production choice (the configuration default is `memory`). An LSM engine
+  whose `store.path` is a directory. `store.sync: false` (the default) is fast
+  async durability; `store.sync: true` fsyncs every write. Under a very high
+  sustained rate of *new* clients (each of which triggers a challenge write in
+  `pow.mode: always`), a single-box durable backend eventually becomes the
+  ceiling. Load-test with `guardian-loadtest` at your expected new-client rate
+  before relying on it near 50k req/s; if it saturates, switch to the `redis`
+  backend or set `pow.mode: suspicion` (no catch-all challenge, so only
+  explicit policies cause challenge writes).
 - **redis**: multi-instance and the highest write throughput. Works with both
   Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which is
   a drop-in replacement (same wire protocol, same `backend: redis` value). See

@@ -108,3 +108,14 @@ type PostureVotes interface {
 type ActiveBlockScanner interface {
 	ScanActiveBlocks(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
 }
+
+// Every shipping backend must implement the full Store contract plus all the
+// optional capabilities, so the enforcement mirror (block index) and attack-mode
+// fleet posture work on any configured backend. These assertions fail the build
+// if a backend regresses one of them.
+var (
+	_ = []Store{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
+	_ = []LimitedScanner{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
+	_ = []ActiveBlockScanner{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
+	_ = []PostureVotes{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
+)

@@ -22,7 +22,7 @@ guardiand -config /etc/guardian/guardian.yaml
 # config guardian.yaml: ok
 # ...or, on a bad config:
 # config guardian.yaml: FAILED
-# config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
+# config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
 ```
 
 ### Signals

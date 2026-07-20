@@ -230,7 +230,7 @@ a `paths` object with the same view per overlay:
 
 ```json
 {
-  "store": "bbolt",
+  "store": "pebble",
   "defaults": { "pow_enabled": false, "pow_base_difficulty": 5, "...": "..." },
   "domains": {
     "example.com": {

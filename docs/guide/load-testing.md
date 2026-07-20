@@ -7,14 +7,14 @@ before relying on a deployment near its throughput budget.
 ## Scenarios
 
 `allow` and `token` are read-dominated; the [block mirror](/guide/block-offload)
-removes even that read on single-writer backends. A static denylist match
-terminates before the store. `challenge` is the write-heavy path where bbolt's
-single embedded writer trails redis/valkey, unless
+removes even that read on the embedded backends. A static denylist match
+terminates before the store. `challenge` is the write-heavy path (the only one
+whose throughput depends on the store backend) unless
 [attack mode](/guide/attack-mode) has switched issuance to the stateless path.
 
 | Scenario | What it does | Store I/O per request |
 |---|---|---|
-| `allow` | plain request, full pipeline, ends in "default allow" | none on `bbolt`/`memory` once the mirror is seeded; 1 read on `redis` (read-through for cross-replica blocks) |
+| `allow` | plain request, full pipeline, ends in "default allow" | none on the embedded backends (`memory`/`buntdb`/`pebble`) once the mirror is seeded; 1 read on `redis` (read-through for cross-replica blocks) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | none |
 | `challenge` | issue a fresh PoW challenge per request | normally 1 synchronous **write** (CAS), plus coalesced background counter increments; under attack mode, or when that stateful write fails, issuance is stateless (no write at issue, the single-spend write moves to redemption) |
@@ -51,27 +51,30 @@ scenario rotates the client IP itself to dodge the per-IP issuance limit.
 ## Reference numbers
 
 Single node, loopback, 64 connections, load generator sharing the same CPU
-(AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis
-backend; fresh daemon per run). Numbers are req/s and per-request latency:
+(AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis backend;
+fresh daemon per run). Each cell is **throughput / p50 / p99** (req/s and
+per-request latency):
 
-| Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
-|---|---|---|
-| allow     | ~161k / 0.19 ms / 1.8 ms | ~78k / 0.77 ms / 1.7 ms |
-| token     | ~135k / 0.34 ms / 1.9 ms | ~77k / 0.78 ms / 1.8 ms |
-| deny      | ~125k / 0.41 ms / 1.8 ms | ~151k / 0.24 ms / 1.8 ms |
-| challenge (write) | **~4.5k / 14 ms / 16 ms** | **~21k / 1.5 ms / 33 ms** |
-| challenge, attack mode (stateless) | ~44k / 0.27 ms / 18 ms | ~26k / 0.38 ms / 25 ms |
+| Backend | allow | token | deny | challenge (write) |
+|---|---|---|---|---|
+| `memory` (ephemeral)              | 169k / 0.15ms / 1.8ms | 159k / 0.21ms / 1.7ms | 150k / 0.14ms / 2.4ms | **156k / 0.29ms / 1.7ms** |
+| `pebble` (async, default durable) | 177k / 0.14ms / 1.7ms | 154k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **39k / 0.73ms / 20ms** |
+| `pebble` (sync, fully durable)    | 172k / 0.14ms / 1.8ms | 155k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **25k / 2.6ms / 7.5ms** |
+| `buntdb` (async, single-file)     | 175k / 0.14ms / 1.7ms | 153k / 0.23ms / 1.8ms | 150k / 0.14ms / 2.4ms | **36k / 1.3ms / 17ms** |
+| `redis`·`valkey` (fleet)          | 96k / 0.62ms / 1.4ms  | 94k / 0.63ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **34k / 1.2ms / 21ms** |
 
-Read paths comfortably clear a 50k req/s budget on both backends. On
-single-writer backends the [block mirror](/guide/block-offload) removes the
-per-request store read entirely, which is why bbolt now out-reads the
-networked store on allow/token; redis keeps one read per request for
-cross-replica correctness. The takeaway is the **write** path: each issued
-challenge writes its issuance record through embedded bbolt's single fsync'd
-writer, while redis/valkey sustains ~5x its throughput, and
-[attack mode](/guide/attack-mode)'s stateless issuance lifts the bbolt ceiling
-an order of magnitude by deferring the only write to redemption. The per-IP
-rate-limit and
+Read paths comfortably clear a 50k req/s budget on every backend: the
+[block mirror](/guide/block-offload) makes the embedded stores authoritative, so
+the per-request store read is gone on allow/token (redis keeps one read for
+cross-replica correctness, so its reads land lower). The takeaway is the
+**write** path: each issued
+challenge writes one CAS record. The durable LSM/append-only backends absorb
+this far better than a synchronously-fsync'd single writer (`pebble` ~39k/s
+async, ~25k/s fully durable; `buntdb` ~36k/s async), and
+[attack mode](/guide/attack-mode)'s stateless issuance lifts it further by
+deferring the only write to redemption. (`buntdb` + `sync: true` is rejected at
+startup: its single writer makes fsync-per-commit ~100x slower, so use `pebble`
+for synchronous durability.) The per-IP rate-limit and
 [farming-escalation](/guide/configuration#base-difficulty-and-max-difficulty)
 counters do not add write rounds: they are counted in-process and synced to
 the shared store in the background. See
@@ -79,12 +82,12 @@ the shared store in the background. See
 
 ::: tip The block check is now off the store
 With the [in-process mirror](/guide/block-offload) (always on), the behavioural
-block lookup on the `allow` path no longer reads the store on single-writer
+block lookup on the `allow` path no longer reads the store on the embedded
 backends. In the `core` micro-benchmarks the seeded authoritative mirror takes
-the full bbolt allow path from ~1600 ns to ~160 ns per `Evaluate` (about 10x),
-and a request from an already-blocked IP is denied in ~590 ns with zero store
-I/O. That is what keeps a flood from known-bad clients cheap; run
-`go test -bench BenchmarkEvaluateBoltMirror ./core/` to reproduce.
+the full allow path from ~1600 ns to ~160 ns per `Evaluate` (about 10x), and a
+request from an already-blocked IP is denied in ~590 ns with zero store I/O.
+That is what keeps a flood from known-bad clients cheap; run
+`go test -bench BenchmarkEvaluatePebbleMirror ./core/` to reproduce.
 :::
 
 ## Micro-benchmarks
