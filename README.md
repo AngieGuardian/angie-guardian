@@ -99,9 +99,9 @@ ride past the WAF.
   GeoIP/feed sources, log level. Active blocks and issued tokens survive; a
   config that fails validation, or changes a startup-only listener/store/key/
   admin field, is rejected and the running config stays live.
-- **Stores**: `memory` (dev), `bbolt` (single box), or `redis`/`valkey`
-  (multi-instance replicas behind a load balancer, sharing blocks + spent
-  challenges + the signing key).
+- **Stores**: `memory` (dev/ephemeral), `pebble` or `buntdb` (durable, single
+  box), or `redis`/`valkey` (multi-instance replicas behind a load balancer,
+  sharing blocks + spent challenges + the signing key).
 
 ## Testing
 
@@ -164,51 +164,75 @@ write-heavy path):
 
 | Scenario | What it does | Store I/O per request |
 |---|---|---|
-| `allow` | plain request, full pipeline, ends in "default allow" | none on `bbolt`/`memory` once the block mirror is seeded; 1 read on `redis` (read-through, so another replica's blocks apply immediately) |
+| `allow` | plain request, full pipeline, ends in "default allow" | none on the embedded backends once the block mirror is seeded; 1 read on `redis` (read-through, so another replica's blocks apply immediately) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | no store I/O |
 | `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
-same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the
-redis backend; fresh daemon per run). Numbers are req/s and per-request
-latency:
+same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis
+backend; fresh daemon per run). Each cell is **throughput / p50 / p99** (req/s
+and per-request latency):
 
-| Scenario | bbolt (throughput / p50 / p99) | redis · valkey (throughput / p50 / p99) |
-|---|---|---|
-| allow     | ~161k / 0.19 ms / 1.8 ms | ~78k / 0.77 ms / 1.7 ms |
-| token     | ~135k / 0.34 ms / 1.9 ms | ~77k / 0.78 ms / 1.8 ms |
-| deny      | ~125k / 0.41 ms / 1.8 ms | ~151k / 0.24 ms / 1.8 ms |
-| challenge (write) | **~4.5k / 14 ms / 16 ms** | **~21k / 1.5 ms / 33 ms** |
-| challenge, attack mode (stateless) | ~44k / 0.27 ms / 18 ms | ~26k / 0.38 ms / 25 ms |
+| Backend | allow | token | deny | challenge (write) |
+|---|---|---|---|---|
+| `memory` (ephemeral)              | 169k / 0.15ms / 1.8ms | 159k / 0.21ms / 1.7ms | 150k / 0.14ms / 2.4ms | **156k / 0.29ms / 1.7ms** |
+| `pebble` (async, default durable) | 177k / 0.14ms / 1.7ms | 154k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **39k / 0.73ms / 20ms** |
+| `pebble` (sync, fully durable)    | 172k / 0.14ms / 1.8ms | 155k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **25k / 2.6ms / 7.5ms** |
+| `buntdb` (async, single-file)     | 175k / 0.14ms / 1.7ms | 153k / 0.23ms / 1.8ms | 150k / 0.14ms / 2.4ms | **36k / 1.3ms / 17ms** |
+| `redis`·`valkey` (fleet)          | 96k / 0.62ms / 1.4ms  | 94k / 0.63ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **34k / 1.2ms / 21ms** |
 
-The read paths clear the ≥50k req/s budget on both backends with a wide
-margin. On single-writer backends the in-process block mirror removes the
-per-request store read entirely, which is why bbolt now *out-reads* the
-networked store: allow/token cost no store I/O at all there, while the redis
-backend keeps one read for cross-replica correctness.
+(`buntdb` + `sync: true` measured only ~0.6k challenge writes/s, because a
+single-writer store fsync'ing every commit is that slow, so the combination is
+**rejected at startup**; use `pebble` with `sync: true` for synchronous durability.)
 
-The takeaway remains the **write** path: issuing a challenge writes the
-issuance record through embedded bbolt's single fsync'd writer (~4.5k/s,
-~14 ms under contention), while redis/valkey sustains ~5x that. Under attack
-mode, issuance goes stateless and the bbolt ceiling lifts to ~44k/s, an order
-of magnitude, because the only remaining write is the single-spend marker at
-redemption, which an attacker cannot trigger without actually solving the
-proof of work. So the backend choice hinges on your *sustained, normal-mode*
-new-client rate:
+Every backend clears the ≥50k req/s budget on the read paths with a wide margin.
+On the **embedded** backends the in-process block mirror makes the store
+authoritative, so `allow`/`token` do no store I/O at all after the seed scan,
+which is why they cluster at ~150–177k. `redis`/`valkey` is the exception: it
+stays read-through (one network read per request for cross-replica correctness),
+so its `allow`/`token` land lower (~94–96k) while `deny` (no store read) stays fast.
 
-- With `pow.mode: always`, every unvouched request is challenged, so a burst of
-  fresh visitors is bounded by the write path. If that burst can exceed a few
-  thousand per second, use the **redis** backend (Redis or
-  [Valkey](https://valkey.io/), a drop-in replacement), set
-  `pow.mode: suspicion` so there is no catch-all challenge, or rely on
-  attack mode's stateless issuance to absorb the surge.
+The **write** path is where the backend matters. Issuing a challenge writes one
+CAS record, and the durable backends absorb that far better than a synchronous
+single-writer store:
+
+- **`pebble`** (default durable) sustains ~39k challenge writes/s in async mode,
+  and even in fully-durable `sync: true` mode still does ~25k/s. Both are far above
+  a synchronously-fsync'd single-writer store. It is an LSM engine, so writes hit
+  the WAL and memtable and are flushed in the background.
+- **`buntdb`** matches Pebble in async mode (~36k/s) and stores everything in one
+  file, which is simpler to back up. It is single-writer, so `sync: true` would
+  fsync every commit and collapse to ~600/s, so guardiand **refuses to start** in
+  that configuration and points you to Pebble for synchronous durability.
+- **`memory`** has no write ceiling at all (~156k/s) but loses all state on
+  restart.
+- **`redis`/`valkey`** sustains ~34k challenge writes/s (comparable to the
+  embedded durable backends) and is the **multi-instance** option: it is the
+  shared store that lets replicas behind a load balancer see each other's blocks
+  and single-spend markers. It trades some read throughput for that (one network
+  read per request). The embedded backends above are single-node only. See the
+  [store guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#choosing-a-store-backend).
+
+Two ways to lift the write path further when a burst of *new* clients could
+exceed the durable ceiling:
+
+- Set `pow.mode: suspicion` so there is no catch-all challenge (only explicit
+  anomaly/WAF/GeoIP/reputation policies issue one), or rely on
+  [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode)'s
+  **stateless** issuance, which writes nothing at issue time. The only remaining
+  write is then the single-spend marker at redemption, which an attacker cannot
+  trigger without actually solving the proof of work.
 - Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
   verification), so a returning client's request stays on the fast read path
   regardless of backend.
 - At these rates the read paths are bound by Go's garbage collector, not the
-  store: `GOGC=800` raises bbolt allow from ~161k to ~193k req/s. See
-  "GC tuning" in the production guide.
+  store: `GOGC=800` raises allow throughput ~20%. See "GC tuning" in the
+  production guide.
+
+The `redis` backend works with both Redis and
+[Valkey](https://valkey.io/) (a drop-in replacement, same wire protocol and same
+`backend: redis` value).
 
 ### Reproduce
 
@@ -220,7 +244,7 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
     -e 's#/var/lib/guardian/#.guardian/#g' \
     guardian.example.yaml > guardian.local.yaml
 
-# 1. Start guardiand with your store backend (bbolt shown; for redis set
+# 1. Start guardiand with your store backend (pebble shown; for redis set
 #    store.backend: redis and store.addr in the config). PoW must be enabled
 #    for the token/challenge scenarios.
 ./guardiand -config guardian.local.yaml &
@@ -306,7 +330,7 @@ core/stateless/  store-free WAF checks + value types (shared by sidecar & WASM)
 core/pow/        challenges, Ed25519 JWTs, token cache, key persistence + rotation
 core/waf/        signature rules, signed IDs
 core/anomaly/    statistical baseline model, online scorer, hot-swap cache
-core/store/      TTL'd shared state: memory | bbolt | redis
+core/store/      TTL'd shared state: memory | buntdb | pebble | redis
 core/metrics/    Prometheus instrumentation (private registry)
 transport/http/  auth_request sidecar + admin/metrics
 transport/wasm/  optional http-wasm guest (stateless WAF, runs inside Angie)

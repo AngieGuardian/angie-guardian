@@ -26,7 +26,7 @@ routes, metrics and values may be *added*, but existing ones keep working):
   on any other `1.x` sharing the key, so a rolling upgrade never logs clients
   out. Signing-key and rotation file layout is stable.
 - **The on-disk / store key format.** A `1.(x+1)` daemon reads a store
-  (bbolt file or redis/valkey keyspace) written by `1.x`: blocks, spent
+  (buntdb/pebble data or redis/valkey keyspace) written by `1.x`: blocks, spent
   challenges and cached verdicts survive the upgrade. Store key prefixes
   (`block:`, `challenge:`, `chesc:`, `botdns:`) are part of this contract.
 - **Angie integration.** The `X-Guardian-*` header contract and the

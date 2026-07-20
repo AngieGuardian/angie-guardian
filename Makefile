@@ -43,10 +43,11 @@ e2e:
 e2e-nft:
 	go test -tags e2e_nft -count=1 -timeout 15m ./test/e2e/...
 
-# Store-engine benchmark harness: compares Memory / ShardedMemory{16,64,256} /
-# bbolt on Guardian's real write workload (single-spend CAS flood, TTL counters,
-# mixed read/write, expiry reclaim). Manual, not a CI job: benchmarks want a
-# quiet machine, and a red build on benchmark variance is worse than a manual run.
+# Store-engine benchmark harness: compares the sharded in-memory store against
+# the durable backends (buntdb, pebble; each in async and sync mode) on Guardian's
+# real write workload (single-spend CAS flood, TTL counters, mixed read/write,
+# expiry reclaim). Manual, not a CI job: benchmarks want a quiet machine, and a
+# red build on benchmark variance is worse than a manual run.
 # To compare two runs with benchstat (not vendored; go run it directly):
 #   make bench-store > new.txt   # and a baseline old.txt from another commit
 #   go run golang.org/x/perf/cmd/benchstat old.txt new.txt

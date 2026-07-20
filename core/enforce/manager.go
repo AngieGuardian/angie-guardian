@@ -51,7 +51,7 @@ type Manager struct {
 	sinks   []*sinkRunner
 
 	// seeded flips after the first successful scan. Until then the mirror
-	// may be missing blocks persisted before this process started (bbolt),
+	// may be missing blocks persisted before this process started (pebble/buntdb),
 	// so lookups fall back to the store even in authoritative mode.
 	seeded atomic.Bool
 	// mirrorState packs a monotonic drop generation in the upper bits and the

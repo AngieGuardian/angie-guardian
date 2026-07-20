@@ -14,7 +14,7 @@
 *.test
 coverage.out
 
-# Runtime data (bbolt db, signing keys) — never belongs in an image
+# Runtime data (store db/dir, signing keys) — never belongs in an image
 *.db
 *.key
 

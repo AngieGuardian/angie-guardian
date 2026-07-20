@@ -21,7 +21,7 @@ import (
 
 // Mirror consistency modes. "auto" is resolved by the config layer before
 // this package sees it: authoritative for single-writer backends (memory,
-// bbolt), read_through when the store is shared (redis) so a block placed by
+// pebble/buntdb), read_through when the store is shared (redis) so a block placed by
 // another replica bites before the next indexed reconcile.
 const (
 	ModeAuthoritative = "authoritative"

@@ -29,8 +29,8 @@ signing_key_file: /etc/guardian/keys/ed25519.key
 previous_key_dir: /etc/guardian/keys/keys.d
 
 store:
-  backend: bbolt
-  path: /var/lib/guardian/guardian.db
+  backend: pebble
+  path: /var/lib/guardian/pebble
 
 # GeoIP scoping + reputation feeds (see guardian.example.yaml). Off in the
 # harness: the fixture databases/feeds would have to be mounted into the

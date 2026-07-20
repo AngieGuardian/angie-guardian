@@ -27,8 +27,8 @@ signing_key_file: /etc/guardian/keys/ed25519.key
 previous_key_dir: /etc/guardian/keys/keys.d
 
 store:
-  backend: bbolt
-  path: /var/lib/guardian/guardian.db
+  backend: pebble
+  path: /var/lib/guardian/pebble
 
 # Attack mode with a short window and thresholds low enough for the e2e
 # attack-mode test to trip by hammering /challenge, but well above what the

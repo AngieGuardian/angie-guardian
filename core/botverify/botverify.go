@@ -18,7 +18,7 @@
 //
 // Verification results are cached in the shared store: an IP's confirmed
 // rDNS identity is a property of the IP, not of any one vhost's config, so
-// one cache entry serves every domain and survives restarts (bbolt/redis).
+// one cache entry serves every domain and survives restarts (pebble/buntdb/redis).
 // DNS work is deduplicated per IP and capped globally so a flood of spoofed
 // UAs from many IPs degrades to "unverified" instead of a lookup storm.
 package botverify

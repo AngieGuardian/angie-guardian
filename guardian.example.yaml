@@ -43,8 +43,9 @@ signing_key_file: /etc/guardian/ed25519.key
 previous_key_dir: /etc/guardian/keys.d
 
 store:
-  backend: bbolt              # memory | bbolt | redis
-  path: /var/lib/guardian/guardian.db
+  backend: pebble             # memory | buntdb | pebble | redis
+  path: /var/lib/guardian/pebble  # a file for buntdb; a directory for pebble
+  # sync: false               # pebble/buntdb: fsync every write (durable, slower) when true
   # redis backend (multi-instance): all replicas share one server.
   # addr: 127.0.0.1:6379
   # password: ""              # or the REDIS_PASSWORD env var

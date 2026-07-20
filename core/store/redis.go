@@ -19,7 +19,7 @@ import (
 // backend: all Guardian replicas behind a load balancer point at the same
 // server so any instance sees any other's blocks and spent challenges.
 // TTLs are native; Incr and CompareAndSwap use small Lua scripts so their
-// semantics match the memory and bbolt backends exactly (atomic, TTL-aware).
+// semantics match the memory, buntdb and pebble backends exactly (atomic, TTL-aware).
 type Redis struct {
 	rdb *redis.Client
 }

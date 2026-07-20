@@ -82,16 +82,17 @@ daemon. The running config stays active after any rejected reload and the error
 is logged (or returned `422` from the admin endpoint). Validate the config and
 its startup-required local artifacts before reloading with `guardiand -config … -t`.
 
-## Challenge issuance is slow / bbolt can't keep up
+## Challenge issuance is slow / the store can't keep up
 
-Under a very high rate of *new* clients (each triggering a challenge write) on
-the `bbolt` backend, the single embedded writer becomes the ceiling
-(~4.5k issuances/s on the reference machine). Symptoms: rising challenge
-latency, `guardian_store_op` latency climbing. Move to the `redis`/`valkey`
-backend for ~5x the write throughput, set `pow.mode: suspicion` so most
-requests do no write, or enable [attack mode](/guide/attack-mode), whose
-stateless issuance removes the write at issue time (~44k/s on bbolt) when a
-flood trips the posture. See
+Under a very high rate of *new* clients (each triggering a challenge write),
+the embedded writer becomes the ceiling: ~39k issuances/s on `pebble` async,
+~36k/s on `buntdb` async, and ~25k/s on `pebble` with `sync: true`
+(fsync-per-write) on the reference machine. Symptoms: rising challenge
+latency, `guardian_store_op` latency climbing. Set `store.sync: false` (the
+default) if you had turned fsync on, move to the `redis`/`valkey` backend to
+share the write across replicas, set `pow.mode: suspicion` so most requests do
+no write, or enable [attack mode](/guide/attack-mode), whose stateless issuance
+removes the write at issue time entirely when a flood trips the posture. See
 [Choosing a store backend](/guide/production#choosing-a-store-backend).
 
 ## Tokens rejected across replicas / after a restart

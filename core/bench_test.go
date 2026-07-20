@@ -193,10 +193,10 @@ func BenchmarkEvaluateChallengeDecision(b *testing.B) {
 		"pow:no_token")
 }
 
-// BenchmarkEvaluateWithBolt measures the full pipeline with the persistent
+// BenchmarkEvaluateWithPebble measures the full pipeline with the persistent
 // store in the loop (behaviour-block lookup per request).
-func BenchmarkEvaluateWithBolt(b *testing.B) {
-	st, err := store.NewBolt(filepath.Join(b.TempDir(), "bench.db"))
+func BenchmarkEvaluateWithPebble(b *testing.B) {
+	st, err := store.NewPebble(b.TempDir(), store.PebbleOptions{Sync: false})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -206,12 +206,12 @@ func BenchmarkEvaluateWithBolt(b *testing.B) {
 		"default")
 }
 
-// BenchmarkEvaluateBoltMirror is the production authoritative-mirror path on a
-// bbolt store: the block check is served from the seeded in-process mirror, so
-// the per-request store read is gone. Compare against BenchmarkEvaluateWithBolt
+// BenchmarkEvaluatePebbleMirror is the production authoritative-mirror path on a
+// pebble store: the block check is served from the seeded in-process mirror, so
+// the per-request store read is gone. Compare against BenchmarkEvaluateWithPebble
 // (same store, no enforcer) to see the offload's hot-path win.
-func BenchmarkEvaluateBoltMirror(b *testing.B) {
-	st, err := store.NewBolt(filepath.Join(b.TempDir(), "bench.db"))
+func BenchmarkEvaluatePebbleMirror(b *testing.B) {
+	st, err := store.NewPebble(b.TempDir(), store.PebbleOptions{Sync: false})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -221,11 +221,11 @@ func BenchmarkEvaluateBoltMirror(b *testing.B) {
 		"default")
 }
 
-// BenchmarkEvaluateBoltMirrorBlocked measures a blocked client under the
+// BenchmarkEvaluatePebbleMirrorBlocked measures a blocked client under the
 // mirror: the denial is a memory lookup with zero store I/O, the exact flood
 // case the offload exists for.
-func BenchmarkEvaluateBoltMirrorBlocked(b *testing.B) {
-	st, err := store.NewBolt(filepath.Join(b.TempDir(), "bench.db"))
+func BenchmarkEvaluatePebbleMirrorBlocked(b *testing.B) {
+	st, err := store.NewPebble(b.TempDir(), store.PebbleOptions{Sync: false})
 	if err != nil {
 		b.Fatal(err)
 	}

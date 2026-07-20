@@ -43,7 +43,7 @@ features:
     details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard, and a ready-made Grafana dashboard.
   - icon: 🗄️
     title: Pluggable state stores
-    details: memory for dev, embedded bbolt for a single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.
+    details: memory for dev, embedded pebble or buntdb for a durable single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.
   - icon: 🕸️
     title: Optional WASM module
     details: The store-free WAF checks compiled to WebAssembly and run in-process inside Angie, for operators who prefer that integration path.

@@ -135,11 +135,16 @@ type AdminConfig struct {
 }
 
 type StoreConfig struct {
-	Backend  string `yaml:"backend"`  // memory | bbolt | redis
-	Path     string `yaml:"path"`     // bbolt database file
+	Backend  string `yaml:"backend"`  // memory | buntdb | pebble | redis
+	Path     string `yaml:"path"`     // buntdb database file, or pebble directory
 	Addr     string `yaml:"addr"`     // redis host:port
 	Password string `yaml:"password"` // redis password (or use REDIS_PASSWORD)
 	DB       int    `yaml:"db"`       // redis database number
+	// Sync makes the buntdb and pebble backends fsync every write (fully durable,
+	// slower). When false (default), writes are flushed without a per-write fsync,
+	// much faster, at the cost of losing the unflushed tail on a power/OS crash
+	// (a bounded, <=challenge_ttl replay window). Ignored by other backends.
+	Sync bool `yaml:"sync"`
 }
 
 // EnforcementConfig moves active-block enforcement onto layers cheaper than
@@ -162,10 +167,10 @@ type MirrorConfig struct {
 	ReconcileInterval Duration `yaml:"reconcile_interval"` // default 10s, min 1s
 	// MaxEntries bounds the mirror; overflow entries fall back to store reads.
 	MaxEntries int `yaml:"max_entries"` // default 1048576
-	// Mode: auto (default) picks authoritative for single-writer backends
-	// (memory, bbolt) and read_through for a shared store (redis), where a
-	// mirror miss must still consult the store so another replica's blocks
-	// bite before the next indexed reconcile.
+	// Mode: auto (default) picks authoritative for embedded single-instance
+	// backends (memory, buntdb, pebble) and read_through for a shared store
+	// (redis), where a mirror miss must still consult the store so another
+	// replica's blocks bite before the next indexed reconcile.
 	Mode string `yaml:"mode"` // auto | authoritative | read_through
 }
 
@@ -918,16 +923,31 @@ func (c *Config) finalize() error {
 	case "":
 		c.Store.Backend = "memory"
 	case "memory":
-	case "bbolt":
+	case "buntdb":
 		if c.Store.Path == "" {
-			return fmt.Errorf("store.path is required for the bbolt backend")
+			return fmt.Errorf("store.path is required for the buntdb backend")
+		}
+		if c.Store.Sync {
+			// buntdb is single-writer, so fsync-per-commit (sync: true) collapses
+			// challenge-write throughput to a few hundred req/s, far below the
+			// budget and worse than not persisting at all. Refuse it rather than
+			// ship a silently crippled daemon; pebble is the synchronous-durable
+			// option.
+			return fmt.Errorf("store.sync is not supported on the buntdb backend " +
+				"(its single writer makes fsync-per-commit ~100x slower); use " +
+				"backend: pebble with sync: true for synchronous durability, or " +
+				"leave buntdb in its fast async mode (sync: false)")
+		}
+	case "pebble":
+		if c.Store.Path == "" {
+			return fmt.Errorf("store.path is required for the pebble backend")
 		}
 	case "redis":
 		if c.Store.Addr == "" {
 			return fmt.Errorf("store.addr is required for the redis backend")
 		}
 	default:
-		return fmt.Errorf("store.backend must be memory, bbolt or redis, got %q", c.Store.Backend)
+		return fmt.Errorf("store.backend must be memory, buntdb, pebble or redis, got %q", c.Store.Backend)
 	}
 	if err := c.Enforcement.validate(); err != nil {
 		return err
@@ -1430,10 +1450,10 @@ func (c *Config) IntelConfig() intel.Config {
 }
 
 // EnforceConfig assembles the enforcement manager's configuration. The mirror
-// mode "auto" resolves here: single-writer backends (memory, bbolt) make the
-// seeded mirror authoritative, while a shared store (redis) keeps the
-// per-request store fallback so blocks placed by another replica bite before
-// the next indexed reconcile.
+// mode "auto" resolves here: embedded single-instance backends (memory, buntdb,
+// pebble) make the seeded mirror authoritative, while a shared store (redis)
+// keeps the per-request store fallback so blocks placed by another replica bite
+// before the next indexed reconcile.
 func (c *Config) EnforceConfig() enforce.Config {
 	mode := c.Enforcement.Mirror.Mode
 	if mode == "" || mode == "auto" {

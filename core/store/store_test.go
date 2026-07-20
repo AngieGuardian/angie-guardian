@@ -67,7 +67,7 @@ func sleepAdvance(d time.Duration) { time.Sleep(d) }
 
 func backends(t *testing.T) map[string]backend {
 	t.Helper()
-	b, err := NewBolt(filepath.Join(t.TempDir(), "test.db"))
+	bunt, err := NewBuntDB(filepath.Join(t.TempDir(), "test.db"), BuntDBOptions{Sync: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,17 +78,32 @@ func backends(t *testing.T) map[string]backend {
 
 	return map[string]backend{
 		"memory": {NewMemory(), sleepAdvance},
-		"bbolt":  {b, sleepAdvance},
+		"buntdb": {bunt, sleepAdvance},
 		"redis":  {NewRedisFromClient(rdb), func(d time.Duration) { mr.FastForward(d + d/2) }},
 	}
 }
 
 func TestStoreConformance(t *testing.T) {
-	ctx := context.Background()
 	for name, be := range backends(t) {
-		s, advance := be.store, be.advance
 		t.Run(name, func(t *testing.T) {
-			defer s.Close()
+			defer be.store.Close()
+			assertStoreConformance(t, be.store, be.advance, 500*time.Millisecond, 200*time.Millisecond)
+		})
+	}
+}
+
+// assertStoreConformance runs the full Store contract against s. advance makes a
+// TTL of d elapse (real-clock backends sleep). shortTTL is the expiry window
+// used for the TTL/expiry assertions: pass a sub-second value for fine-grained
+// in-memory stores, or >=1.2s for backends with one-second TTL resolution
+// (Badger, NutsDB). Shared by TestStoreConformance and the durable-backend
+// conformance test so every backend proves identical semantics (CAS anti-replay,
+// IncrByDeadline rules 2/3/4, TTL, sorted scan).
+func assertStoreConformance(t *testing.T, s Store, advance func(time.Duration), shortTTL, margin time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	{
+		{
 
 			// Get/Set round trip, no TTL.
 			if err := s.Set(ctx, "k", []byte("v"), 0); err != nil {
@@ -117,11 +132,10 @@ func TestStoreConformance(t *testing.T) {
 			// Expiry direction: a short TTL, then advance past it. 500ms is far
 			// larger than any plausible scheduling pause, so the "still there"
 			// window before advance() is not asserted on the short key.
-			const shortTTL = 500 * time.Millisecond
 			if err := s.Set(ctx, "ttl", []byte("x"), shortTTL); err != nil {
 				t.Fatal(err)
 			}
-			advance(shortTTL + 200*time.Millisecond)
+			advance(shortTTL + margin)
 			if _, ok, _ := s.Get(ctx, "ttl"); ok {
 				t.Fatal("expired key reported present")
 			}
@@ -149,7 +163,7 @@ func TestStoreConformance(t *testing.T) {
 			if n, _ := s.Incr(ctx, "ctr2", shortTTL); n != 1 {
 				t.Fatalf("first incr = %d, want 1", n)
 			}
-			advance(shortTTL + 200*time.Millisecond)
+			advance(shortTTL + margin)
 			if n, _ := s.Incr(ctx, "ctr2", time.Minute); n != 1 {
 				t.Fatalf("incr after expiry = %d, want 1", n)
 			}
@@ -171,7 +185,7 @@ func TestStoreConformance(t *testing.T) {
 			if n, _ := s.IncrBy(ctx, "byctr2", 4, shortTTL); n != 4 {
 				t.Fatalf("first short IncrBy = %d, want 4", n)
 			}
-			advance(shortTTL + 200*time.Millisecond)
+			advance(shortTTL + margin)
 			if n, _ := s.IncrBy(ctx, "byctr2", 2, time.Minute); n != 2 {
 				t.Fatalf("IncrBy after expiry = %d, want 2 (window did not reset)", n)
 			}
@@ -189,7 +203,7 @@ func TestStoreConformance(t *testing.T) {
 			if n, applied, _ := s.IncrByDeadline(ctx, "dl", 2, nowNanos()+time.Hour.Nanoseconds()); n != 5 || !applied {
 				t.Fatalf("live IncrByDeadline = %d applied=%v, want 5 true", n, applied)
 			}
-			advance(shortTTL + 200*time.Millisecond)
+			advance(shortTTL + margin)
 			if _, ok, _ := s.Get(ctx, "dl"); ok {
 				t.Fatal("IncrByDeadline fresh key did not expire at its deadline")
 			}
@@ -248,7 +262,7 @@ func TestStoreConformance(t *testing.T) {
 			if err := s.Set(ctx, "scan:dead", []byte("gone"), shortTTL); err != nil {
 				t.Fatal(err)
 			}
-			advance(shortTTL + 200*time.Millisecond)
+			advance(shortTTL + margin)
 			if err := s.Set(ctx, "scan:perm", []byte("3"), 0); err != nil {
 				t.Fatal(err)
 			}
@@ -271,60 +285,50 @@ func TestStoreConformance(t *testing.T) {
 			if got, _ := s.Scan(ctx, "nothing:"); len(got) != 0 {
 				t.Fatalf("scan of absent prefix = %+v, want empty", got)
 			}
-		})
-	}
-}
-
-func TestBoltPersistence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "persist.db")
-
-	s, err := NewBolt(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Set(ctx, "durable", []byte("yes"), time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	s2, err := NewBolt(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s2.Close()
-	v, ok, err := s2.Get(ctx, "durable")
-	if err != nil || !ok || string(v) != "yes" {
-		t.Fatalf("value did not survive reopen: %q %v %v", v, ok, err)
-	}
-}
-
-func TestBoltRejectsTTLThatWouldBecomePermanent(t *testing.T) {
-	s, err := NewBolt(filepath.Join(t.TempDir(), "overflow.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ttl, err := time.ParseDuration("2562047h")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if err := s.Set(ctx, "set", []byte("v"), ttl); err == nil {
-		t.Fatal("oversized positive Set TTL was accepted as a permanent record")
-	}
-	if _, err := s.IncrBy(ctx, "incr", 1, ttl); err == nil {
-		t.Fatal("oversized positive IncrBy TTL was accepted as a permanent record")
-	}
-	if _, err := s.CompareAndSwap(ctx, "cas", nil, []byte("v"), ttl); err == nil {
-		t.Fatal("oversized positive CAS TTL was accepted as a permanent record")
-	}
-	for _, key := range []string{"set", "incr", "cas"} {
-		if _, ok, err := s.Get(ctx, key); err != nil || ok {
-			t.Fatalf("rejected TTL wrote %q: ok=%v err=%v", key, ok, err)
 		}
+	}
+}
+
+// TestDurablePersistence verifies that a value written to a durable embedded
+// backend survives a close and reopen of the same path — the property that
+// distinguishes buntdb/pebble from the in-memory store.
+func TestDurablePersistence(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		open func(path string) (Store, error)
+		file string // filename under the temp dir, or "" for a directory store
+	}{
+		{"buntdb", func(p string) (Store, error) { return NewBuntDB(p, BuntDBOptions{Sync: true}) }, "persist.db"},
+		{"pebble", func(p string) (Store, error) { return NewPebble(p, PebbleOptions{Sync: true}) }, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := dir
+			if tc.file != "" {
+				path = filepath.Join(dir, tc.file)
+			}
+			s, err := tc.open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Set(ctx, "durable", []byte("yes"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			s2, err := tc.open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s2.Close()
+			v, ok, err := s2.Get(ctx, "durable")
+			if err != nil || !ok || string(v) != "yes" {
+				t.Fatalf("value did not survive reopen: %q %v %v", v, ok, err)
+			}
+		})
 	}
 }
 

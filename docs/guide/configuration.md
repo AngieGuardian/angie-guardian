@@ -73,7 +73,7 @@ when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
 # config guardian.yaml: ok
 # ...or, on a bad config:
 # config guardian.yaml: FAILED
-# config guardian.yaml: store.backend must be memory, bbolt or redis, got "etcd"
+# config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
 ```
 
 ## base_difficulty and max_difficulty

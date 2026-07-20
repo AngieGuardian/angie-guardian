@@ -104,10 +104,15 @@ func run(configPath string) error {
 	switch cfg.Store.Backend {
 	case "memory":
 		st = store.NewMemory()
-	case "bbolt":
-		st, err = store.NewBolt(cfg.Store.Path)
+	case "buntdb":
+		st, err = store.NewBuntDB(cfg.Store.Path, store.BuntDBOptions{Sync: cfg.Store.Sync})
 		if err != nil {
-			return fmt.Errorf("open bbolt store %s: %w", cfg.Store.Path, err)
+			return fmt.Errorf("open buntdb store %s: %w", cfg.Store.Path, err)
+		}
+	case "pebble":
+		st, err = store.NewPebble(cfg.Store.Path, store.PebbleOptions{Sync: cfg.Store.Sync})
+		if err != nil {
+			return fmt.Errorf("open pebble store %s: %w", cfg.Store.Path, err)
 		}
 	case "redis":
 		password := cfg.Store.Password

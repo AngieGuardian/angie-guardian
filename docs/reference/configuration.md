@@ -45,8 +45,9 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `store.backend` | string | `memory` | One of `memory`, `bbolt`, `redis`. See [choosing a store backend](/guide/production#choosing-a-store-backend). |
-| `store.path` | string | | bbolt database file. **Required** for the `bbolt` backend. |
+| `store.backend` | string | `memory` | One of `memory`, `buntdb`, `pebble`, `redis`. See [choosing a store backend](/guide/production#choosing-a-store-backend). |
+| `store.path` | string | | Durable store location: a **file** for the `buntdb` backend, a **directory** for the `pebble` backend. **Required** for both. |
+| `store.sync` | bool | `false` | Durable embedded backends only (`buntdb`/`pebble`). `false` is fast async; `true` fsyncs every write. `buntdb` + `sync: true` is rejected at startup (buntdb is single-writer); use `pebble` for synchronous durability. |
 | `store.addr` | string | | Redis/Valkey `host:port`. **Required** for the `redis` backend. |
 | `store.password` | string | `$REDIS_PASSWORD` | Redis/Valkey password. Falls back to the `REDIS_PASSWORD` env var. |
 | `store.db` | int | `0` | Redis database number. |
@@ -61,7 +62,7 @@ full picture. Every field is restart-required.
 |---|---|---|---|
 | `enforcement.mirror.reconcile_interval` | duration | `10s` | Cadence of the bounded active-block index read that seeds the mirror, corrects entries and repairs sink drift. Minimum `1s`. |
 | `enforcement.mirror.max_entries` | int | `1048576` | Mirror capacity. Overflow entries fall back to the store read path (never lost, just not cached). |
-| `enforcement.mirror.mode` | string | `auto` | `auto` (authoritative for `memory`/`bbolt`, read-through for `redis`), `authoritative`, or `read_through`. |
+| `enforcement.mirror.mode` | string | `auto` | `auto` (authoritative for `memory`/`buntdb`/`pebble`, read-through for `redis`), `authoritative`, or `read_through`. |
 | `enforcement.nftables.enabled` | bool | `false` | Enable the kernel sink. Linux only; needs `CAP_NET_ADMIN`. |
 | `enforcement.nftables.mode` | string | `managed` | `managed` (own a table + port-scoped drop rule) or `sets_only` (maintain the sets, you write the rule). |
 | `enforcement.nftables.table` | string | `guardian` | nftables `inet` table name. |

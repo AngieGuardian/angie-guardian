@@ -68,12 +68,12 @@ suspicion mode, so a brief spike never walls a suspicion-mode site.
 ### Stateless issuance (`stateless_issuance`, default on)
 
 Normally each issued challenge writes an issuance record to the store, and
-embedded bbolt's single fsync'd writer tops out around 4.5k/s (see
+even the fast durable embedded backends top out around 39k/s (pebble async)
+to 36k/s (buntdb async), or ~25k/s with `pebble` fsync-per-write (see
 [load testing](/guide/load-testing)). Under attack, Guardian issues
 **stateless** challenges instead: an HMAC-signed, self-authenticating ID
 (`s1.` prefix) that carries its own state, so issuance performs no store
-write. Measured, that lifts the bbolt issuance ceiling to ~44k/s, an order
-of magnitude. Single-spend moves to redeem time, keyed by the solved challenge and
+write. Single-spend moves to redeem time, keyed by the solved challenge and
 written only after the client has actually paid the proof of work, so the only
 store write an attacker can induce costs them real compute first.
 
@@ -131,7 +131,7 @@ With `share_posture: true` (default) each instance publishes its level as an
 expiring per-replica vote once per tick and adopts the maximum of its local
 level and every live peer vote, so replicas move together. One quiet replica
 cannot overwrite a higher vote from an attacking peer. The built-in stores
-keep these votes in a dedicated map/bbolt bucket or two fixed Redis sorted
+keep these votes in a dedicated map/embedded key range or two fixed Redis sorted
 sets; a tick never scans challenge, counter, bot-verification, or block keys.
 The bounded coordination runs off the hot path; if the store is down it
 degrades to local-only (and the store failure is itself a trigger).

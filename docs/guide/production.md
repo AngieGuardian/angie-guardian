@@ -108,17 +108,28 @@ verdicts) in a pluggable store. Signing keys remain in
   viable single-instance production choice for a site that can re-learn blocks
   and re-issue challenges after a restart (a solved challenge could be replayed
   only within its remaining, short, `challenge_ttl` window across a restart).
-- **bbolt**: single instance, persistent. Writes are coalesced (`db.Batch`) so
-  concurrent challenge/event writes share fsyncs, but it is still one embedded
-  writer: under a very high sustained rate of *new* clients (each of which
-  triggers a challenge write in `pow.mode: always`), the single writer becomes
-  the ceiling. Load-test with `guardian-loadtest` at your expected new-client
-  rate before relying on it near 50k req/s; if the writer saturates, switch to
-  the `redis` backend or set `pow.mode: suspicion` (no catch-all challenge;
-  only explicit anomaly/WAF/GeoIP/reputation policies cause challenge writes).
-- **redis**: multi-instance and the highest write throughput. Works with both
-  Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which
-  is a drop-in replacement (same wire protocol, same `backend: redis` value).
+- **pebble**: single instance, persistent, and the **recommended durable
+  backend**. Pebble is an LSM engine (CockroachDB's), so a write hits the WAL and
+  an in-memory memtable and is flushed to disk in the background rather than
+  fsync'ing every commit. It sustains ~39k challenge writes/s with `sync: false`
+  (the default), and ~25k/s with `sync: true` (fsync every write, fully durable).
+  Its state lives in a directory (set `store.path` to a directory).
+- **buntdb**: single instance, persistent, stored in a **single file** (simpler
+  to back up or copy). In its async default (`sync: false`) it matches Pebble
+  (~36k challenge writes/s). It is a single-writer store, so `sync: true`
+  (fsync-per-commit) would collapse it to a few hundred writes/s, so guardiand
+  **refuses to start** with `backend: buntdb` + `sync: true` and points
+  you to Pebble for synchronous durability. Set `store.path` to a file.
+- **redis**: multi-instance. Works with both Redis and
+  [Valkey](https://valkey.io/) (the open-source Redis fork), a drop-in
+  replacement (same wire protocol, same `backend: redis` value). This is the
+  shared store that lets replicas behind a load balancer see each other's blocks
+  and single-spend markers; the embedded backends above are single-node only.
+
+Both durable embedded backends take a `store.sync` flag: `false` (default) is
+fast and loses only the unflushed tail on a power/OS crash (a bounded,
+≤`challenge_ttl` replay window), while `true` fsyncs every write (only worth it
+on Pebble).
 
 Guardian's Redis client currently uses plaintext TCP and its keys are not
 prefixed per deployment. Put Redis/Valkey on loopback or a private,
@@ -135,24 +146,22 @@ operation. Use a stable TCP endpoint in front of your replicated Redis/Valkey
 service when you need server failover.
 
 The rule of thumb from the
-[measured numbers](/guide/what-is-guardian#performance): the backend choice
-hinges on your *new-client* rate, i.e. the clients that trigger a challenge
-write. bbolt sustains ~4.5k challenge issuances/s; redis/valkey ~5x that
-(~21k/s).
+[measured numbers](/guide/what-is-guardian#performance): the backend choice only
+affects your *new-client* rate, i.e. the clients that trigger a challenge write.
+The read paths (`allow`/`token`/`deny`) are backend-independent at ~150–176k
+req/s, because the [block mirror](/guide/block-offload) makes every embedded
+backend authoritative, so after the seed scan the allow/token path does zero store
+reads. redis is the exception: it stays read-through, keeping one network read
+per request so a block placed by another replica applies immediately, the price
+of multi-instance correctness.
 
-On the *read* path the trade runs the other way, and it is not a mistake that
-single-instance bbolt out-reads networked redis. The
-[block mirror](/guide/block-offload) makes bbolt (and `memory`) authoritative:
-after the seed scan the allow/token path does zero store reads. redis stays
-read-through, keeping one network read per request so a block placed by
-another replica applies immediately, the price of multi-instance correctness.
-So bbolt wins the read path, redis wins the write path and is the multi-instance
-option. Under [attack mode](/guide/attack-mode), issuance switches to a
-stateless path with no write at issue time, lifting the bbolt ceiling to
-~44k/s, so the numbers above bound your *sustained, normal-mode* new-client
-rate, not the flood case. Verified tokens are cached in-process (~144 ns vs
-~43 µs for a full Ed25519 verification), so a returning client's request
-stays on the fast read path regardless of backend.
+So the write path is the deciding factor: `pebble` ~39k challenge writes/s
+(async) or ~25k/s (sync), `buntdb` ~36k/s (async only). Under
+[attack mode](/guide/attack-mode), issuance switches to a stateless path with no
+write at issue time, so these numbers bound your *sustained, normal-mode*
+new-client rate, not the flood case. Verified tokens are cached in-process
+(~144 ns vs ~43 µs for a full Ed25519 verification), so a returning client's
+request stays on the fast read path regardless of backend.
 
 ## GC tuning for peak throughput
 
@@ -160,8 +169,8 @@ At tens of thousands of requests per second, guardiand's read paths are
 bound by Go's garbage collector, not the store: a freshly started daemon has
 a small heap, so at high allocation rates the GC runs almost continuously.
 On the [benchmark machine](/guide/load-testing#reference-numbers), starting
-guardiand with `GOGC=800` raised the read-path throughput by about 20% (allow:
-~161k to ~193k req/s on bbolt), at the price of a larger heap between
+guardiand with `GOGC=800` raised the read-path throughput by about 20%, at the
+price of a larger heap between
 collections. If you chase peak throughput, set `GOGC` (or a `GOMEMLIMIT`
 budget) in the systemd unit's `Environment=` and measure with
 `guardian-loadtest`; at typical production rates the default is fine.
