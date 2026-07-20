@@ -122,3 +122,10 @@ domains:
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }
+  # A WordPress-ish host: shares the common rules file but disables its
+  # wp-probe rule by exact id (issue #27); every other rule still applies.
+  wp.localhost:
+    pow: { enabled: false }
+    waf:
+      keywords:
+        disabled_rule_ids: [ wp-probe ]

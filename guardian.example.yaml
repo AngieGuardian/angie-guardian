@@ -175,6 +175,16 @@ defaults:
     keywords:
       enabled: true           # requires the rules file to exist (fail-fast);
       rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
+      # disabled_rule_ids removes selected rules from the file for a scope by
+      # their exact, case-sensitive id, without copying the file. Like every
+      # list, an overlay replaces it wholesale: omitted inherits, [] clears,
+      # a non-empty list replaces the inherited one. Unknown/empty/duplicate
+      # ids fail -t, startup and reload. Typical use: the starter set's
+      # wp-probe rule is wrong on a real WordPress site, so under domains:
+      #   wordpress.example.com:
+      #     waf:
+      #       keywords:
+      #         disabled_rule_ids: [ wp-probe ]
     anomaly:
       enabled: false          # requires a model trained from your own logs:
       model: /etc/guardian/model.json   #   guardian-train -out model.json /var/log/angie/*.access.json

@@ -121,11 +121,16 @@ The file must be installed and named explicitly (the systemd recipe in step 3
 does both): nothing under `/etc/guardian/rules.d/` is auto-discovered, and a
 configured `rules_file` that is missing fails `-t` and startup rather than
 silently matching nothing. `defaults.waf.keywords` is inherited by every
-domain and path overlay unless overridden there; scoping works per FILE, by
-pointing a domain (or path overlay) at a different `rules_file` or setting
-`enabled: false` for that scope. The `id` is a log/reason label (`waf:<id>`),
-not a switch: individual rule IDs cannot be enabled or disabled from
-`guardian.yaml`.
+domain and path overlay unless overridden there; a scope can point at a
+different `rules_file`, set `enabled: false`, or disable selected rules from
+its effective file by exact, case-sensitive `id` with `disabled_rule_ids`
+(the `id` is also the log/reason label, `waf:<id>`). A disabled rule falls
+through to the next matching rule in file order. The list overlays wholesale
+(omitted inherits, `[]` clears, non-empty replaces); unknown, empty or
+duplicate ids fail `-t`, startup and reload naming the scope, file and id,
+and a watched rules-file update that removes a still-excluded id is rejected
+with the last-good rules kept active. To delete a disabled rule on purpose,
+drop its id from `guardian.yaml` and reload first, then edit the rules file.
 
 **Request bodies are never inspected.** Angie's `auth_request` subrequest
 carries only the request line and headers, never the body, so no rule can see
@@ -459,6 +464,8 @@ sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
 sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
 # The starter WAF rules the example config enables; without this file the
 # unit's ExecStartPre `-t` preflight fails on the missing rules_file.
+# Per-host exceptions to this shared file belong in guardian.yaml
+# (waf.keywords.disabled_rule_ids), not in diverging copies of the file.
 sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
 
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service

@@ -903,8 +903,15 @@
     $("domains").replaceChildren(...doms.map(([name, dc]) => {
       const pow = td(null, "");
       pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
+      // Keywords cell: flag rule-ID exclusions and expose the effective
+      // rules file + excluded IDs in the tooltip.
+      const excluded = dc.waf_disabled_rule_ids || [];
+      const kw = td(null, dc.waf_keywords ? (excluded.length ? "on (" + excluded.length + " excluded)" : "on") : "off");
+      if (dc.waf_rules_file) {
+        kw.title = dc.waf_rules_file + (excluded.length ? " minus: " + excluded.join(", ") : "");
+      }
       return row(td("wrap", name), pow, td(null, dc.pow_mode),
-        td(null, dc.waf_keywords ? "on" : "off"),
+        kw,
         td(null, dc.waf_ip_behaviour ? "on" : "off"),
         td(null, dc.geo ? "on" : "off"),
         td(null, dc.reputation ? "on" : "off"));

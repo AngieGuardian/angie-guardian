@@ -48,6 +48,9 @@ const (
 	powHost = "localhost"
 	// wafOnlyHost has pow disabled: WAF runs, but no interstitial.
 	wafOnlyHost = "api.localhost"
+	// wpHost shares the common rules file but disables wp-probe by id
+	// (waf.keywords.disabled_rule_ids); pow is off like wafOnlyHost.
+	wpHost = "wp.localhost"
 )
 
 // Base URLs of the two published listeners, set in runSuite once the harness

@@ -96,30 +96,75 @@ Inside a rules file, each rule has an `id`, an `action`
 `header:<name>`; default `[path, query]`), optional `methods`, and `keywords`
 (case-insensitive literals) and/or `regexes` (Go RE2, linear-time). Rules are
 evaluated **in file order and the first match wins**, so put narrow or
-terminal rules before broad challenge rules. The `id` is a label, not a
-switch: a hit is logged and counted as `waf:<id>`, but IDs cannot be enabled
-or disabled individually from `guardian.yaml`. The starter file documents
+terminal rules before broad challenge rules. The `id` does double duty: a hit
+is logged and counted as `waf:<id>`, and it is the exact, case-sensitive
+selector for per-scope exclusions (below). The starter file documents
 every field; the [reference](/reference/configuration#waf-keywords) lists the
 exact matching semantics.
 
 Like every `waf` setting, `defaults.waf.keywords` is inherited by **every
 domain and path overlay** that does not override it, so the file above applies
 to your whole estate, including unknown Hosts that fall back to `defaults`.
-Today scoping works at file granularity, in two ways:
+Scoping works three ways:
 
 - Point a domain (or path overlay) at a **different file** with its own
   `rules_file`, e.g. an API set without challenge-action heuristics (which
   degrade to deny where PoW is off).
 - Turn matching off for a scope with `enabled: false`.
+- Disable **individual rules** for a scope with `disabled_rule_ids`, without
+  copying the file.
+
+### Per-scope rule exclusions (`disabled_rule_ids`)
+
+A shared rules file rarely fits every host exactly: the starter set's
+`wp-probe` rule is right on non-WordPress hosts and wrong on a real WordPress
+domain. Instead of maintaining a diverging copy of the file for one exception,
+list the rule's exact `id` in that scope's `disabled_rule_ids`:
+
+```yaml
+defaults:
+  waf:
+    keywords:
+      enabled: true
+      rules_file: /etc/guardian/rules.d/common.yaml
+
+domains:
+  wordpress.example.com:
+    waf:
+      keywords:
+        disabled_rule_ids: [ wp-probe ]
+```
+
+A disabled rule is removed from evaluation for that resolved scope only; the
+remaining rules keep their file order, so the next matching rule still decides
+the request. Like every list in the overlay model, the field replaces
+wholesale: an omitted `disabled_rule_ids` inherits the parent's resolved list,
+an explicit `[]` clears inherited exclusions, and a non-empty list replaces
+the inherited one (re-list inherited IDs to keep them). The effective sets are
+precompiled at startup/reload, so exclusions add no per-request work.
+
+Validation is deliberately strict, so a typo can never silently leave a
+dangerous rule enabled: empty, whitespace-only or duplicate entries, an
+exclusion list with no effective `rules_file` (even while `enabled: false`),
+and any ID absent from the scope's effective rules file are all rejected at
+`guardiand -t`, startup and reload, with the error naming the scope, the file
+and the unknown ID.
 
 The [examples page](/examples#signature-rules-one-starter-file-scoped-per-domain)
-has a complete copyable config showing both.
+has a complete copyable config combining a shared file, per-domain exclusions,
+a domain-specific file and a fully disabled scope, and
+[`GET /admin/config`](/reference/admin-api#get-admin-config) shows every
+scope's effective `rules_file` and exclusions together.
 
 Rules files hot-reload two ways: they are watched on disk (edits apply within
 seconds, no signal needed), and a SIGHUP/`/admin/reload` re-reads
 `guardian.yaml` including any changed `rules_file` paths. A file that fails to
 parse, or exceeds the 8 MiB bound, keeps the previous rules active; only a
-cold start hard-fails on a bad file.
+cold start hard-fails on a bad file. A watched update that removes or renames
+a rule ID some scope still excludes is rejected the same way, so a renamed
+formerly-disabled rule can never become active silently. To intentionally
+delete a disabled rule, first remove its ID from `guardian.yaml` and reload
+successfully, then remove the rule from the watched file.
 
 ## Validating a config
 

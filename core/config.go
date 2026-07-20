@@ -25,6 +25,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
+	"github.com/melroy89/angie-guardian/core/waf"
 	"github.com/melroy89/angie-guardian/internal/safefile"
 	"gopkg.in/yaml.v3"
 )
@@ -806,6 +807,18 @@ type HoneypotConfig = stateless.HoneypotConfig
 type KeywordsConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	RulesFile string `yaml:"rules_file"`
+	// DisabledRuleIDs removes rules from the effective rules_file for this
+	// scope by their exact, case-sensitive id, without copying the file. Like
+	// every list field it overlays wholesale: omitted inherits the parent's
+	// list, [] clears it, a non-empty list replaces it (re-list inherited IDs
+	// to keep them). Every ID must exist in the effective rules_file; typos
+	// are load/reload errors, never silently-enabled rules.
+	DisabledRuleIDs []string `yaml:"disabled_rule_ids"`
+
+	// ruleKey is the precomputed RuleCache variant key for this scope's
+	// (rules_file, disabled_rule_ids) pair, set in validate() so the request
+	// hot path stays a single map lookup with no per-request filtering.
+	ruleKey string
 }
 
 type AnomalyConfig struct {
@@ -1320,6 +1333,24 @@ func (dc *DomainConfig) validate() error {
 			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(maxPoWTTL), t.d.Std())
 		}
 	}
+	kw := &dc.WAF.Keywords
+	seenIDs := make(map[string]bool, len(kw.DisabledRuleIDs))
+	for _, id := range kw.DisabledRuleIDs {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("waf.keywords.disabled_rule_ids: empty or whitespace-only entry; every entry must be an exact rule id")
+		}
+		if seenIDs[id] {
+			return fmt.Errorf("waf.keywords.disabled_rule_ids: duplicate entry %q", id)
+		}
+		seenIDs[id] = true
+	}
+	// Checked whether or not keywords is enabled: a parked exclusion list with
+	// no rules_file to select from would activate broken policy the day the
+	// layer is switched on.
+	if len(kw.DisabledRuleIDs) > 0 && strings.TrimSpace(kw.RulesFile) == "" {
+		return fmt.Errorf("waf.keywords.disabled_rule_ids is set but rules_file is not configured; exclusions select ids from the effective rules_file")
+	}
+	kw.ruleKey = waf.VariantKey(kw.RulesFile, kw.DisabledRuleIDs)
 	a := &dc.WAF.Anomaly
 	if a.Enabled && (math.IsNaN(a.ChallengeAt) || math.IsInf(a.ChallengeAt, 0) ||
 		math.IsNaN(a.DenyAt) || math.IsInf(a.DenyAt, 0) ||
@@ -1595,25 +1626,60 @@ func (c *Config) AllowlistUnion() []netip.Prefix {
 	return out
 }
 
-// RuleFiles returns every distinct WAF rules file referenced by an enabled
-// keywords config, for the rule cache to load and watch.
+// RuleVariants returns every distinct (rules file, disabled_rule_ids) pair
+// referenced by a resolved scope, for the rule cache to load, watch and
+// precompile. A scope contributes when keywords is enabled, or when it is
+// disabled but carries exclusions: parked exclusions are still validated
+// against the file so they cannot later activate broken policy. Scope labels
+// are collected per variant (defaults first, then sorted hosts) so cache
+// errors name who is affected.
+func (c *Config) RuleVariants() []waf.VariantSpec {
+	var order []string
+	byKey := make(map[string]*waf.VariantSpec)
+	add := func(label string, dc *DomainConfig) {
+		kw := &dc.WAF.Keywords
+		if kw.RulesFile == "" || (!kw.Enabled && len(kw.DisabledRuleIDs) == 0) {
+			return
+		}
+		spec, ok := byKey[kw.ruleKey]
+		if !ok {
+			spec = &waf.VariantSpec{Path: kw.RulesFile, Disabled: kw.DisabledRuleIDs}
+			byKey[kw.ruleKey] = spec
+			order = append(order, kw.ruleKey)
+		}
+		spec.Scopes = append(spec.Scopes, label)
+	}
+	add("defaults", &c.Defaults)
+	hosts := make([]string, 0, len(c.resolved))
+	for host := range c.resolved {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	for _, host := range hosts {
+		dc := c.resolved[host]
+		add("domain "+host, dc)
+		for i := range dc.pathOverrides {
+			o := &dc.pathOverrides[i]
+			add("domain "+host+" path "+o.key, o.cfg)
+		}
+	}
+	specs := make([]waf.VariantSpec, 0, len(order))
+	for _, key := range order {
+		specs = append(specs, *byKey[key])
+	}
+	return specs
+}
+
+// RuleFiles returns every distinct WAF rules file the rule cache would load
+// and watch (see RuleVariants for the inclusion rule).
 func (c *Config) RuleFiles() []string {
 	seen := make(map[string]bool)
-	add := func(dc *DomainConfig) {
-		if dc.WAF.Keywords.Enabled && dc.WAF.Keywords.RulesFile != "" {
-			seen[dc.WAF.Keywords.RulesFile] = true
+	var files []string
+	for _, spec := range c.RuleVariants() {
+		if !seen[spec.Path] {
+			seen[spec.Path] = true
+			files = append(files, spec.Path)
 		}
-	}
-	add(&c.Defaults)
-	for _, dc := range c.resolved {
-		add(dc)
-		for i := range dc.pathOverrides {
-			add(dc.pathOverrides[i].cfg)
-		}
-	}
-	files := make([]string, 0, len(seen))
-	for f := range seen {
-		files = append(files, f)
 	}
 	return files
 }

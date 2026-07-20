@@ -176,6 +176,29 @@ func TestPerDomainPolicy(t *testing.T) {
 	}
 }
 
+// TestWAFDisabledRuleID: wp.localhost shares the common rules file but
+// disables wp-probe by exact id (guardian.e2e.yaml, issue #27). The probe
+// path reaches the backend there, the rest of the shared file still applies
+// on the same host, and wp-probe keeps firing on hosts that do not exclude
+// it: one file on disk, different effective rule sets per scope.
+func TestWAFDisabledRuleID(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks() // start clean
+
+	if r := get(t, "/wp-login.php", wpHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("/wp-login.php on %s: status %d, want 200 (wp-probe disabled by id)", wpHost, r.StatusCode)
+	}
+	// The rest of the shared file still applies on the excluding host.
+	if r := get(t, "/.env", wpHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("/.env on %s: status %d, want 403 (dotfile-probe must stay active)", wpHost, r.StatusCode)
+	}
+	clearGatewayBlocks() // dotfile-probe is a block action; unpoison the gateway IP
+	// And the excluded rule still fires on a host without the exclusion.
+	if r := get(t, "/wp-login.php", wafOnlyHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("/wp-login.php on %s: status %d, want 403 (wp-probe active)", wafOnlyHost, r.StatusCode)
+	}
+}
+
 // urlEscape is a tiny query-value escaper (avoids importing net/url just for a
 // couple of characters used in the SQLi probe).
 func urlEscape(s string) string {
