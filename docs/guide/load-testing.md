@@ -48,7 +48,7 @@ A behavioural block from one run can bleed into the next. The `challenge`
 scenario rotates the client IP itself to dodge the per-IP issuance limit.
 :::
 
-## Reference numbers
+## Benchmark results
 
 Single node, loopback, 64 connections, load generator sharing the same CPU
 (AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis backend;
