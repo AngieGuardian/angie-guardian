@@ -23,7 +23,7 @@
     --plane: #f9f9f7; --surface: #fcfcfb;
     --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
-    --critical: #d03b3b; --warning: #fab219; --good: #0ca30c;
+    --critical: #d03b3b; --warning: #fab219; --good: #249828;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -48,8 +48,12 @@
   body { margin: 0; background: var(--plane); color: var(--ink);
          font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   main { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
-  header { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
-  h1 { font-size: 1.15rem; margin: 0 auto 0 0; }
+  header { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  h1 { font-size: 1.15rem; margin: 0 auto 0 0;
+       display: flex; align-items: center; gap: 0.5rem; }
+  h1 .logo { width: 1.6rem; height: 1.6rem; flex: none; display: block; }
+  #gate h1 .logo { width: 2rem; height: 2rem; }
+  #gate h1 { justify-content: center; }
   h2 { font-size: 0.85rem; font-weight: 600; color: var(--ink-2);
        text-transform: uppercase; letter-spacing: 0.04em; margin: 1.75rem 0 0.5rem; }
   .meta { color: var(--muted); font-size: 0.8rem; }
@@ -58,6 +62,9 @@
            padding: 0.25rem 0.7rem; cursor: pointer; }
   button:hover { border-color: var(--muted); }
   button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
+  header select { font: inherit; color: var(--ink); background: var(--surface);
+                  border: 1px solid var(--border); border-radius: 6px;
+                  padding: 0.25rem 0.5rem; cursor: pointer; }
 
   /* KPI stat tiles */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
@@ -67,6 +74,22 @@
   .tile .label { color: var(--ink-2); font-size: 0.8rem; }
   .tile .value { font-size: 1.9rem; font-weight: 600; margin-top: 0.15rem; }
   .tile .sub { color: var(--muted); font-size: 0.75rem; margin-top: 0.1rem; }
+
+  /* Chart cards. Each holds a fixed-height canvas Chart.js draws into. */
+  .charts { display: grid; grid-template-columns: 2fr 1fr; gap: 0.75rem;
+            margin-top: 0.75rem; }
+  @media (max-width: 56rem) { .charts { grid-template-columns: 1fr; } }
+  .chart-card { background: var(--surface); border: 1px solid var(--border);
+                border-radius: 10px; padding: 0.8rem 1rem 0.9rem; min-width: 0; }
+  .chart-card .label { color: var(--ink-2); font-size: 0.8rem;
+                       display: flex; justify-content: space-between; gap: 0.5rem; }
+  .chart-card .canvas-wrap { position: relative; height: 220px; margin-top: 0.5rem; }
+  .chart-card canvas { max-width: 100%; }
+
+  /* Top-offenders: a row of compact ranked-list tables. */
+  .offenders { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+               gap: 0.75rem; }
+  .offenders td.hits { text-align: right; font-variant-numeric: tabular-nums; }
 
   /* Tables (wide content scrolls inside its own container) */
   .tablewrap { background: var(--surface); border: 1px solid var(--border);
@@ -116,7 +139,7 @@
 <body>
 
 <div id="gate" hidden>
-  <h1>Guardian dashboard</h1>
+  <h1><svg class="logo" viewBox="0 0 2000 2000" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="lg1g"><stop style="stop-color:#3cc89e" offset="0"/><stop style="stop-color:#239a70" offset="0.9855147"/></linearGradient><linearGradient xlink:href="#lg1g" id="lg2g" x1="705.46222" y1="309.95483" x2="1323.8979" y2="1698.9841" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1.0556706,0,0,1.0556706,-56.487822,-55.919401)" xmlns:xlink="http://www.w3.org/1999/xlink"/></defs><path d="m 1783.3295,40.874597 -213.5229,-9.976302 c -218.1729,0 -892.07648,0.108647 -1110.24935,0.108647 l -213.53509,9.98836 C 231.50475,125.23777 183.411,484.82927 236.4083,897.6717 c 53.56488,417.1301 212.89492,921.7273 778.4366,1080.3689 v -0.2174 c 565.2761,-158.7261 724.5578,-663.2147 778.0984,-1080.26015 53.0094,-412.8425 4.9158,-772.44603 -9.6138,-856.688498" style="fill:url(#lg2g);fill-rule:nonzero;stroke:none"/><path d="m 1483.7942,876.37866 c -35.417,281.09314 -86.8873,561.00964 -458.6686,669.77044 C 653.34422,1437.3883 596.70846,1168.7544 561.30476,887.65959 526.12697,608.35847 546.92264,399.18802 556.55464,342.19242 l 92.34195,-9.41001 c 144.85971,0 592.14771,-0.0816 736.99601,-0.0816 l 89.6375,7.60518 c 9.632,57.00724 42.4282,257.92391 7.2408,537.23838 m 87.8559,-621.25219 -186.3844,-12.35624 c -159.4283,0 -577.55618,0.0815 -736.99598,0.0815 l -186.38434,12.35633 c 0,0 -46.53006,311.56243 -6.60118,629.20943 23.52335,187.2862 63.13074,345.0976 141.64516,469.0814 98.94957,156.3018 238.95306,277.9454 419.66594,324.1877 180.7017,-46.2423 321.0611,-167.9677 420.0221,-324.2698 78.5145,-123.9837 124.1836,-281.8067 147.7184,-469.06947 39.9173,-317.65872 -12.6857,-629.22123 -12.6857,-629.22123" style="fill:#beebdd;fill-rule:nonzero;stroke:none"/></svg>Guardian dashboard</h1>
   <p class="meta">Open the login link from the guardiand startup log
      (<code>admin dashboard ready</code>), or paste the admin bearer token
      here. It is kept in this tab's sessionStorage only.</p>
@@ -127,8 +150,16 @@
 
 <main id="app" hidden>
   <header>
-    <h1>Guardian dashboard</h1>
+    <h1><svg class="logo" viewBox="0 0 2000 2000" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="lg1"><stop style="stop-color:#3cc89e" offset="0"/><stop style="stop-color:#239a70" offset="0.9855147"/></linearGradient><linearGradient xlink:href="#lg1" id="lg2" x1="705.46222" y1="309.95483" x2="1323.8979" y2="1698.9841" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1.0556706,0,0,1.0556706,-56.487822,-55.919401)" xmlns:xlink="http://www.w3.org/1999/xlink"/></defs><path d="m 1783.3295,40.874597 -213.5229,-9.976302 c -218.1729,0 -892.07648,0.108647 -1110.24935,0.108647 l -213.53509,9.98836 C 231.50475,125.23777 183.411,484.82927 236.4083,897.6717 c 53.56488,417.1301 212.89492,921.7273 778.4366,1080.3689 v -0.2174 c 565.2761,-158.7261 724.5578,-663.2147 778.0984,-1080.26015 53.0094,-412.8425 4.9158,-772.44603 -9.6138,-856.688498" style="fill:url(#lg2);fill-rule:nonzero;stroke:none"/><path d="m 1483.7942,876.37866 c -35.417,281.09314 -86.8873,561.00964 -458.6686,669.77044 C 653.34422,1437.3883 596.70846,1168.7544 561.30476,887.65959 526.12697,608.35847 546.92264,399.18802 556.55464,342.19242 l 92.34195,-9.41001 c 144.85971,0 592.14771,-0.0816 736.99601,-0.0816 l 89.6375,7.60518 c 9.632,57.00724 42.4282,257.92391 7.2408,537.23838 m 87.8559,-621.25219 -186.3844,-12.35624 c -159.4283,0 -577.55618,0.0815 -736.99598,0.0815 l -186.38434,12.35633 c 0,0 -46.53006,311.56243 -6.60118,629.20943 23.52335,187.2862 63.13074,345.0976 141.64516,469.0814 98.94957,156.3018 238.95306,277.9454 419.66594,324.1877 180.7017,-46.2423 321.0611,-167.9677 420.0221,-324.2698 78.5145,-123.9837 124.1836,-281.8067 147.7184,-469.06947 39.9173,-317.65872 -12.6857,-629.22123 -12.6857,-629.22123" style="fill:#beebdd;fill-rule:nonzero;stroke:none"/></svg>Guardian dashboard</h1>
     <span class="meta" id="refreshed"></span>
+    <select id="interval" aria-label="Refresh interval" title="Auto-refresh interval">
+      <option value="2000">Refresh: 2s</option>
+      <option value="5000" selected>Refresh: 5s</option>
+      <option value="10000">Refresh: 10s</option>
+      <option value="30000">Refresh: 30s</option>
+      <option value="60000">Refresh: 60s</option>
+      <option value="0">Refresh: off</option>
+    </select>
     <button id="theme">Theme: auto</button>
     <button id="pause">Pause</button>
     <button id="logout">Forget token</button>
@@ -156,6 +187,45 @@
       <div class="sub" id="t-reason-n"></div></div>
   </div>
 
+  <h2>Activity <span class="meta">(recent ring, non-allow decisions)</span></h2>
+  <div class="charts">
+    <div class="chart-card">
+      <div class="label"><span>Decisions over time</span>
+        <span class="meta" id="chart-decisions-window"></span></div>
+      <div class="canvas-wrap"><canvas id="chart-decisions"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="label"><span>Proof-of-work funnel</span>
+        <span class="meta">since start</span></div>
+      <div class="canvas-wrap"><canvas id="chart-funnel"></canvas></div>
+    </div>
+  </div>
+  <div class="charts" style="grid-template-columns:1fr;">
+    <div class="chart-card">
+      <div class="label"><span>Decisions by reason over time</span></div>
+      <div class="canvas-wrap"><canvas id="chart-reasons"></canvas></div>
+    </div>
+  </div>
+  <div class="charts" id="dist-charts" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Per-domain traffic</span>
+        <span class="meta">by action, since start</span></div>
+      <div class="canvas-wrap"><canvas id="chart-domains"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="label"><span>Solve-time distribution</span>
+        <span class="meta" id="chart-solvetime-n"></span></div>
+      <div class="canvas-wrap"><canvas id="chart-solvetime"></canvas></div>
+    </div>
+  </div>
+  <div class="charts" id="anomaly-charts" hidden style="grid-template-columns:1fr;">
+    <div class="chart-card">
+      <div class="label"><span>Anomaly-score distribution</span>
+        <span class="meta" id="chart-anomaly-n"></span></div>
+      <div class="canvas-wrap"><canvas id="chart-anomaly"></canvas></div>
+    </div>
+  </div>
+
   <h2>Active blocks</h2>
   <form id="block-form" class="toolbar">
     <input id="block-ip" placeholder="IP to block" required>
@@ -176,6 +246,27 @@
       <span class="meta" id="blk-page"></span>
     </div>
   </div>
+
+  <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span></h2>
+  <div class="offenders" id="offenders">
+    <div class="tablewrap">
+      <table><thead><tr><th>IP</th><th id="off-ip-geo">Geo</th><th>Hits</th></tr></thead>
+        <tbody id="off-ips"></tbody></table>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr><th>Reason</th><th>Hits</th></tr></thead>
+        <tbody id="off-reasons"></tbody></table>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr><th>Path</th><th>Hits</th></tr></thead>
+        <tbody id="off-paths"></tbody></table>
+    </div>
+    <div class="tablewrap" id="off-countries-wrap" hidden>
+      <table><thead><tr><th>Country</th><th>Hits</th></tr></thead>
+        <tbody id="off-countries"></tbody></table>
+    </div>
+  </div>
+  <div class="empty" id="offenders-empty" hidden>Nothing challenged or denied yet.</div>
 
   <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
   <div class="toolbar">
@@ -233,8 +324,34 @@
     </table>
     <div class="empty" id="intel-empty" hidden>No reputation feeds configured.</div>
   </div>
+
+  <h2 id="angie-h2" hidden>Server traffic
+    <span class="meta">from Angie's API (includes allowed traffic Guardian never records)</span></h2>
+  <div class="empty" id="angie-note" hidden></div>
+  <div class="charts" id="angie-charts" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Requests per zone</span>
+        <span class="meta">total, since Angie start</span></div>
+      <div class="canvas-wrap"><canvas id="chart-angie-requests"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="label"><span>Response codes</span>
+        <span class="meta">all zones</span></div>
+      <div class="canvas-wrap"><canvas id="chart-angie-responses"></canvas></div>
+    </div>
+  </div>
+  <div class="tablewrap" id="angie-table-wrap" hidden style="margin-top:0.75rem;">
+    <table>
+      <thead><tr><th>Zone</th><th>Requests</th><th>In&nbsp;flight</th>
+                 <th>Received</th><th>Sent</th></tr></thead>
+      <tbody id="angie-zones"></tbody>
+    </table>
+  </div>
 </main>
 
+<!-- Chart.js, vendored and served same-origin (no CDN). Relative src resolves to
+     /admin/chart.umd.min.js since this page is /admin/dashboard. -->
+<script src="chart.umd.min.js"></script>
 <script>
 (() => {
   "use strict";
@@ -278,6 +395,14 @@
   };
   const clock = (iso) => new Date(iso).toLocaleTimeString();
 
+  // Human-readable byte count for Angie bandwidth counters.
+  const bytes = (n) => {
+    if (!n) return "0 B";
+    const u = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+  };
+
   // Last fetched decisions, re-rendered locally when a filter changes.
   let lastDecisions = [];
   let lastBlocks = { blocks: [] };
@@ -294,6 +419,342 @@
   // state persists across ticks and clamps when an unblock shrinks the set.
   const BLK_PAGE_SIZE = 25;
   let blkPage = 0;
+
+  // --- Charts (Chart.js, vendored). Instances are created once and updated in
+  // place each tick; never new Chart() per tick (that leaks + flickers). All
+  // series come from data render() already fetched, no extra requests. ---
+  const charts = {}; // id -> Chart instance
+
+  // Chart.js can't read CSS custom properties, so pull concrete colors from the
+  // computed root at draw time. Re-read on every render so a theme toggle
+  // recolors without recreating the charts.
+  const themeColors = () => {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n) => cs.getPropertyValue(n).trim();
+    return {
+      ink: v("--ink"), muted: v("--muted"), grid: v("--grid"),
+      critical: v("--critical"), warning: v("--warning"), good: v("--good"),
+      border: v("--border"),
+    };
+  };
+  // A hex color + alpha → rgba, for translucent stacked-area fills.
+  const alpha = (hex, a) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+
+  // Bucket timestamped records into ~nBuckets slots across their own [oldest,
+  // newest] span (adaptive: seconds under attack, hours when quiet). Returns
+  // {labels, at, spanMs}. keyFn maps a record to a series key; series is the
+  // ordered list of keys to emit a count-array for.
+  const bucketize = (records, keyFn, series, nBuckets) => {
+    if (!records.length) return { labels: [], counts: {}, spanMs: 0 };
+    const times = records.map((d) => new Date(d.time).getTime());
+    const lo = Math.min(...times), hi = Math.max(...times);
+    const span = Math.max(hi - lo, 1);
+    const n = Math.min(nBuckets, Math.max(1, records.length));
+    const width = span / n;
+    const counts = {}; series.forEach((s) => (counts[s] = new Array(n).fill(0)));
+    const labels = new Array(n);
+    const fmt = span > 6 * 3600e3
+      ? (t) => new Date(t).toLocaleDateString()
+      : (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    for (let i = 0; i < n; i++) labels[i] = fmt(lo + (i + 0.5) * width);
+    records.forEach((d, idx) => {
+      const b = Math.min(n - 1, Math.floor((times[idx] - lo) / width));
+      const k = keyFn(d);
+      if (counts[k]) counts[k][b]++;
+    });
+    return { labels, counts, spanMs: span };
+  };
+
+  // Create-or-update a chart: builds it on first call, then swaps data + colors
+  // and calls update() thereafter. cfgFn(c) returns the full Chart.js config.
+  const upsertChart = (id, cfgFn) => {
+    const cfg = cfgFn(themeColors());
+    let chart = charts[id];
+    if (!chart) {
+      charts[id] = new Chart($(id).getContext("2d"), cfg);
+      return;
+    }
+    chart.data = cfg.data;
+    chart.options = cfg.options;
+    chart.update();
+  };
+
+  const baseOptions = (c, stacked) => ({
+    responsive: true, maintainAspectRatio: false,
+    animation: false, // live dashboard: no per-tick tweening
+    interaction: { intersect: false, mode: "index" },
+    scales: {
+      x: { stacked, grid: { color: c.grid }, ticks: { color: c.muted, maxRotation: 0, autoSkip: true } },
+      y: { stacked, beginAtZero: true, grid: { color: c.grid },
+           ticks: { color: c.muted, precision: 0 } },
+    },
+    plugins: { legend: { labels: { color: c.ink, boxWidth: 12 } } },
+  });
+
+  // Fixed color per action / reason category, so a series keeps its color across
+  // ticks. Unknown reasons fall back to muted.
+  const REASON_COLORS = (c) => ({
+    pow: c.warning, waf: c.critical, behaviour_block: c.critical,
+    denylist: c.critical, honeypot: c.critical, bot_spoof: c.critical,
+    geo: c.warning, reputation: c.warning, anomaly: c.warning,
+    allowlist: c.good, verified_bot: c.good, "default": c.muted,
+  });
+
+  const renderCharts = () => {
+    if (!window.Chart) return; // vendored lib failed to load; skip silently
+    const decisions = lastDecisions;
+
+    // 1. Decisions over time: stacked area, deny vs challenge.
+    const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge"], 32);
+    $("chart-decisions-window").textContent = decisions.length
+      ? decisions.length + " decisions" : "no recent activity";
+    upsertChart("chart-decisions", (c) => ({
+      type: "line",
+      data: { labels: dt.labels, datasets: [
+        { label: "deny", data: dt.counts.deny || [], borderColor: c.critical,
+          backgroundColor: alpha(c.critical, 0.25), fill: true, stack: "s",
+          tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+        { label: "challenge", data: dt.counts.challenge || [], borderColor: c.warning,
+          backgroundColor: alpha(c.warning, 0.25), fill: true, stack: "s",
+          tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+      ] },
+      options: baseOptions(c, true),
+    }));
+
+    // 2. Decisions by reason over time: stacked bars, one series per reason cat
+    //    (leading token before ':', same collapsing the backend uses).
+    const cats = [];
+    for (const d of decisions) {
+      const cat = d.reason.split(":")[0];
+      if (!cats.includes(cat)) cats.push(cat);
+    }
+    const rr = bucketize(decisions, (d) => d.reason.split(":")[0], cats, 32);
+    const rc = REASON_COLORS(themeColors());
+    upsertChart("chart-reasons", (c) => ({
+      type: "bar",
+      data: { labels: rr.labels, datasets: cats.map((cat) => ({
+        label: cat, data: rr.counts[cat] || [],
+        backgroundColor: rc[cat] || c.muted, stack: "s", borderWidth: 0,
+      })) },
+      options: baseOptions(c, true),
+    }));
+
+    // 3. PoW funnel: static bars issued → solved → failed, from /admin/stats
+    //    lifetime counters (set by render() into lastChallenges).
+    const ch = lastChallenges || {};
+    upsertChart("chart-funnel", (c) => ({
+      type: "bar",
+      data: { labels: ["issued", "solved", "failed"], datasets: [{
+        data: [Math.round(ch.issued || 0), Math.round(ch.solved || 0), Math.round(ch.failed || 0)],
+        backgroundColor: [c.muted, c.good, c.critical], borderWidth: 0,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        scales: {
+          x: { grid: { display: false }, ticks: { color: c.muted } },
+          y: { beginAtZero: true, grid: { color: c.grid }, ticks: { color: c.muted, precision: 0 } },
+        },
+        plugins: { legend: { display: false } },
+      },
+    }));
+
+    // Registry-derived charts (per-domain volume + histograms). Kept inside
+    // renderCharts so a theme toggle recolors these too.
+    renderDistributions();
+    // Angie traffic charts, re-rendered here so a theme toggle recolors them.
+    if (lastAngie) renderAngie(lastAngie);
+  };
+  let lastChallenges = null; // set in render() from /admin/stats
+  let lastDist = null;       // set in render() from /admin/distributions
+
+  // Draw a Prometheus-style histogram (per-bucket counts) as a bar chart. Skips
+  // trailing empty buckets so an all-fast solve distribution isn't mostly blank.
+  const histogramChart = (canvasId, hist, barColor) => {
+    const buckets = (hist && hist.buckets) || [];
+    // Trim trailing zero buckets (keep at least one) for a tighter x-axis.
+    let end = buckets.length;
+    while (end > 1 && buckets[end - 1].count === 0) end--;
+    const shown = buckets.slice(0, end);
+    upsertChart(canvasId, (c) => ({
+      type: "bar",
+      data: {
+        labels: shown.map((b) => "≤" + b.le),
+        datasets: [{ data: shown.map((b) => b.count), backgroundColor: barColor, borderWidth: 0 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        scales: {
+          x: { grid: { display: false }, ticks: { color: c.muted, maxRotation: 0, autoSkip: true } },
+          y: { beginAtZero: true, grid: { color: c.grid }, ticks: { color: c.muted, precision: 0 } },
+        },
+        plugins: { legend: { display: false } },
+      },
+    }));
+  };
+
+  const renderDistributions = () => {
+    if (!window.Chart || !lastDist) return;
+    const cols = themeColors();
+
+    // Per-domain traffic: stacked bars, one bar per domain, segments by action.
+    const perDomain = lastDist.per_domain || {};
+    const domains = Object.keys(perDomain).sort();
+    const actions = ["allow", "challenge", "deny", "shed"];
+    const actionColor = { allow: cols.good, challenge: cols.warning, deny: cols.critical, shed: cols.muted };
+    const hasDomains = domains.length > 0;
+    $("dist-charts").hidden = !hasDomains;
+    if (hasDomains) {
+      upsertChart("chart-domains", (c) => ({
+        type: "bar",
+        data: {
+          labels: domains,
+          datasets: actions.map((a) => ({
+            label: a, stack: "s", borderWidth: 0,
+            backgroundColor: actionColor[a],
+            data: domains.map((d) => perDomain[d][a] || 0),
+          })),
+        },
+        options: baseOptions(c, true),
+      }));
+      const st = lastDist.solve_time || {};
+      $("chart-solvetime-n").textContent = st.count ? Math.round(st.count) + " solves" : "no solves yet";
+      histogramChart("chart-solvetime", st, cols.warning);
+    }
+
+    // Anomaly-score distribution, shown only when the model has scored anything.
+    const an = lastDist.anomaly || {};
+    const hasAnomaly = (an.count || 0) > 0;
+    $("anomaly-charts").hidden = !hasAnomaly;
+    if (hasAnomaly) {
+      $("chart-anomaly-n").textContent = Math.round(an.count) + " scored";
+      histogramChart("chart-anomaly", an, cols.critical);
+    }
+  };
+
+  // Top offenders: four ranked-list tables from /admin/offenders. Text only
+  // (attacker-controlled IPs/paths), so every cell lands via td()'s textContent.
+  const renderOffenders = (data) => {
+    if (!data) return; // fetch failed; leave the last render in place
+    const fill = (tbodyId, rows, cells) => {
+      $(tbodyId).replaceChildren(...rows.map((r) => row(...cells(r))));
+    };
+    const ips = data.ips || [];
+    const hasGeo = ips.some((r) => r.country || r.asn);
+    $("off-ip-geo").hidden = false;
+    fill("off-ips", ips, (r) => {
+      const geo = [r.country, r.as_org || (r.asn ? "AS" + r.asn : "")]
+        .filter(Boolean).join(" · ");
+      return [td("num", r.ip), td("wrap", geo), td("hits", String(r.count))];
+    });
+    fill("off-reasons", data.reasons || [], (r) =>
+      [td("wrap", r.key), td("hits", String(r.count))]);
+    fill("off-paths", data.paths || [], (r) =>
+      [td("wrap", r.key), td("hits", String(r.count))]);
+
+    const countries = data.countries || [];
+    $("off-countries-wrap").hidden = countries.length === 0;
+    if (countries.length) {
+      fill("off-countries", countries, (r) =>
+        [td("wrap", r.key), td("hits", String(r.count))]);
+    }
+    // Collapse the Geo column header when no GeoIP data is present anywhere.
+    $("off-ip-geo").textContent = hasGeo ? "Geo" : "";
+    $("offenders").hidden = (data.window || 0) === 0;
+    $("offenders-empty").hidden = (data.window || 0) !== 0;
+  };
+
+  // Group Angie's per-code responses object into 2xx/3xx/4xx/5xx buckets. Angie
+  // keys responses by individual status code; tolerate a pre-bucketed shape too.
+  const bucketResponses = (responses) => {
+    const b = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+    for (const [code, n] of Object.entries(responses || {})) {
+      const num = parseInt(code, 10);
+      if (num >= 200 && num < 300) b["2xx"] += n;
+      else if (num >= 300 && num < 400) b["3xx"] += n;
+      else if (num >= 400 && num < 500) b["4xx"] += n;
+      else if (num >= 500 && num < 600) b["5xx"] += n;
+      else if (/^[2-5]xx$/.test(code)) b[code] += n; // already bucketed
+    }
+    return b;
+  };
+
+  let lastAngie = null; // set in render(); re-rendered on theme change
+
+  const renderAngie = (data) => {
+    lastAngie = data;
+    const h2 = $("angie-h2"), note = $("angie-note");
+    const charts = $("angie-charts"), tableWrap = $("angie-table-wrap");
+    // Not configured (or fetch failed entirely): hide the whole section.
+    if (!data || data.enabled === false) {
+      h2.hidden = note.hidden = charts.hidden = tableWrap.hidden = true;
+      return;
+    }
+    h2.hidden = false;
+    // Configured but unreachable: show a note, hide the data widgets.
+    if (data.error) {
+      note.hidden = false;
+      note.textContent = "Angie API unreachable: " + data.error;
+      charts.hidden = tableWrap.hidden = true;
+      return;
+    }
+    note.hidden = false; note.textContent = ""; note.hidden = true;
+
+    const zones = data.server_zones || {};
+    const names = Object.keys(zones).sort();
+    const hasData = names.length > 0;
+    charts.hidden = tableWrap.hidden = !hasData;
+    if (!hasData) return;
+    if (!window.Chart) return;
+    const c = themeColors();
+
+    // Requests-per-zone bar chart.
+    upsertChart("chart-angie-requests", (cc) => ({
+      type: "bar",
+      data: { labels: names, datasets: [{
+        data: names.map((z) => (zones[z].requests || {}).total || 0),
+        backgroundColor: cc.good, borderWidth: 0,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        scales: {
+          x: { grid: { display: false }, ticks: { color: cc.muted, maxRotation: 0, autoSkip: true } },
+          y: { beginAtZero: true, grid: { color: cc.grid }, ticks: { color: cc.muted, precision: 0 } },
+        },
+        plugins: { legend: { display: false } },
+      },
+    }));
+
+    // Response-code mix across all zones (doughnut 2xx/3xx/4xx/5xx).
+    const totals = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+    for (const z of names) {
+      const b = bucketResponses(zones[z].responses);
+      for (const k in totals) totals[k] += b[k];
+    }
+    upsertChart("chart-angie-responses", (cc) => ({
+      type: "doughnut",
+      data: { labels: Object.keys(totals), datasets: [{
+        data: Object.values(totals),
+        backgroundColor: [cc.good, cc.muted, cc.warning, cc.critical], borderWidth: 0,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { position: "right", labels: { color: cc.ink, boxWidth: 12 } } },
+      },
+    }));
+
+    // Per-zone detail table.
+    $("angie-zones").replaceChildren(...names.map((z) => {
+      const req = zones[z].requests || {}, dta = zones[z].data || {};
+      return row(td("wrap", z), td("num", String(req.total || 0)),
+        td("num", String(req.processing || 0)),
+        td("num", bytes(dta.received || 0)), td("num", bytes(dta.sent || 0)));
+    }));
+  };
 
   const renderDecisions = () => {
     const action = $("f-action").value;
@@ -372,10 +833,15 @@
       : Promise.resolve(lastBlocks);
     // blocksRequest is awaited for its side effect (it sets lastBlocks, which
     // renderBlocks reads); the resolved value itself is not needed here.
-    const [stats, , decisions, config, intel] = await Promise.all([
+    const [stats, , decisions, config, intel, dist, offenders, angie] = await Promise.all([
       api("/admin/stats"), blocksRequest,
       api("/admin/decisions?limit=512"), api("/admin/config"),
       api("/admin/intel"),
+      // Distributions are best-effort: a failure (metrics off, older server)
+      // must not sink the tick, so it resolves to null and the charts skip.
+      api("/admin/distributions").catch(() => null),
+      api("/admin/offenders").catch(() => null),
+      api("/admin/angie").catch(() => null),
     ]);
 
     // Attack-mode banner: shown only when the posture is above normal.
@@ -395,6 +861,7 @@
     $("t-denies").textContent = byAction.deny || 0;
     $("t-challenges").textContent = byAction.challenge || 0;
     const ch = stats.challenges;
+    lastChallenges = ch || null; // feeds the PoW funnel chart
     if (ch) {
       $("t-solved").textContent = Math.round(ch.solved);
       const parts = [];
@@ -411,6 +878,15 @@
     // Active blocks (rendered through the pager). lastBlocks is already set by
     // the blocksRequest above (or kept from cache), so renderBlocks reads it.
     renderBlocks();
+
+    // Registry distributions (histograms + per-domain totals); null on failure.
+    lastDist = dist;
+
+    // Top offenders (exact top-K over the ring); null on failure.
+    renderOffenders(offenders);
+
+    // Server traffic from Angie's API; null/disabled hides the section.
+    renderAngie(angie);
 
     // Recent decisions (rendered through the active filters).
     lastDecisions = decisions.decisions;
@@ -453,16 +929,42 @@
     }));
     $("intel-empty").hidden = feeds.length > 0;
 
+    // Charts consume lastDecisions + lastChallenges set above, no extra fetch.
+    renderCharts();
+
     $("refreshed").textContent = "updated " + new Date().toLocaleTimeString();
   };
 
+  // A render fans out to several endpoints (and /admin/angie does two sequential
+  // upstream fetches), so on a short interval one render can still be in flight
+  // when the next tick fires. Guard it: skip overlapping ticks rather than
+  // starting a second render, which would double the admin/API traffic and let an
+  // older response land after a newer one. Dropping (not queueing) is fine: the
+  // next scheduled tick refreshes anyway.
+  let ticking = false;
   const tick = () => {
-    if (!paused) render().catch((e) => { if (e.message !== "unauthorized") console.error(e); });
+    if (paused || ticking) return;
+    ticking = true;
+    render()
+      .catch((e) => { if (e.message !== "unauthorized") console.error(e); })
+      .finally(() => { ticking = false; });
+  };
+  // Auto-refresh interval (ms), persisted per browser; 0 = off (manual only).
+  // Validate the stored value against the actual options so a stale/garbage
+  // entry can't leave the select blank or fall back silently.
+  const INTERVAL_KEY = "guardian_dashboard_interval";
+  const INTERVAL_OPTIONS = [...$("interval").options].map((o) => o.value);
+  const storedInterval = localStorage.getItem(INTERVAL_KEY);
+  let intervalMs = INTERVAL_OPTIONS.includes(storedInterval)
+    ? parseInt(storedInterval, 10) : 5000;
+  const armTimer = () => {
+    clearInterval(timer);
+    timer = intervalMs > 0 ? setInterval(tick, intervalMs) : null;
   };
   const start = () => {
     $("gate").hidden = true; $("app").hidden = false;
     tick();
-    timer = setInterval(tick, 5000);
+    armTimer();
   };
   const logout = (msg) => {
     sessionStorage.removeItem(KEY);
@@ -482,6 +984,15 @@
   $("pause").addEventListener("click", (e) => {
     paused = !paused;
     e.target.textContent = paused ? "Resume" : "Pause";
+  });
+  // Refresh-interval selector: persist and re-arm the timer. "off" (0) stops
+  // auto-refresh; the tick still runs once on selecting a live interval.
+  $("interval").value = String(intervalMs);
+  $("interval").addEventListener("change", (e) => {
+    intervalMs = parseInt(e.target.value, 10) || 0;
+    localStorage.setItem(INTERVAL_KEY, String(intervalMs));
+    armTimer();
+    if (intervalMs > 0) tick();
   });
   $("logout").addEventListener("click", () => logout());
 
@@ -534,7 +1045,15 @@
       mode = "auto";
     }
     $("theme").textContent = "Theme: " + mode;
+    recolorCharts();
   };
+  // Re-read CSS colors and repaint every live chart (theme changed, no new data).
+  const recolorCharts = () => { if (Object.keys(charts).length) renderCharts(); };
+  // When following the OS ("auto"), repaint on a system light/dark switch too.
+  window.matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => {
+      if (!localStorage.getItem(THEME_KEY)) recolorCharts();
+    });
   $("theme").addEventListener("click", () => {
     const order = ["auto", "dark", "light"];
     const next = order[(order.indexOf(localStorage.getItem(THEME_KEY) || "auto") + 1) % order.length];

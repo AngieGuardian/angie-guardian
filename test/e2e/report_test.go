@@ -114,6 +114,61 @@ func TestAdminAuthRequired(t *testing.T) {
 	}
 }
 
+// TestAdminAngieRelaysZones drives real traffic through Angie, then asserts
+// GET /admin/angie relays Angie's own status zones (the dashboard's real-traffic
+// panel). Proves the end-to-end proxy against a real Angie API, not a mock.
+func TestAdminAngieRelaysZones(t *testing.T) {
+	// Generate traffic so Angie's per-host status_zone has non-zero counters.
+	// A handful of requests through the protected site is enough.
+	for range 3 {
+		_ = solvePoWThroughAngie(t, "/angie-zone", powHost, browserUA+" z")
+	}
+
+	resp := adminReq(t, http.MethodGet, "/admin/angie", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/angie: status %d, want 200", resp.StatusCode)
+	}
+	var out struct {
+		Enabled     bool            `json:"enabled"`
+		Error       string          `json:"error"`
+		ServerZones json.RawMessage `json:"server_zones"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode /admin/angie: %v", err)
+	}
+	if !out.Enabled {
+		t.Fatalf("enabled = false, want true (angie_api configured in guardian.e2e.yaml)")
+	}
+	if out.Error != "" {
+		t.Fatalf("angie api error: %q (is the api listener up in angie.docker.conf?)", out.Error)
+	}
+	// server_zones must be a non-empty object carrying the protected host.
+	var zones map[string]json.RawMessage
+	if err := json.Unmarshal(out.ServerZones, &zones); err != nil {
+		t.Fatalf("server_zones is not an object: %v", err)
+	}
+	if len(zones) == 0 {
+		t.Fatalf("server_zones is empty; expected at least one status_zone with traffic")
+	}
+}
+
+// TestAdminAngieDegradesGracefully: the report endpoint always answers 200 with
+// an enabled flag, so a misconfigured or down Angie API never breaks the
+// dashboard render. (Here the API is up, so we just assert the contract shape.)
+func TestAdminAngieContract(t *testing.T) {
+	resp := adminReq(t, http.MethodGet, "/admin/angie", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/angie: status %d, want 200 always", resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := out["enabled"]; !ok {
+		t.Errorf("response missing the 'enabled' flag: %v", out)
+	}
+}
+
 // TestDecisionLogsAreStructured asserts guardiand emits structured decision log
 // lines (the audit trail a log pipeline / SIEM ingests): a deny should appear
 // with its reason in the container logs.

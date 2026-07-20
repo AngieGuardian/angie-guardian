@@ -40,6 +40,10 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | `admin.token` | string | `$ADMIN_TOKEN` | Bearer token for `/admin/*` routes. Falls back to the `ADMIN_TOKEN` env var when empty. |
 | `admin.token_file` | string | | Persists an auto-generated bearer token (created 0600 on first start, never regenerated, like the signing key). Used when `token` and `ADMIN_TOKEN` are unset. With neither `token` nor `token_file`, a loopback listener gets a fresh ephemeral token per start, printed in the startup log. |
 | `admin.dashboard` | bool | `false` | Serve the built-in reporting page at `GET /admin/dashboard`. On startup guardiand logs the bare URL; paste the token into the login gate. Configured and persistent bearer tokens are never embedded in logs. |
+| `admin.angie_api.url` | string | (empty = disabled) | Base URL of Angie's [HTTP API][angie-api] location (e.g. `http://127.0.0.1:81/status`). Enables the dashboard's **Server traffic** panels: per-domain requests, in-flight connections, response codes and bandwidth that Guardian never sees on its allow path. guardiand reads it server-side and relays only fixed traffic-zone paths behind the admin token, so keep the API on loopback. See [Enabling the Angie API](/guide/admin#enabling-the-angie-api). |
+| `admin.angie_api.timeout` | duration | `2s` | Per-fetch timeout for the Angie API read. |
+
+[angie-api]: https://en.angie.software/angie/docs/configuration/modules/http/http_api/
 
 ## store
 
@@ -201,7 +205,7 @@ Restrictions and behavior notes:
 | `pow.enabled` | bool | `false` | Enable the proof-of-work challenge layer for this domain. Requires top-level `signing_key_file`. |
 | `pow.mode` | string | `always` | `always`: challenge every unvouched request regardless of method or User-Agent. `suspicion`: disable that catch-all and let anomaly or explicit WAF/GeoIP/reputation challenge policies select requests (requires `waf.anomaly.enabled`). |
 | `pow.base_difficulty` | float | `5` | Baseline for an issued challenge. Must be finite and in range 1..8, in quarter steps. A difficulty of `N` requires `4 * N` leading zero bits of the SHA-256: +1 is 16x the work, +0.25 is exactly one bit (2x). Off-grid values (like `4.3`) are rejected at load. |
-| `pow.max_difficulty` | float | `6` | Ceiling for anomaly, WAF/reputation, and challenge-farming escalation. Must be finite and in range `base_difficulty`..8, in quarter steps. |
+| `pow.max_difficulty` | float | `6` | Ceiling for escalation above `base_difficulty`. A clean visitor always pays `base_difficulty` and never reaches this; a challenge only climbs toward `max_difficulty` when the request is scored more suspicious: by the anomaly model (score `challenge_at`→`1.0` maps to `base`→`max`), by a WAF-signature or reputation-feed hit (+1 step, capped here), or fleet-wide under attack mode. With none of those active, `max_difficulty` is never used. Must be finite and in range `base_difficulty`..8, in quarter steps. |
 | `pow.token_ttl` | Duration | `4h` | Lifetime of the signed JWT cookie a solved challenge earns. Must be between `1s` and seven days when PoW is enabled. |
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. Must be greater than zero when PoW is enabled and no more than seven days. |
 | `pow.issuance_rate_limit` | rate | `60/min` | Per-IP cap on challenge issuance, so the interstitial cannot be used to flood the store. Inherited by domains and path overlays. |

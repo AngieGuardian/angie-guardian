@@ -1,6 +1,33 @@
 # Run it in Production
 
-## systemd
+## Configuration
+
+Guardian is driven by a single YAML file. There is no auto-detected default
+location: `guardiand` requires `-config <path>`, and everything on this page
+(the systemd unit, the Docker mounts, the healthcheck) uses the conventional
+path **`/etc/guardian/guardian.yaml`**. Keep it `0600` and owned by the service
+user; it holds no secrets by default, but the signing key and admin token it
+points at do.
+
+Two references cover the file itself, so this guide does not repeat them:
+
+- The [configuration reference](/reference/configuration) documents every
+  option, its type, default and constraints.
+- The examples page ends with a
+  [full annotated example](/examples#the-full-annotated-example) you can copy as
+  a starting point, alongside smaller task-focused snippets.
+
+Validate an edit before applying it with `guardiand -config
+/etc/guardian/guardian.yaml -t` (the systemd unit does this on every start).
+Most of the file hot-reloads on `systemctl reload guardiand` (domains, lists,
+thresholds, difficulty); listeners, the store and keys need a restart.
+
+## Installation
+
+Run guardiand under systemd on a host, or as a container. Both load the same
+config file described above.
+
+### systemd
 
 Grab the latest `guardiand` binary from the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
@@ -18,7 +45,7 @@ sudo systemctl enable --now guardiand
 curl -s localhost:8072/healthz         # -> ok
 ```
 
-### Readiness and watchdog
+#### Readiness and watchdog
 
 The shipped unit is `Type=notify`: guardiand speaks
 [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html)
@@ -38,7 +65,7 @@ This is systemd-only. The daemon auto-detects `$NOTIFY_SOCKET`, so running it
 by hand or under Docker (where the Compose healthcheck gates readiness instead)
 needs no change.
 
-## Docker
+### Docker
 
 Every release publishes a prebuilt sidecar image (distroless, nonroot,
 version-stamped) to the project container registry, so you don't have to
@@ -163,48 +190,7 @@ new-client rate, not the flood case. Verified tokens are cached in-process
 (~144 ns vs ~43 µs for a full Ed25519 verification), so a returning client's
 request stays on the fast read path regardless of backend.
 
-## GC tuning for peak throughput
-
-At tens of thousands of requests per second, guardiand's read paths are
-bound by Go's garbage collector, not the store: a freshly started daemon has
-a small heap, so at high allocation rates the GC runs almost continuously.
-On the [benchmark machine](/guide/load-testing#reference-numbers), starting
-guardiand with `GOGC=800` raised the read-path throughput by about 20%, at the
-price of a larger heap between
-collections. If you chase peak throughput, set `GOGC` (or a `GOMEMLIMIT`
-budget) in the systemd unit's `Environment=` and measure with
-`guardian-loadtest`; at typical production rates the default is fine.
-
-## Memory footprint
-
-guardiand's in-process memory is bounded independently of traffic, so a flood
-of distinct IPs, hosts, User-Agents or URLs cannot grow it without limit (no
-remote OOM). The client-keyed structures and their caps:
-
-- **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
-  full, entries repopulate cheaply on the next verify.
-- **Counter cache** (issuance rate limit + farming escalation): at most 2^17
-  entries. At capacity it reclaims only clean cached totals; entries carrying
-  unapplied store work are retained. If every entry is protected, unseen keys
-  remain uncached until a drainer makes room, rather than erasing pending
-  reconciliation state.
-- **Recent-decisions ring** (admin/dashboard feed): fixed 512 entries
-  (~100 KiB), overwrite-oldest. Holds raw host/URI/UA but never grows.
-- **Bot-verification in-flight map**: bounded by concurrent lookups, not
-  distinct IPs (entries are added and removed within one call, and a
-  concurrency cap sheds excess). The verification *results* live in the store
-  with a TTL, not in-process.
-- **Prometheus label cardinality**: the `domain` label collapses unconfigured
-  hosts to `default`, and `reason` collapses to a fixed set of stage prefixes
-  (`waf`, `denylist`, `geo`, …), so rule IDs, feed names and Host-header
-  floods never create new series.
-
-Everything else keyed by client input (blocks, spent challenges, bot verdicts)
-lives in the store with a TTL, so its memory is the store's concern, not the
-daemon's. A steady-state instance sits in the low tens of MiB plus whatever
-`GOGC`/`GOMEMLIMIT` you allow the heap to grow to between collections.
-
-## Multi-instance (Redis/Valkey)
+### Multi-instance (Redis/Valkey)
 
 To run replicas behind a load balancer, point every instance at one shared
 Redis or Valkey instance and share the signing key + `previous_key_dir` across
@@ -235,16 +221,83 @@ hosts, use a low-latency, reliably mounted shared filesystem and include mount
 interruption/recovery in the soak: a flaky NFS or distributed mount can cause
 a brief fleet-wide challenge/token outage.
 
-## Metrics and dashboards
+## GC tuning for peak throughput
 
-Prometheus metrics live at `/metrics` on the admin listener (open to
+At tens of thousands of requests per second, guardiand's read paths are
+bound by Go's garbage collector, not the store: a freshly started daemon has
+a small heap, so at high allocation rates the GC runs almost continuously.
+On the [benchmark machine](/guide/load-testing#benchmark-results), starting
+guardiand with `GOGC=800` raised the read-path throughput by about 20%. `GOGC`
+sets how much the heap grows between collections (the default is 100); raising
+it runs the GC less often, so the trade is a larger heap for less GC CPU.
+
+On a host or container where guardiand owns the memory, the
+[Go GC guide](https://go.dev/doc/gc-guide) recommends pairing a high `GOGC`
+with `GOMEMLIMIT`: turn `GOGC` up for the throughput win, and set `GOMEMLIMIT`
+as a safety cap so the larger heap cannot OOM (the runtime does extra GC only as
+it nears the limit). `GOMEMLIMIT` is a **soft** limit: leave 5-10% headroom for
+memory the runtime does not track, and never set it to the machine's total RAM,
+since a too-tight limit can thrash the GC into a slowdown worse than an OOM.
+Skip `GOMEMLIMIT` when the host's memory is shared with other processes.
+
+Set these in the systemd unit's `Environment=` (see
+[`deploy/guardiand.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardiand.service))
+and measure with `guardian-loadtest`; at typical production rates the default is
+fine.
+
+## Memory footprint
+
+guardiand's in-process memory is bounded independently of traffic, so a flood
+of distinct IPs, hosts, User-Agents or URLs cannot grow it without limit (no
+remote OOM). The client-keyed structures and their caps:
+
+- **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
+  full, entries repopulate cheaply on the next verify.
+- **Counter cache** (issuance rate limit + farming escalation): at most 2^17
+  entries. At capacity it reclaims only clean cached totals; entries carrying
+  unapplied store work are retained. If every entry is protected, unseen keys
+  remain uncached until a drainer makes room, rather than erasing pending
+  reconciliation state.
+- **Recent-decisions ring** (admin/dashboard feed): fixed 512 entries
+  (~100 KiB), overwrite-oldest. Holds raw host/URI/UA but never grows.
+- **Bot-verification in-flight map**: bounded by concurrent lookups, not
+  distinct IPs (entries are added and removed within one call, and a
+  concurrency cap sheds excess). The verification *results* live in the store
+  with a TTL, not in-process.
+- **Prometheus label cardinality**: the `domain` label collapses unconfigured
+  hosts to `default`, and `reason` collapses to a fixed set of stage prefixes
+  (`waf`, `denylist`, `geo`, …), so rule IDs, feed names and Host-header
+  floods never create new series.
+
+Everything else keyed by client input (blocks, spent challenges, bot verdicts)
+lives in the store with a TTL, so its memory is the store's concern, not the
+daemon's. A steady-state instance sits in the low tens of MiB plus whatever
+`GOGC`/`GOMEMLIMIT` you allow the heap to grow to between collections.
+
+## Dashboards and metrics
+
+### Built-in dashboard
+
+Guardian ships its own reporting dashboard: set `admin.dashboard: true` and open
+`GET /admin/dashboard`. It gives you a live, at-a-glance view with no extra
+services to run: active blocks with one-click block/unblock, the recent
+deny/challenge feed, activity and distribution graphs (decisions over time, the
+proof-of-work funnel, solve-time and anomaly histograms), a top-offenders panel,
+per-domain feature status, and, when pointed at Angie's API, real server traffic.
+For most single-instance deployments this is all you need. See
+[Admin API & Dashboard](/guide/admin#the-reporting-dashboard) for the full tour.
+
+### Prometheus + Grafana
+
+For long-horizon history, alerting, or fleet-wide aggregation across replicas,
+scrape the Prometheus metrics at `/metrics` on the admin listener (open to
 scrapers, no token needed): decisions by action/reason/domain, challenge
-lifecycle, PoW solve-time and anomaly-score histograms, blocks placed, store
-op latency, and end-to-end `Evaluate()` latency.
-
-Import `deploy/grafana-dashboard.json` for a ready-made Grafana dashboard, or
-enable the built-in reporting page: see
-[Admin API & Dashboard](/guide/admin#the-reporting-dashboard).
+lifecycle, PoW solve-time and anomaly-score histograms, blocks placed, store op
+latency, and end-to-end `Evaluate()` latency. Import
+`deploy/grafana-dashboard.json` for a ready-made Grafana dashboard. This
+complements the built-in dashboard rather than replacing it: the built-in view
+is per-instance and live, while Prometheus retains history and sums across a
+fleet.
 
 ## Key rotation
 

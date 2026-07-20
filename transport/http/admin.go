@@ -5,13 +5,16 @@
 package httptransport
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +24,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // AdminServer exposes Prometheus /metrics and an authenticated JSON admin API
@@ -36,6 +40,13 @@ type AdminServer struct {
 	reload  func() error // nil = no reload endpoint (owned by main: re-reads guardian.yaml)
 	log     *slog.Logger
 	mux     *http.ServeMux
+	angie   *angieClient // nil = admin.angie_api not configured
+
+	// chartETag is a strong ETag over the vendored Chart.js blob, computed once
+	// at startup. It lets the asset revalidate cheaply (304 on match) so a
+	// guardiand upgrade that changes the blob is picked up immediately instead of
+	// a returning browser pairing a stale library with new dashboard JavaScript.
+	chartETag string
 }
 
 // NewAdminServer builds the admin+metrics handler. The cfg parameter only
@@ -47,6 +58,9 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 		engine: engine, metrics: m, token: token,
 		keyPath: keyPath, prevDir: prevDir, reload: reload, log: log,
 		mux: http.NewServeMux(),
+	}
+	if cfg.Admin.AngieAPI.URL != "" {
+		s.angie = newAngieClient(cfg.Admin.AngieAPI, log)
 	}
 	if m != nil {
 		s.mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry(), promhttp.HandlerOpts{}))
@@ -62,6 +76,9 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("DELETE /admin/blocks/{ip}", s.auth(s.handleUnblock))
 	s.mux.HandleFunc("GET /admin/decisions", s.auth(s.handleDecisions))
 	s.mux.HandleFunc("GET /admin/stats", s.auth(s.handleStats))
+	s.mux.HandleFunc("GET /admin/distributions", s.auth(s.handleDistributions))
+	s.mux.HandleFunc("GET /admin/offenders", s.auth(s.handleOffenders))
+	s.mux.HandleFunc("GET /admin/angie", s.auth(s.handleAngie))
 	s.mux.HandleFunc("GET /admin/score", s.auth(s.handleScore))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
 	s.mux.HandleFunc("POST /admin/reload", s.auth(s.handleReload))
@@ -79,6 +96,14 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	// unauthenticated is safe. Off by default; enable with admin.dashboard.
 	if cfg.Admin.Dashboard {
 		s.mux.HandleFunc("GET /admin/dashboard", s.handleDashboard)
+		// Chart.js is vendored (web/vendor) and served same-origin, unauthenticated
+		// for the same reason as the dashboard shell: a <script src> fetch carries
+		// no bearer token, and the asset holds no data. No CDN, works air-gapped.
+		if asset, err := web.FS.ReadFile("vendor/chart.umd.min.js"); err == nil {
+			sum := sha256.Sum256(asset)
+			s.chartETag = `"` + hex.EncodeToString(sum[:16]) + `"`
+		}
+		s.mux.HandleFunc("GET /admin/chart.umd.min.js", s.handleChartJS)
 	}
 	return s
 }
@@ -264,13 +289,7 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	byReason := map[string]int{}
 	for _, d := range recent {
 		byAction[d.Action]++
-		// Collapse to the leading token ("waf:dotfile-probe" → "waf"), the same
-		// categories the guardian_decisions_total metric uses.
-		cat := d.Reason
-		if i := strings.IndexByte(cat, ':'); i >= 0 {
-			cat = cat[:i]
-		}
-		byReason[cat]++
+		byReason[reasonCat(d.Reason)]++
 	}
 	out := map[string]any{
 		"blocks_active":   blocksActive,
@@ -329,6 +348,254 @@ func (s *AdminServer) challengeStats() map[string]any {
 		}
 	}
 	return out
+}
+
+// handleDistributions returns registry-derived data the recent-decisions ring
+// cannot supply: the solve-time and anomaly-score histograms (as ready-to-plot
+// per-bucket counts, not cumulative) and per-domain decision totals from
+// decisions_total (allow-inclusive, since the ring holds no allows). All from a
+// single Gather() of the existing metrics, so it adds no cardinality and never
+// touches the hot path. Empty (but well-formed) when metrics are disabled.
+func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request) {
+	out := map[string]any{
+		"solve_time": emptyHistogram(),
+		"anomaly":    emptyHistogram(),
+		"per_domain": map[string]map[string]float64{},
+	}
+	if s.metrics == nil {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	families, err := s.metrics.Registry().Gather()
+	if err != nil {
+		s.log.Warn("metrics gather failed", "err", err)
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_challenge_solve_seconds":
+			// A single (unlabeled) histogram.
+			for _, m := range mf.GetMetric() {
+				out["solve_time"] = histogramToBuckets(m.GetHistogram())
+			}
+		case "guardian_anomaly_score":
+			// Labelled by domain; sum every domain's buckets into one
+			// distribution (a per-domain split can come later if wanted).
+			out["anomaly"] = sumHistograms(mf.GetMetric())
+		case "guardian_decisions_total":
+			perDomain := map[string]map[string]float64{}
+			for _, m := range mf.GetMetric() {
+				var action, domain string
+				for _, l := range m.GetLabel() {
+					switch l.GetName() {
+					case "action":
+						action = l.GetValue()
+					case "domain":
+						domain = l.GetValue()
+					}
+				}
+				if domain == "" {
+					domain = "default"
+				}
+				if perDomain[domain] == nil {
+					perDomain[domain] = map[string]float64{}
+				}
+				perDomain[domain][action] += m.GetCounter().GetValue()
+			}
+			out["per_domain"] = perDomain
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// bucketCount is one histogram bar: observations that fell in (prev_le, le],
+// with le="+Inf" for the overflow bucket. Non-cumulative, ready to plot.
+type bucketCount struct {
+	Le    string  `json:"le"`
+	Count float64 `json:"count"`
+}
+
+func emptyHistogram() map[string]any {
+	return map[string]any{"buckets": []bucketCount{}, "sum": 0.0, "count": 0.0}
+}
+
+// histogramToBuckets converts one Prometheus histogram (cumulative buckets +
+// an implicit +Inf) into per-bucket counts the dashboard can bar-chart directly.
+func histogramToBuckets(h *dto.Histogram) map[string]any {
+	if h == nil {
+		return emptyHistogram()
+	}
+	buckets := make([]bucketCount, 0, len(h.GetBucket())+1)
+	var prevCumulative float64
+	for _, b := range h.GetBucket() {
+		cum := float64(b.GetCumulativeCount())
+		buckets = append(buckets, bucketCount{
+			Le:    strconv.FormatFloat(b.GetUpperBound(), 'g', -1, 64),
+			Count: cum - prevCumulative,
+		})
+		prevCumulative = cum
+	}
+	// The +Inf overflow bucket: total observations minus the last explicit le.
+	total := float64(h.GetSampleCount())
+	buckets = append(buckets, bucketCount{Le: "+Inf", Count: total - prevCumulative})
+	return map[string]any{"buckets": buckets, "sum": h.GetSampleSum(), "count": total}
+}
+
+// sumHistograms merges the per-label histograms of one metric family (e.g.
+// anomaly_score across domains) into a single distribution by adding aligned
+// cumulative bucket counts, then converting to per-bucket counts.
+func sumHistograms(ms []*dto.Metric) map[string]any {
+	var merged *dto.Histogram
+	var sum, count float64
+	upper := map[float64]uint64{}
+	var bounds []float64
+	for _, m := range ms {
+		h := m.GetHistogram()
+		if h == nil {
+			continue
+		}
+		merged = h // keep a shape reference
+		sum += h.GetSampleSum()
+		count += float64(h.GetSampleCount())
+		for _, b := range h.GetBucket() {
+			ub := b.GetUpperBound()
+			if _, seen := upper[ub]; !seen {
+				bounds = append(bounds, ub)
+			}
+			upper[ub] += b.GetCumulativeCount()
+		}
+	}
+	if merged == nil {
+		return emptyHistogram()
+	}
+	sort.Float64s(bounds)
+	buckets := make([]bucketCount, 0, len(bounds)+1)
+	var prev float64
+	for _, ub := range bounds {
+		cum := float64(upper[ub])
+		buckets = append(buckets, bucketCount{
+			Le: strconv.FormatFloat(ub, 'g', -1, 64), Count: cum - prev,
+		})
+		prev = cum
+	}
+	buckets = append(buckets, bucketCount{Le: "+Inf", Count: count - prev})
+	return map[string]any{"buckets": buckets, "sum": sum, "count": count}
+}
+
+// offenderTopK is the number of rows returned per dimension.
+const offenderTopK = 15
+
+// countEntry is one ranked offender: a key and how many non-allow decisions it
+// accounts for in the recent window.
+type countEntry struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}
+
+// offenderIP carries the IP plus whatever GeoIP/ASN detail is configured.
+type offenderIP struct {
+	IP      string `json:"ip"`
+	Count   int    `json:"count"`
+	Country string `json:"country,omitempty"`
+	ASN     uint32 `json:"asn,omitempty"`
+	ASOrg   string `json:"as_org,omitempty"`
+}
+
+// handleOffenders reports the heaviest sources of non-allow decisions in the
+// recent window: top IPs, reason categories, and request paths, plus a country
+// rollup when GeoIP is loaded. It counts the in-process RecentDecisions ring
+// exactly (bounded to 512 entries, microseconds per request); no Count-Min
+// Sketch, no engine change, and nothing on the hot path. The window is the ring,
+// so it covers challenged/denied traffic, not allows (which are never recorded).
+func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
+	decisions := s.engine.RecentDecisions(0)
+
+	byIP := map[string]int{}
+	byReason := map[string]int{}
+	byPath := map[string]int{}
+	for _, d := range decisions {
+		byIP[d.IP]++
+		byReason[reasonCat(d.Reason)]++
+		byPath[normalizePath(d.URI)]++
+	}
+
+	// GeoIP/ASN merge for the top IPs only (bounded lookups, never per-request).
+	// nil Provider is lookup-safe, so this degrades to IP-only when no DBs load.
+	intel := s.engine.Intel()
+	topIPs := topKEntries(byIP, offenderTopK)
+	ips := make([]offenderIP, 0, len(topIPs))
+	byCountry := map[string]int{}
+	for _, e := range topIPs {
+		row := offenderIP{IP: e.Key, Count: e.Count}
+		if intel != nil {
+			if addr, err := netip.ParseAddr(e.Key); err == nil {
+				info := intel.Lookup(addr)
+				row.Country, row.ASN, row.ASOrg = info.Country, info.ASN, info.ASOrg
+				if info.Country != "" {
+					byCountry[info.Country] += e.Count
+				}
+			}
+		}
+		ips = append(ips, row)
+	}
+
+	out := map[string]any{
+		"window":  len(decisions), // ring depth this reflects
+		"ips":     ips,
+		"reasons": topKEntries(byReason, offenderTopK),
+		"paths":   topKEntries(byPath, offenderTopK),
+	}
+	if len(byCountry) > 0 {
+		out["countries"] = topKEntries(byCountry, offenderTopK)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// reasonCat collapses a decision reason to its leading token ("waf:dotfile" →
+// "waf"), matching the bounded categories the guardian_decisions_total metric
+// uses. Mirrors core.reasonCategory (unexported there).
+func reasonCat(reason string) string {
+	if i := strings.IndexByte(reason, ':'); i >= 0 {
+		return reason[:i]
+	}
+	return reason
+}
+
+// normalizePath strips the query string and caps length, so attacker-controlled
+// URIs group cleanly and never bloat the response. The dashboard renders these
+// via textContent only.
+func normalizePath(uri string) string {
+	if i := strings.IndexByte(uri, '?'); i >= 0 {
+		uri = uri[:i]
+	}
+	if uri == "" {
+		uri = "/"
+	}
+	const maxLen = 128
+	if len(uri) > maxLen {
+		uri = uri[:maxLen] + "…"
+	}
+	return uri
+}
+
+// topKEntries returns the k highest-count keys, descending, ties broken by key
+// for a stable order across ticks.
+func topKEntries(counts map[string]int, k int) []countEntry {
+	entries := make([]countEntry, 0, len(counts))
+	for key, n := range counts {
+		entries = append(entries, countEntry{Key: key, Count: n})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		return entries[i].Key < entries[j].Key
+	})
+	if len(entries) > k {
+		entries = entries[:k]
+	}
+	return entries
 }
 
 // handleScore answers "how anomalous would this request look?" for tuning
@@ -537,6 +804,47 @@ func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(page)
+}
+
+// handleChartJS serves the vendored Chart.js library same-origin. Unauthenticated
+// like the dashboard shell (a <script src> fetch sends no bearer token) and safe:
+// the asset is a static library, not data.
+//
+// The URL is fixed (dashboard.html references a stable relative path), so it must
+// not be cached as immutable: a guardiand upgrade changes the blob, and a returning
+// browser holding a year-old copy would pair a stale Chart.js with freshly loaded
+// (no-store) dashboard JavaScript. Instead it revalidates against a content ETag,
+// so a matching browser gets a cheap 304 and a changed blob is fetched fresh.
+func (s *AdminServer) handleChartJS(w http.ResponseWriter, r *http.Request) {
+	asset, err := web.FS.ReadFile("vendor/chart.umd.min.js")
+	if err != nil {
+		http.Error(w, "chart library missing", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	if s.chartETag != "" {
+		w.Header().Set("ETag", s.chartETag)
+		// Must revalidate every time; a stale cached copy is never served blind.
+		w.Header().Set("Cache-Control", "no-cache")
+		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, s.chartETag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	_, _ = w.Write(asset)
+}
+
+// etagMatches reports whether the client's If-None-Match header lists our ETag.
+// The header can be a comma-separated list or "*"; a weak "W/" prefix still
+// matches the same content for this immutable-per-build asset.
+func etagMatches(header, etag string) bool {
+	for candidate := range strings.SplitSeq(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // handleConfig returns a redacted view of the loaded per-domain config, so an
