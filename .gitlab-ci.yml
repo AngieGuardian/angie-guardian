@@ -18,6 +18,13 @@ variables:
   # Package registry + release-asset endpoints for the release job.
   PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/angie-guardian/${CI_COMMIT_TAG}"
   RELEASE_LINKS_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
+  # GitHub mirror. The repository itself is push-mirrored by GitLab; the release
+  # job additionally publishes the built archives there as a GitHub release.
+  # $GH_TOKEN (a fine-grained PAT with Contents: read+write) comes from the
+  # masked+protected CI/CD variable, and is read implicitly by the gh CLI.
+  GH_REPO: "Angie-Guardian/angie-guardian"
+  # Pinned like govulncheck below; bump deliberately.
+  GH_CLI_VERSION: "2.96.0"
 
 # Branch pipelines only. Without this, the `rules:` on the docs job makes
 # GitLab also attempt a (job-less, thus failed) merge-request pipeline for
@@ -217,6 +224,11 @@ upload_and_release:
           -e "s#/var/lib/guardian/#$RUNTIME_ROOT/var/lib/guardian/#g" \
           "$PKG/guardian.example.yaml" > "$RUNTIME_ROOT/guardian.yaml"
       "$PKG/guardiand" -config "$RUNTIME_ROOT/guardian.yaml" -t
+    # Checksums over the exact archives being published, so downloads from
+    # either host can be verified with `sha256sum -c SHA256SUMS`.
+    - sha256sum angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz
+      angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz > SHA256SUMS
+    - cat SHA256SUMS
     # Upload each archive to the generic package registry.
     - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --upload-file angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz
@@ -224,8 +236,16 @@ upload_and_release:
     - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --upload-file angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz
       ${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz'
+    - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --upload-file SHA256SUMS
+      ${PACKAGE_REGISTRY_URL}/SHA256SUMS'
     # Attach the archives to the (already created) release as asset links.
     # !! In the reverse order of how they should be displayed !!
+    - 'curl --fail --request POST
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --header "Content-Type: application/json"
+      --data "{\"name\":\"Angie Guardian ${CI_COMMIT_TAG} - SHA256 checksums\",\"url\":\"${PACKAGE_REGISTRY_URL}/SHA256SUMS\",\"link_type\":\"other\"}"
+      ${RELEASE_LINKS_URL}'
     - 'curl --fail --request POST
       --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --header "Content-Type: application/json"
@@ -236,6 +256,44 @@ upload_and_release:
       --header "Content-Type: application/json"
       --data "{\"name\":\"Angie Guardian ${CI_COMMIT_TAG} - Linux amd64 (.tar.gz)\",\"url\":\"${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz\",\"link_type\":\"package\"}"
       ${RELEASE_LINKS_URL}'
+    # --- GitHub mirror ------------------------------------------------------
+    # Publish the same archives as a GitHub release on $GH_REPO. Runs last, so
+    # a GitHub outage or an expired token cannot prevent the GitLab assets
+    # above from being published. The golang image has no `gh`, so fetch the
+    # pinned CLI tarball (the shared runners are amd64).
+    #
+    # create-or-upload: `create` fails if the release already exists (a retried
+    # job, or one made by hand), in which case `upload --clobber` attaches the
+    # assets to it instead. That makes re-running this job idempotent.
+    #
+    # --target pins the release to this commit so GitHub creates the tag itself
+    # if the (asynchronous) push mirror has not delivered it yet.
+    - |
+      curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz" \
+        | tar -xz -C /tmp
+      export PATH="/tmp/gh_${GH_CLI_VERSION}_linux_amd64/bin:$PATH"
+      gh release create "$CI_COMMIT_TAG" \
+        angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
+        angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
+        SHA256SUMS \
+        --repo "$GH_REPO" \
+        --target "$CI_COMMIT_SHA" \
+        --title "v$CI_COMMIT_TAG" \
+        --notes "Angie Guardian $CI_COMMIT_TAG" || \
+      gh release upload "$CI_COMMIT_TAG" \
+        angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
+        angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
+        SHA256SUMS \
+        --repo "$GH_REPO" \
+        --clobber
+  # Keep the built archives downloadable from the pipeline for a short while,
+  # so a failed GitHub step can be recovered with a manual upload instead of a
+  # rebuild.
+  artifacts:
+    paths:
+      - angie-guardian-*.tar.gz
+      - SHA256SUMS
+    expire_in: 1 month
 
 # --- Container image (tags only) --------------------------------------------
 # Builds the sidecar image from deploy/docker/Dockerfile and pushes it to the
