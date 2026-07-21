@@ -1,0 +1,52 @@
+[Unit]
+Description=Train and promote the Angie Guardian anomaly model
+Documentation=https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/docs/guide/production.md#running-the-anomaly-trainer
+After=angie.service
+# Create this sentinel during an attack, load test, launch or outage to keep
+# exceptional traffic out of the learned baseline. Remove it to resume.
+ConditionPathExists=!/etc/guardian/trainer.disabled
+
+[Service]
+Type=oneshot
+
+# Copy deploy/guardian-train.env here and replace its example domain names
+# before starting this unit. A missing file leaves the guarded placeholder
+# below active, and the update helper fails safely without promoting a model.
+Environment="GUARDIAN_TRAIN_EXPECTED_DOMAINS=REPLACE_WITH_EXPECTED_DOMAINS"
+EnvironmentFile=-/etc/guardian/trainer.env
+ExecStart=/bin/bash /usr/local/libexec/guardian-train-update
+
+# Root is needed to read restricted Angie logs and atomically promote a
+# root-owned model under /etc. The namespace gives the job no network, hides
+# Guardian's service-owned secrets/state, and makes the rest of the filesystem
+# read-only. The helper only receives write access to its private StateDirectory
+# and /etc/guardian for the final promotion.
+User=root
+Group=root
+UMask=0027
+StateDirectory=guardian-training
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+InaccessiblePaths=-/var/lib/guardian
+ReadOnlyPaths=/var/log/angie
+ReadWritePaths=/etc/guardian
+
+# Training is deliberately low-priority so it does not compete with live
+# request handling when the timer fires on a busy host.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

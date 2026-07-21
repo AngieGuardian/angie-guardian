@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Angie Guardian anomaly-model training and atomic promotion helper.
+# Configuration comes from /etc/guardian/trainer.env via guardian-train.service.
+
+set -Eeuo pipefail
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+log_dir=${GUARDIAN_TRAIN_LOG_DIR:-/var/log/angie}
+log_pattern=${GUARDIAN_TRAIN_LOG_PATTERN:-*.access.json*}
+expected_domains=${GUARDIAN_TRAIN_EXPECTED_DOMAINS:-}
+min_requests=${GUARDIAN_TRAIN_MIN_REQUESTS:-5000}
+max_unparseable=${GUARDIAN_TRAIN_MAX_UNPARSEABLE:-0}
+live_model=${GUARDIAN_TRAIN_LIVE_MODEL:-/etc/guardian/model.json}
+staging_dir=/var/lib/guardian-training
+candidate=${staging_dir}/model.candidate.json
+previous=${staging_dir}/model.previous.json
+next_model=${live_model}.next
+
+fail() {
+  printf 'guardian-train update: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ -d $log_dir ]] || fail "log directory does not exist: ${log_dir}"
+[[ $expected_domains ]] || fail "GUARDIAN_TRAIN_EXPECTED_DOMAINS is empty"
+[[ $expected_domains != *REPLACE_WITH* ]] || fail "replace the example expected domains in /etc/guardian/trainer.env"
+[[ $min_requests =~ ^[1-9][0-9]*$ ]] || fail "GUARDIAN_TRAIN_MIN_REQUESTS must be a positive integer"
+[[ $max_unparseable =~ ^[0-9]+$ ]] || fail "GUARDIAN_TRAIN_MAX_UNPARSEABLE must be a non-negative integer"
+[[ $live_model == /etc/guardian/* ]] || fail "GUARDIAN_TRAIN_LIVE_MODEL must stay below /etc/guardian"
+[[ -d $(dirname "$live_model") ]] || fail "live model directory does not exist: $(dirname "$live_model")"
+
+trainer_version=$(/usr/local/bin/guardian-train -version)
+daemon_version=$(/usr/local/bin/guardiand -version)
+trainer_version=${trainer_version#guardian-train }
+daemon_version=${daemon_version#guardiand }
+[[ $trainer_version && $trainer_version == "$daemon_version" ]] || fail \
+  "guardian-train (${trainer_version}) and guardiand (${daemon_version}) must come from the same release"
+
+mapfile -d '' -t inputs < <(
+  find "$log_dir" -maxdepth 1 -type f -name "$log_pattern" -print0 | sort -z
+)
+((${#inputs[@]} > 0)) || fail "no logs match ${log_dir}/${log_pattern}"
+
+feed_logs() {
+  local path
+  for path in "${inputs[@]}"; do
+    case $path in
+      *.gz) gzip -cd -- "$path" ;;
+      *) cat -- "$path" ;;
+    esac
+    # Keep adjacent files separate even if a rotated file lacks a final LF.
+    printf '\n'
+  done
+}
+
+printf 'training from %d log file(s) in %s\n' "${#inputs[@]}" "$log_dir"
+output=$(
+  feed_logs | /usr/local/bin/guardian-train \
+    -out "$candidate" \
+    -min-requests "$min_requests" \
+    -
+)
+printf '%s\n' "$output"
+
+unparseable=$(sed -nE \
+  's/.*\([0-9]+ lines read, ([0-9]+) unparseable\).*/\1/p' \
+  <<<"$output")
+[[ $unparseable =~ ^[0-9]+$ ]] || fail "could not read the unparseable count from guardian-train output"
+((unparseable <= max_unparseable)) || fail \
+  "${unparseable} unparseable lines exceeds the configured maximum ${max_unparseable}"
+
+for domain in $expected_domains; do
+  awk -v wanted="$domain" '
+    $1 == wanted { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' <<<"$output" || fail "expected domain is absent from the candidate: ${domain}"
+done
+
+model_size=$(stat -c %s -- "$candidate")
+((model_size <= 64 * 1024 * 1024)) || fail \
+  "candidate exceeds guardiand's 64 MiB model limit"
+
+# Keep one last-known-good artifact outside the watched path, then install the
+# candidate through a sibling and rename it atomically into place.
+if [[ -f $live_model ]]; then
+  install -o root -g root -m600 -- "$live_model" "$previous"
+fi
+trap 'rm -f -- "$next_model"' EXIT
+install -o root -g guardian -m640 -- "$candidate" "$next_model"
+mv -fT -- "$next_model" "$live_model"
+
+printf 'promoted model to %s; guardiand will detect it within 10 seconds\n' "$live_model"

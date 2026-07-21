@@ -95,11 +95,20 @@ guardian-train -out /etc/guardian/model.json \
 zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.json -
 ```
 
-Re-run it from cron; `guardiand` picks up each new model within seconds.
 Records without a host and responses with status >= 400 are excluded, so
 scanner/error traffic does not become the normal baseline. Domains below
 `-min-requests` usable successful records are dropped (a thin baseline
 misclassifies everything).
+
+For production automation, prefer the shipped
+[`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
+and
+[`guardian-train.timer`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.timer)
+setup over a bare cron entry. It trains weekly from your retained plain/gzip
+log window, verifies expected domains and malformed-line limits, keeps the
+last-good artifact, and promotes atomically. See
+[Running the anomaly trainer](/guide/production#running-the-anomaly-trainer)
+for installation, configuration and the pause mechanism for incident windows.
 
 ## 3. Enable scoring
 

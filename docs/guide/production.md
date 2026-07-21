@@ -190,36 +190,50 @@ the artifact named by `waf.anomaly.model` and scores requests against it. See
 [Train the Anomaly Model](/guide/anomaly) for the log format, features and
 threshold-tuning workflow.
 
-On a systemd installation, install the trainer from the same release archive as
-the daemon and keep the live artifact with the other root-managed policy:
+### Preferred systemd timer
+
+On a systemd installation, use the shipped
+[`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
+and
+[`guardian-train.timer`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.timer)
+templates. The timer runs weekly with up to 30 minutes of random delay; the
+one-shot service trains at low CPU/I/O priority in a hardened, networkless
+sandbox. Its update helper reads plain and gzip-compressed rotations, rejects a
+trainer/daemon version mismatch, a candidate that omits an expected domain, or
+one that exceeds the malformed-line limit. It keeps the previous artifact and
+promotes with an atomic rename.
+
+Install the trainer from the same release archive as the daemon, then install
+and configure the templates:
 
 ```sh
 sudo install -Dm755 guardian-train /usr/local/bin/guardian-train
-sudo install -d -o root -g root -m700 /var/lib/guardian-training
+sudo install -Dm755 deploy/guardian-train-update \
+  /usr/local/libexec/guardian-train-update
+sudo install -Dm644 deploy/guardian-train.service \
+  /etc/systemd/system/guardian-train.service
+sudo install -Dm644 deploy/guardian-train.timer \
+  /etc/systemd/system/guardian-train.timer
+sudo install -o root -g root -m600 deploy/guardian-train.env \
+  /etc/guardian/trainer.env
 
-# Build away from the live path first. Review the printed domain/request
-# summary before promoting it.
-sudo guardian-train \
-  -out /var/lib/guardian-training/model.candidate.json \
-  -min-requests 5000 \
-  /var/log/angie/*.access.json
+# Replace the placeholder domains and align the log retention/pattern with the
+# representative 7-14 day window you want to train on.
+sudoedit /etc/guardian/trainer.env
 
-# Copy fully, set the daemon-readable ownership, then rename within the target
-# directory so guardiand can never observe a partial artifact.
-sudo install -o root -g guardian -m640 \
-  /var/lib/guardian-training/model.candidate.json \
-  /etc/guardian/model.json.next
-sudo mv /etc/guardian/model.json.next /etc/guardian/model.json
+sudo systemctl daemon-reload
+# Run once interactively and inspect its domain/request summary before enabling
+# unattended updates.
+sudo systemctl start guardian-train.service
+sudo journalctl -u guardian-train.service -n 50 --no-pager
 ```
 
-The training job needs read access to the selected logs and write access to its
-staging directory; it does not need the signing key, admin token or Guardian
-store. Keep `/etc/guardian/model.json` read-only to the `guardian` service user,
-just like `guardian.yaml` and the WAF rules. A compromised daemon should not be
-able to replace the baseline it is meant to enforce. The compact example uses
-`sudo` because access logs are commonly restricted; for an unattended job,
-prefer a dedicated training identity that can read only those logs and write
-only the staging directory, with a separate privileged promotion step.
+The unit runs as root because it must read restricted Angie logs and promote a
+root-owned model under `/etc`, but its systemd sandbox hides Guardian's
+service-owned state and secrets, removes network access and makes the rest of
+the filesystem read-only. Keep `/etc/guardian/model.json` read-only to the
+`guardian` daemon, just like `guardian.yaml` and the WAF rules: a compromised
+daemon must not be able to replace the baseline it enforces.
 
 For the first model, promote the file before enabling `waf.anomaly`, then test
 and reload the config:
@@ -228,6 +242,8 @@ and reload the config:
 sudo -u guardian /usr/local/bin/guardiand \
   -config /etc/guardian/guardian.yaml -t
 sudo systemctl reload guardiand
+sudo systemctl enable --now guardian-train.timer
+sudo systemctl list-timers guardian-train.timer
 ```
 
 Later model replacements need no signal or restart. Each instance checks the
@@ -235,10 +251,11 @@ configured model every 10 seconds using a content hash and logs `anomaly model
 reloaded` after accepting it. An unreadable, oversized or invalid replacement
 leaves the previous model active in memory, but a future daemon restart still
 needs a valid file on disk. Retain the last accepted candidate so you can
-atomically promote it again if a new baseline proves bad.
+atomically promote it again if a new baseline proves bad. The shipped helper
+does this at `/var/lib/guardian-training/model.previous.json`.
 
-Automate the candidate-and-promotion sequence with a timer, cron job or
-deployment job only after defining the input window and acceptance checks:
+Before enabling the timer, define its input window and acceptance checks in
+`/etc/guardian/trainer.env`:
 
 - Rebuild from the whole representative window, including the relevant rotated
   logs. Training is not incremental; feeding only the newest file forgets the
@@ -253,6 +270,13 @@ deployment job only after defining the input window and acceptance checks:
   when no domain reaches the floor.
 - After promotion, confirm the reload log and watch `guardian_anomaly_score` for
   distribution drift before tightening either enforcement threshold.
+
+The timer is intentionally weekly rather than hourly or daily: refreshing too
+quickly can teach a temporary event as normal before anyone notices. Retrain
+manually after an intentional site change when waiting for Sunday makes no
+sense. During an attack, load test, launch or outage, create
+`/etc/guardian/trainer.disabled`; the service's condition then skips scheduled
+training until you remove that sentinel.
 
 The production container image contains `guardiand` only. Run the release's
 `guardian-train` binary on the host or in a separate controlled batch job, then
