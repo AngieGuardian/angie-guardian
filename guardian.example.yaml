@@ -196,7 +196,7 @@ defaults:
       #         disabled_rule_ids: [ wp-probe ]
     anomaly:
       enabled: false          # requires a model trained from your own logs:
-      model: /etc/guardian/model.json   #   guardian-train -out model.json /var/log/angie/*.access.json
+      model: /etc/guardian/model.json   #   guardian-train train -out model.json /var/log/angie/*.access.json*
       observe_only: false     # true records scores but suppresses anomaly challenge/deny
       challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
       deny_at: 0.9            # score >= this -> deny outright

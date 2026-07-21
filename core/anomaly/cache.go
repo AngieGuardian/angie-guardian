@@ -5,15 +5,26 @@
 package anomaly
 
 import (
+	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sort"
 	"sync/atomic"
 	"time"
 
 	"github.com/melroy89/angie-guardian/internal/safefile"
 )
 
-const maxModelBytes = 64 << 20
+type ModelSpec struct {
+	Path          string
+	RequiredHosts []string
+}
+
+type ModelStatus struct {
+	Path      string         `json:"path"`
+	TrainedAt time.Time      `json:"trained_at"`
+	Domains   map[string]int `json:"domains"`
+}
 
 // ModelCache serves the current model for each configured artifact path and
 // hot-swaps it when guardian-train writes a new version. Change detection is
@@ -26,9 +37,10 @@ type ModelCache struct {
 }
 
 type modelFile struct {
-	path  string
-	hash  atomic.Uint64 // FNV-64a of the last loaded file contents
-	model atomic.Pointer[Model]
+	path          string
+	requiredHosts []string
+	hash          atomic.Uint64 // FNV-64a of the last loaded file contents
+	model         atomic.Pointer[Model]
 }
 
 func contentHash(raw []byte) uint64 {
@@ -40,14 +52,14 @@ func contentHash(raw []byte) uint64 {
 // NewModelCache loads every artifact eagerly. A missing or invalid model
 // fails startup for the same reason bad WAF rules do: silently running
 // without a configured protection is worse than refusing to start.
-func NewModelCache(paths []string, log *slog.Logger) (*ModelCache, error) {
-	c := &ModelCache{files: make(map[string]*modelFile, len(paths)), log: log, stop: make(chan struct{})}
-	for _, path := range paths {
-		f := &modelFile{path: path}
+func NewModelCache(specs []ModelSpec, log *slog.Logger) (*ModelCache, error) {
+	c := &ModelCache{files: make(map[string]*modelFile, len(specs)), log: log, stop: make(chan struct{})}
+	for _, spec := range specs {
+		f := &modelFile{path: spec.Path, requiredHosts: spec.RequiredHosts}
 		if err := f.load(); err != nil {
 			return nil, err
 		}
-		c.files[path] = f
+		c.files[spec.Path] = f
 	}
 	return c, nil
 }
@@ -61,8 +73,20 @@ func (f *modelFile) load() error {
 	if err != nil {
 		return err
 	}
+	if err := f.validateRequired(m); err != nil {
+		return err
+	}
 	f.model.Store(m)
 	f.hash.Store(contentHash(raw))
+	return nil
+}
+
+func (f *modelFile) validateRequired(m *Model) error {
+	for _, host := range f.requiredHosts {
+		if !m.HasDomain(host) {
+			return fmt.Errorf("model %s: required domain %q has no baseline", f.path, host)
+		}
+	}
 	return nil
 }
 
@@ -110,11 +134,29 @@ func (c *ModelCache) reloadChanged() {
 			f.hash.Store(hash)
 			continue
 		}
+		if err := f.validateRequired(m); err != nil {
+			c.log.Error("model reload failed, keeping previous model", "file", f.path, "err", err)
+			f.hash.Store(hash)
+			continue
+		}
 		f.model.Store(m)
 		f.hash.Store(hash)
 		c.log.Info("anomaly model reloaded", "file", f.path,
 			"domains", len(m.Domains), "trained_at", m.TrainedAt)
 	}
+}
+
+func (c *ModelCache) Status() []ModelStatus {
+	out := make([]ModelStatus, 0, len(c.files))
+	for _, f := range c.files {
+		m := f.model.Load()
+		if m == nil {
+			continue
+		}
+		out = append(out, ModelStatus{Path: f.path, TrainedAt: m.TrainedAt, Domains: m.DomainSummary()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func (c *ModelCache) Close() {

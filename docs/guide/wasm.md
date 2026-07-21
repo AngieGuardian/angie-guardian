@@ -3,8 +3,8 @@
 Instead of the sidecar, you can run Guardian's **stateless WAF checks**
 in-process inside Angie via its WebAssembly support. This path does the
 store-free checks only (allowlist, denylist, honeypot, keyword/regex
-signatures); proof-of-work, behavioural IP blocking, and anomaly scoring need
-the shared store and remain sidecar-only.
+signatures); proof-of-work and behavioural IP blocking need sidecar state,
+while anomaly scoring also remains sidecar-only.
 
 Use it when you want the WASM integration and the stateless WAF subset is
 enough, or alongside a backend that handles the rest. Both paths share the

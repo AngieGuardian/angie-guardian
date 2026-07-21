@@ -108,15 +108,17 @@ never the result of an expensive fallback scan. Long-horizon numbers live in
 
 Registry-derived data the recent-decisions ring cannot supply, in one pass: the
 solve-time and anomaly-score histograms (as ready-to-plot per-bucket counts, not
-cumulative) and per-domain decision totals from `decisions_total` (allow-
-inclusive, since the ring holds no allows). It reads metrics that already exist, adds
-no cardinality, and never touches the hot path. Feeds the dashboard's
-distribution charts.
+cumulative), anomaly baseline selections/misses, and per-domain decision totals
+from `decisions_total` (allow-inclusive, since the ring holds no allows). It
+reads metrics that already exist, adds no cardinality, and never touches the hot
+path. Feeds the dashboard's distribution charts and anomaly coverage warning.
 
 ```json
 {
   "solve_time": {"buckets":[{"le":"0.25","count":140},{"le":"+Inf","count":3}],"sum":41.2,"count":143},
   "anomaly":    {"buckets":[{"le":"0.1","count":10}],"sum":3.1,"count":10},
+  "anomaly_selection": {"example.com":{"exact":8,"domain":2}},
+  "anomaly_misses": {},
   "per_domain": {"example.com":{"allow":349472,"challenge":30}}
 }
 ```
@@ -164,11 +166,22 @@ see [Country or City](/guide/bots-ip-intel#country-or-city-both-go-in-location-d
 Score a hypothetical request against the domain's anomaly model, for tuning
 `challenge_at` / `deny_at`.
 
-Query parameters: `host`, `uri`, `ua`.
+Query parameters: `host`, `method` (defaults to `GET`), `uri`, `ua`.
 
 ```json
-{"host":"shop.example.com","scored":true,"score":0.72}
+{"host":"shop.example.com","method":"GET","route":"/cgi-bin","baseline":"exact","scored":true,"score":0.72}
 ```
+
+When the host has no baseline it returns `scored:false` with a reason instead
+of presenting the missing baseline as a zero score.
+
+### `GET /admin/anomaly`
+
+Returns bounded operational metadata for the loaded anomaly artifacts and all
+configured default/domain/path scopes. Each enabled scope reports `observe` or
+`enforce` mode, artifact path, coverage (`ready`, `dynamic`, or `missing`), and
+its automatic segment count. Artifacts report their training time and domains;
+learned frequencies and raw baseline values are never returned.
 
 ## IP intelligence
 
@@ -315,7 +328,7 @@ not automatically deleted from disk).
 The active per-domain configuration: which features are enabled where,
 including PoW base/max difficulty, each scope's effective signature-rule
 selection (`waf_rules_file` plus `waf_disabled_rule_ids`, both omitted when
-empty) and, when a domain defines
+empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a domain defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
 a `paths` object with the same view per overlay:
 
@@ -329,6 +342,8 @@ a `paths` object with the same view per overlay:
       "pow_base_difficulty": 5,
       "pow_max_difficulty": 6,
       "waf_keywords": true,
+      "waf_anomaly": true,
+      "waf_anomaly_observe_only": true,
       "waf_rules_file": "/etc/guardian/rules.d/common.yaml",
       "waf_disabled_rule_ids": ["wp-probe"],
       "paths": {

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/intel"
@@ -1692,25 +1693,57 @@ func (c *Config) RuleFiles() []string {
 	return files
 }
 
-// ModelFiles returns every distinct anomaly model artifact referenced by an
-// enabled anomaly config, for the model cache to load and watch.
-func (c *Config) ModelFiles() []string {
-	seen := make(map[string]bool)
-	add := func(dc *DomainConfig) {
-		if dc.WAF.Anomaly.Enabled && dc.WAF.Anomaly.Model != "" {
-			seen[dc.WAF.Anomaly.Model] = true
+// ModelSpecs returns each distinct enabled anomaly artifact together with the
+// named hosts that must exist in it. Defaults apply to arbitrary unknown hosts
+// and therefore cannot contribute a finite requirement list.
+func (c *Config) ModelSpecs() []anomaly.ModelSpec {
+	byPath := make(map[string]map[string]bool)
+	add := func(path, host string) {
+		if path == "" {
+			return
+		}
+		if byPath[path] == nil {
+			byPath[path] = make(map[string]bool)
+		}
+		if host != "" {
+			byPath[path][host] = true
 		}
 	}
-	add(&c.Defaults)
-	for _, dc := range c.resolved {
-		add(dc)
+	if a := c.Defaults.WAF.Anomaly; a.Enabled {
+		add(a.Model, "")
+	}
+	for host, dc := range c.resolved {
+		if a := dc.WAF.Anomaly; a.Enabled {
+			add(a.Model, host)
+		}
 		for i := range dc.pathOverrides {
-			add(dc.pathOverrides[i].cfg)
+			if a := dc.pathOverrides[i].cfg.WAF.Anomaly; a.Enabled {
+				add(a.Model, host)
+			}
 		}
 	}
-	files := make([]string, 0, len(seen))
-	for f := range seen {
-		files = append(files, f)
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]anomaly.ModelSpec, 0, len(paths))
+	for _, path := range paths {
+		hosts := make([]string, 0, len(byPath[path]))
+		for host := range byPath[path] {
+			hosts = append(hosts, host)
+		}
+		sort.Strings(hosts)
+		out = append(out, anomaly.ModelSpec{Path: path, RequiredHosts: hosts})
+	}
+	return out
+}
+
+func (c *Config) ModelFiles() []string {
+	specs := c.ModelSpecs()
+	files := make([]string, len(specs))
+	for i := range specs {
+		files[i] = specs[i].Path
 	}
 	return files
 }

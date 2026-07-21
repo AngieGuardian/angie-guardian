@@ -107,6 +107,8 @@ func TestDistributionsBuckets(t *testing.T) {
 	m.AnomalyScore("shop.test", 0.15)
 	m.AnomalyScore("shop.test", 0.85)
 	m.AnomalyScore("api.test", 0.45)
+	m.AnomalyBaseline("shop.test", "exact")
+	m.AnomalyBaseline("shop.test", "missing")
 	// Per-domain decisions, allow-inclusive.
 	m.Decision("allow", "default", "shop.test")
 	m.Decision("allow", "default", "shop.test")
@@ -118,6 +120,13 @@ func TestDistributionsBuckets(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	out := decodeJSON(t, resp)
+	selection := out["anomaly_selection"].(map[string]any)["shop.test"].(map[string]any)
+	if selection["exact"] != float64(1) || selection["missing"] != float64(1) {
+		t.Fatalf("anomaly selection = %v", selection)
+	}
+	if misses := out["anomaly_misses"].(map[string]any)["shop.test"]; misses != float64(1) {
+		t.Fatalf("anomaly misses = %v, want 1", misses)
+	}
 
 	// Solve-time: 3 observations total, and the per-bucket counts must sum to 3
 	// (proving we de-cumulated correctly rather than double-counting).

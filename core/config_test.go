@@ -638,6 +638,10 @@ domains:
 	if len(models) != 1 || models[0] != "path-model.json" {
 		t.Errorf("ModelFiles = %v, want [path-model.json]", models)
 	}
+	specs := cfg.ModelSpecs()
+	if len(specs) != 1 || !slices.Equal(specs[0].RequiredHosts, []string{"a.test"}) {
+		t.Errorf("ModelSpecs = %#v, want required host a.test", specs)
+	}
 }
 
 // TestDisabledRuleIDsOverlay pins the list-overlay semantics for

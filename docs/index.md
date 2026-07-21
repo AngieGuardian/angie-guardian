@@ -31,7 +31,7 @@ features:
     details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
   - icon: 📈
     title: Statistical anomaly scoring
-    details: guardian-train learns per-domain baselines from Angie JSON access logs offline; the online scorer rates unvouched requests that reach it in about 260 ns and drives challenge, deny, and difficulty escalation.
+    details: guardian-train learns domain and route/method baselines from Angie JSON access logs offline; the sub-microsecond online scorer rates unvouched requests and drives challenge, deny, and difficulty escalation.
   - icon: 🚫
     title: Behavioural IP blocking
     details: When enabled, signature hits, PoW failures, and tamper events feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.

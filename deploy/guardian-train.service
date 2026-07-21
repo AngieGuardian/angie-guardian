@@ -18,9 +18,9 @@ ExecStart=/bin/bash /usr/local/libexec/guardian-train-update
 
 # Root is needed to read restricted Angie logs and atomically promote a
 # root-owned model under /etc. The namespace gives the job no network, hides
-# Guardian's service-owned secrets/state, and makes the rest of the filesystem
+# Guardian's service-owned runtime state, and makes the rest of the filesystem
 # read-only. The helper only receives write access to its private StateDirectory
-# and /etc/guardian for the final promotion.
+# and /etc/guardian for the final promotion; keep unrelated secrets elsewhere.
 User=root
 Group=root
 UMask=0027
@@ -50,3 +50,8 @@ ReadWritePaths=/etc/guardian
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# Bound damage from unexpectedly high-cardinality or decompression-heavy input.
+# Large installations can raise these with a systemctl edit drop-in after
+# measuring a representative manual run.
+MemoryHigh=1G
+MemoryMax=2G

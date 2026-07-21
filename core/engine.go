@@ -139,7 +139,7 @@ func loadSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	models, err := anomaly.NewModelCache(cfg.ModelFiles(), log)
+	models, err := anomaly.NewModelCache(cfg.ModelSpecs(), log)
 	if err != nil {
 		rules.Close()
 		return nil, err
@@ -482,22 +482,21 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 
 // ScoreRequest runs the anomaly scorer for a hypothetical request against the
 // domain's model, for admin inspection ("how anomalous is this request?").
-// Returns -1 when the domain has no anomaly model loaded.
-func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
+func (e *Engine) ScoreRequest(host, method, uri, ua string) anomaly.ScoreResult {
 	snap := e.acquireSnapshot()
 	if snap == nil {
-		return -1
+		return anomaly.ScoreResult{Level: "missing"}
 	}
 	defer snap.release()
 	dcfg := snap.cfg.ConfigFor(host, uri)
 	if !dcfg.WAF.Anomaly.Enabled {
-		return -1
+		return anomaly.ScoreResult{Level: "missing"}
 	}
 	m := snap.models.Get(dcfg.WAF.Anomaly.Model)
 	if m == nil {
-		return -1
+		return anomaly.ScoreResult{Level: "missing"}
 	}
-	return m.Score(host, decodePath(requestPath(uri)), decodeQuery(requestQuery(uri)), ua)
+	return m.Score(host, method, decodePath(requestPath(uri)), decodeQuery(requestQuery(uri)), ua)
 }
 
 // ShedVerdict is the outcome of the load-shedding fast path (see ShedDecision).
@@ -608,3 +607,13 @@ func (e *Engine) Intel() *intel.Provider { return e.snap.Load().intel }
 // a point-in-time snapshot: a hot reload swaps it, so hold the returned
 // pointer for one request, never across requests.
 func (e *Engine) Config() *Config { return e.snap.Load().cfg }
+
+// AnomalyModels returns immutable metadata for the currently loaded artifacts.
+func (e *Engine) AnomalyModels() []anomaly.ModelStatus {
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return nil
+	}
+	defer snap.release()
+	return snap.models.Status()
+}

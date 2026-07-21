@@ -116,8 +116,8 @@ func TestAnomalyObserveOnlyScoresWithoutEnforcement(t *testing.T) {
 	ctx := context.Background()
 	e := anomalyEngine(t)
 
-	if score := e.ScoreRequest("observe.test", scannerPath, "zgrab/0.x"); score < 0.8 {
-		t.Fatalf("setup score = %.3f, want >= deny threshold", score)
+	if result := e.ScoreRequest("observe.test", "GET", scannerPath, "zgrab/0.x"); result.Score < 0.8 {
+		t.Fatalf("setup score = %.3f, want >= deny threshold", result.Score)
 	}
 	d := e.Evaluate(ctx, req("observe.test", "198.51.100.45", scannerPath, "zgrab/0.x"))
 	if d.Action != ActionAllow || d.Reason != "default" {

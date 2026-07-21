@@ -406,10 +406,15 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 	if m == nil {
 		return nil, nil
 	}
-	score := m.Score(req.Host,
+	result := m.Score(req.Host, req.Method,
 		decodePath(requestPath(req.URI)),
 		decodeQuery(requestQuery(req.URI)),
 		req.UserAgent)
+	env.metrics.AnomalyBaseline(env.domainLabel, result.Level)
+	if !result.Found {
+		return nil, nil
+	}
+	score := result.Score
 	env.metrics.AnomalyScore(env.domainLabel, score)
 	if a.ObserveOnly {
 		return nil, nil
