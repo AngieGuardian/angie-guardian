@@ -152,9 +152,10 @@ for the file format, inheritance, and hot-reload behavior, and the
 ## Suspicion-only challenges (anomaly model)
 
 This fragment disables the catch-all and defines only an anomaly challenge
-policy, so ordinary visitors never see an interstitial. Explicit WAF, GeoIP,
-or reputation challenge policies would still apply. Requires a [trained
-model](/guide/anomaly) and a top-level signing key.
+policy. Requests below the anomaly threshold are not challenged by that policy;
+explicit WAF, GeoIP, reputation, and attack-mode decisions still apply. Requires
+a [trained model](/guide/anomaly) and a top-level signing key. Add
+`observe_only: true` to measure scores without anomaly enforcement first.
 
 ```yaml
 domains:

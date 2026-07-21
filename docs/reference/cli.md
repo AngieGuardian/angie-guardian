@@ -56,7 +56,7 @@ Builds per-domain anomaly baselines offline from Angie JSON access logs. See
 [Train the Anomaly Model](/guide/anomaly).
 
 ```sh
-guardian-train -out /etc/guardian/model.json -min-requests 5000 \
+guardian-train -out model.candidate.json -min-requests 5000 \
                /var/log/angie/*.access.json
 ```
 
@@ -66,8 +66,11 @@ guardian-train -out /etc/guardian/model.json -min-requests 5000 \
 | `-min-requests <n>` | `1000` | Drop domains with fewer usable successful records (entries without a host and responses with status >= 400 are excluded). |
 | `-version` | | Print version and exit. |
 
-Positional arguments are the JSON access log files to read; pass `-` to read
-from stdin (e.g. `zcat ... | guardian-train -out model.json -`).
+Positional arguments are plain JSON access log files to read; the CLI does not
+decompress `.gz` files. Pass `-` to read a decompressed stream (for example,
+`zcat ... | guardian-train -out model.candidate.json -`). Inspect a candidate
+before atomically promoting it to the configured live path; for unattended
+updates use the [preferred systemd timer](/guide/production#running-the-anomaly-trainer).
 
 ## guardian-loadtest
 

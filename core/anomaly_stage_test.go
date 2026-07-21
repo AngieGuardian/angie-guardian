@@ -31,15 +31,19 @@ domains:
     pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: %q, challenge_at: 0.4, deny_at: 0.8 }
+  observe.test:
+    pow: { enabled: true, mode: suspicion, base_difficulty: 2, max_difficulty: 6 }
+    waf:
+      anomaly: { enabled: true, observe_only: true, model: %q, challenge_at: 0.4, deny_at: 0.8 }
 `
 
 const commonUA = "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"
 
 func anomalyEngine(t *testing.T) *Engine {
 	t.Helper()
-	// Train a baseline of shallow blog traffic under two hosts.
+	// Train a baseline of shallow blog traffic under the three test hosts.
 	tr := &anomaly.Trainer{}
-	for _, host := range []string{"anom.test", "always.test"} {
+	for _, host := range []string{"anom.test", "always.test", "observe.test"} {
 		for i := 0; i < 2000; i++ {
 			tr.Add(&anomaly.LogRecord{
 				Host: host, URI: fmt.Sprintf("/blog/post-%d", i%40),
@@ -52,7 +56,7 @@ func anomalyEngine(t *testing.T) *Engine {
 		t.Fatal(err)
 	}
 
-	cfg := loadTestConfig(t, fmt.Sprintf(anomalyYAML, model, model))
+	cfg := loadTestConfig(t, fmt.Sprintf(anomalyYAML, model, model, model))
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
 	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
@@ -105,6 +109,19 @@ func TestAnomalyStage(t *testing.T) {
 	d = e.Evaluate(ctx, req("anom.test", "198.51.100.43", scannerPath, "zgrab/0.x"))
 	if d.Action != ActionDeny || d.Reason != "anomaly:deny" {
 		t.Fatalf("fully anomalous: got %s/%s, want deny/anomaly:deny", d.Action, d.Reason)
+	}
+}
+
+func TestAnomalyObserveOnlyScoresWithoutEnforcement(t *testing.T) {
+	ctx := context.Background()
+	e := anomalyEngine(t)
+
+	if score := e.ScoreRequest("observe.test", scannerPath, "zgrab/0.x"); score < 0.8 {
+		t.Fatalf("setup score = %.3f, want >= deny threshold", score)
+	}
+	d := e.Evaluate(ctx, req("observe.test", "198.51.100.45", scannerPath, "zgrab/0.x"))
+	if d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("observe-only anomaly decision = %s/%s, want allow/default", d.Action, d.Reason)
 	}
 }
 

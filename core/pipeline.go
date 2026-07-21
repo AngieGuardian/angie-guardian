@@ -411,6 +411,9 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 		decodeQuery(requestQuery(req.URI)),
 		req.UserAgent)
 	env.metrics.AnomalyScore(env.domainLabel, score)
+	if a.ObserveOnly {
+		return nil, nil
+	}
 
 	switch {
 	case score >= a.DenyAt:

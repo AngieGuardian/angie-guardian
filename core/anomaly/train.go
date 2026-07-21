@@ -80,6 +80,12 @@ func (t *Trainer) Add(rec *LogRecord) {
 	if i := strings.IndexByte(rec.URI, '?'); i >= 0 {
 		path, query = rec.URI[:i], rec.URI[i+1:]
 	}
+	// The online anomaly stage scores the percent-decoded path and query. Train
+	// on that exact representation too: Angie logs $request_uri in its escaped
+	// form, and allowing the two sides to drift would make ordinary encoded URLs
+	// look anomalous at runtime (or teach a different query-parameter count).
+	path = stateless.DecodePath(path)
+	query = stateless.DecodeQuery(query)
 
 	agg.n++
 	agg.pathDepth.add(float64(pathDepth(path)))

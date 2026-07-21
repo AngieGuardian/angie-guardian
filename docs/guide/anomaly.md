@@ -12,12 +12,12 @@ difficulty with the suspicion score.
 
 ## What training gives you
 
-The trainer reads your access logs and writes one small JSON artifact: a
+The trainer reads your access logs and writes one compact JSON artifact: a
 **per-domain baseline** of roughly ten numbers plus two frequency tables. It
 records the *shape* of your traffic in aggregate, not individual visitors, IPs,
 or sessions. In return, three things change at runtime:
 
-- **Bot-shaped requests get caught without a signature.** A scanner using a
+- **Bot-shaped requests can be caught without a signature.** A scanner using a
   fresh path list, or probing a CVE nobody has written a rule for yet, still
   looks nothing like normal traffic for that host. The WAF has no rule to match;
   the scorer has an opinion anyway.
@@ -28,9 +28,10 @@ or sessions. In return, three things change at runtime:
   `pow.mode: suspicion` the catch-all interstitial is off, so only requests the
   scorer (or an explicit WAF, GeoIP, or reputation rule) flags get challenged.
 
-Without a model the stage is inert: `anomaly.enabled: true` with no artifact, or
-a host that is absent from the artifact, scores `0`. No baseline, no opinion, and
-the request continues to the other pipeline stages unchanged.
+An enabled anomaly stage always requires a configured, readable, valid model:
+`guardiand -t` and startup fail otherwise. A host absent from an otherwise valid
+artifact scores `0`. For that host the anomaly stage has no opinion and the
+other pipeline stages still apply.
 
 ## 1. Collect JSON access logs
 
@@ -82,23 +83,25 @@ is a reasonable starting point; a single quiet afternoon is not.
 
 ## 2. Train offline
 
-Once JSON logs have accumulated, build a per-domain baseline offline and drop
-it where the config's `anomaly.model` points. `guardiand` hot-swaps the
-artifact when the file changes, no restart needed:
+Once JSON logs have accumulated, build and inspect a candidate per-domain
+baseline offline. Promote it only after the checks described in the production
+workflow. `guardiand` hot-swaps the configured artifact when the file changes,
+so no restart is needed:
 
 ```sh
-guardian-train -out /etc/guardian/model.json \
+guardian-train -out model.candidate.json \
                -min-requests 5000 \
                /var/log/angie/*.access.json
 
-# From a stream (e.g. journald, or gzip'd logs):
-zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.json -
+# The CLI reads compressed logs through stdin; it does not decompress files.
+zcat /var/log/angie/example.com.access.json.*.gz | \
+  guardian-train -out model.candidate.json -min-requests 5000 -
 ```
 
-Records without a host and responses with status >= 400 are excluded, so
-scanner/error traffic does not become the normal baseline. Domains below
-`-min-requests` usable successful records are dropped (a thin baseline
-misclassifies everything).
+Records without a host and responses with status >= 400 are excluded. This
+filters failed probes and error traffic, but successful bot requests remain
+eligible training data. Domains below `-min-requests` usable records are
+dropped because a thin sample does not provide a trustworthy baseline.
 
 For production automation, prefer the shipped
 [`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
@@ -120,36 +123,38 @@ domains:
       anomaly:
         enabled: true
         model: /etc/guardian/model.json
+        observe_only: true    # score and record metrics; do not challenge/deny
         challenge_at: 0.5     # score >= this -> PoW challenge
         deny_at: 0.85         # score >= this -> deny outright
 ```
 
-With `pow.mode: suspicion`, the catch-all challenge is disabled. In this
-example the anomaly scorer is the only challenge policy, so ordinary visitors
-never see an interstitial; explicit WAF, GeoIP, or reputation challenge rules
-would still apply. Difficulty scales across `[base_difficulty, max_difficulty]`
-with the score, so a more bot-like client pays more.
+With `pow.mode: suspicion`, the catch-all challenge is disabled. While
+`observe_only` is true, anomaly scores are recorded but do not challenge or
+deny. Explicit WAF, GeoIP, reputation, and attack-mode decisions still apply.
+After tuning the thresholds, set `observe_only: false` (or remove it) to enforce
+them. Scores from `challenge_at` through `1.0` scale PoW difficulty across
+`[base_difficulty, max_difficulty]`; scores at or above `deny_at` are denied.
 
 ## How scoring works
 
-Both the trainer and the scorer derive the same six features from a request,
-using only the host, path, query string, and User-Agent. Nothing else about the
-client is involved.
+Both the trainer and the scorer percent-decode the path and query string, then
+derive the same six features from the host, path, query string, and User-Agent.
+Nothing else about the client is involved.
 
 | Feature | Learned as | What an outlier looks like |
 | --- | --- | --- |
 | Path depth (segment count) | mean + std | `/a/b/c/d/e/f/g` on a two-level site |
 | Path length in bytes | mean + std | Overlong probe URIs |
 | Path Shannon entropy | mean + std | Encoded or random-looking blobs |
-| Query parameter count | mean + std | Parameter-stuffed injection attempts |
-| UA prefix (lowered, first 24 chars) | frequency table | A UA absent from your real traffic |
-| Path prefix (first two segments) | frequency table | A section of the site that does not exist |
+| Query-field count (`&` separators + 1) | mean + std | Parameter-stuffed injection attempts |
+| UA prefix (lowered, first 24 bytes) | frequency table | A UA absent from your real traffic |
+| Path prefix (lowered, first two segments) | frequency table | A section of the site that does not exist |
 
 The four numeric features score as a **z-score**: how many standard deviations
 the request sits from the learned mean, saturating at four (past that, weirder
 adds nothing). A floor on the standard deviation keeps a near-constant feature
-from exploding on a small deviation. Truncating the UA to its first 24
-lowercased characters is deliberate: it keeps a browser's version bumps from
+from exploding on a small deviation. Truncating the lowered UA to its first 24
+bytes is deliberate: it keeps a browser's version bumps from
 turning every upgraded visitor into a rarity.
 
 The two frequency tables score as **rarity**: a value making up 2% or more of
@@ -171,26 +176,31 @@ a `challenge_at` of `0.5` without any help from path shape. Reaching a
 `deny_at` of `0.85` effectively requires the path to be misshapen as well, so
 denial stays reserved for requests that are wrong in several ways at once.
 
-On the training side, aggregation uses Welford streaming statistics, so memory
-stays flat regardless of how much log you feed in; only the frequency tables
-grow, and `Finish` prunes those. Records with no host, and any response with
-status >= 400, are skipped. That exclusion matters: the scanners already probing
-your site are mostly generating 404s, and counting them would teach the baseline
-that scanner traffic is normal.
+On the training side, Welford keeps the four numeric aggregates at constant
+size. The UA- and path-prefix frequency maps grow with the number of distinct
+values seen and are pruned to the top 1000 only when training finishes. A large,
+high-cardinality or hostile log window can therefore increase trainer memory.
+Records with no host and responses with status >= 400 are skipped, which removes
+failed probes but not successful scanner traffic.
 
 ## Tune the thresholds
 
-Use `GET /admin/score` to ask "why would this request be challenged?" and tune
-`challenge_at` / `deny_at` against real request shapes:
+Use `GET /admin/score` to ask "how anomalous is this request?" and tune
+`challenge_at` / `deny_at` against real request shapes. The endpoint returns the
+combined score, not a per-feature explanation:
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" \
      "http://127.0.0.1:8072/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
+# Example only; the score depends on your model:
 # {"host":"shop.example.com","scored":true,"score":0.72}
 ```
 
-The `guardian_` anomaly-score histogram in `/metrics` shows the live score
-distribution per domain, which makes threshold drift easy to spot.
+The `guardian_anomaly_score` histogram in `/metrics` shows the live score
+distribution per domain for requests that reach the anomaly stage. Requests
+terminated earlier in the pipeline, including those with a valid PoW token, are
+not represented. With suspicion mode and `observe_only`, it provides the score
+distribution of the remaining traffic without anomaly enforcement.
 
 ## Best practices
 
@@ -198,19 +208,19 @@ The detector is only as good as the traffic you train it on. A handful of habits
 make the difference between a baseline that catches scanners and one that
 annoys customers.
 
-**Train on traffic that represents normal.** The baseline defines "ordinary" for
-a domain, so anything unusual present in the training window becomes ordinary,
-and anything normal but absent becomes suspicious. Train on a window that
-includes your quiet hours as well as your peak, and avoid windows dominated by a
-one-off event, a migration, or a load test. If you have just survived a large
-bot campaign, note that the campaign's successful (sub-400) requests are in
-those logs too.
+**Train on traffic that represents normal.** Sufficiently frequent shapes in the
+training window influence what the model considers ordinary; a single unusual
+record does not automatically become ordinary. Train on a window that includes
+quiet hours as well as peaks, and avoid windows dominated by a one-off event, a
+migration, or a load test. If you have just survived a large bot campaign, note
+that the campaign's successful (sub-400) requests are in those logs too.
 
-**Keep `-min-requests` honest.** The 1000 default is a floor, not a target. Low
-traffic domains produce wide, mushy distributions in which almost nothing looks
-anomalous, so raising the floor for a busy site (the guide's example uses 5000)
-is usually better than training a baseline you cannot trust. A domain dropped
-for thin data simply scores 0, which is a safe outcome.
+**Keep `-min-requests` honest.** The 1000 default is a floor, not a target. A
+small or unrepresentative sample can produce a baseline that is too narrow, too
+wide, or biased toward one traffic shape. Raising the floor for a busy site (the
+guide's example uses 5000) is usually better than trusting a thin sample. A
+domain dropped for insufficient data scores `0`, avoiding anomaly false
+positives but failing open for that stage; other protections still apply.
 
 **Treat the artifact as perishable, but retrain deliberately.** Sites change:
 new sections, a new mobile app UA, a redesign that shifts every path prefix.
@@ -224,32 +234,34 @@ See [Running the anomaly trainer](/guide/production#running-the-anomaly-trainer)
 for the operational side, including why retraining over an attack window can
 teach the baseline that the attack is normal.
 
-**Roll out in observation mode first.** Before enforcing, set `challenge_at` and
-`deny_at` high enough that nothing trips, and watch the `/metrics` score
-histogram for a few days. It shows you the real distribution per domain, which
-is the only honest basis for picking thresholds. Then lower `challenge_at` to
-where the tail begins.
+**Roll out in observation mode first.** Set `observe_only: true` and watch the
+`guardian_anomaly_score` histogram for a few days. Do not try to simulate this
+with thresholds at `1.0`: comparisons are inclusive, so a score of exactly `1`
+can still enforce. Pick thresholds from the observed distribution, then set
+`observe_only: false` and reload.
 
 **Move `challenge_at` before `deny_at`.** A challenge that misfires costs a
 legitimate visitor a few seconds of PoW; a deny that misfires costs you the
 visitor. Keep a comfortable gap between the two, and only tighten `deny_at`
 after the score histogram shows a clean separation.
 
-**Spot-check with `/admin/score` before changing a threshold.** Replay the
-shapes you actually care about, a real browser request, your monitoring
+**Spot-check with `/admin/score` before changing a threshold.** Score the request
+shapes you actually care about: a real browser request, your monitoring
 probe, a partner's API client, and confirm each lands where you expect. Health
 checks and uptime monitors are the classic false positive: they often use an
 unusual UA against a path that appears nowhere else in your traffic, which is
 precisely the 0.55 combination described above.
 
-**Give the trainer the whole picture.** Point it at all rotated logs for a
-domain, including compressed ones, rather than only today's file. Feeding a
-combined multi-host log is fine, since each record carries its own `host`.
+**Give the trainer the whole picture.** Include all retained rotated logs for a
+domain rather than only today's file. The CLI does not decompress `.gz` files;
+pipe them through `zcat`, or use the production helper, which reads retained
+plain and gzip-compressed logs. A combined multi-host stream is fine because
+each record carries its own `host`.
 
 ::: tip A broken model fails startup, but not a reload
 `guardiand` refuses to start on a missing or invalid artifact, on the grounds
 that silently running without a configured protection is worse than not starting.
 Once running, a failed reload logs an error and keeps the previous model. So a
-bad cron run degrades to a stale baseline rather than an outage, but if you
-rotate the file out from under a restart you will not come back up.
+bad scheduled update degrades to a stale baseline rather than an outage, but if
+you rotate the file out from under a restart you will not come back up.
 :::

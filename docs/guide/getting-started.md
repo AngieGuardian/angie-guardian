@@ -285,3 +285,8 @@ visit should reuse the signed cookie and pass without another challenge.
 For backups, monitoring, store durability, secret ownership, resource tuning,
 containers, multi-instance deployments, and future upgrades, continue with
 [Run it in Production](/guide/production).
+
+`guardiand` is the runtime service and is all the basic installation needs.
+If you later enable anomaly scoring, use the optional offline `guardian-train`
+companion as described in [Train the Anomaly Model](/guide/anomaly), then follow
+the [production timer setup](/guide/production#running-the-anomaly-trainer).

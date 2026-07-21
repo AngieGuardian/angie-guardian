@@ -830,6 +830,7 @@ type KeywordsConfig struct {
 
 type AnomalyConfig struct {
 	Enabled     bool    `yaml:"enabled"`
+	ObserveOnly bool    `yaml:"observe_only"`
 	Model       string  `yaml:"model"`
 	ChallengeAt float64 `yaml:"challenge_at"`
 	DenyAt      float64 `yaml:"deny_at"`

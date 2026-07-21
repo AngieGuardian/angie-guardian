@@ -91,6 +91,32 @@ func TestThinBaselinesDropped(t *testing.T) {
 	}
 }
 
+// The guardian_json log contains Angie's raw $request_uri, while the online
+// pipeline scores its decoded path/query. Training must normalize identically
+// or percent-encoded slashes and separators create a self-inflicted anomaly.
+func TestTrainerDecodesURIExactlyLikeScorer(t *testing.T) {
+	tr := &Trainer{}
+	tr.Add(&LogRecord{
+		Host: "encoded.test", URI: "/shop%2Fitem?q=a%26b+c",
+		UserAgent: "Mozilla/5.0 encoded", Status: 200,
+	})
+	m := tr.Finish(1)
+	b := m.Domains["encoded.test"]
+	if b == nil {
+		t.Fatal("encoded.test baseline missing")
+	}
+	if b.PathDepth.Mean != 2 || b.PathLen.Mean != float64(len("/shop/item")) || b.QueryParams.Mean != 2 {
+		t.Fatalf("decoded features = depth %.0f, length %.0f, params %.0f; want 2, %d, 2",
+			b.PathDepth.Mean, b.PathLen.Mean, b.QueryParams.Mean, len("/shop/item"))
+	}
+	if _, ok := b.PathPrefixFreq["/shop/item"]; !ok {
+		t.Fatalf("decoded path prefix absent: %v", b.PathPrefixFreq)
+	}
+	if got := m.Score("encoded.test", "/shop/item", "q=a&b c", "Mozilla/5.0 encoded"); got != 0 {
+		t.Fatalf("runtime-equivalent decoded request scored %v, want 0", got)
+	}
+}
+
 func TestModelRoundTripAndVersionCheck(t *testing.T) {
 	m := trainBaseline(t)
 	path := filepath.Join(t.TempDir(), "model.json")

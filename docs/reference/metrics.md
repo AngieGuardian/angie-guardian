@@ -32,7 +32,7 @@ Label values are bounded by construction:
 |---|---|---|---|
 | `guardian_challenges_total` | counter | `outcome` | Challenge lifecycle events: `issued`, `solved`, `failed` (wrong nonce, expired, or replayed), `escalated` (issued above base difficulty to a [challenge farmer](/guide/configuration#base-difficulty-and-max-difficulty)), plus the stateless outcomes described below. |
 | `guardian_challenge_solve_seconds` | histogram | | Client-reported solve time, for tuning `base_difficulty`. |
-| `guardian_anomaly_score` | histogram | `domain` | Distribution of anomaly scores, for tuning `challenge_at` / `deny_at`. |
+| `guardian_anomaly_score` | histogram | `domain` | Distribution of scores for requests that reach the anomaly stage, for tuning `challenge_at` / `deny_at`. Earlier terminal decisions and requests with valid PoW tokens are not observed. |
 
 ## Blocking and bots
 
