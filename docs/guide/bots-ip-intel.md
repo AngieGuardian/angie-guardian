@@ -106,27 +106,19 @@ files unchanged, on a GitHub Actions cron that runs every three days, and the
 
 ```sh
 sudo mkdir -p /var/lib/GeoIP
-base=https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download
-
-# Country (8.8 MB) + ASN (12 MB). Swap Country for City for city/region labels.
-for db in GeoLite2-Country GeoLite2-ASN; do
-  curl -fsSL -o "/tmp/$db.mmdb" "$base/$db.mmdb"
-  sudo mv "/tmp/$db.mmdb" "/var/lib/GeoIP/$db.mmdb"
-done
+cd /var/lib/GeoIP
+sudo wget https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb
+sudo wget https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb
 ```
 
-Download to a temporary file and `mv` into place, as above: the rename is
-atomic, so Guardian never observes a half-written database. Re-running the
-snippet from a weekly cron is a complete update story, no restart involved.
+That is Country (8.8 MB) plus ASN (12 MB). Swap `GeoLite2-Country.mmdb` for
+`GeoLite2-City.mmdb` if you want city and region labels; the same `location_db`
+key takes either file, as the next section explains.
 
-::: tip Prefer upstream for anything contractual
-The mirror is a third party republishing MaxMind's files, so you are trusting
-its operator for integrity, availability and continuity. If your compliance
-posture needs a first-party chain of custody, or you want MaxMind's twice-weekly
-cadence rather than a three-day cron, sign up for a free licence key and run
-`geoipupdate` instead. Either way the data is MaxMind's and carries their
+To refresh later, delete the old files first and re-run the two `wget` lines, or
+use [`geoipupdate`](https://github.com/maxmind/geoipupdate) with a free MaxMind
+licence key. The data is MaxMind's, under the
 [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula).
-:::
 
 ### Country or City: both go in `location_db`
 
