@@ -12,6 +12,9 @@ coverage.out
 *.db
 *.key
 
+# GeoLite datbaases
+*.mmdb
+
 # Editor / OS
 .idea/
 .vscode/
