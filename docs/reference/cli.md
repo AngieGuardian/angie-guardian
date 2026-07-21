@@ -40,7 +40,7 @@ alive. See
 ### Hot-path endpoints (on `listen`)
 
 These are Angie's side of the integration, wired by
-`deploy/angie-guardian.conf`; you never call them directly.
+[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf); you never call them directly.
 
 | Endpoint | Purpose |
 |---|---|

@@ -30,7 +30,7 @@ routes, metrics and values may be *added*, but existing ones keep working):
   challenges and cached verdicts survive the upgrade. Store key prefixes
   (`block:`, `challenge:`, `chesc:`, `botdns:`) are part of this contract.
 - **Angie integration.** The `X-Guardian-*` header contract and the
-  `deploy/angie-guardian.conf` snippet semantics (auth subrequest, the 401/403
+  [`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf) snippet semantics (auth subrequest, the 401/403
   divert, the fail-open bypass) stay compatible.
 - **CLI flags** of `guardiand` and the signal contract (`SIGHUP` reload,
   `SIGINT`/`SIGTERM` shutdown, sd_notify).

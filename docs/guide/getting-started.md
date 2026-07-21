@@ -196,7 +196,9 @@ recommended annotated profile instead.
 
 ## 3. Install and wire the Angie configuration
 
-Install the shipped per-server snippet at the path used by the examples:
+Install the shipped per-server snippet
+([`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf))
+at the path used by the examples:
 
 ```sh
 sudo install -Dm644 deploy/angie-guardian.conf \

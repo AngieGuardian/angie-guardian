@@ -36,7 +36,7 @@ the request continues to the other pipeline stages unchanged.
 
 The trainer does not parse Angie's default `combined` log format. It reads one
 JSON object per line and needs four fields per record: `host`, `uri`,
-`user_agent`, and `status`. `deploy/angie-json-log.conf` defines a `log_format`
+`user_agent`, and `status`. [`deploy/angie-json-log.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf) defines a `log_format`
 named `guardian_json` that emits exactly those (plus timestamp, client address,
 method, bytes, request time, referer, and Guardian's own action, which are
 useful for your own analysis and ignored by the trainer).
@@ -54,7 +54,8 @@ include /etc/angie/angie-json-log.conf;   # from deploy/angie-json-log.conf
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
-Copy the file into place alongside the other snippets, then reload:
+Copy [the file](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf)
+into place alongside the other snippets, then reload:
 
 ```sh
 sudo cp deploy/angie-json-log.conf /etc/angie/
@@ -69,7 +70,7 @@ you can pass either shape to `guardian-train`.
 ::: warning `$guardian_action` needs the Guardian snippet
 The format logs `$guardian_action`, which is set by
 `auth_request_set $guardian_action $upstream_http_x_guardian_action;` in
-`deploy/angie-guardian.conf`. In a `server {}` block that does not include the
+[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf). In a `server {}` block that does not include the
 Guardian snippet the variable is simply empty, which logs fine but tells you
 nothing. Wire up [Angie](/guide/angie) first.
 :::

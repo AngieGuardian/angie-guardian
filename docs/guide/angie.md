@@ -23,7 +23,7 @@ upstream guardian {
 include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
 ```
 
-`deploy/angie-guardian.conf` documents the fail-open toggle (what happens when
+[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf) documents the fail-open toggle (what happens when
 the sidecar is down) and the challenge/pass/denied routes.
 
 ## Preserve the real client IP behind a proxy or CDN
@@ -57,7 +57,7 @@ taking your site down. The toggle is documented in the snippet itself.
 ## JSON access logs (for the anomaly trainer)
 
 To feed the anomaly trainer, switch protected vhosts to the JSON access log
-format from `deploy/angie-json-log.conf`:
+format from [`deploy/angie-json-log.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf):
 
 ```nginx
 access_log /var/log/angie/example.com.access.json guardian_json;

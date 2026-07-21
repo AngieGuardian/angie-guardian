@@ -26,7 +26,7 @@ make wasm        # -> dist/guardian.wasm
 ## Load it into Angie
 
 Requires an Angie build with WASM support (wasmtime or WAMR). Load it and wire
-the handler using the snippet in `deploy/angie-wasm.conf`:
+the handler using the snippet in [`deploy/angie-wasm.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-wasm.conf):
 
 ```nginx
 # http {} context: load the module once, with the guest config inline.
