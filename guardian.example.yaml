@@ -128,12 +128,21 @@ store:
 #       - 203.0.113.0/24
 
 # GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
-# for the per-domain `geo` scoping below. Keep them updated with geoipupdate
-# or a scheduled download; guardiand hot-reloads the files when they are
-# replaced on disk, no restart needed. Omit a database you don't use; config
-# is refused if a geo rule needs one that isn't configured.
+# for the per-domain `geo` scoping below. Get them from MaxMind with a free
+# licence key (geoipupdate), or without an account from the GeoLite2 mirror at
+# https://github.com/P3TERX/GeoLite.mmdb/releases (latest/download/ URLs, so
+# `curl -fsSL -o /tmp/x.mmdb ... && mv` from cron is a full update). guardiand
+# hot-reloads the files when they are replaced on disk, no restart needed.
+# Omit a database you don't use; config is refused if a geo rule needs one
+# that isn't configured.
+#
+# location_db takes a Country OR a City database: City is a superset (same
+# country data plus city/region), so `countries:` rules behave identically.
+# Country is recommended; City costs ~7.5x the size (8.8 MB vs 66 MB) and adds
+# only admin-view detail, never new selectors.
 # geoip:
-#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb   # city/region in admin
 #   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
@@ -402,7 +411,7 @@ domains:
     waf: { ip_behaviour: { enabled: false } }
 
   # Home-market shop: serve NL/BE/DE normally, make everyone else prove work
-  # first (requires geoip.country_db and pow enabled).
+  # first (requires geoip.location_db and pow enabled).
   # shop.example.nl:
   #   geo:
   #     enabled: true

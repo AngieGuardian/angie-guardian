@@ -307,16 +307,39 @@ positive can't deindex you), while **challenge** verdicts fire after the PoW tok
 check, so a listed client solves once and then browses normally until its
 token expires.
 
-**GeoIP databases.** Point `geoip:` at MaxMind-format `.mmdb` files. Free
-options: MaxMind GeoLite2 (free account + `geoipupdate`) or the DB-IP lite
-downloads. Guardian hot-reloads the files when they are replaced on disk, so
-a weekly `geoipupdate` cron needs no restart.
+**GeoIP databases.** Point `geoip:` at MaxMind-format `.mmdb` files. Guardian
+hot-reloads them when they are replaced on disk, so a scheduled update cron
+needs no restart.
 
 ```yaml
 geoip:
-  country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
-  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb   # optional, for asns: selectors
+  location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb  # 8.8 MB, recommended
+  # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb   # 66 MB, adds city/region
+  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb           # optional, for asns:
 ```
+
+Quickest way to get the files, no account needed: the
+[P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb/releases) mirror
+republishes MaxMind's GeoLite2 builds every three days behind stable
+`latest/download` URLs.
+
+```sh
+base=https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download
+for db in GeoLite2-Country GeoLite2-ASN; do
+  curl -fsSL -o "/tmp/$db.mmdb" "$base/$db.mmdb"
+  sudo mv "/tmp/$db.mmdb" "/var/lib/GeoIP/$db.mmdb"   # atomic, no half-written file
+done
+```
+
+That is a third-party mirror. For a first-party chain of custody use a free
+[MaxMind licence key](https://www.maxmind.com/en/geolite2/signup) with
+`geoipupdate`; [DB-IP lite](https://db-ip.com/db/lite.php) is another
+account-free publisher of the same format.
+
+`location_db` accepts a Country **or** a City database: City is a superset
+(same country data plus city/region detail), so `countries:` selectors behave
+identically either way. City adds city/region labels to the admin views but no
+new selectors, and is 7.5x the size.
 
 Then scope per domain (or in `defaults`):
 

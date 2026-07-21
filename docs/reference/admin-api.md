@@ -82,7 +82,11 @@ Lift a block.
 ### `GET /admin/decisions`
 
 The recent deny/challenge feed, newest first, from an in-process ring buffer
-(per instance, cleared on restart).
+(per instance, cleared on restart). When GeoIP/ASN databases are configured,
+each row may also contain `country`, `city`, `subdivision`,
+`accuracy_radius_km`, `asn`, and `as_org`. These optional fields are looked up
+when the feed is read, once per distinct IP in the response; they do not add
+work to the request decision path and are omitted when unavailable.
 
 Query parameters:
 
@@ -126,15 +130,32 @@ no hot-path cost). The window is the ring, so it covers challenged/denied
 traffic, not allows. Paths are query-stripped; GeoIP/ASN is merged for the top
 IPs only, and the country rollup is omitted when no databases are loaded.
 
+`ips`, `reasons` and `paths` are capped at the **top 15** entries, since they
+are unbounded and partly attacker-controlled. `countries` is **not capped**: it
+covers every distinct IP in the window, sorted by count descending, so a botnet
+spread thin across many addresses is reported at its true weight rather than
+ranked below one noisy IP from elsewhere. It is bounded by the ring in the worst
+case, and in practice by the number of countries with traffic.
+
 ```json
 {
   "window": 512,
-  "ips": [{"ip":"203.0.113.10","count":30,"country":"RU","asn":64500,"as_org":"Example Carrier"}],
+  "ips": [{"ip":"203.0.113.10","count":30,"country":"RU","asn":64500,"as_org":"Example Carrier"},
+          {"ip":"84.86.0.1","count":12,"country":"NL","city":"Schagen",
+           "subdivision":"NH","accuracy_radius_km":10,"asn":1136,"as_org":"KPN B.V."}],
   "reasons": [{"key":"denylist","count":50}],
   "paths": [{"key":"/wp-login.php","count":30}],
   "countries": [{"key":"RU","count":30}]
 }
 ```
+
+`city` and `subdivision` need a City-class
+[`location_db`](/reference/configuration#geoip) and are **absent** for roughly a
+fifth of networks even then, so treat a missing key as normal rather than an
+error. `accuracy_radius_km` is the radius of the area the record describes, not
+a precision: values of 200 and up are common and mean the locality is a
+region-or-larger guess. Latitude and longitude are deliberately not exposed;
+see [Country or City](/guide/bots-ip-intel#country-or-city-both-go-in-location-db).
 
 ## Scoring
 
@@ -161,8 +182,8 @@ and last error. Returns `{"enabled": false}` when neither
 
 ```json
 {"enabled":true,"intel":{
-  "country_db":{"path":"/var/lib/GeoIP/GeoLite2-Country.mmdb",
-                "type":"GeoLite2-Country","built":"2026-07-01T00:00:00Z"},
+  "location_db":{"path":"/var/lib/GeoIP/GeoLite2-Country.mmdb",
+                 "type":"GeoLite2-Country","built":"2026-07-01T00:00:00Z"},
   "feeds":[{"name":"firehol-level1","action":"deny","loaded":true,
             "loaded_from":"url","entries":6512,
             "last_refresh":"2026-07-10T06:00:00Z"}]}}

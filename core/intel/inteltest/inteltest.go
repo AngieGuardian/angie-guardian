@@ -30,6 +30,48 @@ func WriteCountryDB(t testing.TB, dir string, networks map[string]string) string
 	return writeDB(t, filepath.Join(dir, "country.mmdb"), "GeoLite2-Country", records)
 }
 
+// CityRecord is one network's entry in a GeoLite2-City-shaped fixture. Only
+// Country is universal in the real database: city and subdivision are absent
+// for roughly a fifth of networks, so leaving those fields empty is a
+// realistic case worth testing, not a malformed one.
+type CityRecord struct {
+	Country          string // ISO 3166-1 alpha-2, e.g. "NL"
+	City             string // English name, "" to omit the city key entirely
+	Subdivision      string // ISO code, "" to omit the subdivisions key entirely
+	AccuracyRadiusKM uint16 // 0 to omit the location key entirely
+}
+
+// WriteCityDB writes a GeoLite2-City-shaped database and returns its path.
+// Zero-valued fields are omitted from the written record rather than encoded
+// as empty values, so a fixture can reproduce the partial coverage the real
+// database has (see CityRecord).
+func WriteCityDB(t testing.TB, dir string, networks map[string]CityRecord) string {
+	t.Helper()
+	records := map[string]mmdbtype.DataType{}
+	for cidr, rec := range networks {
+		m := mmdbtype.Map{
+			"country": mmdbtype.Map{"iso_code": mmdbtype.String(rec.Country)},
+		}
+		if rec.City != "" {
+			m["city"] = mmdbtype.Map{
+				"names": mmdbtype.Map{"en": mmdbtype.String(rec.City)},
+			}
+		}
+		if rec.Subdivision != "" {
+			m["subdivisions"] = mmdbtype.Slice{
+				mmdbtype.Map{"iso_code": mmdbtype.String(rec.Subdivision)},
+			}
+		}
+		if rec.AccuracyRadiusKM != 0 {
+			m["location"] = mmdbtype.Map{
+				"accuracy_radius": mmdbtype.Uint16(rec.AccuracyRadiusKM),
+			}
+		}
+		records[cidr] = m
+	}
+	return writeDB(t, filepath.Join(dir, "city.mmdb"), "GeoLite2-City", records)
+}
+
 // WriteASNDB writes a GeoLite2-ASN-shaped database mapping each CIDR to an
 // AS number (organisation derived from the number), and returns its path.
 func WriteASNDB(t testing.TB, dir string, networks map[string]uint32) string {

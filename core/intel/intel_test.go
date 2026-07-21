@@ -81,7 +81,7 @@ func TestProviderGeoLookup(t *testing.T) {
 	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{
 		"198.51.100.0/24": 64500,
 	})
-	p, err := New(Config{CountryDB: countryDB, ASNDB: asnDB}, testLogger())
+	p, err := New(Config{LocationDB: countryDB, ASNDB: asnDB}, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +101,90 @@ func TestProviderGeoLookup(t *testing.T) {
 	// 4-in-6 client addresses must still hit the v4 entry.
 	if info = p.Lookup(netip.MustParseAddr("::ffff:198.51.100.7")); info.Country != "NL" {
 		t.Fatalf("4-in-6 lookup failed: %+v", info)
+	}
+}
+
+// TestProviderCityLookup covers a City database in the location_db slot: the
+// country fields must behave exactly as with a Country file, and the extra
+// city/subdivision/radius detail must come through the same single lookup.
+func TestProviderCityLookup(t *testing.T) {
+	dir := t.TempDir()
+	cityDB := inteltest.WriteCityDB(t, dir, map[string]inteltest.CityRecord{
+		"198.51.100.0/24": {Country: "NL", City: "Schagen", Subdivision: "NH", AccuracyRadiusKM: 10},
+		// Country-level record: the real database leaves city and subdivision
+		// out for ~20% of networks, and pins those at a huge radius.
+		"203.0.113.0/24": {Country: "US", AccuracyRadiusKM: 1000},
+	})
+	p, err := New(Config{LocationDB: cityDB}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	info := p.Lookup(netip.MustParseAddr("198.51.100.7"))
+	if info.Country != "NL" || info.City != "Schagen" || info.Subdivision != "NH" {
+		t.Fatalf("city record: %+v", info)
+	}
+	if info.AccuracyRadiusKM != 10 {
+		t.Fatalf("accuracy radius = %d, want 10", info.AccuracyRadiusKM)
+	}
+
+	// A record without city/subdivision must degrade to country only rather
+	// than erroring or panicking on the empty subdivisions slice.
+	info = p.Lookup(netip.MustParseAddr("203.0.113.7"))
+	if info.Country != "US" || info.City != "" || info.Subdivision != "" {
+		t.Fatalf("country-only record in a City db: %+v", info)
+	}
+	if info.AccuracyRadiusKM != 1000 {
+		t.Fatalf("accuracy radius = %d, want 1000", info.AccuracyRadiusKM)
+	}
+
+	if info = p.Lookup(netip.MustParseAddr("10.0.0.1")); info != (Info{}) {
+		t.Fatalf("want zero Info for unknown IP, got %+v", info)
+	}
+}
+
+// TestCountryDBOmitsCityFields is the degradation guarantee: the common
+// deployment points location_db at a Country database, and must see exactly
+// what it saw before city support existed.
+func TestCountryDBOmitsCityFields(t *testing.T) {
+	dir := t.TempDir()
+	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{
+		"198.51.100.0/24": "NL",
+	})
+	p, err := New(Config{LocationDB: countryDB}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	info := p.Lookup(netip.MustParseAddr("198.51.100.7"))
+	if info.Country != "NL" {
+		t.Fatalf("country = %q, want NL", info.Country)
+	}
+	if info.City != "" || info.Subdivision != "" || info.AccuracyRadiusKM != 0 {
+		t.Fatalf("a Country database must yield no city detail, got %+v", info)
+	}
+}
+
+// TestCityDBAcceptedAsLocationDB pins the type guard: a City file is a valid
+// location database, so a future edit to mmdbKind.matches cannot silently
+// start rejecting it (nor start accepting an ASN file, which would decode
+// zero values and make every geo rule inert).
+func TestCityDBAcceptedAsLocationDB(t *testing.T) {
+	dir := t.TempDir()
+	cityDB := inteltest.WriteCityDB(t, dir, map[string]inteltest.CityRecord{
+		"198.51.100.0/24": {Country: "NL", City: "Schagen"},
+	})
+	p, err := New(Config{LocationDB: cityDB}, testLogger())
+	if err != nil {
+		t.Fatalf("a City database must be accepted as location_db: %v", err)
+	}
+	p.Close()
+
+	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{"198.51.100.0/24": 64500})
+	if _, err := New(Config{LocationDB: asnDB}, testLogger()); err == nil {
+		t.Fatal("an ASN database as location_db must fail startup")
 	}
 }
 
@@ -124,7 +208,7 @@ func TestProviderNilAndEmpty(t *testing.T) {
 func TestMMDBHotReload(t *testing.T) {
 	dir := t.TempDir()
 	path := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
-	p, err := New(Config{CountryDB: path}, testLogger())
+	p, err := New(Config{LocationDB: path}, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +240,7 @@ func TestMMDBHotReloadDetectsSameSizeAndMtimeReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(Config{CountryDB: path}, testLogger())
+	p, err := New(Config{LocationDB: path}, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +272,8 @@ func TestMMDBWrongTypeFailsStartup(t *testing.T) {
 	dir := t.TempDir()
 	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
 	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{"198.51.100.0/24": 64500})
-	if _, err := New(Config{CountryDB: asnDB}, testLogger()); err == nil {
-		t.Fatal("an ASN database as country_db must fail startup")
+	if _, err := New(Config{LocationDB: asnDB}, testLogger()); err == nil {
+		t.Fatal("an ASN database as location_db must fail startup")
 	}
 	if _, err := New(Config{ASNDB: countryDB}, testLogger()); err == nil {
 		t.Fatal("a country database as asn_db must fail startup")
@@ -199,7 +283,7 @@ func TestMMDBWrongTypeFailsStartup(t *testing.T) {
 func TestMMDBReloadWrongTypeKeepsPrevious(t *testing.T) {
 	dir := t.TempDir()
 	path := inteltest.WriteCountryDB(t, dir, map[string]string{"198.51.100.0/24": "NL"})
-	p, err := New(Config{CountryDB: path}, testLogger())
+	p, err := New(Config{LocationDB: path}, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +441,7 @@ func TestProviderStatus(t *testing.T) {
 	if err := os.WriteFile(feedFile, []byte("192.0.2.1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(Config{CountryDB: countryDB, Feeds: []FeedConfig{
+	p, err := New(Config{LocationDB: countryDB, Feeds: []FeedConfig{
 		{Name: "f", File: feedFile, Action: FeedActionDeny},
 	}}, testLogger())
 	if err != nil {
@@ -365,7 +449,7 @@ func TestProviderStatus(t *testing.T) {
 	}
 	defer p.Close()
 	s := p.Status()
-	if s.CountryDB == nil || s.CountryDB.Type != "GeoLite2-Country" || s.ASNDB != nil {
+	if s.LocationDB == nil || s.LocationDB.Type != "GeoLite2-Country" || s.ASNDB != nil {
 		t.Fatalf("unexpected db status: %+v", s)
 	}
 	if len(s.Feeds) != 1 || !s.Feeds[0].Loaded || s.Feeds[0].Entries != 1 {
@@ -378,8 +462,8 @@ func TestProviderStatus(t *testing.T) {
 // against files MaxMind actually ships, not only mmdbwriter output.
 func TestOfficialMaxMindTestData(t *testing.T) {
 	p, err := New(Config{
-		CountryDB: "testdata/GeoIP2-Country-Test.mmdb",
-		ASNDB:     "testdata/GeoLite2-ASN-Test.mmdb",
+		LocationDB: "testdata/GeoIP2-Country-Test.mmdb",
+		ASNDB:      "testdata/GeoLite2-ASN-Test.mmdb",
 	}, testLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -407,8 +491,8 @@ func TestOfficialMaxMindTestData(t *testing.T) {
 	}
 
 	s := p.Status()
-	if s.CountryDB == nil || s.CountryDB.Type != "GeoIP2-Country" {
-		t.Errorf("country db status: %+v", s.CountryDB)
+	if s.LocationDB == nil || s.LocationDB.Type != "GeoIP2-Country" {
+		t.Errorf("country db status: %+v", s.LocationDB)
 	}
 	if s.ASNDB == nil || s.ASNDB.Type != "GeoLite2-ASN" {
 		t.Errorf("asn db status: %+v", s.ASNDB)

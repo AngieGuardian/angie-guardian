@@ -88,7 +88,10 @@ ride past the WAF.
   admin API; guardiand prints the bare login URL at startup and never embeds a
   configured/persistent token in logs (see `admin.token_file`). It shows active
   blocks with one-click block/unblock, the filterable recent decisions feed,
-  challenge/solve counters, and per-domain status. See USAGE.md § 4.
+  challenge/solve counters, per-domain status, activity graphs, and (with a
+  `geoip.location_db` loaded) a zoomable world map of where non-allow decisions
+  come from. Charts and map data are bundled with the daemon, so the page needs
+  no CDN and works air-gapped. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` atomically archives the current
   Ed25519 key and generates a new one; `previous_key_dir` is required. Live
   replicas sharing both paths refresh automatically. Retired keys accept only

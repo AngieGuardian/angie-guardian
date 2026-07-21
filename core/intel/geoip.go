@@ -16,7 +16,7 @@ import (
 	"github.com/oschwald/maxminddb-golang/v2"
 )
 
-// mmdbKind is the record schema expected from a database, so a country_db
+// mmdbKind is the record schema expected from a database, so a location_db
 // accidentally pointed at an ASN file (or vice versa) is rejected instead of
 // silently decoding zero values and never matching any geo rule.
 type mmdbKind string
@@ -167,30 +167,83 @@ func (f *mmdbFile) close() {
 	}
 }
 
-// country returns the ISO 3166-1 alpha-2 code for addr, or "" when the
-// database has no record. located-country wins; registered_country is the
-// fallback (many hosting ranges carry only the latter).
-func (f *mmdbFile) country(addr netip.Addr) (string, error) {
+// geoRecord is what one location lookup yields. Country is always attempted;
+// the rest are only present in City-class databases, and even there not for
+// every network (measured on GeoLite2-City: city ~79%, subdivision ~80%), so
+// every field is independently optional.
+type geoRecord struct {
+	Country     string // ISO 3166-1 alpha-2
+	City        string // English name, "" when absent
+	Subdivision string // ISO code of the largest subdivision, "" when absent
+
+	// AccuracyRadiusKM is the radius in km of the circle the record describes,
+	// NOT a precision. MaxMind: "A geolocation area is a circle defined by
+	// latitude, longitude, and an accuracy radius" and locations "should not
+	// be used to identify a particular address or household". Measured on
+	// GeoLite2-City, ~29% of networks are 200km or worse and 12.5% sit at the
+	// 1000km floor (8.8.8.8 resolves to the geographic centre of the US), so
+	// callers must present City as a hint qualified by this, never as fact.
+	AccuracyRadiusKM uint16
+}
+
+// geo returns the location record for addr, zero-valued when the database has
+// no entry. located-country wins; registered_country is the fallback (many
+// hosting ranges carry only the latter).
+//
+// Country and City databases both land here: City is a superset carrying the
+// same country fields, so the extra keys simply decode empty against a
+// Country file. It is deliberately one lookup rather than one per field, so
+// the auth hot path pays a single mmap traversal.
+//
+// Latitude, longitude, time_zone and postal are deliberately never decoded:
+// see AccuracyRadiusKM for why a coordinate pair here would fabricate
+// precision Guardian does not have.
+func (f *mmdbFile) geo(addr netip.Addr) (geoRecord, error) {
 	r := f.acquire()
 	if r == nil {
-		return "", nil
+		return geoRecord{}, nil
 	}
 	defer r.release()
 	var rec struct {
+		City struct {
+			// Decoded as a struct, not map[string]string: the databases carry
+			// eight languages and allocating that map per lookup to read one
+			// field would be pure hot-path waste. Every one of the 4,583,842
+			// city records in GeoLite2-City has an "en" key, so nothing is lost.
+			Names struct {
+				EN string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"city"`
 		Country struct {
 			ISOCode string `maxminddb:"iso_code"`
 		} `maxminddb:"country"`
 		RegisteredCountry struct {
 			ISOCode string `maxminddb:"iso_code"`
 		} `maxminddb:"registered_country"`
+		Location struct {
+			AccuracyRadius uint16 `maxminddb:"accuracy_radius"`
+		} `maxminddb:"location"`
+		Subdivisions []struct {
+			ISOCode string `maxminddb:"iso_code"`
+		} `maxminddb:"subdivisions"`
 	}
 	if err := r.Lookup(addr).Decode(&rec); err != nil {
-		return "", err
+		return geoRecord{}, err
 	}
-	if rec.Country.ISOCode != "" {
-		return rec.Country.ISOCode, nil
+	out := geoRecord{
+		Country:          rec.Country.ISOCode,
+		City:             rec.City.Names.EN,
+		AccuracyRadiusKM: rec.Location.AccuracyRadius,
 	}
-	return rec.RegisteredCountry.ISOCode, nil
+	if out.Country == "" {
+		out.Country = rec.RegisteredCountry.ISOCode
+	}
+	// Index 0 is the largest administrative division; ~20% of records have no
+	// subdivisions at all, so the empty slice is the common case, not an error.
+	if len(rec.Subdivisions) > 0 {
+		out.Subdivision = rec.Subdivisions[0].ISOCode
+	}
+	return out, nil
 }
 
 // asn returns the autonomous system number and organisation for addr, or

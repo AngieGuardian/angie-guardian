@@ -80,16 +80,92 @@ Every field: [verified_bots reference](/reference/configuration#verified-bots).
 ## GeoIP scoping
 
 Guardian can scope traffic by origin country and ASN. Point `geoip:` at
-MaxMind-format `.mmdb` files. Free options: [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) (free account
-plus `geoipupdate`) or the [DB-IP lite](https://db-ip.com/db/lite.php) downloads. Guardian hot-reloads the
-files when they are replaced on disk, so a weekly `geoipupdate` cron needs no
-restart.
+MaxMind-format `.mmdb` files. Guardian hot-reloads the files when they are
+replaced on disk, so a scheduled update cron needs no restart.
 
 ```yaml
 geoip:
-  country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
-  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb   # optional, for asns: selectors
+  location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb  # 8.8 MB, recommended
+  # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb   # 66 MB, adds city/region
+  asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb           # optional, for asns:
 ```
+
+### Getting the databases
+
+Free options, easiest first:
+
+| Source | What you need | Notes |
+|---|---|---|
+| [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb/releases) | nothing | Unofficial GeoLite2 mirror, no account, plain HTTPS download. |
+| [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) | free account + licence key | The upstream source; use [`geoipupdate`](https://github.com/maxmind/geoipupdate). |
+| [DB-IP lite](https://db-ip.com/db/lite.php) | nothing | Different publisher, monthly builds, filenames differ. |
+
+The quickest start is the P3TERX mirror. It republishes MaxMind's own GeoLite2
+files unchanged, on a GitHub Actions cron that runs every three days, and the
+`releases/latest/download/` URLs always resolve to the newest build:
+
+```sh
+sudo mkdir -p /var/lib/GeoIP
+base=https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download
+
+# Country (8.8 MB) + ASN (12 MB). Swap Country for City for city/region labels.
+for db in GeoLite2-Country GeoLite2-ASN; do
+  curl -fsSL -o "/tmp/$db.mmdb" "$base/$db.mmdb"
+  sudo mv "/tmp/$db.mmdb" "/var/lib/GeoIP/$db.mmdb"
+done
+```
+
+Download to a temporary file and `mv` into place, as above: the rename is
+atomic, so Guardian never observes a half-written database. Re-running the
+snippet from a weekly cron is a complete update story, no restart involved.
+
+::: tip Prefer upstream for anything contractual
+The mirror is a third party republishing MaxMind's files, so you are trusting
+its operator for integrity, availability and continuity. If your compliance
+posture needs a first-party chain of custody, or you want MaxMind's twice-weekly
+cadence rather than a three-day cron, sign up for a free licence key and run
+`geoipupdate` instead. Either way the data is MaxMind's and carries their
+[GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula).
+:::
+
+### Country or City: both go in `location_db`
+
+GeoLite2 ships three files, and two of them belong in `location_db`. That one
+key takes either because **City is a superset of Country**: it carries the same
+`country.iso_code`, plus city, region and postal detail on top. Country rules
+behave identically whichever you load, which is why the key is not named after
+either product. GeoIP2-Enterprise and DB-IP files work here too.
+
+| | `GeoLite2-Country.mmdb` | `GeoLite2-City.mmdb` |
+|---|---|---|
+| Size (memory-mapped) | 8.8 MB | **66 MB** (7.5x) |
+| `countries:` selectors | yes | yes, identical |
+| City / region in admin views | no | yes |
+
+**Use Country unless you specifically want city labels.** City costs 7.5x the
+size and buys no new rules: there is no `cities:` or `subdivisions:` selector,
+by design. What it adds is visibility. Offender rows read
+`Schagen, NH · NL · KPN B.V.` instead of `NL · KPN B.V.`, which helps when you
+are working out whether traffic is one datacentre or a whole region.
+
+::: warning A GeoLite2 location is an area, not an address
+City data is a *hint*, and often a very coarse one. MaxMind defines a location
+as a circle with an accuracy radius "from a few kilometers to 1000 kilometers",
+and says it "should not be used to identify a particular address or household".
+
+Measured over all 5.8M networks in the City database: only ~17% resolve to
+within 10 km, while **~29% carry a radius of 200 km or worse** and 12.5% sit at
+the 1000 km floor. `8.8.8.8` is the classic case: it resolves to the geographic
+centre of the United States at a 1000 km radius, which means "somewhere in the
+US", not a place.
+
+So Guardian never exposes latitude/longitude, and marks any locality resolved
+to 200 km or worse as approximate in the dashboard. Roughly a fifth of networks
+have no city at all, which shows as country only rather than a guess.
+:::
+
+Whichever file you load, the dashboard also draws a
+[world map](/guide/admin) of where non-allow decisions come from.
 
 Then scope per domain (or in `defaults`):
 

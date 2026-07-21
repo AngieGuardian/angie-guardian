@@ -32,10 +32,13 @@ const pollInterval = time.Minute
 
 // Config is what the Provider needs, assembled by the core config loader.
 type Config struct {
-	CountryDB string // MaxMind-format country database, "" = no country data
-	ASNDB     string // MaxMind-format ASN database, "" = no ASN data
-	CacheDir  string // persisted copies of URL feeds, "" = no persistence
-	Feeds     []FeedConfig
+	// LocationDB is a MaxMind-format Country or City database ("" = no
+	// country data). City is a superset of Country, so both satisfy country
+	// lookups; only City also yields city/subdivision detail.
+	LocationDB string
+	ASNDB      string // MaxMind-format ASN database, "" = no ASN data
+	CacheDir   string // persisted copies of URL feeds, "" = no persistence
+	Feeds      []FeedConfig
 }
 
 // Info is one IP's intelligence: zero values mean "unknown" (no database
@@ -44,6 +47,19 @@ type Info struct {
 	Country string `json:"country,omitempty"` // ISO 3166-1 alpha-2, upper case
 	ASN     uint32 `json:"asn,omitempty"`
 	ASOrg   string `json:"as_org,omitempty"`
+
+	// City and Subdivision are only ever populated from a City-class
+	// location_db, and even then not for every network (~79% / ~80%), so
+	// treat "" as normal rather than exceptional.
+	City        string `json:"city,omitempty"`        // English name, e.g. "Schagen"
+	Subdivision string `json:"subdivision,omitempty"` // ISO code, e.g. "NH"
+
+	// AccuracyRadiusKM qualifies City/Subdivision: it is the radius of the
+	// area the record describes, not a precision. Large values are common
+	// (~29% of networks are 200km+), so anything showing a locality to an
+	// operator should show this alongside it. Never a coordinate: see
+	// geoRecord.AccuracyRadiusKM.
+	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitempty"`
 }
 
 // FeedHit names one feed an IP appears in.
@@ -83,7 +99,7 @@ type Provider struct {
 // background once Start is called. Returns (nil, nil) when nothing is
 // configured.
 func New(cfg Config, log *slog.Logger) (*Provider, error) {
-	if cfg.CountryDB == "" && cfg.ASNDB == "" && len(cfg.Feeds) == 0 {
+	if cfg.LocationDB == "" && cfg.ASNDB == "" && len(cfg.Feeds) == 0 {
 		return nil, nil
 	}
 	p := &Provider{
@@ -93,8 +109,8 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 	}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	var err error
-	if cfg.CountryDB != "" {
-		if p.country, err = openMMDB(cfg.CountryDB, kindCountry); err != nil {
+	if cfg.LocationDB != "" {
+		if p.country, err = openMMDB(cfg.LocationDB, kindCountry); err != nil {
 			return nil, err
 		}
 	}
@@ -291,11 +307,12 @@ func (p *Provider) Lookup(addr netip.Addr) Info {
 	addr = addr.Unmap()
 	var info Info
 	if p.country != nil {
-		c, err := p.country.country(addr)
+		g, err := p.country.geo(addr)
 		if err != nil {
-			p.log.Warn("country lookup failed", "ip", addr, "err", err)
+			p.log.Warn("location lookup failed", "ip", addr, "err", err)
 		}
-		info.Country = c
+		info.Country, info.City = g.Country, g.City
+		info.Subdivision, info.AccuracyRadiusKM = g.Subdivision, g.AccuracyRadiusKM
 	}
 	if p.asn != nil {
 		n, org, err := p.asn.asn(addr)
@@ -337,9 +354,11 @@ func (p *Provider) FeedHits(addr netip.Addr) []FeedHit {
 
 // Status is the admin-API view of the whole provider.
 type Status struct {
-	CountryDB *DBStatus    `json:"country_db,omitempty"`
-	ASNDB     *DBStatus    `json:"asn_db,omitempty"`
-	Feeds     []FeedStatus `json:"feeds"`
+	// LocationDB reports the loaded Country or City database; Type carries
+	// which one it actually is (e.g. "GeoLite2-City").
+	LocationDB *DBStatus    `json:"location_db,omitempty"`
+	ASNDB      *DBStatus    `json:"asn_db,omitempty"`
+	Feeds      []FeedStatus `json:"feeds"`
 }
 
 func (p *Provider) Status() Status {
@@ -348,7 +367,7 @@ func (p *Provider) Status() Status {
 		return s
 	}
 	if p.country != nil {
-		s.CountryDB = p.country.status()
+		s.LocationDB = p.country.status()
 	}
 	if p.asn != nil {
 		s.ASNDB = p.asn.status()

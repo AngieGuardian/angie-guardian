@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/intel/inteltest"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
@@ -146,6 +147,11 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	if newest := ds[0].(map[string]any); newest["ip"] != "203.0.113.3" || newest["reason"] != "denylist:ip" {
 		t.Fatalf("newest decision = %v, want ip=203.0.113.3 reason=denylist:ip", newest)
 	}
+	for _, key := range []string{"country", "city", "subdivision", "accuracy_radius_km", "asn", "as_org"} {
+		if value, ok := ds[0].(map[string]any)[key]; ok {
+			t.Errorf("%s present without a configured GeoIP/ASN database: %v", key, value)
+		}
+	}
 
 	// limit + filters.
 	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?limit=2", adminToken, ""))
@@ -175,6 +181,49 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	}
 	if byReason := recent["by_reason"].(map[string]any); byReason["denylist"] != float64(3) {
 		t.Fatalf("stats by_reason = %v, want denylist:3 (category, not full reason)", byReason)
+	}
+}
+
+func TestAdminDecisionsGeoDetail(t *testing.T) {
+	dir := t.TempDir()
+	cityDB := inteltest.WriteCityDB(t, dir, map[string]inteltest.CityRecord{
+		"203.0.113.10/32": {Country: "NL", City: "Schagen", Subdivision: "NH", AccuracyRadiusKM: 10},
+		"203.0.113.11/32": {Country: "US", AccuracyRadiusKM: 1000},
+	})
+	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{"203.0.113.10/32": 64500})
+	yaml := reportYAML + "geoip: { location_db: " + cityDB + ", asn_db: " + asnDB + " }\n"
+	ts, engine := reportServer(t, yaml)
+
+	for _, ip := range []string{"203.0.113.10", "203.0.113.11"} {
+		engine.Evaluate(context.Background(), &core.RequestContext{
+			Host: "site.test", Method: "GET", URI: "/probe",
+			RemoteAddr: ip, UserAgent: "curl/8",
+		})
+	}
+
+	out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/decisions", adminToken, ""))
+	rows := map[string]map[string]any{}
+	for _, value := range out["decisions"].([]any) {
+		row := value.(map[string]any)
+		rows[row["ip"].(string)] = row
+	}
+
+	full := rows["203.0.113.10"]
+	if full["country"] != "NL" || full["city"] != "Schagen" || full["subdivision"] != "NH" {
+		t.Errorf("city decision = %v, want Schagen, NH, NL", full)
+	}
+	if full["accuracy_radius_km"] != float64(10) || full["asn"] != float64(64500) || full["as_org"] != "Test AS" {
+		t.Errorf("decision intelligence = %v, want radius 10, AS64500/Test AS", full)
+	}
+
+	partial := rows["203.0.113.11"]
+	if partial["country"] != "US" || partial["accuracy_radius_km"] != float64(1000) {
+		t.Errorf("country-only decision = %v, want US with radius 1000", partial)
+	}
+	for _, key := range []string{"city", "subdivision", "asn", "as_org"} {
+		if value, ok := partial[key]; ok {
+			t.Errorf("%s should be omitted when unavailable, got %v", key, value)
+		}
 	}
 }
 

@@ -106,14 +106,22 @@ Fleet-wide attack posture. Off when absent. See the
 
 MaxMind-format (`.mmdb`) databases: MaxMind GeoLite2/GeoIP2, DB-IP, or any
 other publisher of the format. The files are hot-reloaded when replaced on
-disk (geoipupdate does this atomically), so scheduled updates need no
-restart. Either may be omitted; a `geo` rule that needs the missing database
-is refused at config load.
+disk (as long as the update lands via an atomic rename, which `geoipupdate`
+and a `curl` + `mv` both do), so scheduled updates need no restart. Either may
+be omitted; a `geo` rule that needs the missing database is refused at config
+load. Where to download them:
+[Getting the databases](/guide/bots-ip-intel#getting-the-databases).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `geoip.country_db` | string | | Country database, for `countries:` selectors. |
+| `geoip.location_db` | string | | Country **or** City database, for `countries:` selectors. |
 | `geoip.asn_db` | string | | ASN database, for `asns:` selectors. |
+
+`location_db` accepts either `GeoLite2-Country.mmdb` or `GeoLite2-City.mmdb`
+(also GeoIP2-Enterprise and DB-IP): City is a superset of Country, so
+`countries:` selectors behave the same either way. City adds city/region labels
+to the admin views but no new selectors, and costs 7.5x the file size. See
+[Country or City](/guide/bots-ip-intel#country-or-city-both-go-in-location-db).
 
 ## reputation
 

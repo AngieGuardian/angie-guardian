@@ -48,7 +48,7 @@ func intelEngine(t *testing.T) (*Engine, *pow.Manager) {
 store: { backend: memory }
 signing_key_file: test-signing.key
 geoip:
-  country_db: %s
+  location_db: %s
   asn_db: %s
 reputation:
   feeds:

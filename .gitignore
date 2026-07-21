@@ -12,7 +12,7 @@ coverage.out
 *.db
 *.key
 
-# GeoLite datbaases
+# GeoLite databases
 *.mmdb
 
 # Editor / OS

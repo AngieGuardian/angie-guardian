@@ -36,7 +36,7 @@ store:
 # harness: the fixture databases/feeds would have to be mounted into the
 # container first.
 # geoip:
-#   country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+#   location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb  # or GeoLite2-City.mmdb
 #   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds

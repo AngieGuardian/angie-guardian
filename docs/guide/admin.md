@@ -121,6 +121,12 @@ headline count comes from the bounded in-process mirror and is shown as a lower
 bound when that mirror is capacity-incomplete, so leaving the dashboard open
 never triggers an unbounded store scan.
 
+When GeoIP or ASN databases are loaded, Recent decisions gains a **Geo** column
+with the same country, locality, accuracy and network context as Top offenders.
+Geo text participates in the free-text filter. Broad City-database matches are
+dimmed and expose their accuracy radius on hover rather than presenting an
+approximate locality as a precise one.
+
 ### Graphs
 
 The page renders graphs with a local copy of Chart.js (no CDN). The charts are
@@ -143,6 +149,32 @@ when GeoIP is loaded) from
 [`GET /admin/offenders`](/reference/admin-api#get-admin-offenders). It counts
 the in-process decision ring exactly, so it reflects challenged/denied traffic
 (not allows) and adds nothing to the hot path.
+
+With a City-class [`location_db`](/guide/bots-ip-intel#country-or-city-both-go-in-location-db)
+the IP rows also name the city and region (`Schagen, NH · NL · KPN B.V.`). A
+locality that GeoLite2 only resolves to a 200 km-or-wider circle is dimmed and
+carries the radius in a tooltip, so a precise hit and a region-sized guess never
+look alike. IPs with no city record show the country alone.
+
+#### World map
+
+When a `location_db` is loaded, a choropleth above the tables shades countries
+by their share of non-allow decisions, drawn with a local copy of
+chartjs-chart-geo and a bundled TopoJSON atlas (no CDN; the atlas is fetched
+once, and only when there is geo data to draw). It uses an Equal Earth
+projection so relative areas stay honest.
+
+The map can be explored without trapping normal page scrolling. On Linux and
+Windows, hold **Ctrl** while using the mouse wheel to zoom or dragging to pan;
+on macOS use **Cmd**. Touch screens support direct one-finger panning and
+two-finger pinch zoom. **Reset view** returns to the centred world view. The
+zoom plugin and its touch-gesture dependency are bundled with the daemon, so
+these controls also work in air-gapped deployments.
+
+The atlas has no shape for some countries, mostly city-states and small island
+territories such as Hong Kong, Singapore and Malta. Their traffic is **not**
+dropped: it is listed under the map as `Not on map: HK 4 · SG 3`. The country
+table beside the map remains the complete, exact view.
 
 ### Server traffic (Angie API)
 

@@ -509,8 +509,15 @@ func ratioField(name string, v float64) error {
 // scheduled updates need no restart. Either may be omitted; geo rules that
 // would need the missing database are refused at config load.
 type GeoIPConfig struct {
-	CountryDB string `yaml:"country_db"`
-	ASNDB     string `yaml:"asn_db"`
+	// LocationDB answers "where is this IP". A Country database
+	// (GeoLite2-Country) and a City database (GeoLite2-City) are both valid
+	// here: City is a superset, carrying the same country.iso_code plus
+	// city/subdivision detail, so country rules behave identically either
+	// way. City costs ~7.5x the file size and only adds admin-view detail,
+	// never new selectors. GeoIP2-Enterprise and DB-IP files work too, which
+	// is why this key is not named after any one product.
+	LocationDB string `yaml:"location_db"`
+	ASNDB      string `yaml:"asn_db"`
 }
 
 // ReputationFeeds is the global list of external IP reputation feeds. Feeds
@@ -1456,13 +1463,13 @@ func (c *Config) checkGeoRefs(dc *DomainConfig) error {
 	if !g.Enabled {
 		return nil
 	}
-	if c.GeoIP.CountryDB == "" && c.GeoIP.ASNDB == "" {
-		return fmt.Errorf("geo is enabled but no geoip.country_db or geoip.asn_db is configured")
+	if c.GeoIP.LocationDB == "" && c.GeoIP.ASNDB == "" {
+		return fmt.Errorf("geo is enabled but no geoip.location_db or geoip.asn_db is configured")
 	}
 	usesCountries := len(g.Deny.Countries)+len(g.Challenge.Countries)+len(g.Allow.Countries) > 0
 	usesASNs := len(g.Deny.ASNs)+len(g.Challenge.ASNs)+len(g.Allow.ASNs) > 0
-	if usesCountries && c.GeoIP.CountryDB == "" {
-		return fmt.Errorf("geo uses country selectors but geoip.country_db is not configured")
+	if usesCountries && c.GeoIP.LocationDB == "" {
+		return fmt.Errorf("geo uses country selectors but geoip.location_db is not configured")
 	}
 	if usesASNs && c.GeoIP.ASNDB == "" {
 		return fmt.Errorf("geo uses asn selectors but geoip.asn_db is not configured")
@@ -1524,9 +1531,9 @@ func validFeedName(name string) bool {
 // plus reputation feeds) from the loaded top-level config.
 func (c *Config) IntelConfig() intel.Config {
 	ic := intel.Config{
-		CountryDB: c.GeoIP.CountryDB,
-		ASNDB:     c.GeoIP.ASNDB,
-		CacheDir:  c.Reputation.CacheDir,
+		LocationDB: c.GeoIP.LocationDB,
+		ASNDB:      c.GeoIP.ASNDB,
+		CacheDir:   c.Reputation.CacheDir,
 	}
 	for _, f := range c.Reputation.Feeds {
 		ic.Feeds = append(ic.Feeds, intel.FeedConfig{

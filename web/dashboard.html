@@ -86,14 +86,35 @@
   .chart-card .canvas-wrap { position: relative; height: 220px; margin-top: 0.5rem; }
   .chart-card canvas { max-width: 100%; }
 
+  /* World map: full-width card sitting above the offender tables. */
+  #geomap-card { grid-template-columns: 1fr; margin-bottom: 0.75rem; }
+  #geomap-card .geomap-tools { display: flex; align-items: center; gap: 0.6rem; }
+  #geomap-card .geomap-help { margin-top: 0.25rem; }
+  #geomap-reset { padding: 0.12rem 0.5rem; font-size: 0.75rem; }
+  #chart-geomap { cursor: grab; touch-action: none; }
+  #chart-geomap:active { cursor: grabbing; }
+  /* Countries the atlas cannot draw, listed under the map. Needs its own
+     breathing room: without it the line collides with the canvas above and
+     the card edge below. */
+  #geomap-unmapped { margin-top: 0.6rem; padding-top: 0.55rem;
+                     border-top: 1px solid var(--border); }
+
   /* Top-offenders: a row of compact ranked-list tables. */
   .offenders { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
                gap: 0.75rem; }
   .offenders td.hits { text-align: right; font-variant-numeric: tabular-nums; }
+  /* A locality resolved only to a 200km+ circle: shown, but not as fact. */
+  td.coarse { color: var(--ink-2); font-style: italic; }
 
   /* Tables (wide content scrolls inside its own container) */
   .tablewrap { background: var(--surface); border: 1px solid var(--border);
                border-radius: 10px; overflow-x: auto; }
+  /* Any table that can outgrow its neighbours scrolls in place rather than
+     stretching the section. The country rollup is uncapped (every country in
+     the window) and the top-15 lists still vary in height, so all four share
+     one bound and the grid renders them as equal-height columns. */
+  .tablewrap.scrolly { max-height: 34.5rem; overflow-y: auto; align-self: stretch; }
+  .tablewrap.scrolly th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
   table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
   th { text-align: left; color: var(--muted); font-weight: 500;
        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
@@ -248,20 +269,34 @@
   </div>
 
   <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span></h2>
+  <!-- World map: only rendered when a location_db is loaded (see renderGeoMap). -->
+  <div class="charts" id="geomap-card" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Where non-allow decisions come from</span>
+        <span class="geomap-tools"><span class="meta" id="geomap-note"></span>
+          <button id="geomap-reset" type="button" disabled>Reset view</button></span></div>
+      <div class="meta geomap-help" id="geomap-help"></div>
+      <div class="canvas-wrap" style="height:340px;"><canvas id="chart-geomap"></canvas></div>
+      <!-- Countries the atlas has no shape for (Hong Kong, Singapore, Malta,
+           small island territories). Listed rather than dropped: they are
+           exactly the hosting-heavy origins a WAF cares about. -->
+      <div class="meta" id="geomap-unmapped" hidden></div>
+    </div>
+  </div>
   <div class="offenders" id="offenders">
-    <div class="tablewrap">
+    <div class="tablewrap scrolly">
       <table><thead><tr><th>IP</th><th id="off-ip-geo">Geo</th><th>Hits</th></tr></thead>
         <tbody id="off-ips"></tbody></table>
     </div>
-    <div class="tablewrap">
+    <div class="tablewrap scrolly">
       <table><thead><tr><th>Reason</th><th>Hits</th></tr></thead>
         <tbody id="off-reasons"></tbody></table>
     </div>
-    <div class="tablewrap">
+    <div class="tablewrap scrolly">
       <table><thead><tr><th>Path</th><th>Hits</th></tr></thead>
         <tbody id="off-paths"></tbody></table>
     </div>
-    <div class="tablewrap" id="off-countries-wrap" hidden>
+    <div class="tablewrap scrolly" id="off-countries-wrap" hidden>
       <table><thead><tr><th>Country</th><th>Hits</th></tr></thead>
         <tbody id="off-countries"></tbody></table>
     </div>
@@ -275,13 +310,14 @@
       <option value="deny">deny</option>
       <option value="challenge">challenge</option>
     </select>
-    <input id="f-text" placeholder="filter host / IP / URI / reason / UA" size="34">
+    <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
     <span class="meta" id="f-count"></span>
   </div>
   <div class="tablewrap">
     <table>
       <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
-                 <th>IP</th><th>Request</th><th>User-Agent</th></tr></thead>
+                 <th>IP</th><th id="dec-geo" hidden>Geo</th>
+                 <th>Request</th><th>User-Agent</th></tr></thead>
       <tbody id="decisions"></tbody>
     </table>
     <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
@@ -352,6 +388,13 @@
 <!-- Chart.js, vendored and served same-origin (no CDN). Relative src resolves to
      /admin/chart.umd.min.js since this page is /admin/dashboard. -->
 <script src="chart.umd.min.js"></script>
+<!-- Map module: reads the Chart global at load, so it must come after Chart.js.
+     Self-registers its controllers and scales, and re-exports topojson. -->
+<script src="chart-geo.umd.min.js"></script>
+<!-- chartjs-plugin-zoom's UMD build expects Hammer to exist globally. Keep both
+     local so the dashboard remains usable in an air-gapped deployment. -->
+<script src="hammer.min.js"></script>
+<script src="chartjs-plugin-zoom.min.js"></script>
 <script>
 (() => {
   "use strict";
@@ -420,10 +463,159 @@
   const BLK_PAGE_SIZE = 25;
   let blkPage = 0;
 
+  // A GeoLite2 city record describes a circle, and the radius runs from a few
+  // km to 1000. At or above this the label is a region-or-larger guess, not a
+  // place, so it is shown dimmed with the radius in a tooltip.
+  const COARSE_RADIUS_KM = 200;
+
   // --- Charts (Chart.js, vendored). Instances are created once and updated in
   // place each tick; never new Chart() per tick (that leaks + flickers). All
   // series come from data render() already fetched, no extra requests. ---
   const charts = {}; // id -> Chart instance
+
+  // chartjs-plugin-zoom operates on Cartesian min/max ranges. The geo module's
+  // projection scale instead exposes a multiplicative scale and pixel offset,
+  // so bridge the plugin's scale hooks to that representation. A hidden linear
+  // y scale below lets the plugin deliver vertical pan deltas; the real color
+  // scale must be ignored or zooming would change the choropleth ramp.
+  const GEO_MIN_ZOOM = 1;
+  const GEO_MAX_ZOOM = 8;
+  const geoViewport = { scale: 1, offset: [0, 0], zoomHandled: false };
+  const macPlatform = /Mac|iPhone|iPad|iPod/.test(
+    navigator.userAgentData?.platform || navigator.platform || ""
+  );
+  const geoModifier = macPlatform ? "meta" : "ctrl";
+  const geoModifierLabel = macPlatform ? "Cmd" : "Ctrl";
+  $("geomap-help").textContent = geoModifierLabel +
+    "+wheel to zoom · " + geoModifierLabel +
+    "+drag to pan · touch: pinch and drag";
+
+  const geoProjection = (chart) => chart?.scales?.projection;
+  const geoOutline = (chart) => ({
+    type: "FeatureCollection",
+    features: chart?.data?.datasets?.[0]?.outline || [],
+  });
+  const geoPanLimits = (scale, zoom) => {
+    const area = scale?.chart?.chartArea;
+    const features = scale?.chart?.data?.datasets?.[0]?.outline;
+    if (!area || !features?.length || !scale.geoPath) return [Infinity, Infinity];
+    const bounds = scale.geoPath.bounds(geoOutline(scale.chart));
+    // The handler computes the next viewport before Chart.js redraws, so the
+    // rendered projection can still be at the previous zoom here. Divide by
+    // that rendered value, not the already-updated persistent state.
+    const current = Math.max(GEO_MIN_ZOOM,
+      Number(scale.options.projectionScale) || geoViewport.scale);
+    const baseWidth = Math.max(0, bounds[1][0] - bounds[0][0]) / current;
+    const baseHeight = Math.max(0, bounds[1][1] - bounds[0][1]) / current;
+    return [
+      Math.max(0, (baseWidth * zoom - area.width) / 2),
+      Math.max(0, (baseHeight * zoom - area.height) / 2),
+    ];
+  };
+  const clampGeoOffset = (scale, zoom, offset) => {
+    const [maxX, maxY] = geoPanLimits(scale, zoom);
+    return [
+      Math.max(-maxX, Math.min(maxX, offset[0])),
+      Math.max(-maxY, Math.min(maxY, offset[1])),
+    ];
+  };
+  const applyGeoViewport = (scale) => {
+    if (!scale) return;
+    geoViewport.offset = clampGeoOffset(scale, geoViewport.scale, geoViewport.offset);
+    scale.options.projectionScale = geoViewport.scale;
+    scale.options.projectionOffset = [...geoViewport.offset];
+    $("geomap-reset").disabled = geoViewport.scale === 1 &&
+      geoViewport.offset[0] === 0 && geoViewport.offset[1] === 0;
+  };
+  const zoomGeoProjection = (scale, amount, center) => {
+    const oldZoom = geoViewport.scale;
+    const nextZoom = Math.max(GEO_MIN_ZOOM,
+      Math.min(GEO_MAX_ZOOM, oldZoom * amount));
+    if (nextZoom === oldZoom) return true;
+
+    // Keep the geographic point beneath the cursor stationary. The projection
+    // translate already includes our current offset; remove it to recover the
+    // chart-geo fitted origin before calculating the next offset.
+    const ratio = nextZoom / oldZoom;
+    const translate = scale.projection.translate();
+    const base = [
+      translate[0] - geoViewport.offset[0],
+      translate[1] - geoViewport.offset[1],
+    ];
+    geoViewport.scale = nextZoom;
+    geoViewport.offset = clampGeoOffset(scale, nextZoom, [
+      center.x + ratio * (translate[0] - center.x) - base[0],
+      center.y + ratio * (translate[1] - center.y) - base[1],
+    ]);
+    applyGeoViewport(scale);
+    return true;
+  };
+  const panGeoProjection = (scale, dx, dy) => {
+    geoViewport.offset = clampGeoOffset(scale, geoViewport.scale, [
+      geoViewport.offset[0] + dx,
+      geoViewport.offset[1] + dy,
+    ]);
+    applyGeoViewport(scale);
+    return true;
+  };
+
+  if (window.ChartZoom) {
+    const defaultZoom = ChartZoom.zoomFunctions.default;
+    const defaultPan = ChartZoom.panFunctions.default;
+
+    ChartZoom.zoomFunctions.projection = (scale, amount, center) => {
+      geoViewport.zoomHandled = true;
+      queueMicrotask(() => { geoViewport.zoomHandled = false; });
+      return zoomGeoProjection(scale, amount, center);
+    };
+    ChartZoom.panFunctions.projection = (scale, delta) =>
+      panGeoProjection(scale, delta, 0);
+
+    // The hidden y bridge receives the second half of an xy gesture. On a
+    // vertical pinch it also supplies the zoom amount; diagonal pinches have
+    // already been handled through the projection scale and are de-duplicated.
+    ChartZoom.zoomFunctions.linear = (scale, amount, center, limits) => {
+      if (scale.id !== "geo-pan-y") return defaultZoom(scale, amount, center, limits);
+      if (!geoViewport.zoomHandled) return zoomGeoProjection(
+        geoProjection(scale.chart), amount, center
+      );
+      return true;
+    };
+    ChartZoom.panFunctions.linear = (scale, delta, limits) => {
+      if (scale.id !== "geo-pan-y") return defaultPan(scale, delta, limits);
+      return panGeoProjection(geoProjection(scale.chart), 0, delta);
+    };
+    ChartZoom.zoomFunctions.color = () => true;
+    ChartZoom.panFunctions.color = () => true;
+
+    // Responsive layout can shrink the legal pan range. Re-clamp after the geo
+    // scale has recomputed its fitted projection, without resetting the view.
+    Chart.register({
+      id: "geoViewportClamp",
+      resize(chart) {
+        if (chart.canvas?.id !== "chart-geomap") return;
+        requestAnimationFrame(() => {
+          const scale = geoProjection(chart);
+          if (!scale) return;
+          const before = geoViewport.offset.join(",");
+          applyGeoViewport(scale);
+          if (geoViewport.offset.join(",") !== before) chart.update("none");
+        });
+      },
+    });
+  }
+
+  $("geomap-reset").onclick = () => {
+    geoViewport.scale = 1;
+    geoViewport.offset = [0, 0];
+    const chart = charts["chart-geomap"];
+    if (chart) {
+      applyGeoViewport(geoProjection(chart));
+      chart.update("none");
+    } else {
+      $("geomap-reset").disabled = true;
+    }
+  };
 
   // Chart.js can't read CSS custom properties, so pull concrete colors from the
   // computed root at draw time. Re-read on every render so a theme toggle
@@ -481,7 +673,9 @@
     }
     chart.data = cfg.data;
     chart.options = cfg.options;
-    chart.update();
+    // "none" skips the transition on refresh. Animation is already off, so
+    // this only avoids re-running layout work every tick.
+    chart.update("none");
   };
 
   const baseOptions = (c, stacked) => ({
@@ -636,6 +830,25 @@
     }
   };
 
+  const hasGeoInfo = (r) => Boolean(
+    r.country || r.city || r.subdivision || r.asn || r.as_org
+  );
+  const geoText = (r) => {
+    const place = [r.city, r.subdivision].filter(Boolean).join(", ");
+    return [place, r.country, r.as_org || (r.asn ? "AS" + r.asn : "")]
+      .filter(Boolean).join(" · ");
+  };
+  const geoCell = (r) => {
+    const cell = td("wrap", geoText(r));
+    // A GeoLite2 location is a circle, not a point. Make a broad locality
+    // visibly approximate everywhere the dashboard presents city data.
+    if ((r.city || r.subdivision) && r.accuracy_radius_km >= COARSE_RADIUS_KM) {
+      cell.className = "wrap coarse";
+      cell.title = "approximate: " + r.accuracy_radius_km + " km radius";
+    }
+    return cell;
+  };
+
   // Top offenders: four ranked-list tables from /admin/offenders. Text only
   // (attacker-controlled IPs/paths), so every cell lands via td()'s textContent.
   const renderOffenders = (data) => {
@@ -644,12 +857,10 @@
       $(tbodyId).replaceChildren(...rows.map((r) => row(...cells(r))));
     };
     const ips = data.ips || [];
-    const hasGeo = ips.some((r) => r.country || r.asn);
+    const hasGeo = ips.some(hasGeoInfo);
     $("off-ip-geo").hidden = false;
     fill("off-ips", ips, (r) => {
-      const geo = [r.country, r.as_org || (r.asn ? "AS" + r.asn : "")]
-        .filter(Boolean).join(" · ");
-      return [td("num", r.ip), td("wrap", geo), td("hits", String(r.count))];
+      return [td("num", r.ip), geoCell(r), td("hits", String(r.count))];
     });
     fill("off-reasons", data.reasons || [], (r) =>
       [td("wrap", r.key), td("hits", String(r.count))]);
@@ -666,6 +877,170 @@
     $("off-ip-geo").textContent = hasGeo ? "Geo" : "";
     $("offenders").hidden = (data.window || 0) === 0;
     $("offenders-empty").hidden = (data.window || 0) !== 0;
+
+    renderGeoMap(countries);
+  };
+
+  // --- World map (chartjs-chart-geo + vendored TopoJSON atlas) ---------------
+  // The atlas keys countries by ISO 3166-1 numeric id; GeoIP reports alpha-2,
+  // so this table bridges them. Values are zero-padded strings because that is
+  // how the atlas encodes ids ("020", not 20).
+  const ISO_A2_TO_NUM = {
+    AD:"020",AE:"784",AF:"004",AG:"028",AI:"660",AL:"008",AM:"051",AO:"024",
+    AQ:"010",AR:"032",AS:"016",AT:"040",AU:"036",AW:"533",AX:"248",AZ:"031",
+    BA:"070",BB:"052",BD:"050",BE:"056",BF:"854",BG:"100",BH:"048",BI:"108",
+    BJ:"204",BL:"652",BM:"060",BN:"096",BO:"068",BQ:"535",BR:"076",BS:"044",
+    BT:"064",BV:"074",BW:"072",BY:"112",BZ:"084",CA:"124",CC:"166",CD:"180",
+    CF:"140",CG:"178",CH:"756",CI:"384",CK:"184",CL:"152",CM:"120",CN:"156",
+    CO:"170",CR:"188",CU:"192",CV:"132",CW:"531",CX:"162",CY:"196",CZ:"203",
+    DE:"276",DJ:"262",DK:"208",DM:"212",DO:"214",DZ:"012",EC:"218",EE:"233",
+    EG:"818",EH:"732",ER:"232",ES:"724",ET:"231",FI:"246",FJ:"242",FK:"238",
+    FM:"583",FO:"234",FR:"250",GA:"266",GB:"826",GD:"308",GE:"268",GF:"254",
+    GG:"831",GH:"288",GI:"292",GL:"304",GM:"270",GN:"324",GP:"312",GQ:"226",
+    GR:"300",GS:"239",GT:"320",GU:"316",GW:"624",GY:"328",HK:"344",HM:"334",
+    HN:"340",HR:"191",HT:"332",HU:"348",ID:"360",IE:"372",IL:"376",IM:"833",
+    IN:"356",IO:"086",IQ:"368",IR:"364",IS:"352",IT:"380",JE:"832",JM:"388",
+    JO:"400",JP:"392",KE:"404",KG:"417",KH:"116",KI:"296",KM:"174",KN:"659",
+    KP:"408",KR:"410",KW:"414",KY:"136",KZ:"398",LA:"418",LB:"422",LC:"662",
+    LI:"438",LK:"144",LR:"430",LS:"426",LT:"440",LU:"442",LV:"428",LY:"434",
+    MA:"504",MC:"492",MD:"498",ME:"499",MF:"663",MG:"450",MH:"584",MK:"807",
+    ML:"466",MM:"104",MN:"496",MO:"446",MP:"580",MQ:"474",MR:"478",MS:"500",
+    MT:"470",MU:"480",MV:"462",MW:"454",MX:"484",MY:"458",MZ:"508",NA:"516",
+    NC:"540",NE:"562",NF:"574",NG:"566",NI:"558",NL:"528",NO:"578",NP:"524",
+    NR:"520",NU:"570",NZ:"554",OM:"512",PA:"591",PE:"604",PF:"258",PG:"598",
+    PH:"608",PK:"586",PL:"616",PM:"666",PN:"612",PR:"630",PS:"275",PT:"620",
+    PW:"585",PY:"600",QA:"634",RE:"638",RO:"642",RS:"688",RU:"643",RW:"646",
+    SA:"682",SB:"090",SC:"690",SD:"729",SE:"752",SG:"702",SH:"654",SI:"705",
+    SJ:"744",SK:"703",SL:"694",SM:"674",SN:"686",SO:"706",SR:"740",SS:"728",
+    ST:"678",SV:"222",SX:"534",SY:"760",SZ:"748",TC:"796",TD:"148",TF:"260",
+    TG:"768",TH:"764",TJ:"762",TK:"772",TL:"626",TM:"795",TN:"788",TO:"776",
+    TR:"792",TT:"780",TV:"798",TW:"158",TZ:"834",UA:"804",UG:"800",UM:"581",
+    US:"840",UY:"858",UZ:"860",VA:"336",VC:"670",VE:"862",VG:"092",VI:"850",
+    VN:"704",VU:"548",WF:"876",WS:"882",YE:"887",YT:"175",ZA:"710",ZM:"894",
+    ZW:"716",
+  };
+
+  // The atlas is fetched once, lazily, and only when there is geo data to draw:
+  // a deployment without a location_db never pays for it. null = not loaded yet,
+  // "failed" = fetch/parse failed (do not retry every tick).
+  let geoFeatures = null;
+
+  const loadAtlas = async () => {
+    if (geoFeatures) return geoFeatures;
+    const topo = await (await fetch("countries-110m.json")).json();
+    geoFeatures = ChartGeo.topojson.feature(topo, topo.objects.countries).features;
+    return geoFeatures;
+  };
+
+  // Choropleth of the offender country rollup. Countries with no traffic draw
+  // at 0 so the whole world stays visible as context.
+  const renderGeoMap = async (countries) => {
+    const card = $("geomap-card");
+    if (!countries.length) { card.hidden = true; return; }
+    if (geoFeatures === "failed") return;
+    let features;
+    try {
+      features = await loadAtlas();
+    } catch (e) {
+      geoFeatures = "failed";
+      return; // no map; the country table below still has every number
+    }
+
+    // Test against the shapes actually in the atlas, NOT merely against the
+    // alpha-2 table: Hong Kong and Singapore have valid ISO numeric codes but
+    // no geometry at 110m, so keying off the code alone would drop their
+    // traffic from both the map and the list below it.
+    const drawable = new Set(features.map((f) => f.id));
+    const byNum = {};
+    const unmapped = [];
+    for (const r of countries) {
+      const num = ISO_A2_TO_NUM[r.key];
+      if (num && drawable.has(num)) byNum[num] = (byNum[num] || 0) + r.count;
+      else unmapped.push(r.key + " " + r.count);
+    }
+
+    const note = $("geomap-unmapped");
+    note.hidden = unmapped.length === 0;
+    note.textContent = unmapped.length ? "Not on map: " + unmapped.join(" · ") : "";
+
+    const max = Math.max(1, ...Object.values(byNum));
+    $("geomap-note").textContent = "peak " + max;
+    card.hidden = false;
+
+    upsertChart("chart-geomap", (c) => ({
+      type: "choropleth",
+      data: {
+        labels: features.map((f) => f.properties.name),
+        datasets: [{
+          outline: features,
+          borderColor: c.border,
+          borderWidth: 0.5,
+          // A country with no traffic gets null, NOT 0: 0 lands on the bottom
+          // of the colour ramp and paints the whole world as a light offender.
+          // null routes it to the scale's `missing` colour instead.
+          data: features.map((f) => ({ feature: f, value: byNum[f.id] ?? null })),
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: false },
+          zoom: {
+            pan: {
+              enabled: true, mode: "xy", modifierKey: geoModifier, threshold: 3,
+            },
+            zoom: {
+              mode: "xy",
+              wheel: { enabled: true, modifierKey: geoModifier, speed: 0.1 },
+              pinch: { enabled: true },
+            },
+          },
+          tooltip: {
+            callbacks: {
+              // Most of the world has no traffic and carries a null value;
+              // say what that means rather than printing an empty figure.
+              label: (ctx) => {
+                const v = ctx.raw.value;
+                return ctx.chart.data.labels[ctx.dataIndex] + ": " +
+                  (v ? v + " decisions" : "none");
+              },
+            },
+          },
+        },
+        scales: {
+          // Equal Earth: honest relative areas. Mercator would inflate high
+          // latitudes and misrepresent where traffic actually concentrates.
+          projection: {
+            axis: "x", projection: "equalEarth",
+            projectionScale: geoViewport.scale,
+            projectionOffset: [...geoViewport.offset],
+          },
+          // chartjs-plugin-zoom dispatches one scalar delta per scale. This
+          // invisible y scale carries vertical map gestures to the adapter.
+          "geo-pan-y": {
+            type: "linear", axis: "y", display: false, position: "chartArea",
+            min: 0, max: 1,
+          },
+          color: {
+            axis: "x", quantize: 5,
+            // The domain otherwise auto-fits the data, which is right at any
+            // real volume but degenerates when a quiet window holds a single
+            // country: Chart.js pads around the lone value and ticks the
+            // legend 0.94/0.98/1.02 for what is a count of whole decisions.
+            // Anchoring at 0 and floor 1 keeps the ramp integral and makes
+            // shade comparable to zero traffic rather than to the runner-up.
+            min: 0, max: Math.max(1, max),
+            ticks: { precision: 0 },
+            // A small ramp legend: without it the shading is unreadable.
+            legend: { position: "bottom-right", align: "right" },
+            // Countries with no traffic read as neutral land, never as the
+            // faint end of the offender ramp.
+            missing: alpha(c.muted, 0.22),
+            interpolate: (t) => alpha(c.critical, 0.25 + 0.75 * t),
+          },
+        },
+      },
+    }));
   };
 
   // Group Angie's per-code responses object into 2xx/3xx/4xx/5xx buckets. Angie
@@ -759,11 +1134,13 @@
   const renderDecisions = () => {
     const action = $("f-action").value;
     const needle = $("f-text").value.trim().toLowerCase();
+    const hasGeo = lastDecisions.some(hasGeoInfo);
+    $("dec-geo").hidden = !hasGeo;
     const rows = lastDecisions.filter((d) => {
       if (action && d.action !== action) return false;
       if (!needle) return true;
-      return [d.host, d.ip, d.uri, d.reason, d.ua, d.method]
-        .some((f) => (f || "").toLowerCase().includes(needle));
+      return [d.host, d.ip, geoText(d), d.asn, d.uri, d.reason, d.ua, d.method]
+        .some((f) => String(f || "").toLowerCase().includes(needle));
     });
 
     const pages = Math.max(1, Math.ceil(rows.length / DEC_PAGE_SIZE));
@@ -775,9 +1152,11 @@
     dt.replaceChildren(...pageRows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
-      return row(td("time", clock(d.time)), action, td("wrap", d.reason),
-        td("wrap", d.host), td("num", d.ip),
-        td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+      const cells = [td("time", clock(d.time)), action, td("wrap", d.reason),
+        td("wrap", d.host), td("num", d.ip)];
+      if (hasGeo) cells.push(geoCell(d));
+      cells.push(td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+      return row(...cells);
     }));
     $("decisions-empty").hidden = rows.length > 0;
     $("f-count").textContent = (action || needle)
@@ -920,7 +1299,7 @@
     // IP intelligence: loaded GeoIP databases in the heading, feeds below.
     const src = intel.enabled ? intel.intel : {};
     const dbs = [];
-    for (const db of [src.country_db, src.asn_db]) {
+    for (const db of [src.location_db, src.asn_db]) {
       if (db) dbs.push(db.type + " built " + new Date(db.built).toLocaleDateString());
     }
     $("intel-dbs").textContent = dbs.length ? dbs.join(" | ") : "(no GeoIP databases)";
