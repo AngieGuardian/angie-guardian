@@ -282,6 +282,7 @@ Behavioural IP blocking with exponential backoff.
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable statistical anomaly scoring. Requires a non-empty `model` trained from your own logs; see [Train the Anomaly Model](/guide/anomaly). |
 | `model` | string | | Path to the model artifact from `guardian-train`. Required when enabled, limited to 64 MiB, and hot-swapped when the file changes. An oversized or invalid update keeps the last-good model active. |
+| `observe_only` | bool | `false` | Continue scoring and recording `guardian_anomaly_score`, but suppress anomaly challenge and deny decisions. Other pipeline policies still apply. Use this while tuning thresholds before enforcement. |
 | `challenge_at` | float | | Score at or above this triggers a PoW challenge when PoW is enabled, with difficulty scaled by the score; otherwise it falls through until `deny_at`. Both thresholds must be finite and satisfy `0 < challenge_at < deny_at <= 1`. |
 | `deny_at` | float | | Score at or above this denies outright. |
 

@@ -80,8 +80,11 @@ domains:
     pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
-                 challenge_at: 0.5, deny_at: 0.85 }
+                 observe_only: true, challenge_at: 0.5, deny_at: 0.85 }
 ```
+
+Set `observe_only: false` after tuning the thresholds from
+`guardian_anomaly_score`.
 
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
 loads and validates the file (YAML syntax, trailing documents, unknown fields,
@@ -632,25 +635,28 @@ loopback or a firewalled management network.
 
 ## 5. Train the anomaly model
 
-Once JSON logs have accumulated, build a per-domain baseline offline and drop
-it where the config's `anomaly.model` points. `guardiand` hot-swaps the
-artifact when the file changes, no restart needed:
+Once JSON logs have accumulated, build a candidate per-domain baseline offline.
+Inspect it before atomically promoting it to the path configured by
+`anomaly.model`; `guardiand` hot-swaps a valid replacement without a restart:
 
 ```sh
-guardian-train -out /etc/guardian/model.json \
+guardian-train -out model.candidate.json \
                -min-requests 5000 \
                /var/log/angie/*.access.json
 
-# From a stream (e.g. journald, or gzip'd logs):
-zcat /var/log/angie/example.com.access.json.*.gz | guardian-train -out model.json -
+# guardian-train does not decompress .gz files itself:
+zcat /var/log/angie/example.com.access.json.*.gz | \
+  guardian-train -out model.candidate.json -min-requests 5000 -
 ```
 
-Re-run it from cron; `guardiand` picks up each new model within seconds.
-Records without a host and responses with status >= 400 are excluded, so
-scanner/error traffic does not become the normal baseline. Domains below
-`-min-requests` usable successful records are dropped. Training and scoring normalize host case, ports, trailing dots,
-and bracketed IPv6 exactly like domain lookup, so equivalent host spellings use
-one baseline.
+For production, use the shipped `deploy/guardian-train.service` and
+`deploy/guardian-train.timer` instead of a bare cron entry. The helper validates
+and promotes a candidate atomically while retaining the last-good artifact; see
+the [production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#running-the-anomaly-trainer).
+Records without a host and responses with status >= 400 are excluded, but
+successful bot requests remain eligible. Domains below `-min-requests` usable
+records are dropped. Training and scoring normalize host and percent-decode the
+path and query identically before deriving features.
 
 ## 6. Load-test your deployment
 

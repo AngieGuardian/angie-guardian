@@ -35,14 +35,18 @@ domains:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
 
-  # Disable the catch-all challenge; this fragment has only an anomaly policy,
-  # so ordinary visitors do not see an interstitial. Requires a trained model.
+  # Disable the catch-all challenge. Requests below the anomaly threshold are
+  # not challenged by this policy. Requires a trained model.
   shop.example.com:
     pow: { enabled: true, mode: suspicion, base_difficulty: 5, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
                  challenge_at: 0.5, deny_at: 0.85 }
 ```
+
+For a non-enforcing rollout, add `observe_only: true` to the anomaly settings,
+tune the thresholds from `guardian_anomaly_score`, then remove it or set it to
+`false`.
 
 ## Per-path overrides
 

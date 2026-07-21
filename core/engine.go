@@ -481,7 +481,7 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 }
 
 // ScoreRequest runs the anomaly scorer for a hypothetical request against the
-// domain's model, for admin inspection ("why would this be challenged?").
+// domain's model, for admin inspection ("how anomalous is this request?").
 // Returns -1 when the domain has no anomaly model loaded.
 func (e *Engine) ScoreRequest(host, uri, ua string) float64 {
 	snap := e.acquireSnapshot()

@@ -4,10 +4,10 @@
 
 // guardian-train builds the anomaly-detection baseline from Angie JSON
 // access logs (the guardian_json format from deploy/angie-json-log.conf)
-// and writes the model artifact guardiand scores against. Run it from cron;
-// guardiand hot-swaps the artifact when the file changes.
+// and writes the model artifact guardiand scores against. Run it manually or
+// from the shipped systemd timer; guardiand hot-swaps the artifact on change.
 //
-//	guardian-train -out /etc/guardian/model.json /var/log/angie/*.access.json
+//	guardian-train -out model.candidate.json /var/log/angie/*.access.json
 package main
 
 import (
