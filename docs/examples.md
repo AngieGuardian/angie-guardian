@@ -13,7 +13,10 @@ store:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
-signing_key_file: /var/lib/guardian/ed25519.key   # generated state, not /etc
+signing_key_file: /var/lib/guardian/ed25519.key   # signs PoW challenges and
+                                                  # the JWT cookie a solve
+                                                  # earns; created on first run,
+                                                  # keep it secret
 store:
   backend: pebble
   path: /var/lib/guardian/pebble
