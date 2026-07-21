@@ -18,10 +18,14 @@ routes, metrics and values may be *added*, but existing ones keep working):
 - **The `guardian.yaml` schema.** Field names, nesting, types and the meaning
   of values are stable. A config that loads on `1.0` loads on any `1.x`.
 - **The admin API.** Route paths, methods, and the JSON request/response
-  shapes of the `/admin/*`, `/metrics` and `/healthz` endpoints.
+  shapes of the `/admin/*`, `/metrics`, `/healthz` and `/readyz` endpoints.
+  `/healthz` is liveness only and never consults the store; `/readyz` is the
+  one that reports store readiness.
 - **Prometheus metric names and labels.** Renaming a metric or a label breaks
   every dashboard and alert built on it, so these are frozen. New metrics and
   new label values may appear; existing series keep their identity.
+  Every `store_*` series carries a `backend` label, so they can be grouped by
+  backend without joining against another metric.
 - **The PoW token format and signing.** A token minted by one `1.x` verifies
   on any other `1.x` sharing the key, so a rolling upgrade never logs clients
   out. Signing-key and rotation file layout is stable.

@@ -25,6 +25,18 @@
     --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
     --critical: #d03b3b; --warning: #fab219; --good: #249828;
+    /* Deeper red reserved for a hard failure state (store down). */
+    --critical-deep: #a11a1a;
+    /* Categorical hues for the by-reason chart: identity (which rule fired),
+       not severity. The Okabe-Ito qualitative set, chosen because it is
+       designed for colour-vision deficiency: every pair stays separable
+       for deuteranopia/protanopia, which a severity-shaded ramp does not.
+       Validated across ALL pairs (series presence is data-driven, so any
+       two can end up touching) on both surfaces. Same values in light and
+       dark: re-stepping them for the dark lightness band collides orange
+       with vermillion, which is a worse defect than the band miss. */
+    --series-1: #0072B2; --series-2: #D55E00; --series-3: #009E73;
+    --series-4: #CC79A7; --series-5: #56B4E9; --series-6: #E69F00;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -73,7 +85,17 @@
   .tile { background: var(--surface); border: 1px solid var(--border);
           border-radius: 10px; padding: 0.8rem 1rem; }
   .tile .label { color: var(--ink-2); font-size: 0.8rem; }
-  .tile .value { font-size: 1.9rem; font-weight: 600; margin-top: 0.15rem; }
+  /* overflow-wrap so a long value can never spill out of its tile: reason
+     categories are identifiers ("behaviour_block"), not numbers, and browsers
+     do not break on underscores by default. */
+  .tile .value { font-size: 1.9rem; font-weight: 600; margin-top: 0.15rem;
+                 overflow-wrap: anywhere; }
+  /* Word-valued tiles (top reason, store state) get a smaller size so a long
+     identifier stays on one line at the tile's minimum width. */
+  .tile .value.text { font-size: 1.25rem; line-height: 1.25; }
+  /* Only the store-down state is coloured: a healthy value stays in the normal
+     ink so the tile reads as a state readout, and red always means trouble. */
+  .tile .value.down { color: var(--critical-deep); }
   .tile .sub { color: var(--muted); font-size: 0.75rem; margin-top: 0.1rem; }
 
   /* Chart cards. Each holds a fixed-height canvas Chart.js draws into. */
@@ -190,10 +212,17 @@
   </header>
 
   <div id="attack-banner" role="status" hidden
-       style="margin:0 0 1rem;padding:.6rem .9rem;border-radius:6px;font-weight:600;
+       style="margin:1rem 0 0;padding:.6rem .9rem;border-radius:6px;font-weight:600;
               background:#7a2020;color:#fff;"></div>
   <div id="anomaly-banner" role="status" hidden
-       style="margin:0 0 1rem;padding:.6rem .9rem;border-radius:6px;font-weight:600;
+       style="margin:1rem 0 0;padding:.6rem .9rem;border-radius:6px;font-weight:600;
+              background:#7a2020;color:#fff;"></div>
+
+  <!-- Degraded-component banner. The background is set from script: red when
+       the store is unreachable (Guardian is silently failing open), amber for
+       recoverable degradation that is still protecting traffic. -->
+  <div id="health-banner" role="status" hidden
+       style="margin:1rem 0 0;padding:.6rem .9rem;border-radius:6px;font-weight:600;
               background:#7a2020;color:#fff;"></div>
 
   <div class="tiles">
@@ -210,8 +239,23 @@
       <div class="value" id="t-solved">–</div>
       <div class="sub" id="t-solved-sub">since start</div></div>
     <div class="tile"><div class="label">Top reason</div>
-      <div class="value" id="t-reason">–</div>
+      <div class="value text" id="t-reason">–</div>
       <div class="sub" id="t-reason-n"></div></div>
+    <!-- Store readiness. Shown healthy too, so the tile is a state readout
+         rather than a failure-only indicator. -->
+    <div class="tile" id="t-store-tile" hidden><div class="label">Store</div>
+      <div class="value text" id="t-store">–</div>
+      <div class="sub" id="t-store-sub"></div></div>
+  </div>
+
+  <h2 id="health-h2" hidden>System health
+    <span class="meta">(counters marked "since start" only count as degradation
+      when they move between refreshes)</span></h2>
+  <div class="tablewrap" id="health-card" hidden>
+    <table>
+      <thead><tr><th>Component</th><th>State</th><th>Detail</th></tr></thead>
+      <tbody id="health-rows"></tbody>
+    </table>
   </div>
 
   <h2>Activity <span class="meta">(recent ring, non-allow decisions)</span></h2>
@@ -467,6 +511,9 @@
   let lastDecisions = [];
   let lastBlocks = { blocks: [] };
   let lastBlocksAt = 0;
+  // Set when the active-block fetch failed (the store is unreachable), so the
+  // table says "could not be refreshed" instead of claiming there are none.
+  let blocksStale = false;
 
   // Client-side pagination over the filtered decisions. The list is bounded by
   // the engine's recent-decisions ring and refetched every tick, so paging in
@@ -643,7 +690,8 @@
     return {
       ink: v("--ink"), muted: v("--muted"), grid: v("--grid"),
       critical: v("--critical"), warning: v("--warning"), good: v("--good"),
-      border: v("--border"),
+      border: v("--border"), surface: v("--surface"),
+      series: [1, 2, 3, 4, 5, 6].map((n) => v("--series-" + n)),
     };
   };
   // A hex color + alpha → rgba, for translucent stacked-area fills.
@@ -707,14 +755,28 @@
     plugins: { legend: { labels: { color: c.ink, boxWidth: 12 } } },
   });
 
-  // Fixed color per action / reason category, so a series keeps its color across
-  // ticks. Unknown reasons fall back to muted.
-  const REASON_COLORS = (c) => ({
-    pow: c.warning, waf: c.critical, behaviour_block: c.critical,
-    denylist: c.critical, honeypot: c.critical, bot_spoof: c.critical,
-    geo: c.warning, reputation: c.warning, anomaly: c.warning,
-    allowlist: c.good, verified_bot: c.good, "default": c.muted,
-  });
+  // Reason categories are a closed set (the leading token before ':', the same
+  // collapsing guardian_decisions_total uses to bound its label cardinality),
+  // so each gets a fixed categorical hue slot. In this chart hue is *identity*
+  // — which rule fired — not severity: every series here is already a non-allow
+  // decision, and severity is carried by the deny/challenge chart above. The
+  // previous map keyed on severity instead, which painted waf and
+  // behaviour_block the same red and made a stacked bar unreadable.
+  //
+  // Which reason lands on which hue is fixed, so a series keeps its colour as
+  // the mix changes. The palette is validated across ALL pairs rather than just
+  // neighbouring ones, because which reasons are present is data-driven: a
+  // deployment with no anomaly model puts honeypot straight next to
+  // behaviour_block. Categories past the six slots fall back to muted rather
+  // than getting a generated hue.
+  const REASON_ORDER = [
+    "pow", "waf", "behaviour_block", "honeypot", "denylist", "anomaly",
+  ];
+  const REASON_COLORS = (c) => {
+    const map = {};
+    REASON_ORDER.forEach((cat, i) => (map[cat] = c.series[i] || c.muted));
+    return map;
+  };
 
   const renderCharts = () => {
     if (!window.Chart) return; // vendored lib failed to load; skip silently
@@ -739,9 +801,13 @@
 
     // 2. Decisions by reason over time: stacked bars, one series per reason cat
     //    (leading token before ':', same collapsing the backend uses).
-    const cats = [];
-    for (const d of decisions) {
-      const cat = d.reason.split(":")[0];
+    // Stack in the declared order so a series never changes colour or position
+    // between refreshes just because a different reason happened to appear
+    // first. Anything outside the known set keeps first-appearance order after
+    // the declared ones, and renders muted.
+    const present = new Set(decisions.map((d) => d.reason.split(":")[0]));
+    const cats = REASON_ORDER.filter((cat) => present.has(cat));
+    for (const cat of present) {
       if (!cats.includes(cat)) cats.push(cat);
     }
     const rr = bucketize(decisions, (d) => d.reason.split(":")[0], cats, 32);
@@ -750,7 +816,10 @@
       type: "bar",
       data: { labels: rr.labels, datasets: cats.map((cat) => ({
         label: cat, data: rr.counts[cat] || [],
-        backgroundColor: rc[cat] || c.muted, stack: "s", borderWidth: 0,
+        backgroundColor: rc[cat] || c.muted, stack: "s",
+        // Surface-coloured hairline between stacked segments, so touching
+        // fills stay separable without relying on hue alone.
+        borderColor: c.surface, borderWidth: { top: 2, bottom: 0, left: 0, right: 0 },
       })) },
       options: baseOptions(c, true),
     }));
@@ -1258,7 +1327,13 @@
       return row(td("num", b.ip), td("wrap", b.reason),
         td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
     }));
-    $("blocks-empty").hidden = all.length > 0;
+    // "No active blocks" would be a lie when the store simply could not be
+    // read; say which of the two it is.
+    const empty = $("blocks-empty");
+    empty.textContent = blocksStale
+      ? "Could not read active blocks: the store is unreachable. Showing the last known list."
+      : "No active blocks.";
+    empty.hidden = all.length > 0 && !blocksStale;
 
     $("blk-pager").hidden = all.length <= BLK_PAGE_SIZE;
     $("blk-prev").disabled = blkPage === 0;
@@ -1269,12 +1344,239 @@
       : "";
   };
 
+  // --- System health -------------------------------------------------------
+  // store_ops, shed and pow_fallback are process-lifetime counters: they say
+  // what has happened since guardiand started, not what is happening now. A
+  // single failure hours ago leaves them nonzero forever, so a component is
+  // only called degraded when a counter MOVES between refreshes. The first
+  // sample is a baseline ("observing"), and a decrease means the process
+  // restarted, so the baseline is discarded rather than reported as a negative.
+  let lastCounters = null;
+  const counterDeltas = (current) => {
+    const previous = lastCounters;
+    lastCounters = current;
+    if (!previous) return null;
+    const out = {};
+    for (const key of Object.keys(current)) {
+      const a = previous[key], b = current[key];
+      if (typeof a !== "number" || typeof b !== "number") return null;
+      if (b < a) return null; // counter reset: re-baseline on this sample
+      out[key] = b - a;
+    }
+    return out;
+  };
+
+  // ok === true renders green, false red, null "observing" (no verdict yet).
+  const statePill = (ok) => el("span",
+    "chip" + (ok === false ? " deny" : ok === true ? " on" : ""),
+    ok === false ? "degraded" : ok === true ? "ok" : "observing");
+
+  const pct = (v) => (typeof v === "number" ? (v * 100).toFixed(1) + "%" : "–");
+  const count = (v) => (typeof v === "number" ? Math.round(v) : 0);
+
+  // renderHealth drives the banner, the Store tile and the System health card
+  // from the /admin/stats health object the dashboard already fetches each
+  // tick, plus the intel payload. Against an older server (no stats.health)
+  // all three hide themselves, like the dist/offenders fetches that resolve to
+  // null. Every string lands via textContent: this payload can contain a raw
+  // backend error.
+  const renderHealth = (stats, intel) => {
+    const banner = $("health-banner");
+    const h = stats.health;
+    if (!h) {
+      banner.hidden = true;
+      $("t-store-tile").hidden = true;
+      $("health-h2").hidden = true;
+      $("health-card").hidden = true;
+      return;
+    }
+    $("t-store-tile").hidden = false;
+    $("health-h2").hidden = false;
+    $("health-card").hidden = false;
+
+    const store = h.store || null;
+    const signals = h.store_signals || {};
+    const thresholds = h.store_thresholds || {};
+    const shed = h.shed || null;
+    const fallback = h.pow_fallback || null;
+    const enf = h.enforcement || null;
+    const deltas = counterDeltas({
+      shed: shed ? shed.shed : undefined,
+      passToken: shed ? shed.pass_token : undefined,
+      stateless: fallback ? fallback.issued_stateless_fallback : undefined,
+      casFailed: fallback ? fallback.spent_cas_failed : undefined,
+    });
+
+    // Store KPI tile.
+    const tile = $("t-store"), tileSub = $("t-store-sub");
+    const storeDown = !!store && store.probed && !store.up;
+    if (!store || !store.probed) {
+      tile.textContent = "?";
+      tileSub.textContent = store ? "probe pending" : "no probe configured";
+    } else if (store.up) {
+      tile.textContent = "up";
+      tileSub.textContent = (store.backend || "store") + ", checked " + relTime(store.checked_at);
+    } else {
+      tile.textContent = "DOWN";
+      tileSub.textContent = (store.backend || "store") +
+        (store.stale ? ", probe stale" : ", failing open");
+    }
+    // Red only in the failure state; "up" keeps the normal ink colour.
+    tile.classList.toggle("down", storeDown);
+
+    // A zero threshold means the signal is disabled, so it can never be crossed.
+    const crossed = (value, limit) =>
+      typeof limit === "number" && limit > 0 && typeof value === "number" && value >= limit;
+    const storeDegraded = !store || !store.probed || !store.up ||
+      crossed(signals.error_ratio, thresholds.error_ratio) ||
+      crossed(signals.slow_ratio, thresholds.slow_ratio);
+
+    const storeDetail = [];
+    if (store) {
+      storeDetail.push(store.backend || "unknown backend");
+      if (store.probed) storeDetail.push("probe " + (store.latency_ms || 0).toFixed(1) + " ms");
+      if (store.stale) storeDetail.push("snapshot stale");
+      if (store.error) storeDetail.push(store.error);
+    } else {
+      storeDetail.push("no probe wired");
+    }
+    if (h.store_signals) {
+      storeDetail.push("errors " + pct(signals.error_ratio) + ", slow " + pct(signals.slow_ratio));
+    }
+    if (h.store_ops) {
+      storeDetail.push(count(h.store_ops.errors) + " op errors of " +
+        count(h.store_ops.total) + " since start");
+    }
+
+    let hotOk = null, hotDetail = "no metrics";
+    if (shed) {
+      if (!deltas) {
+        hotDetail = "observing · " + count(shed.shed) + " shed since start";
+      } else if (deltas.shed > 0) {
+        hotOk = false;
+        hotDetail = deltas.shed + " shed since the last refresh";
+      } else {
+        hotOk = true;
+        hotDetail = count(shed.shed) + " shed since start";
+      }
+    }
+
+    let enfOk = null, enfDetail = "not reported";
+    if (enf) {
+      const mirror = enf.mirror || {};
+      const sinks = enf.sinks || [];
+      const unhealthy = sinks.filter((s) => !s.healthy);
+      enfOk = mirror.seeded === true && unhealthy.length === 0;
+      const parts = [mirror.seeded
+        ? "mirror seeded, " + count(mirror.entries) + " entries"
+        : "mirror not seeded"];
+      parts.push(sinks.length
+        ? sinks.map((s) => s.name + (s.healthy ? " ok" : " degraded")).join(", ")
+        : "in-daemon enforcement only");
+      for (const s of unhealthy) if (s.last_error) parts.push(s.last_error);
+      enfDetail = parts.join(" · ");
+    }
+
+    let powOk = null, powDetail = "no metrics";
+    if (fallback) {
+      const totals = count(fallback.issued_stateless_fallback) + " stateless fallback, " +
+        count(fallback.spent_cas_failed) + " single-spend CAS failures since start";
+      if (!deltas) {
+        powDetail = "observing · " + totals;
+      } else if (deltas.stateless > 0 || deltas.casFailed > 0) {
+        powOk = false;
+        powDetail = deltas.stateless + " stateless fallback, " + deltas.casFailed +
+          " CAS failures since the last refresh";
+      } else {
+        powOk = true;
+        powDetail = totals;
+      }
+    }
+
+    let attackOk = null, attackDetail = "not configured";
+    if (stats.attack && stats.attack.level) {
+      attackOk = stats.attack.level === "normal";
+      attackDetail = stats.attack.level +
+        (stats.attack.since ? " since " + clock(stats.attack.since) : "");
+    }
+
+    // Reputation feeds come from /admin/intel, which the dashboard already
+    // fetches. A feed with zero entries is not proof of failure (a list can
+    // legitimately be empty); only "not loaded" or a refresh error is.
+    const feeds = (intel && intel.enabled && intel.intel && intel.intel.feeds) || [];
+    let feedOk = null, feedDetail = "no reputation feeds configured";
+    if (feeds.length) {
+      const broken = feeds.filter((f) => !f.loaded || f.last_error);
+      feedOk = broken.length === 0;
+      feedDetail = broken.length
+        ? broken.map((f) => f.name + ": " + (f.last_error || "not loaded")).join(" · ")
+        : feeds.length + " loaded, " +
+          feeds.reduce((n, f) => n + (f.entries || 0), 0) + " entries";
+    }
+
+    const rows = [
+      { name: "Store", ok: !storeDegraded, detail: storeDetail.join(" · ") },
+      { name: "Hot path", ok: hotOk, detail: hotDetail },
+      { name: "Enforcement", ok: enfOk, detail: enfDetail },
+      { name: "Proof of work", ok: powOk, detail: powDetail },
+      { name: "Attack posture", ok: attackOk, detail: attackDetail },
+      { name: "Reputation feeds", ok: feedOk, detail: feedDetail },
+    ];
+    // Degraded first; sort is stable, so everything else keeps its order.
+    rows.sort((a, b) => (a.ok === false ? 0 : 1) - (b.ok === false ? 0 : 1));
+    $("health-rows").replaceChildren(...rows.map((r) => {
+      const state = td(null, "");
+      state.appendChild(statePill(r.ok));
+      return row(td(null, r.name), state, td("wrap", r.detail));
+    }));
+
+    // Banner: worst first. A store outage is critical because protection has
+    // silently degraded to fail-open; the rest is recoverable and still
+    // protecting traffic, so it is amber.
+    const critical = [], warning = [];
+    if (store && store.probed && !store.up) {
+      critical.push("store unreachable (" + (store.backend || "unknown") +
+        "). Guardian is failing open" + (store.error ? ": " + store.error : ""));
+    } else if (!store || !store.probed) {
+      warning.push("store readiness unknown, no probe has completed");
+    }
+    if (enf) {
+      const unhealthy = (enf.sinks || []).filter((s) => !s.healthy);
+      if (unhealthy.length) {
+        warning.push(unhealthy.map((s) => s.name).join(", ") +
+          " offload degraded, enforcing in-daemon");
+      }
+    }
+    if (deltas && deltas.shed > 0) warning.push("load shedding active");
+    if (deltas && (deltas.stateless > 0 || deltas.casFailed > 0)) {
+      warning.push("proof of work degraded to stateless single-spend");
+    }
+    const messages = critical.concat(warning);
+    if (messages.length) {
+      banner.textContent = "Degraded: " + messages.join(" · ");
+      banner.style.background = critical.length ? "#7a2020" : "#7a5a12";
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  };
+
   const render = async (refreshBlocks = false) => {
     const blocksRequest = refreshBlocks || Date.now() - lastBlocksAt >= 60000
       ? api("/admin/blocks?limit=1000").then((blocks) => {
           lastBlocks = blocks;
           lastBlocksAt = Date.now();
+          blocksStale = false;
           return blocks;
+        }).catch(() => {
+          // Listing active blocks is the one fetch on this page that reaches
+          // the store, so it is the first thing to fail during a store outage.
+          // Letting it sink the tick would blank the entire dashboard exactly
+          // when the health banner and System health card are the reason to be
+          // looking at it. Keep the last known list, mark it stale, and let the
+          // rest of the refresh run.
+          blocksStale = true;
+          return null;
         })
       : Promise.resolve(lastBlocks);
     // blocksRequest is awaited for its side effect (it sets lastBlocks, which
@@ -1321,6 +1623,10 @@
     $("t-reason-n").textContent = reasons.length ? reasons[0][1] + " recent" : "";
     $("t-window").textContent = stats.recent.oldest
       ? "since " + clock(stats.recent.oldest) : "in the recent window";
+
+    // Store tile, degraded-component banner and the System health card. Fed by
+    // the payloads already fetched above: no extra request, no new endpoint.
+    renderHealth(stats, intel);
 
     // Active blocks (rendered through the pager). lastBlocks is already set by
     // the blocksRequest above (or kept from cache), so renderBlocks reads it.

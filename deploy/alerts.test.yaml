@@ -1,0 +1,389 @@
+# Angie Guardian — unit tests for deploy/alerts.yaml.
+# Copyright (C) 2026 Melroy van den Berg
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run with:  promtool test rules deploy/alerts.test.yaml
+# CI runs this (and promtool check rules) on every pipeline, so validation does
+# not depend on a developer happening to have promtool installed.
+#
+# Each rule is tested twice: that it fires on the condition it exists for, and
+# that it stays quiet just below its sample floor. The floors are the whole
+# reason these rules are safe to ship as defaults, so an accidental removal has
+# to fail a test rather than page somebody at 3am on an idle instance.
+
+rule_files:
+  - alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- GuardianStoreDown --------------------------------------------------
+  - interval: 1m
+    name: store down trips fail-open after the 2m grace period
+    input_series:
+      - series: 'guardian_store_up{job="angie-guardian",instance="guardian:9101",backend="pebble"}'
+        values: '1 1 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      # The store went away at t=2m. A restart or failover shorter than the
+      # grace period must not page.
+      - eval_time: 3m
+        alertname: GuardianStoreDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: GuardianStoreDown
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianStoreDown
+              severity: critical
+              job: angie-guardian
+              instance: guardian:9101
+              backend: pebble
+            exp_annotations:
+              summary: 'Guardian store unreachable on guardian:9101 (pebble)'
+              description: "The pebble store has not answered Guardian's write/read-back probe for over 2 minutes. Guardian is failing open: requests still pass, but single-spend is per-replica, behavioural scoreboards are not updating and blocks may not be enforced. /healthz stays green on purpose; check /readyz and the \"store\" block of /admin/stats for the raw error."
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting#readyz-says-degraded
+
+  - interval: 1m
+    name: a healthy store never trips the fail-open alert
+    input_series:
+      - series: 'guardian_store_up{job="angie-guardian",instance="guardian:9101",backend="redis"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GuardianStoreDown
+        exp_alerts: []
+
+  # --- GuardianStoreErrors ------------------------------------------------
+  - interval: 1m
+    name: store error ratio fires above the operation floor
+    input_series:
+      # 10 ops/min total, 2 of them failing: a 20% error ratio and 100
+      # operations in the 10m window, comfortably above the floor of 20.
+      - series: 'guardian_store_ops_total{job="angie-guardian",instance="guardian:9101",backend="pebble",op="get",status="ok"}'
+        values: '0+8x40'
+      - series: 'guardian_store_ops_total{job="angie-guardian",instance="guardian:9101",backend="pebble",op="get",status="error"}'
+        values: '0+2x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GuardianStoreErrors
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianStoreErrors
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian store error rate above 5% on guardian:9101'
+              description: 'More than 5% of store operations failed over the last 10 minutes (20%). Individual stages abstain on a store error, so protection is degrading unevenly rather than cleanly failing open.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends
+
+  - interval: 1m
+    name: an idle instance with the same error ratio stays quiet
+    input_series:
+      # Same 20% ratio, but only 10 operations in the window: below the floor,
+      # so two unlucky failures cannot page anybody.
+      - series: 'guardian_store_ops_total{job="angie-guardian",instance="guardian:9101",backend="pebble",op="get",status="ok"}'
+        values: '0+0.8x40'
+      - series: 'guardian_store_ops_total{job="angie-guardian",instance="guardian:9101",backend="pebble",op="get",status="error"}'
+        values: '0+0.2x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GuardianStoreErrors
+        exp_alerts: []
+
+  # --- GuardianChallengeSolveCollapse -------------------------------------
+  - interval: 1m
+    name: solve-rate collapse fires above the issued floor
+    input_series:
+      # 10 challenges/min issued, 1/min solved: a 10% solve rate over 150
+      # issued challenges in the 15m window.
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="issued"}'
+        values: '0+10x60'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="solved"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: GuardianChallengeSolveCollapse
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianChallengeSolveCollapse
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian proof-of-work solve rate below 30% on guardian:9101'
+              description: 'Under 30% of issued challenges were solved over the last 15 minutes (10%). Check base_difficulty against the solve-time histogram before assuming an attack: a difficulty that real browsers cannot afford looks identical to a bot flood.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting
+
+  - interval: 1m
+    name: a quiet site with a bad-looking solve rate stays quiet
+    input_series:
+      # Same 10% solve rate, but only 3 challenges issued in the window.
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="issued"}'
+        values: '0+0.2x60'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="solved"}'
+        values: '0+0.02x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: GuardianChallengeSolveCollapse
+        exp_alerts: []
+
+  - interval: 1m
+    name: a healthy solve rate at high volume stays quiet
+    input_series:
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="issued"}'
+        values: '0+10x60'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="solved"}'
+        values: '0+9x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: GuardianChallengeSolveCollapse
+        exp_alerts: []
+
+  - interval: 1m
+    name: a total collapse with no solved series at all still fires
+    input_series:
+      # The worst case: challenges are issued and NOTHING is ever solved, so the
+      # outcome="solved" series is never created. The zero-fill in the rule is
+      # what makes the numerator 0 here instead of an empty vector that would
+      # silence the alert exactly when it matters most.
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="issued"}'
+        values: '0+10x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: GuardianChallengeSolveCollapse
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianChallengeSolveCollapse
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian proof-of-work solve rate below 30% on guardian:9101'
+              description: 'Under 30% of issued challenges were solved over the last 15 minutes (0%). Check base_difficulty against the solve-time histogram before assuming an attack: a difficulty that real browsers cannot afford looks identical to a bot flood.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting
+
+  # --- GuardianBlockRateSpike ---------------------------------------------
+  - interval: 1m
+    name: a block-rate spike over a quiet baseline fires
+    input_series:
+      # 0.1 blocks/min for an hour, then 100/min. The offset baseline keeps the
+      # comparison against pre-spike traffic, so the condition holds well past
+      # the 10m `for:` instead of being swallowed by its own spike. It does
+      # still expire once the spike has been the trailing hour long enough to
+      # count as the new normal, which is the intended "onset" semantics.
+      - series: 'guardian_blocks_placed_total{job="angie-guardian",instance="guardian:9101",reason="behaviour"}'
+        values: '0+0.1x60 6+100x40'
+    alert_rule_test:
+      # Still pending 9 minutes in: the `for:` has to elapse first.
+      - eval_time: 69m
+        alertname: GuardianBlockRateSpike
+        exp_alerts: []
+      - eval_time: 76m
+        alertname: GuardianBlockRateSpike
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianBlockRateSpike
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian block rate spiked on guardian:9101'
+              description: 'Blocks are being placed more than 5x faster than the trailing hour, and above 1 per minute. Check /admin/decisions and the top-offenders view to tell an attack from a rule change that started blocking real users.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/admin
+
+  - interval: 1m
+    name: a tiny baseline multiplied fivefold stays below the absolute floor
+    input_series:
+      # 0.02/min becoming 0.2/min is a tenfold jump, but still one block every
+      # five minutes. Without the absolute floor this would page.
+      - series: 'guardian_blocks_placed_total{job="angie-guardian",instance="guardian:9101",reason="behaviour"}'
+        values: '0+0.02x60 1.2+0.2x30'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: GuardianBlockRateSpike
+        exp_alerts: []
+
+  - interval: 1m
+    name: a counter reset is not a block-rate spike
+    input_series:
+      # guardiand restarts at t=60m: the counter drops to zero. rate() corrects
+      # for the reset, so a restart must not look like an attack.
+      - series: 'guardian_blocks_placed_total{job="angie-guardian",instance="guardian:9101",reason="behaviour"}'
+        values: '0+2x60 0+2x30'
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: GuardianBlockRateSpike
+        exp_alerts: []
+
+  # --- GuardianScrapeAbsent -----------------------------------------------
+  - interval: 1m
+    name: a failing scrape fires
+    input_series:
+      - series: 'up{job="angie-guardian",instance="guardian:9101"}'
+        values: '1 1 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GuardianScrapeAbsent
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: GuardianScrapeAbsent
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianScrapeAbsent
+              severity: critical
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian is not being scraped (guardian:9101)'
+              description: "Prometheus cannot scrape Guardian's admin listener. Every other rule in this group is blind until this is fixed. Check that guardiand is running, that admin.listen is reachable from Prometheus, and that the job name in your scrape config matches these rules."
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#dashboards-and-metrics
+
+  - interval: 1m
+    name: a target that never existed still alerts
+    input_series:
+      # No up{job="angie-guardian"} at all: a target removed from the scrape
+      # config, or a job renamed. up == 0 alone cannot see this, which is what
+      # the absent() half of the rule is for.
+      - series: 'up{job="node",instance="host:9100"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GuardianScrapeAbsent
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianScrapeAbsent
+              severity: critical
+              job: angie-guardian
+            exp_annotations:
+              summary: 'Guardian is not being scraped ()'
+              description: "Prometheus cannot scrape Guardian's admin listener. Every other rule in this group is blind until this is fixed. Check that guardiand is running, that admin.listen is reachable from Prometheus, and that the job name in your scrape config matches these rules."
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#dashboards-and-metrics
+
+  - interval: 1m
+    name: a healthy scrape stays quiet
+    input_series:
+      - series: 'up{job="angie-guardian",instance="guardian:9101"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GuardianScrapeAbsent
+        exp_alerts: []
+
+  # --- Extras: degraded but still protecting ------------------------------
+  - interval: 1m
+    name: a degraded offload sink and a raised posture are warnings, not pages
+    input_series:
+      - series: 'guardian_offload_healthy{job="angie-guardian",instance="guardian:9101",sink="nftables"}'
+        values: '1 1 0 0 0 0 0 0 0 0 0 0'
+      - series: 'guardian_attack_mode{job="angie-guardian",instance="guardian:9101"}'
+        values: '0 0 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GuardianOffloadDegraded
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianOffloadDegraded
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+              sink: nftables
+            exp_annotations:
+              summary: 'Guardian nftables offload degraded on guardian:9101'
+              description: 'The nftables enforcement sink is unhealthy; Guardian is enforcing blocks in-daemon instead of in the kernel. Traffic is still protected. Usually a missing capability (CAP_NET_ADMIN) or an nft table removed out of band; see /admin/offload for the error.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#enforcement-offload
+      - eval_time: 15m
+        alertname: GuardianAttackMode
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianAttackMode
+              severity: info
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian attack posture raised on guardian:9101'
+              description: 'Attack mode has been above normal for 10 minutes (1 = elevated, 2 = attack). Proof-of-work difficulty is raised fleet-wide. See /admin/attack for the signal that triggered it.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode
+
+  - interval: 1m
+    name: sustained shedding and single-spend fallback both alert
+    input_series:
+      - series: 'guardian_shed_total{job="angie-guardian",instance="guardian:9101",outcome="shed"}'
+        values: '0+60x30'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="spent_cas_failed"}'
+        values: '0+6x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: GuardianLoadShedding
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianLoadShedding
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian is shedding load on guardian:9101'
+              description: 'Guardian has been shedding requests continuously for 10 minutes (1/s). The instance is saturated: add capacity, or move to a faster store backend.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#performance
+      - eval_time: 25m
+        alertname: GuardianStatelessSpendFallback
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianStatelessSpendFallback
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian single-spend CAS failing on guardian:9101'
+              description: 'Challenge redemption cannot complete its compare-and-swap, so single-spend has degraded to per-replica and a solved challenge can be replayed against another instance. Check GuardianStoreDown and GuardianStoreErrors first; this rarely fires on its own.'
+              runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends
+
+  - interval: 1m
+    name: a healthy instance triggers nothing at all
+    input_series:
+      - series: 'up{job="angie-guardian",instance="guardian:9101"}'
+        values: '1+0x30'
+      - series: 'guardian_store_up{job="angie-guardian",instance="guardian:9101",backend="pebble"}'
+        values: '1+0x30'
+      - series: 'guardian_offload_healthy{job="angie-guardian",instance="guardian:9101",sink="nftables"}'
+        values: '1+0x30'
+      - series: 'guardian_attack_mode{job="angie-guardian",instance="guardian:9101"}'
+        values: '0+0x30'
+      - series: 'guardian_shed_total{job="angie-guardian",instance="guardian:9101",outcome="pass_token"}'
+        values: '0+600x30'
+      - series: 'guardian_store_ops_total{job="angie-guardian",instance="guardian:9101",backend="pebble",op="get",status="ok"}'
+        values: '0+600x30'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="issued"}'
+        values: '0+10x30'
+      - series: 'guardian_challenges_total{job="angie-guardian",instance="guardian:9101",outcome="solved"}'
+        values: '0+10x30'
+      - series: 'guardian_blocks_placed_total{job="angie-guardian",instance="guardian:9101",reason="behaviour"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GuardianStoreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianStoreErrors
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianChallengeSolveCollapse
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianBlockRateSpike
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianScrapeAbsent
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianOffloadDegraded
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianAttackMode
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianLoadShedding
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianStatelessSpendFallback
+        exp_alerts: []

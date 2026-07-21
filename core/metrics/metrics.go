@@ -19,6 +19,10 @@ import (
 // without nil-checks at every call site.
 type Metrics struct {
 	reg *prometheus.Registry
+	// backend labels every store series with the configured backend. It is
+	// constant for the process (store.backend is startup-only), so it costs one
+	// label value per target rather than multiplying series.
+	backend string
 
 	decisions           *prometheus.CounterVec // by action, reason_category, domain
 	challenge           *prometheus.CounterVec // by outcome: issued|escalated|solved|failed
@@ -28,8 +32,10 @@ type Metrics struct {
 	anomalySelection    *prometheus.CounterVec
 	blocksPlaced        *prometheus.CounterVec // by reason_category
 	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
-	storeOps            *prometheus.CounterVec // by op, status
+	storeOps            *prometheus.CounterVec // by backend, op, status
 	storeLatency        *prometheus.HistogramVec
+	storeUp             *prometheus.GaugeVec   // by backend; 1 = reachable, 0 = failing open
+	storeProbe          *prometheus.CounterVec // by backend, status
 	evalLatency         prometheus.Histogram
 	feedEntries         *prometheus.GaugeVec   // by feed
 	feedRefresh         *prometheus.CounterVec // by feed, status
@@ -48,7 +54,10 @@ type Metrics struct {
 	shed              *prometheus.CounterVec // load-shed decisions by outcome
 }
 
-func New() *Metrics {
+// New builds the collector set for a process using the named store backend.
+// Every store series carries it, so a fleet scrape can group by backend
+// without joining against another metric.
+func New(backend string) *Metrics {
 	reg := prometheus.NewRegistry()
 	f := promauto.With(reg)
 
@@ -58,7 +67,8 @@ func New() *Metrics {
 	)
 
 	return &Metrics{
-		reg: reg,
+		reg:     reg,
+		backend: backend,
 		decisions: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "decisions_total",
 			Help: "Pipeline decisions by action, reason category and domain.",
@@ -95,13 +105,21 @@ func New() *Metrics {
 		}, []string{"bot", "result"}),
 		storeOps: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "store_ops_total",
-			Help: "Store operations by op and status (ok|error).",
-		}, []string{"op", "status"}),
+			Help: "Store operations by backend, op and status (ok|error).",
+		}, []string{"backend", "op", "status"}),
 		storeLatency: f.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "guardian", Name: "store_op_seconds",
-			Help:    "Store operation latency by op.",
+			Help:    "Store operation latency by backend and op.",
 			Buckets: []float64{50e-6, 100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3, 50e-3},
-		}, []string{"op"}),
+		}, []string{"backend", "op"}),
+		storeUp: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "store_up",
+			Help: "Whether the store answered its last health probe (1) or Guardian is failing open (0).",
+		}, []string{"backend"}),
+		storeProbe: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "store_probe_total",
+			Help: "Completed store health probes by backend and status (ok|error).",
+		}, []string{"backend", "status"}),
 		evalLatency: f.NewHistogram(prometheus.HistogramOpts{
 			Namespace: "guardian", Name: "evaluate_seconds",
 			Help:    "End-to-end Evaluate() latency (the auth hot path).",
@@ -225,8 +243,33 @@ func (m *Metrics) StoreOp(op string, seconds float64, err error) {
 	if err != nil {
 		status = "error"
 	}
-	m.storeOps.WithLabelValues(op, status).Inc()
-	m.storeLatency.WithLabelValues(op).Observe(seconds)
+	m.storeOps.WithLabelValues(m.backend, op, status).Inc()
+	m.storeLatency.WithLabelValues(m.backend, op).Observe(seconds)
+}
+
+// StoreProbe records one completed store health probe: the gauge follows the
+// result and the counter separates ok from error. Together they answer both
+// "is it down right now" and "how flaky has it been".
+func (m *Metrics) StoreProbe(backend string, up bool) {
+	if m == nil {
+		return
+	}
+	status, value := "error", 0.0
+	if up {
+		status, value = "ok", 1.0
+	}
+	m.storeUp.WithLabelValues(backend).Set(value)
+	m.storeProbe.WithLabelValues(backend, status).Inc()
+}
+
+// StoreProbeStale drives the gauge to 0 when no probe completed in time (a
+// wedged probe loop). No probe finished, so no probe counter moves: pretending
+// an error was observed would misreport the failure rate.
+func (m *Metrics) StoreProbeStale(backend string) {
+	if m == nil {
+		return
+	}
+	m.storeUp.WithLabelValues(backend).Set(0)
 }
 
 // FeedRefresh records one reputation feed refresh attempt and the resulting

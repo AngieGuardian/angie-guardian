@@ -26,6 +26,7 @@ import (
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
@@ -128,7 +129,7 @@ func run(configPath string) error {
 		}
 	}
 
-	m := metrics.New()
+	m := metrics.New(cfg.Store.Backend)
 	// The attack-mode detector observes every store op (latency + errors) for
 	// its store-degradation signal, so it must wrap the store alongside the
 	// metrics recorder. Constructed before the engine so its posture is live
@@ -145,6 +146,10 @@ func run(configPath string) error {
 		m.AttackSignal("store_error_ratio", sig.StoreErrorRatio)
 		m.AttackSignal("store_slow_ratio", sig.StoreSlowRatio)
 	})
+	// The health checker probes this raw handle, not the instrumented one, so
+	// its synthetic Set/Get never inflates guardian_store_ops_total or feeds
+	// the detector's store error/slow ratios. Probes have their own metrics.
+	rawStore := st
 	st = store.Instrument(st, m, detector)
 	defer st.Close()
 
@@ -192,6 +197,22 @@ func run(configPath string) error {
 	engine.SetAttackDetector(detector)
 	detector.Start(context.Background())
 	defer detector.Close()
+
+	// Store health: the write + read-back probe behind /readyz, the
+	// guardian_store_up gauge and the dashboard's degraded-state surface.
+	// Only worth running when there is an admin listener, since without one
+	// there is no /readyz, no /metrics and no dashboard to observe it — and
+	// unobservable periodic writes are just noise. Start runs the first probe
+	// synchronously so the gauge exists before the first scrape; a failing
+	// store is not fatal (Guardian fails open), it only fails readiness. The
+	// deferred Close runs before the store's, so the probe loop always stops
+	// first.
+	if cfg.Admin.Listen != "" {
+		hc := health.New(rawStore, cfg.Store.Backend, m, log)
+		engine.SetHealth(hc)
+		hc.Start(context.Background())
+		defer hc.Close()
+	}
 
 	// reload re-reads guardian.yaml and hot-swaps everything derived from it
 	// (domains, lists, thresholds, rule/model/geoip/feed sources, log level).

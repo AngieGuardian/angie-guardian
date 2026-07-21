@@ -1,0 +1,60 @@
+# Demo/seeding config for `make seed` — NOT a production example.
+# See guardian.example.yaml for that; this one is tuned to make every dashboard
+# surface light up quickly on a throwaway instance.
+#
+#   guardiand -config test/seed/guardian.seed.yaml     # from the repo root
+#   make seed                                          # in another shell
+#
+# Deliberate choices:
+#   trusted_proxy   the seeder stands in for Angie and sets X-Guardian-* itself
+#   base_difficulty low, so solving thousands of challenges takes seconds
+#   memory store    throwaway state; no container and nothing to clean up
+#   admin.token     a fixed dev token so the dashboard link below just works
+#
+# Dashboard: http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token
+
+listen: 127.0.0.1:18071
+log_level: warn
+trusted_proxy: true
+
+# Generated on first start next to this file; delete to rotate.
+signing_key_file: test/seed/.seed-ed25519.key
+
+store:
+  backend: memory
+
+admin:
+  listen: 127.0.0.1:18072
+  token: seed-demo-token
+  dashboard: true
+
+defaults:
+  # A statically denied range, so the seeder can produce denylist:ip decisions
+  # (TEST-NET-3, reserved for documentation, so it can never be a real client).
+  denylist:
+    ips: [ "203.0.113.240/28" ]
+  pow:
+    enabled: true
+    base_difficulty: 4
+    max_difficulty: 8
+  waf:
+    keywords:
+      enabled: true
+      # The shipped starter rules: the seeder's scanner traffic is built to
+      # match these, so denies and blocks appear without extra setup.
+      rules_file: deploy/rules-common.yaml
+    ip_behaviour:
+      enabled: true
+      block_ttl: 30m
+    # Trap paths no legitimate client visits: one hit denies and (with
+    # ip_behaviour on) persists a block, so the seeder can produce honeypot
+    # decisions alongside the signature ones.
+    honeypot:
+      enabled: true
+      paths: [ "/admin-old/", "/wp-admin-backup/" ]
+
+domains:
+  # Proof of work off here, so this host supplies the allowed traffic that
+  # gives the per-domain chart its green band.
+  plain.test:
+    pow: { enabled: false }

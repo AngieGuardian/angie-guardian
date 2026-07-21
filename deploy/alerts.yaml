@@ -1,0 +1,221 @@
+# Angie Guardian — Prometheus alerting rules.
+# Copyright (C) 2026 Melroy van den Berg
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Load these next to your other rule files:
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/rules/angie-guardian-alerts.yaml
+#
+# Every rule selects job="angie-guardian". That must match the job name in YOUR
+# scrape config — if you scrape Guardian under a different job, search/replace
+# it here, or the rules will silently never fire.
+#
+# The thresholds below are STARTING POINTS chosen to be quiet on a healthy
+# instance, not universal truths. Ratio and rate rules carry an explicit sample
+# floor (at least N operations, at least N challenges, at least 1 block/min) so
+# a near-idle instance cannot produce a screaming ratio out of two samples.
+# Tune the floors up on busy deployments and the windows out on bursty ones.
+#
+# Validate after editing:
+#   promtool check rules deploy/alerts.yaml
+#   promtool test rules deploy/alerts.test.yaml
+#
+# The single alert that matters most is GuardianStoreDown. Guardian fails open
+# by design: with the store unreachable it keeps answering every request, both
+# listeners keep passing /healthz and systemd still reports active, while
+# single-spend, scoreboards and blocks have quietly stopped working. Nothing
+# else in this file replaces it.
+
+groups:
+  - name: angie-guardian
+    rules:
+      # Fail-open is active: the process is healthy, traffic flows, and
+      # stateful protection is gone. 2m rides out a store restart or a
+      # failover without paging, since the probe runs every 10s.
+      - alert: GuardianStoreDown
+        expr: guardian_store_up{job="angie-guardian"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Guardian store unreachable on {{ $labels.instance }} ({{ $labels.backend }})'
+          description: >-
+            The {{ $labels.backend }} store has not answered Guardian's
+            write/read-back probe for over 2 minutes. Guardian is failing open:
+            requests still pass, but single-spend is per-replica, behavioural
+            scoreboards are not updating and blocks may not be enforced.
+            /healthz stays green on purpose; check /readyz and the "store" block
+            of /admin/stats for the raw error.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting#readyz-says-degraded
+
+      # Partial store failure: reachable but erroring. Gated on at least 20
+      # operations in the window so an idle instance with one failed op does
+      # not report a 100% error rate.
+      - alert: GuardianStoreErrors
+        expr: >-
+          sum by (job, instance) (increase(guardian_store_ops_total{job="angie-guardian",status="error"}[10m]))
+            /
+          clamp_min(sum by (job, instance) (increase(guardian_store_ops_total{job="angie-guardian"}[10m])), 1)
+            > 0.05
+          and
+          sum by (job, instance) (increase(guardian_store_ops_total{job="angie-guardian"}[10m])) >= 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian store error rate above 5% on {{ $labels.instance }}'
+          description: >-
+            More than 5% of store operations failed over the last 10 minutes
+            ({{ $value | humanizePercentage }}). Individual stages abstain on a
+            store error, so protection is degrading unevenly rather than
+            cleanly failing open.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends
+
+      # Challenges are issued but almost nobody solves them. Either the
+      # difficulty is set beyond what real clients can afford, the challenge
+      # page is broken, or the traffic is a bot flood that never solves.
+      # Gated on at least 50 issued challenges so a quiet window stays quiet.
+      #
+      # A total solve collapse is exactly when the `outcome="solved"` series does
+      # not exist (nothing was ever solved this process), so the numerator would
+      # be an empty vector and the division would yield no result — the alert
+      # would stay silent during the worst case it exists to catch. The
+      # `or (issued * 0)` zero-fills the numerator with the issued series' own
+      # (job, instance) label set whenever solved is absent.
+      - alert: GuardianChallengeSolveCollapse
+        expr: >-
+          (
+            sum by (job, instance) (increase(guardian_challenges_total{job="angie-guardian",outcome="solved"}[15m]))
+            or
+            sum by (job, instance) (increase(guardian_challenges_total{job="angie-guardian",outcome="issued"}[15m])) * 0
+          )
+            /
+          clamp_min(sum by (job, instance) (increase(guardian_challenges_total{job="angie-guardian",outcome="issued"}[15m])), 1)
+            < 0.3
+          and
+          sum by (job, instance) (increase(guardian_challenges_total{job="angie-guardian",outcome="issued"}[15m])) >= 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian proof-of-work solve rate below 30% on {{ $labels.instance }}'
+          description: >-
+            Under 30% of issued challenges were solved over the last 15 minutes
+            ({{ $value | humanizePercentage }}). Check base_difficulty against
+            the solve-time histogram before assuming an attack: a difficulty
+            that real browsers cannot afford looks identical to a bot flood.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting
+
+      # A sudden jump in behavioural blocks: an attack, or a rule change that
+      # started blocking legitimate traffic. The absolute floor is what keeps
+      # this quiet: without it, going from 0.2 to 1 block per hour is "5x".
+      #
+      # The 1h baseline is taken `offset 10m` so the spike does not poison its
+      # own reference. Without the offset the trailing hour absorbs the spike
+      # fast enough that the ratio falls back under 5x after roughly 12 minutes,
+      # which is shorter than the 10m `for:` this rule needs to survive — the
+      # alert would be true for about one evaluation and almost never fire.
+      # With the offset the comparison stays against pre-spike traffic. Note
+      # this needs ~70m of history, so it is blind right after a fresh
+      # Prometheus start (GuardianScrapeAbsent covers that window).
+      - alert: GuardianBlockRateSpike
+        expr: >-
+          sum by (job, instance) (rate(guardian_blocks_placed_total{job="angie-guardian"}[5m]))
+            >
+          5 * sum by (job, instance) (rate(guardian_blocks_placed_total{job="angie-guardian"}[1h] offset 10m))
+          and
+          sum by (job, instance) (rate(guardian_blocks_placed_total{job="angie-guardian"}[5m])) > (1 / 60)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian block rate spiked on {{ $labels.instance }}'
+          description: >-
+            Blocks are being placed more than 5x faster than the trailing hour,
+            and above 1 per minute. Check /admin/decisions and the top-offenders
+            view to tell an attack from a rule change that started blocking real
+            users.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/admin
+
+      # No scrape at all. Deliberately last-resort: absent() covers the case
+      # where the series vanished entirely, which up == 0 alone cannot see.
+      - alert: GuardianScrapeAbsent
+        expr: up{job="angie-guardian"} == 0 or absent(up{job="angie-guardian"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Guardian is not being scraped ({{ $labels.instance }})'
+          description: >-
+            Prometheus cannot scrape Guardian's admin listener. Every other rule
+            in this group is blind until this is fixed. Check that guardiand is
+            running, that admin.listen is reachable from Prometheus, and that
+            the job name in your scrape config matches these rules.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#dashboards-and-metrics
+
+      # Kernel offload fell back to in-daemon enforcement. Blocks are still
+      # enforced, just at higher cost per request, so this is a warning.
+      - alert: GuardianOffloadDegraded
+        expr: guardian_offload_healthy{job="angie-guardian"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian {{ $labels.sink }} offload degraded on {{ $labels.instance }}'
+          description: >-
+            The {{ $labels.sink }} enforcement sink is unhealthy; Guardian is
+            enforcing blocks in-daemon instead of in the kernel. Traffic is
+            still protected. Usually a missing capability (CAP_NET_ADMIN) or an
+            nft table removed out of band; see /admin/offload for the error.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#enforcement-offload
+
+      # Informational: attack mode is doing its job. Paging on this would page
+      # on every attack Guardian successfully absorbed.
+      - alert: GuardianAttackMode
+        expr: guardian_attack_mode{job="angie-guardian"} >= 1
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: 'Guardian attack posture raised on {{ $labels.instance }}'
+          description: >-
+            Attack mode has been above normal for 10 minutes (1 = elevated,
+            2 = attack). Proof-of-work difficulty is raised fleet-wide. See
+            /admin/attack for the signal that triggered it.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode
+
+      # Saturation: Guardian is dropping work to protect its own latency.
+      # Sustained shedding means the instance is undersized for the traffic.
+      - alert: GuardianLoadShedding
+        expr: >-
+          sum by (job, instance) (rate(guardian_shed_total{job="angie-guardian",outcome="shed"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian is shedding load on {{ $labels.instance }}'
+          description: >-
+            Guardian has been shedding requests continuously for 10 minutes
+            ({{ $value | humanize }}/s). The instance is saturated: add
+            capacity, or move to a faster store backend.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#performance
+
+      # Single-spend fell back to per-replica: the challenge CAS is failing, so
+      # a solved challenge is no longer guaranteed to be redeemable exactly
+      # once fleet-wide. Almost always a symptom of the store being unhappy.
+      - alert: GuardianStatelessSpendFallback
+        expr: >-
+          sum by (job, instance) (rate(guardian_challenges_total{job="angie-guardian",outcome="spent_cas_failed"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian single-spend CAS failing on {{ $labels.instance }}'
+          description: >-
+            Challenge redemption cannot complete its compare-and-swap, so
+            single-spend has degraded to per-replica and a solved challenge can
+            be replayed against another instance. Check GuardianStoreDown and
+            GuardianStoreErrors first; this rarely fires on its own.
+          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends

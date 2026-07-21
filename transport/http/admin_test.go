@@ -77,7 +77,7 @@ func adminServer(t *testing.T) (*httptest.Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := metrics.New()
+	m := metrics.New("memory")
 	st = store.Instrument(st, m)
 	engine, err := core.NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
 	if err != nil {
@@ -141,7 +141,7 @@ func TestAdminStatsChallenges(t *testing.T) {
 	}
 	t.Cleanup(engine.Close)
 
-	m := metrics.New()
+	m := metrics.New("memory")
 	m.Challenge("issued")
 	m.Challenge("issued")
 	m.Challenge("solved")
@@ -365,7 +365,7 @@ func TestAdminRotateKeyRequiresPreviousDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	ts := httptest.NewServer(NewAdminServer(engine, cfg, metrics.New(), adminToken, keyPath, "", nil, slog.Default()))
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, metrics.New("memory"), adminToken, keyPath, "", nil, slog.Default()))
 	t.Cleanup(ts.Close)
 
 	resp := adminReq(t, ts, "POST", "/admin/rotate-key", adminToken, "")

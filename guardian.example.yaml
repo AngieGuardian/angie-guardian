@@ -26,7 +26,7 @@ log_level: info
 # trusted_proxy: true
 
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
-# /metrics, /healthz, and the optional static dashboard shell are open; every
+# /metrics, /healthz, /readyz, and the optional static dashboard shell are open; every
 # JSON/data /admin route requires the bearer token. A non-loopback bind without
 # a configured token is refused at startup, but a bearer token alone does not
 # make a remote bind safe: the listener speaks plain HTTP (the token would

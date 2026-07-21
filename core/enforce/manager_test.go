@@ -290,7 +290,7 @@ func TestSinkReconcileCannotOverwriteNewerApply(t *testing.T) {
 	st := &blockingSnapshotStore{
 		Store: base, entered: make(chan struct{}), resume: make(chan struct{}),
 	}
-	met := guardianmetrics.New()
+	met := guardianmetrics.New("memory")
 	m := New(Config{ReconcileInterval: time.Second, MaxEntries: 1024, Mode: ModeAuthoritative},
 		st, met, slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { _ = m.Close() })
@@ -420,7 +420,7 @@ func TestManagerReconcileUsesActiveBlockIndex(t *testing.T) {
 func TestManagerDoesNotReplaceSinksFromIncompleteIndex(t *testing.T) {
 	base := store.NewMemory()
 	t.Cleanup(func() { base.Close() })
-	met := guardianmetrics.New()
+	met := guardianmetrics.New("memory")
 	m := New(Config{ReconcileInterval: time.Second, MaxEntries: 1024, Mode: ModeAuthoritative},
 		&partialBlockStore{Store: base}, met, slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { _ = m.Close() })

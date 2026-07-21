@@ -44,7 +44,7 @@ func dashboardAdminServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := metrics.New()
+	m := metrics.New("memory")
 	st = store.Instrument(st, m)
 	engine, err := core.NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
 	if err != nil {
@@ -298,5 +298,58 @@ func TestAssetsGatedOnDashboard(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s: status = %d, want 404 when dashboard disabled", route, resp.StatusCode)
 		}
+	}
+}
+
+// TestDashboardHealthSurface pins the degraded-state surface the enriched
+// /admin/stats payload feeds: the banner, the Store KPI tile and the System
+// health card. The IDs are the contract between dashboard.html's markup and
+// its script, so a rename in one half must not pass silently.
+func TestDashboardHealthSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, id := range []string{
+		"health-banner", // "store unreachable, failing open" / amber degradation
+		"t-store-tile",  // the Store KPI tile wrapper (hidden on an old server)
+		"t-store",       // up / DOWN
+		"t-store-sub",   // backend + how long ago it was checked
+		"health-h2",     // System health heading
+		"health-card",   // the card itself
+		"health-rows",   // one row per component
+	} {
+		if !bytes.Contains(page, []byte(`id="`+id+`"`)) {
+			t.Errorf("dashboard is missing the %q element the health surface renders into", id)
+		}
+		if !bytes.Contains(page, []byte(`$("`+id+`")`)) {
+			t.Errorf("dashboard markup declares %q but no script reads it", id)
+		}
+	}
+
+	// Against a server that predates this payload the three surfaces must hide
+	// rather than throw, the same defensive style as the dist/offenders fetches.
+	if !bytes.Contains(page, []byte("const h = stats.health;")) ||
+		!bytes.Contains(page, []byte("if (!h) {")) {
+		t.Error("dashboard does not guard on an absent stats.health payload")
+	}
+
+	// The health payload can carry a raw backend error, so it must never reach
+	// the DOM as markup. The whole page is textContent-only by policy.
+	if bytes.Contains(page, []byte("innerHTML")) {
+		t.Error("dashboard uses innerHTML; health details must land via textContent")
+	}
+
+	// GET /admin/blocks is the only fetch on this page that reaches the store,
+	// so it 500s during exactly the outage the health surface exists to report.
+	// If it is allowed to reject the refresh, the whole dashboard blanks and
+	// the banner, tile and card are never drawn. It must be caught.
+	blocks := bytes.Index(page, []byte(`api("/admin/blocks?limit=1000")`))
+	if blocks < 0 {
+		t.Fatal("dashboard no longer fetches /admin/blocks; update this guard")
+	}
+	if !bytes.Contains(page[blocks:min(blocks+700, len(page))], []byte("blocksStale = true")) {
+		t.Error("the /admin/blocks fetch is not caught; a store outage would blank the " +
+			"dashboard instead of showing the health banner")
 	}
 }

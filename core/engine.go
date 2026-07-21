@@ -18,6 +18,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -64,6 +65,7 @@ type Engine struct {
 	metrics  *metrics.Metrics     // nil = instrumentation disabled (no-op)
 	enforcer *enforce.Manager     // nil = mirror/offload disabled (store-only enforcement)
 	attack   *attackmode.Detector // nil = attack mode disabled (always Normal)
+	health   *health.Checker      // nil = no store probe (readiness reports unavailable)
 	recent   recentRing           // last non-allow decisions, for the admin API
 	stages   []Stage
 	log      *slog.Logger
@@ -127,6 +129,15 @@ func (e *Engine) SetAttackDetector(d *attackmode.Detector) { e.attack = d }
 // AttackDetector exposes the detector for the admin API and the transport's
 // signal feeds (may be nil; its methods are nil-safe).
 func (e *Engine) AttackDetector() *attackmode.Detector { return e.attack }
+
+// SetHealth attaches the background store-health checker. Call once at startup
+// before serving; nil (the default) means no probe runs, which /readyz reports
+// as unavailable rather than quietly degrading readiness to liveness.
+func (e *Engine) SetHealth(hc *health.Checker) { e.health = hc }
+
+// Health exposes the store-health checker for the admin API (may be nil; its
+// methods are nil-safe).
+func (e *Engine) Health() *health.Checker { return e.health }
 
 // reloadInterval is how often WAF rules files and anomaly model artifacts
 // are polled for changes.

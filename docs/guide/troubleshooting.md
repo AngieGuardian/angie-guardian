@@ -50,11 +50,53 @@ erroring. The site stays up; it is just unprotected until Guardian returns.
 
 **Don't mistake this for health.** Alert on it: watch the systemd unit
 (`Type=notify` marks the service failed if it wedges), the `/metrics` endpoint,
-and store connectivity. See [Run it in Production](/guide/production).
+and store connectivity via `guardian_store_up`. `deploy/alerts.yaml` ships the
+rules; see [Alerting](/guide/production#alerting).
 
 To verify the bypass is wired correctly, stop guardiand and confirm the site
 still serves; if it returns 500 instead, the `@guardian_bypass` fallback is
 missing from your Angie config.
+
+## `/readyz` says degraded
+
+`/readyz` returns `503` only when **store** readiness is not established. The
+process is still serving: Guardian [fails open](/guide/threat-model), so traffic
+keeps flowing while single-spend, behavioural scoreboards and blocks are not
+working. `/healthz` staying `200` in this state is correct, not a bug.
+
+The body carries one of four coarse reasons:
+
+| `reason` | What to do |
+|---|---|
+| `store probe pending` | The daemon just started and no probe has completed. Give it a few seconds. |
+| `store probe unavailable` | No probe is attached. This is a wiring fault, not a store fault, and should not happen with a configured `admin.listen`. |
+| `store probe failed` | The write/read-back round trip failed. This is the real one. |
+| `store probe stale` | No probe completed for three intervals. The probe loop is wedged; treat the store as down and check for a hung backend. |
+
+The reason is deliberately coarse: `/readyz` is unauthenticated and raw backend
+errors can carry addresses, DSN credentials and filesystem paths. For the
+detail, read the log (guardiand logs one `store probe failed` warning per
+transition, not per tick) or the `health.store.error` field of the token-guarded
+[`GET /admin/stats`](/reference/admin-api#get-admin-stats):
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8072/admin/stats \
+  | jq .health.store
+```
+
+Common causes, in the order worth checking:
+
+- **Redis/Valkey unreachable**: wrong `store.addr`, a firewall, or the server
+  simply down. The raw error usually says so verbatim.
+- **Disk full or read-only filesystem** on a `pebble`/`buntdb` backend. The
+  probe writes *and reads back*, so a backend that accepts writes and silently
+  loses them fails here even though a ping would pass.
+- **Permissions** on `store.path` after a unit or user change.
+
+A degraded nftables sink or a raised attack posture appear in the `/readyz` body
+but never change the status code: both are still protecting traffic. If the
+`enforcement` block shows an unhealthy sink, see
+[Block Enforcement Offload](/guide/block-offload).
 
 ## Admin API returns 401
 

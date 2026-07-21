@@ -141,6 +141,94 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Store up (0 = failing open)",
+      "description": "guardian_store_up is 1 when the store answered Guardian's last write/read-back probe. At 0 Guardian still serves every request, but single-spend, behavioural scoreboards and blocks have quietly stopped working. /healthz stays green in that state on purpose; /readyz does not. min() so one unhealthy replica cannot be averaged away.",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "min(guardian_store_up) by (backend)",
+          "legendFormat": "{{backend}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "FAILING OPEN", "index": 0 },
+                "1": { "text": "up", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Degradation signals",
+      "description": "Mixed units on purpose: a 0-1 store error ratio, per-second shed and single-spend-CAS-failure rates, and the 0/1 offload health series, together so one incident reads in one place. Every series names its unit in the legend; compare shapes, not absolute values.",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(guardian_store_ops_total{status=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(guardian_store_ops_total[$__rate_interval])), 0.001)",
+          "legendFormat": "store error ratio (0-1)"
+        },
+        {
+          "expr": "sum(rate(guardian_store_probe_total{status=\"error\"}[$__rate_interval]))",
+          "legendFormat": "failed store probes /s"
+        },
+        {
+          "expr": "sum(rate(guardian_shed_total{outcome=\"shed\"}[$__rate_interval]))",
+          "legendFormat": "load shed /s"
+        },
+        {
+          "expr": "sum(rate(guardian_challenges_total{outcome=\"spent_cas_failed\"}[$__rate_interval]))",
+          "legendFormat": "single-spend CAS failures /s"
+        },
+        {
+          "expr": "min(guardian_offload_healthy) by (sink)",
+          "legendFormat": "offload healthy {{sink}} (0/1)"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0 },
+        "overrides": []
+      }
     }
   ]
 }

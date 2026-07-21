@@ -21,6 +21,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/attackmode"
+	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/web"
@@ -30,8 +31,9 @@ import (
 
 // AdminServer exposes Prometheus /metrics and an authenticated JSON admin API
 // on a listener separate from the auth hot path (bind it to loopback or a
-// management interface). Every /admin route requires a bearer token; /metrics
-// and /healthz do not, so a scraper needs no secret.
+// management interface). Every /admin route requires a bearer token; /metrics,
+// /healthz and /readyz do not, so a scraper or orchestrator probe needs no
+// secret.
 type AdminServer struct {
 	engine  *core.Engine
 	metrics *metrics.Metrics // nil = no metrics endpoint, no challenge stats
@@ -82,6 +84,7 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	// Authenticated admin API.
 	s.mux.HandleFunc("GET /admin/blocks", s.auth(s.handleBlockList))
@@ -313,6 +316,83 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "decisions": out})
 }
 
+// Coarse, stable readiness reasons. They are the entire failure vocabulary of
+// the unauthenticated /readyz: enough to alert and to look in the right place,
+// with no raw backend error (which can carry addresses, credentials in DSNs,
+// or filesystem paths). The detail lives in the log and /admin/stats.
+const (
+	reasonProbePending     = "store probe pending"
+	reasonProbeUnavailable = "store probe unavailable"
+	reasonProbeFailed      = "store probe failed"
+	reasonProbeStale       = "store probe stale"
+)
+
+// notReadyReason returns the coarse reason readiness is failing, or "" when the
+// store round trip is established. A nil checker means the probe was never
+// wired up, which is a deployment fault: reporting it as unavailable keeps
+// /readyz from silently collapsing into a second liveness endpoint.
+func notReadyReason(hc *health.Checker) string {
+	if hc == nil {
+		return reasonProbeUnavailable
+	}
+	switch st := hc.Status(); {
+	case !st.Probed:
+		return reasonProbePending
+	case st.Stale:
+		return reasonProbeStale
+	case !st.Up:
+		return reasonProbeFailed
+	}
+	return ""
+}
+
+// handleReadyz is the readiness probe, deliberately distinct from the liveness
+// /healthz. Guardian fails open: with the store unreachable the process still
+// answers every request, so "alive" says nothing about whether stateful
+// protection (single-spend, scoreboards, blocks) is actually working.
+//
+// Only store readiness decides the status code. A degraded nftables sink or a
+// raised attack posture are reported for context but stay 200: both still
+// protect traffic, and failing readiness would pull a working instance out of a
+// load balancer during exactly the incident it is defending against.
+//
+// The handler reads the last background-probe snapshot and performs no store
+// I/O, so an unauthenticated caller cannot turn readiness checks into store
+// traffic. Open like /healthz, and never cached.
+func (s *AdminServer) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	hc := s.engine.Health()
+	reason := notReadyReason(hc)
+
+	out := map[string]any{"ready": reason == ""}
+	if reason != "" {
+		out["reason"] = reason
+	}
+	if hc != nil {
+		// health.Status omits the raw error from its JSON on purpose.
+		out["store"] = hc.Status()
+	}
+	// Coarse enforcement view only: a sink's last_error belongs to the
+	// authenticated surface, not to an open endpoint.
+	if enf := s.engine.Enforcer(); enf != nil {
+		if sinks := enf.Status().Sinks; len(sinks) > 0 {
+			view := make([]map[string]any, 0, len(sinks))
+			for _, sink := range sinks {
+				view = append(view, map[string]any{"name": sink.Name, "healthy": sink.Healthy})
+			}
+			out["enforcement"] = map[string]any{"sinks": view}
+		}
+	}
+	if d := s.engine.AttackDetector(); d != nil {
+		out["attack"] = map[string]any{"level": d.State().Level.String()}
+	}
+
+	code := http.StatusOK
+	if reason != "" {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, out) // writeJSON already sets Cache-Control: no-store
+}
+
 // handleStats returns a small rollup for the dashboard header: active block
 // count plus action/reason-category counts over the recent-decisions window.
 // Long-horizon numbers live in /metrics; this is the "right now" view.
@@ -346,27 +426,42 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		out["recent"].(map[string]any)["newest"] = recent[0].Time
 		out["recent"].(map[string]any)["oldest"] = recent[len(recent)-1].Time
 	}
-	if ch := s.challengeStats(); ch != nil {
+	// One registry snapshot feeds both rollups: the dashboard polls this every
+	// couple of seconds, and gathering twice per refresh buys nothing.
+	families := s.gatherMetrics()
+	if ch := challengeStats(families); ch != nil {
 		out["challenges"] = ch
 	}
 	if d := s.engine.AttackDetector(); d != nil {
 		st := d.State()
 		out["attack"] = map[string]any{"level": st.Level.String(), "since": st.Since}
 	}
+	out["health"] = s.healthStats(families)
 	writeJSON(w, http.StatusOK, out)
 }
 
-// challengeStats reads the PoW lifecycle counters and the mean solve time
-// back out of the Prometheus registry, so the dashboard shows them without a
-// second bookkeeping path (process lifetime, not just the recent window).
-// Returns nil when metrics are disabled.
-func (s *AdminServer) challengeStats() map[string]any {
+// gatherMetrics returns one snapshot of the private registry for the handlers
+// that derive several rollups from it. nil when metrics are disabled or the
+// gather failed, which every caller treats as "this rollup is unavailable"
+// rather than as zeroes.
+func (s *AdminServer) gatherMetrics() []*dto.MetricFamily {
 	if s.metrics == nil {
 		return nil
 	}
 	families, err := s.metrics.Registry().Gather()
 	if err != nil {
 		s.log.Warn("metrics gather failed", "err", err)
+		return nil
+	}
+	return families
+}
+
+// challengeStats reads the PoW lifecycle counters and the mean solve time
+// back out of a gathered registry snapshot, so the dashboard shows them
+// without a second bookkeeping path (process lifetime, not just the recent
+// window). Returns nil when no snapshot is available.
+func challengeStats(families []*dto.MetricFamily) map[string]any {
+	if families == nil {
 		return nil
 	}
 	out := map[string]any{"issued": 0.0, "solved": 0.0, "failed": 0.0}
@@ -392,6 +487,100 @@ func (s *AdminServer) challengeStats() map[string]any {
 	return out
 }
 
+// healthStats is the authenticated companion to /readyz: the same store
+// snapshot plus the raw probe error and the supporting numbers the dashboard
+// needs to decide which component is degraded and why. Everything here comes
+// from the one registry snapshot handleStats already gathered, the live config
+// and in-memory status, so it adds no cardinality and does no hot-path work.
+//
+// store_ops, shed and pow_fallback are process-lifetime counters. They say what
+// has happened since start, NOT what is happening now: a single failure hours
+// ago leaves them nonzero forever. Only a refresh-to-refresh delta (which the
+// dashboard computes, handling counter resets) may be read as active
+// degradation. Current-window ratios come from the detector, and windowed
+// latency quantiles are left to Prometheus, which computes them correctly.
+func (s *AdminServer) healthStats(families []*dto.MetricFamily) map[string]any {
+	out := map[string]any{}
+
+	if hc := s.engine.Health(); hc != nil {
+		st := hc.Status()
+		store := map[string]any{
+			"probed": st.Probed, "up": st.Up, "backend": st.Backend,
+			"latency_ms": st.LatencyMS, "checked_at": st.CheckedAt,
+		}
+		if st.Stale {
+			store["stale"] = true
+		}
+		if st.Err != "" {
+			store["error"] = st.Err
+		}
+		out["store"] = store
+	}
+
+	if d := s.engine.AttackDetector(); d != nil {
+		sig := d.CurrentSignals()
+		out["store_signals"] = map[string]any{
+			"error_ratio": sig.StoreErrorRatio, "slow_ratio": sig.StoreSlowRatio,
+		}
+		// Resolved thresholds, not the raw YAML: 0 means the signal is off, and
+		// the dashboard must not call a component degraded against it.
+		am := s.engine.Config().AttackModeSettings()
+		out["store_thresholds"] = map[string]any{
+			"error_ratio": am.StoreErrorRatio, "slow_ratio": am.StoreSlowRatio,
+		}
+	}
+
+	if enf := s.engine.Enforcer(); enf != nil {
+		out["enforcement"] = enf.Status()
+	}
+
+	if families == nil {
+		return out
+	}
+	var storeTotal, storeErrors float64
+	shed := map[string]float64{"shed": 0, "pass_token": 0}
+	fallback := map[string]float64{"issued_stateless_fallback": 0, "spent_cas_failed": 0}
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_store_ops_total":
+			for _, m := range mf.GetMetric() {
+				v := m.GetCounter().GetValue()
+				storeTotal += v
+				if labelValue(m, "status") == "error" {
+					storeErrors += v
+				}
+			}
+		case "guardian_shed_total":
+			for _, m := range mf.GetMetric() {
+				if outcome := labelValue(m, "outcome"); outcome != "" {
+					shed[outcome] = m.GetCounter().GetValue()
+				}
+			}
+		case "guardian_challenges_total":
+			for _, m := range mf.GetMetric() {
+				outcome := labelValue(m, "outcome")
+				if _, tracked := fallback[outcome]; tracked {
+					fallback[outcome] = m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	out["store_ops"] = map[string]any{"total": storeTotal, "errors": storeErrors}
+	out["shed"] = shed
+	out["pow_fallback"] = fallback
+	return out
+}
+
+// labelValue returns one label of a gathered metric, or "" when absent.
+func labelValue(m *dto.Metric, name string) string {
+	for _, l := range m.GetLabel() {
+		if l.GetName() == name {
+			return l.GetValue()
+		}
+	}
+	return ""
+}
+
 // handleDistributions returns registry-derived data the recent-decisions ring
 // cannot supply: the solve-time and anomaly-score histograms (as ready-to-plot
 // per-bucket counts, not cumulative) and per-domain decision totals from
@@ -406,13 +595,8 @@ func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request
 		"anomaly_misses":    map[string]float64{},
 		"per_domain":        map[string]map[string]float64{},
 	}
-	if s.metrics == nil {
-		writeJSON(w, http.StatusOK, out)
-		return
-	}
-	families, err := s.metrics.Registry().Gather()
-	if err != nil {
-		s.log.Warn("metrics gather failed", "err", err)
+	families := s.gatherMetrics()
+	if families == nil {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}

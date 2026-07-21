@@ -38,7 +38,7 @@ func metricsAdminServer(t *testing.T) (*httptest.Server, *metrics.Metrics) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := metrics.New()
+	m := metrics.New("memory")
 	st = store.Instrument(st, m)
 	engine, err := core.NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
 	if err != nil {

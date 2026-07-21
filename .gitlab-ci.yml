@@ -72,6 +72,23 @@ govulncheck:
     - go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
     - $GOPATH/bin/govulncheck ./...
 
+# Validate the shipped Prometheus rules (deploy/alerts.yaml) and their unit
+# tests. These are release artifacts an operator loads verbatim, so a typo'd
+# expression or a rule that silently stops firing must fail the pipeline rather
+# than wait for a developer who happens to have promtool installed. The image
+# is pinned by version AND digest like every other one here; its entrypoint is
+# cleared because it defaults to running the Prometheus server.
+alerts:
+  stage: test
+  image:
+    name: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
+    entrypoint: [""]
+  cache: []
+  script:
+    - cd deploy
+    - promtool check rules alerts.yaml
+    - promtool test rules alerts.test.yaml
+
 # Build-check the VitePress documentation site on branches that touch it, so
 # a broken docs change (dead link, bad config) fails the MR instead of the
 # Pages deploy on main. VitePress link checking runs as part of the build.
@@ -214,6 +231,7 @@ upload_and_release:
       test -f "$PKG/deploy/guardian-train.env"
       test -f "$PKG/deploy/guardian-train.service"
       test -f "$PKG/deploy/guardian-train.timer"
+      test -f "$PKG/deploy/alerts.yaml"
       grep -q '^signing_key_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
       grep -q '^  token_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
       grep -q 'rules_file: /etc/guardian/rules.d/common.yaml' "$PKG/guardian.example.yaml"

@@ -54,6 +54,14 @@ key), as `compose.yaml` here does. Its distroless-safe healthcheck runs the buil
 `-healthcheck` probe and requires every configured `/healthz` listener before
 Compose marks Guardian healthy or starts Angie.
 
+That probe is **liveness**: it deliberately does not follow the store, because
+Guardian serves fail-open and a store outage must not restart-loop a container
+that is still protecting traffic. For readiness ("is the store actually
+working?") poll `GET /readyz` on the admin listener; it returns `503` while the
+store probe is pending, failing or stale. See
+[Alerting](https://angie-guardian-31c118.pages.melroy.org/guide/production#alerting)
+for the shipped Prometheus rules.
+
 ## Manual use
 
 ```sh

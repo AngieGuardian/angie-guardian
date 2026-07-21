@@ -497,7 +497,8 @@ sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/ru
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
-curl -s localhost:8072/healthz         # -> ok
+curl -s localhost:8072/healthz         # liveness -> ok
+curl -s localhost:8072/readyz          # readiness -> {"ready":true,...}
 ```
 
 Generated state (the signing key, retired-key archive, admin token, and the
@@ -522,7 +523,7 @@ persistent volumes, or `deploy/docker/` for the full demo stack.
 ## 4. Operate it via the admin API
 
 The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
-separate from the auth hot path. `/metrics`, `/healthz`, and the optional static
+separate from the auth hot path. `/metrics`, `/healthz`, `/readyz`, and the optional static
 dashboard shell are open; every JSON/data `/admin/*` route needs an
 `Authorization: Bearer <token>` header with that exact scheme prefix. The
 dashboard authenticates every API call.
