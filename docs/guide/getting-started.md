@@ -260,8 +260,9 @@ The unit repeats config validation in `ExecStartPre` and creates
 listeners expose their own health endpoint:
 
 ```sh
-curl --fail http://127.0.0.1:8071/healthz   # auth listener
-curl --fail http://127.0.0.1:8072/healthz   # admin listener
+curl --fail http://127.0.0.1:8071/healthz   # auth listener (liveness)
+curl --fail http://127.0.0.1:8072/healthz   # admin listener (liveness)
+curl --fail http://127.0.0.1:8072/readyz    # is the store actually working?
 ```
 
 Now apply the Angie configuration that already passed `angie -t`:

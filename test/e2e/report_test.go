@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The "WAF report" surface Guardian exposes is Prometheus /metrics plus the
@@ -280,5 +281,117 @@ func TestDashboardServed(t *testing.T) {
 	body := bodyOf(t, resp)
 	if !strings.Contains(body, "Guardian dashboard") || !strings.Contains(body, "/admin/stats") {
 		t.Fatalf("dashboard page content unexpected:\n%s", tail(body, 500))
+	}
+}
+
+// TestReadinessAndStoreHealth walks the operator surface issue #13 added,
+// through the real stack: the open readiness endpoint, the store_up gauge and
+// the probe counter. It also pins the two invariants that make the background
+// probe safe to run: readiness must stay distinct from liveness, and the
+// synthetic probe traffic must not inflate the operational store counters.
+func TestReadinessAndStoreHealth(t *testing.T) {
+	// /readyz is open like /healthz: a load balancer or an orchestrator probes
+	// it without a bearer token.
+	resp := req(t, http.MethodGet, admin+"/readyz", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/readyz = %d, want 200 against a healthy stack", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("/readyz Cache-Control = %q, want no-store", got)
+	}
+	var ready struct {
+		Ready bool `json:"ready"`
+		Store struct {
+			Probed  bool   `json:"probed"`
+			Up      bool   `json:"up"`
+			Backend string `json:"backend"`
+		} `json:"store"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
+		t.Fatalf("decode /readyz: %v", err)
+	}
+	if !ready.Ready || !ready.Store.Up || !ready.Store.Probed {
+		t.Fatalf("/readyz body = %+v, want a probed, up store", ready)
+	}
+	if ready.Store.Backend != "pebble" {
+		t.Errorf("store backend = %q, want pebble (guardian.e2e.yaml)", ready.Store.Backend)
+	}
+
+	// The gauge the shipped GuardianStoreDown alert rule fires on.
+	if got := metric(t, "guardian_store_up", `backend="pebble"`); got != 1 {
+		t.Errorf("guardian_store_up{backend=pebble} = %v, want 1", got)
+	}
+	if got := metric(t, "guardian_store_probe_total", `backend="pebble"`, `status="ok"`); got < 1 {
+		t.Errorf("guardian_store_probe_total{status=ok} = %v, want at least one completed probe", got)
+	}
+	if got := metric(t, "guardian_store_probe_total", `backend="pebble"`, `status="error"`); got != 0 {
+		t.Errorf("guardian_store_probe_total{status=error} = %v, want 0 against a healthy store", got)
+	}
+
+	// The checker probes the raw store, not the instrumented wrapper, so its
+	// periodic Set/Get must never show up here. Without that separation the
+	// probe would add a steady ~12 ops/min of synthetic traffic to every
+	// operational store panel and to the attack detector's error/slow ratios.
+	//
+	// Scoped to the two ops the probe actually performs. Other background loops
+	// legitimately keep touching the instrumented store while we wait (the
+	// enforcement reconcile scans on its own ticker), so a total-ops assertion
+	// would be measuring them, not the probe.
+	probeOps := func() float64 {
+		return metric(t, "guardian_store_ops_total", `op="get"`) +
+			metric(t, "guardian_store_ops_total", `op="set"`)
+	}
+	beforeOps := probeOps()
+	beforeProbes := metric(t, "guardian_store_probe_total", `backend="pebble"`)
+	deadline := time.Now().Add(45 * time.Second)
+	for metric(t, "guardian_store_probe_total", `backend="pebble"`) < beforeProbes+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("probe counter did not advance past %v; the probe loop is not running", beforeProbes)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	// No request traffic is driven here and a /metrics scrape does no store
+	// I/O, so any growth would be the probe leaking into these counters.
+	if after := probeOps(); after != beforeOps {
+		t.Errorf("guardian_store_ops_total{op=get|set} moved %v → %v across two health "+
+			"probes; the checker is probing the instrumented store", beforeOps, after)
+	}
+
+	// Liveness must not follow the store, or a store outage would kill
+	// containers that are still (fail-open) serving.
+	if r := req(t, http.MethodGet, admin+"/healthz", nil, nil); r.StatusCode != http.StatusOK {
+		t.Errorf("/healthz = %d, want 200", r.StatusCode)
+	}
+}
+
+// TestAdminStatsHealthObject: the authenticated rollup carries the detail the
+// dashboard needs and /readyz deliberately withholds.
+func TestAdminStatsHealthObject(t *testing.T) {
+	resp := adminReq(t, http.MethodGet, "/admin/stats", nil)
+	var stats struct {
+		Health struct {
+			Store struct {
+				Probed  bool    `json:"probed"`
+				Up      bool    `json:"up"`
+				Backend string  `json:"backend"`
+				Latency float64 `json:"latency_ms"`
+			} `json:"store"`
+			StoreOps map[string]float64 `json:"store_ops"`
+			Shed     map[string]float64 `json:"shed"`
+			Fallback map[string]float64 `json:"pow_fallback"`
+		} `json:"health"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode /admin/stats: %v", err)
+	}
+	h := stats.Health
+	if !h.Store.Probed || !h.Store.Up || h.Store.Backend != "pebble" {
+		t.Errorf("health.store = %+v, want a probed, up pebble store", h.Store)
+	}
+	if h.StoreOps == nil || h.Shed == nil || h.Fallback == nil {
+		t.Errorf("health is missing a counter block: %+v", h)
+	}
+	if _, ok := h.StoreOps["total"]; !ok {
+		t.Errorf("health.store_ops = %v, want a total", h.StoreOps)
 	}
 }

@@ -5,11 +5,17 @@ After=network.target
 Before=angie.service
 
 [Service]
-# sd_notify readiness + watchdog. guardiand signals READY=1 only once both
+# sd_notify startup gating + watchdog. guardiand signals READY=1 only once both
 # listeners actually answer /healthz, so `systemctl start` blocks until the
 # service is really serving (not merely forked), and the watchdog restarts a
 # wedged process instead of leaving it "active" but not protecting. The daemon
 # auto-detects $NOTIFY_SOCKET, so this needs no rebuild and no config.
+#
+# This gate is LIVENESS: it intentionally does not wait on the store, since
+# Guardian serves fail-open and a store outage must not stop the unit from
+# starting. "active" therefore means serving, not "the store is reachable" —
+# poll GET /readyz on the admin listener, or alert on guardian_store_up
+# (deploy/alerts.yaml), for that.
 Type=notify
 WatchdogSec=30s
 

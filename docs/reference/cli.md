@@ -13,7 +13,7 @@ guardiand -config /etc/guardian/guardian.yaml
 | Flag | Description |
 |---|---|
 | `-config <path>` | Path to `guardian.yaml` (required). |
-| `-healthcheck` | Load the config and require every configured listener to answer `/healthz`, then exit. Used by the distroless Compose image. |
+| `-healthcheck` | **Liveness** check: load the config and require every configured listener to answer `/healthz`, then exit. Used by the distroless Compose image. It deliberately does not consult the store; see [`/readyz`](/reference/admin-api#get-readyz) for readiness. |
 | `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
 | `-version` | Print version and exit. |
 
@@ -33,8 +33,9 @@ guardiand -config /etc/guardian/guardian.yaml
 | `SIGINT` / `SIGTERM` | Graceful shutdown (sends `STOPPING=1` under systemd). |
 
 Under systemd (the shipped unit is `Type=notify`), guardiand speaks sd_notify:
-it signals `READY=1` once both listeners answer `/healthz` and keeps a watchdog
-alive. See
+it signals `READY=1` once both listeners answer `/healthz` (liveness: the
+sequencing intentionally does not wait on the store, since Guardian serves
+fail-open) and keeps a watchdog alive. See
 [Readiness and watchdog](/guide/production#readiness-and-watchdog).
 
 ### Hot-path endpoints (on `listen`)
@@ -49,6 +50,17 @@ These are Angie's side of the integration, wired by
 | `POST /pass` (public path `/__guardian/pass`) | Receives the solved challenge, sets the signed cookie. `GET` serves the no-JS fallback. |
 | `/denied` | The deny page. |
 | `GET /healthz` | Liveness probe. |
+
+### Admin endpoints (on `admin.listen`)
+
+Open (no bearer token); every other `/admin/*` route is authenticated. See the
+[Admin API reference](/reference/admin-api).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /healthz` | Liveness probe. Answers while the process serves; never follows the store. |
+| `GET /readyz` | Readiness probe. `503` when store readiness is not established, so a fail-open degradation is visible to an orchestrator. |
+| `GET /metrics` | Prometheus metrics. |
 
 ## guardian-train
 

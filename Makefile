@@ -6,11 +6,14 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store seed
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
 FUZZTIME ?= 30s
+
+# How long `make seed` keeps generating dashboard traffic.
+SEEDTIME ?= 2m
 
 # Build the three sidecar binaries into dist/.
 build:
@@ -68,6 +71,19 @@ fuzz:
 			go test -run '^$$' -fuzz "^$$fn$$" -fuzztime $(FUZZTIME) $$pkg; \
 		done; \
 	done
+
+# Developer-only: fill a local guardiand with representative traffic (solved
+# and failed proof-of-work, challenge/deny decisions, behavioural blocks,
+# allowed traffic) so the dashboard and /metrics have something to show. Start
+# the throwaway instance first, in another shell:
+#
+#   go run ./cmd/guardiand -config test/seed/guardian.seed.yaml
+#
+# then `make seed`, and open the dashboard link that config prints. Not a load
+# test: cmd/guardian-loadtest is the one that measures throughput.
+seed:
+	go run ./test/seed -url http://127.0.0.1:18071 -d $(SEEDTIME) \
+		-admin http://127.0.0.1:18072 -token seed-demo-token
 
 vet:
 	go vet ./...

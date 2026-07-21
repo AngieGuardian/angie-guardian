@@ -63,7 +63,8 @@ sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/ru
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now guardiand
-curl -s localhost:8072/healthz         # -> ok
+curl -s localhost:8072/healthz         # liveness -> ok
+curl -s localhost:8072/readyz          # readiness -> {"ready":true,...}
 ```
 
 `guardian.yaml` here is your edited copy of the shipped
@@ -102,12 +103,16 @@ substitute for ownership: it only relaxes the systemd sandbox
 (`ProtectSystem=strict`) and never overrides normal Unix ownership and mode
 checks, which is why the unit grants write access to nothing under `/etc`.
 
-#### Readiness and watchdog
+#### Startup readiness and watchdog
 
 The shipped unit is `Type=notify`: guardiand speaks
 [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html)
 with no extra dependency, signalling `READY=1` only once every configured
-listener answers `/healthz`. So `systemctl start` blocks until the service is
+listener answers `/healthz`. That is *liveness*: it deliberately does not wait
+on the store, because Guardian serves fail-open and a store outage must not
+stop the unit from starting. For the "is the store actually working" question
+see [`/readyz`](#probes-liveness-vs-readiness).
+So `systemctl start` blocks until the service is
 genuinely serving, and `systemctl status` reflects real readiness rather than
 "the process forked". This matters because Guardian fails open: a daemon wedged
 before it binds would otherwise look active while every request sails through
@@ -163,7 +168,10 @@ volumes:
 
 The built-in probe loads the mounted config and requires both configured
 listeners to answer `/healthz`; merely being able to launch the binary is not
-considered healthy.
+considered healthy. This is a **liveness** check on purpose: it must not follow
+the store, or a store outage would restart-loop a container that is still
+(fail-open) serving traffic. Point your orchestrator's readiness probe at
+[`/readyz`](#probes-liveness-vs-readiness) instead.
 
 Inside the container, set `listen: 0.0.0.0:8071` plus `trusted_proxy: true`
 and `admin.listen: 0.0.0.0:8072` in `guardian.yaml` (the loopback-only
@@ -494,6 +502,69 @@ latency, and end-to-end `Evaluate()` latency. Import
 complements the built-in dashboard rather than replacing it: the built-in view
 is per-instance and live, while Prometheus retains history and sums across a
 fleet.
+
+### Alerting
+
+`deploy/alerts.yaml` ships ready-made Prometheus rules. Point your `rule_files`
+at it:
+
+```yaml
+# prometheus.yml
+rule_files:
+  - /etc/prometheus/rules/angie-guardian-alerts.yaml
+```
+
+Every rule selects `job="angie-guardian"`. If you scrape Guardian under a
+different job name, search/replace it in the file or nothing will ever fire.
+Validate after editing with `promtool check rules` and `promtool test rules`
+(the shipped `deploy/alerts.test.yaml` covers the rules and their sample
+floors; CI runs both on every pipeline).
+
+| Alert | Fires on | Severity |
+|---|---|---|
+| `GuardianStoreDown` | `guardian_store_up == 0` for 2m | critical |
+| `GuardianScrapeAbsent` | no scrape for 5m (including a vanished target) | critical |
+| `GuardianStoreErrors` | >5% store op errors over 10m, at least 20 ops | warning |
+| `GuardianChallengeSolveCollapse` | <30% of challenges solved over 15m, at least 50 issued | warning |
+| `GuardianBlockRateSpike` | 5m block rate >5x the pre-spike hour and >1/min | warning |
+| `GuardianOffloadDegraded` | an enforcement sink dropped to in-daemon | warning |
+| `GuardianLoadShedding` | sustained shedding for 10m | warning |
+| `GuardianStatelessSpendFallback` | single-spend CAS failing for 10m | warning |
+| `GuardianAttackMode` | posture above normal for 10m | info |
+
+**If you ship only one alert, ship `GuardianStoreDown.`** Guardian
+[fails open](/guide/threat-model) by design: when the store is unreachable,
+stages abstain, challenge issuance falls back to stateless minting, single-spend
+degrades to per-replica, and every request sails through. The process stays up,
+both listeners keep answering `/healthz`, and `systemctl status` still says
+`active`. Nothing about that state is visible without this gauge.
+
+The thresholds are starting points chosen to be quiet on a healthy instance.
+Every ratio and rate rule carries an explicit sample floor (at least N
+operations, at least N challenges, at least one block per minute) so a near-idle
+instance cannot produce a screaming ratio from two samples; raise the floors on
+busy deployments.
+
+### Probes: liveness vs readiness
+
+The two health endpoints answer different questions, and wiring them the same
+way defeats the point:
+
+- **`/healthz`** (both listeners) is **liveness**: is the process serving? It
+  never consults the store. Use it for container health checks, systemd
+  readiness sequencing, and the `-healthcheck` flag. Tying liveness to the store
+  would kill containers that are still (fail-open) protecting traffic and turn a
+  degradation into an outage.
+- **`/readyz`** (admin listener) is **readiness**: is the shared state Guardian's
+  stateful protection depends on actually working? It returns `503` when the
+  background store probe is pending, failing or stale. Use it for load-balancer
+  readiness, Kubernetes `readinessProbe`, and the "should this replica take
+  traffic" question.
+
+`/readyz` only reads the last probe snapshot, so probing it aggressively costs
+nothing and cannot turn health checks into store traffic. A degraded nftables
+sink or a raised attack posture appear in the body but never change the status
+code: both still protect traffic.
 
 ## Key rotation
 

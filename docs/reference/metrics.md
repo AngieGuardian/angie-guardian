@@ -54,8 +54,19 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_store_ops_total` | counter | `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`, `block_index_scan`, `posture_set`, `posture_delete`, `posture_max`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
-| `guardian_store_op_seconds` | histogram | `op` | Store operation latency. On a durable embedded backend with `store.sync: true`, watch `set` and `cas`: they pay an fsync. |
+| `guardian_store_ops_total` | counter | `backend`, `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`, `block_index_scan`, `posture_set`, `posture_delete`, `posture_max`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
+| `guardian_store_op_seconds` | histogram | `backend`, `op` | Store operation latency. On a durable embedded backend with `store.sync: true`, watch `set` and `cas`: they pay an fsync. |
+| `guardian_store_up` | gauge | `backend` | `1` = the store answered the last write/read-back probe, `0` = Guardian is failing open. **The single most important series to alert on**: at `0` the process is still serving every request while single-spend, scoreboards and blocks have quietly stopped working, and `/healthz` stays green. `deploy/alerts.yaml` ships the rule. |
+| `guardian_store_probe_total` | counter | `backend`, `status` | Completed store health probes by `status` (`ok`, `error`). A staleness event (a wedged probe loop) drives `guardian_store_up` to `0` without incrementing this, since no probe finished. |
+
+Every `store_*` series carries `backend`, so a mixed fleet — or one part-way
+through a backend migration — can group by it directly rather than joining
+against another metric. `store.backend` is startup-only, so the value is
+constant for the process: it adds one label value per target, not a multiplier
+on the series count.
+
+Probe traffic runs against the raw store, so it never appears in
+`guardian_store_ops_total` or `guardian_store_op_seconds`.
 
 ## Block enforcement offload
 

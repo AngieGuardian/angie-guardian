@@ -11,6 +11,7 @@ coverage.out
 # Runtime data
 *.db
 *.key
+*.rotate.lock
 
 # GeoLite databases
 *.mmdb

@@ -36,7 +36,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `admin.listen` | string | (empty = disabled) | Numeric `host:port` for the Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics`, `/healthz`, and the optional static dashboard shell are open; every JSON/data `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is rejected by preflight. |
+| `admin.listen` | string | (empty = disabled) | Numeric `host:port` for the Admin API + Prometheus `/metrics` listener, separate from the hot path. `/metrics`, `/healthz`, `/readyz`, and the optional static dashboard shell are open; every JSON/data `/admin/*` route requires the bearer token. Binding to a non-loopback address without a configured token is rejected by preflight. |
 | `admin.token` | string | `$ADMIN_TOKEN` | Bearer token for `/admin/*` routes. Falls back to the `ADMIN_TOKEN` env var when empty. |
 | `admin.token_file` | string | | Persists an auto-generated bearer token (created 0600 on first start, never regenerated, like the signing key). Used when `token` and `ADMIN_TOKEN` are unset. With neither `token` nor `token_file`, a loopback listener gets a fresh ephemeral token per start, printed in the startup log. |
 | `admin.dashboard` | bool | `false` | Serve the built-in reporting page at `GET /admin/dashboard`. On startup guardiand logs the bare URL; paste the token into the login gate. Configured and persistent bearer tokens are never embedded in logs. |

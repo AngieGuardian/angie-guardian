@@ -77,6 +77,10 @@ ride past the WAF.
   solve-time and anomaly-score histograms, anomaly baseline selections/misses,
   blocks placed, store op latency, and end-to-end `Evaluate()` latency. Import
   `deploy/grafana-dashboard.json`.
+  `deploy/alerts.yaml` ships ready-made Prometheus alert rules; the one that
+  matters most is `guardian_store_up == 0`, which is the only signal that
+  Guardian has silently degraded to fail-open. `/readyz` reports the same thing
+  to an orchestrator, separately from the liveness `/healthz`.
 - **Admin API**: bearer-token JSON API on the same listener: inspect/place/
   clear IP blocks (`/admin/blocks/{ip}`), list a bounded page of active blocks
   (`/admin/blocks`), read the recent deny/challenge feed (`/admin/decisions`)
@@ -156,6 +160,37 @@ scoring) also carry benchmarks:
 ```sh
 go test -bench=. -benchmem ./core/... ./core/pow/...
 ```
+
+### Seeding a dashboard (developers only)
+
+Reviewing a dashboard change against empty charts tells you nothing, and the
+screenshot in the docs has to be regenerated from *something*. `test/seed/`
+drives a throwaway local guardiand with a representative traffic mix: visitors
+that solve the proof of work, ones that abandon the interstitial, a bot
+submitting a bad nonce, scanners that trip the shipped signature rules into
+denies and behavioural blocks, and plain allowed traffic. Two shells from the
+repo root:
+
+```sh
+go run ./cmd/guardiand -config test/seed/guardian.seed.yaml   # throwaway instance
+make seed                                                     # 2m of traffic (SEEDTIME=5m)
+```
+
+Then open <http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token>. The
+seed config uses the memory store, a fixed dev token and a deliberately low PoW
+difficulty, so there is nothing to clean up and thousands of challenges solve in
+seconds. It is **not** a load test — `cmd/guardian-loadtest` is the tool that
+measures throughput; this one optimises for a realistic *mix* at a gentle rate.
+
+```sh
+# Or point it at an instance you already have running:
+go run ./test/seed -url http://127.0.0.1:8071 -d 2m \
+    -admin http://127.0.0.1:8072 -token "$TOKEN"
+```
+
+The target must run with `trusted_proxy: true` (the seeder stands in for Angie
+and sets the `X-Guardian-*` headers itself). With `-admin`/`-token` it prints a
+summary of what it produced.
 
 ## Performance
 
@@ -333,7 +368,7 @@ transport/http/  auth_request sidecar + admin/metrics
 transport/wasm/  optional http-wasm guest (stateless WAF, runs inside Angie)
 cmd/             guardiand (sidecar), guardian-train (offline anomaly training),
                  guardian-loadtest (stress tool)
-deploy/          Angie snippets, systemd unit, rules, Grafana dashboard
+deploy/          Angie snippets, systemd unit, rules, Grafana dashboard, alert rules
 web/             challenge/denied pages (self-contained HTML + JS solver)
 ```
 

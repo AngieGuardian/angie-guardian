@@ -1,7 +1,7 @@
 # Admin API & Dashboard
 
 The admin API and `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
-separate from the auth hot path. `/metrics`, `/healthz`, and the optional static
+separate from the auth hot path. `/metrics`, `/healthz`, `/readyz`, and the optional static
 `/admin/dashboard` shell are open; every JSON/data `/admin/*` route needs an
 `Authorization: Bearer <token>` header with that exact scheme prefix. The
 dashboard contains no data itself and authenticates every API call.
@@ -124,6 +124,34 @@ for one minute (and refreshed immediately after a block/unblock action). The
 headline count comes from the bounded in-process mirror and is shown as a lower
 bound when that mirror is capacity-incomplete, so leaving the dashboard open
 never triggers an unbounded store scan.
+
+### System health
+
+A **Store** KPI tile sits alongside the headline counters, reading `up` or a red
+`DOWN` with the backend name and how long ago the probe ran, so a healthy store
+is visible too rather than only its failure.
+
+Below the tiles, the **System health** card holds one row per component with an
+ok/degraded state pill and the supporting number: store (backend, probe latency,
+current-window error and slow ratios), hot path (load shedding), enforcement
+(mirror seeding and per-sink health), proof of work (stateless fallback and
+single-spend CAS failures), attack posture, and reputation feeds. Rows render
+green by default, so the card doubles as an "everything is fine" confirmation;
+degraded rows sort to the top.
+
+When any component is degraded, a banner appears above the tiles naming the
+worst one first: red when the store is unreachable (Guardian is silently failing
+open), amber for recoverable degradation that is still protecting traffic.
+
+Everything on this surface comes from the `health` object of
+[`GET /admin/stats`](/reference/admin-api#get-admin-stats), which the dashboard
+already fetches each tick, so it costs no extra request. Some of those numbers
+are process-lifetime counters (shedding, stateless fallback, CAS failures); the
+dashboard compares them against the previous refresh and only calls a component
+degraded when they actually move, re-baselining when a counter drops because the
+process restarted. The first sample of each shows as "observing" rather than a
+verdict. Against an older guardiand that does not send `health`, the banner,
+tile and card hide themselves.
 
 When GeoIP or ASN databases are loaded, Recent decisions gains a **Geo** column
 with the same country, locality, accuracy and network context as Top offenders.

@@ -17,15 +17,65 @@ The token comes from `admin.token` (or `ADMIN_TOKEN`), the auto-generated
 per-start token printed in the startup log; see
 [the token resolution order](/guide/admin).
 
-`/metrics` and `/healthz` are open (a scraper needs no secret). Binding the
-admin listener to a non-loopback address without a configured token is
-refused at startup.
+`/metrics`, `/healthz` and `/readyz` are open (a scraper or an orchestrator
+probe needs no secret). Binding the admin listener to a non-loopback address
+without a configured token is refused at startup.
 
 ## Open endpoints
 
 ### `GET /healthz`
 
 Liveness probe. Returns `ok`.
+
+It answers as long as the process is serving, and deliberately does **not**
+follow the store: Guardian [fails open](/guide/threat-model), so a store outage
+leaves it passing traffic. Tying liveness to the store would kill containers and
+flap units that are still doing useful work. Use `/readyz` for that question.
+
+### `GET /readyz`
+
+Readiness probe: is the shared state Guardian's stateful protection depends on
+actually working? A background checker writes a nonce to the store and reads it
+back every 10 seconds; this endpoint reports the last snapshot and performs no
+store I/O itself, so an unauthenticated caller cannot turn readiness checks into
+store traffic.
+
+`200` with `"ready":true`:
+
+```json
+{"ready":true,
+ "store":{"probed":true,"up":true,"backend":"pebble","latency_ms":0.4,
+          "checked_at":"2026-07-21T20:14:03Z"},
+ "enforcement":{"sinks":[{"name":"nftables","healthy":true}]},
+ "attack":{"level":"normal"}}
+```
+
+`503` with `"ready":false` and one of four stable reasons:
+
+| Reason | Meaning |
+|---|---|
+| `store probe pending` | The checker is wired but no probe has completed yet (startup). |
+| `store probe unavailable` | No checker is attached. A wiring fault, not a store problem. |
+| `store probe failed` | The write/read-back round trip failed. Guardian is failing open. |
+| `store probe stale` | No probe completed for three intervals; the last snapshot is no longer trustworthy. |
+
+Only store readiness sets the status code. The `enforcement` and `attack` blocks
+are informational and never fail readiness: a degraded nftables sink or a raised
+attack posture both still protect traffic, and dropping the instance out of a
+load balancer during exactly that incident would be the wrong reflex. Both
+blocks are omitted when unconfigured.
+
+The reason is deliberately coarse and the response carries no raw backend error
+(those can contain addresses, DSN credentials or filesystem paths). The detail
+goes to the log and to the token-guarded [`/admin/stats`](#get-admin-stats)
+`health` object.
+
+Responses are `Cache-Control: no-store`.
+
+The probe is a write **and** a read-back requiring an exact nonce match, not a
+ping: a read-only replica, a full disk or a silently lossy backend all accept a
+write, and would pass a liveness-style check while losing every value Guardian
+stores.
 
 ### `GET /metrics`
 
@@ -103,6 +153,40 @@ action and reason category, and the PoW lifecycle. `blocks_complete:false`
 means `blocks_active` is a lower bound (or `-1` while the mirror has not seeded),
 never the result of an expensive fallback scan. Long-horizon numbers live in
 `/metrics`.
+
+It also carries a `health` object: the authenticated companion to `/readyz`,
+with the raw probe error and the supporting numbers behind the dashboard's
+System health card.
+
+```json
+"health":{
+  "store":{"probed":true,"up":false,"backend":"redis","latency_ms":100.7,
+           "checked_at":"2026-07-21T20:14:03Z",
+           "error":"dial tcp 127.0.0.1:6379: connection refused"},
+  "store_ops":{"total":91240,"errors":812},
+  "store_signals":{"error_ratio":0.08,"slow_ratio":0.31},
+  "store_thresholds":{"error_ratio":0.05,"slow_ratio":0.25},
+  "shed":{"shed":19,"pass_token":4},
+  "pow_fallback":{"issued_stateless_fallback":22,"spent_cas_failed":3},
+  "enforcement":{"mirror":{"seeded":true,"entries":412,"complete":true},
+                 "sinks":[{"name":"nftables","healthy":false,"last_error":"..."}]}
+}
+```
+
+`store_ops`, `shed` and `pow_fallback` are **process-lifetime** counters: they
+say what has happened since guardiand started, not what is happening now. One
+failure hours ago leaves them nonzero forever. Read a component as actively
+degraded only when a counter moves between two refreshes (and re-baseline when
+one decreases, which means the process restarted). `store_signals` are the
+detector's current-window ratios and `store_thresholds` the resolved config
+values they are compared against; a threshold of `0` means that signal is
+disabled. Windowed latency quantiles are deliberately absent here: Prometheus
+computes those correctly and lifetime totals cannot.
+
+The whole object is derived from a single registry gather shared with the
+challenge rollup, so a dashboard refresh costs one `Gather()`, not two. The
+counter blocks are omitted entirely when metrics are disabled, rather than
+reported as zeroes.
 
 ### `GET /admin/distributions`
 
