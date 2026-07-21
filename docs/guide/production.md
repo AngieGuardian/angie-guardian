@@ -180,6 +180,98 @@ For a complete, runnable example (including Angie and a demo backend) see
 because the e2e suite exercises the working tree, but swapping `build:` for
 `image:` gives the production shape above.
 
+## Running the anomaly trainer
+
+`guardian-train` is an offline batch job, not a second daemon. It reads a
+representative window of Angie JSON access logs, builds a complete replacement
+baseline for every domain with enough usable requests, writes one model
+artifact, and exits. `guardiand` never learns from live requests: it only reads
+the artifact named by `waf.anomaly.model` and scores requests against it. See
+[Train the Anomaly Model](/guide/anomaly) for the log format, features and
+threshold-tuning workflow.
+
+On a systemd installation, install the trainer from the same release archive as
+the daemon and keep the live artifact with the other root-managed policy:
+
+```sh
+sudo install -Dm755 guardian-train /usr/local/bin/guardian-train
+sudo install -d -o root -g root -m700 /var/lib/guardian-training
+
+# Build away from the live path first. Review the printed domain/request
+# summary before promoting it.
+sudo guardian-train \
+  -out /var/lib/guardian-training/model.candidate.json \
+  -min-requests 5000 \
+  /var/log/angie/*.access.json
+
+# Copy fully, set the daemon-readable ownership, then rename within the target
+# directory so guardiand can never observe a partial artifact.
+sudo install -o root -g guardian -m640 \
+  /var/lib/guardian-training/model.candidate.json \
+  /etc/guardian/model.json.next
+sudo mv /etc/guardian/model.json.next /etc/guardian/model.json
+```
+
+The training job needs read access to the selected logs and write access to its
+staging directory; it does not need the signing key, admin token or Guardian
+store. Keep `/etc/guardian/model.json` read-only to the `guardian` service user,
+just like `guardian.yaml` and the WAF rules. A compromised daemon should not be
+able to replace the baseline it is meant to enforce. The compact example uses
+`sudo` because access logs are commonly restricted; for an unattended job,
+prefer a dedicated training identity that can read only those logs and write
+only the staging directory, with a separate privileged promotion step.
+
+For the first model, promote the file before enabling `waf.anomaly`, then test
+and reload the config:
+
+```sh
+sudo -u guardian /usr/local/bin/guardiand \
+  -config /etc/guardian/guardian.yaml -t
+sudo systemctl reload guardiand
+```
+
+Later model replacements need no signal or restart. Each instance checks the
+configured model every 10 seconds using a content hash and logs `anomaly model
+reloaded` after accepting it. An unreadable, oversized or invalid replacement
+leaves the previous model active in memory, but a future daemon restart still
+needs a valid file on disk. Retain the last accepted candidate so you can
+atomically promote it again if a new baseline proves bad.
+
+Automate the candidate-and-promotion sequence with a timer, cron job or
+deployment job only after defining the input window and acceptance checks:
+
+- Rebuild from the whole representative window, including the relevant rotated
+  logs. Training is not incremental; feeding only the newest file forgets the
+  older traffic distribution.
+- Do not promote a window dominated by an attack, load test, launch or outage.
+  Successful responses below status 400 are eligible, so a successful bot
+  campaign can otherwise become part of “normal”.
+- Require a zero exit status and check the printed list contains every expected
+  domain with a credible request count. Malformed JSON lines are skipped rather
+  than fatal, so alert on an unexpected `unparseable` count. Domains below
+  `-min-requests` are omitted, and the command fails without writing a model only
+  when no domain reaches the floor.
+- After promotion, confirm the reload log and watch `guardian_anomaly_score` for
+  distribution drift before tightening either enforcement threshold.
+
+The production container image contains `guardiand` only. Run the release's
+`guardian-train` binary on the host or in a separate controlled batch job, then
+mount a model **directory** read-only into every Guardian container:
+
+```yaml
+services:
+  guardiand:
+    volumes:
+      - ./guardian-models:/etc/guardian/models:ro
+```
+
+Point `waf.anomaly.model` at `/etc/guardian/models/model.json` and atomically
+rename the candidate inside `./guardian-models`. Mounting the directory matters:
+replacing a single bind-mounted file can leave a container attached to the old
+inode. In a replica fleet, distribute the same accepted artifact to every node;
+the shared Redis/Valkey store does not distribute models. Confirm the reload on
+each instance before considering the rollout complete.
+
 ## Choosing a store backend
 
 Guardian keeps TTL state (IP blocks, counters, spent challenges, and bot
