@@ -39,10 +39,40 @@ canonical `guardian.example.yaml`, and the complete `deploy/` directory. The
 installation below uses the binary, systemd unit, Angie snippet, and starter
 rules directly from that directory.
 
-::: warning Release verification is not available yet
-[Issue #7](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/7) tracks
-publishing signed checksums. Once those assets are available, verify the
-archive before extracting or installing it. Do not substitute an unpinned
+### Verify the download (optional)
+
+Every release publishes a `SHA256SUMS` file next to the archives, listing the
+SHA-256 digest of each one. Downloading it alongside the archive lets you
+confirm the file arrived intact and matches what the release pipeline built:
+
+```sh
+wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/1.0.0/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Run it from the directory holding the archive:
+
+```
+angie-guardian-1.0.0-linux-amd64.tar.gz: OK
+```
+
+`SHA256SUMS` lists both architectures, so `--ignore-missing` is what lets you
+verify just the one you downloaded. Without it, `sha256sum` reports the archive
+you did not download as `FAILED open or read` and exits non-zero, which looks
+like a verification failure but is not one.
+
+A file that does not match reports `FAILED` instead of `OK` (and the command
+exits non-zero); do not install it. The same `SHA256SUMS` is attached to the
+[GitHub release](https://github.com/Angie-Guardian/angie-guardian/releases) and
+verifies identically.
+
+::: warning Checksums detect corruption, not tampering
+A checksum only proves the archive matches the `SHA256SUMS` you downloaded. It
+is not a signature: anyone able to replace the archive could replace the
+checksum file with it. Releases are not yet signed, and the container images
+are not yet attested, so treat this as an integrity check rather than proof of
+origin. [Issue #7](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/7)
+tracks signing the checksums and the images. Do not substitute an unpinned
 `latest` download for the explicit version above.
 :::
 
