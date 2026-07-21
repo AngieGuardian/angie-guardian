@@ -476,7 +476,7 @@ func TestAdminIntel(t *testing.T) {
 	}
 	yaml := fmt.Sprintf(`
 store: { backend: memory }
-geoip: { country_db: %s }
+geoip: { location_db: %s }
 reputation:
   feeds: [ { name: bad-actors, file: %s } ]
 defaults:
@@ -506,8 +506,8 @@ defaults:
 		t.Fatalf("intel status: %v, want enabled=true", m)
 	}
 	intelView := m["intel"].(map[string]any)
-	if intelView["country_db"] == nil {
-		t.Fatal("intel status missing country_db")
+	if intelView["location_db"] == nil {
+		t.Fatal("intel status missing location_db")
 	}
 	feeds := intelView["feeds"].([]any)
 	if len(feeds) != 1 || feeds[0].(map[string]any)["entries"] != float64(1) {

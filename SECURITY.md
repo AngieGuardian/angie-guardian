@@ -51,7 +51,7 @@ glue in `deploy/`.
 Out of scope (by design, documented in the
 [security model](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)):
 
-- volumetric / L3–L4 floods — that's Angie's rate limiting and your network's
+- volumetric / L3–L4 floods: that's Angie's rate limiting and your network's
   job, not a proof-of-work interstitial's;
 - attacks originating from inside a configured allowlist / trusted range;
 - a native-code solver outpacing browsers at proof-of-work (a cost trade-off,

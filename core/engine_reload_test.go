@@ -148,7 +148,7 @@ func TestReloadKeepsInflightSnapshotResourcesAlive(t *testing.T) {
 	db := inteltest.WriteCountryDB(t, t.TempDir(), map[string]string{"198.51.100.0/24": "NL"})
 	cfg := loadTestConfig(t, fmt.Sprintf(`
 store: { backend: memory }
-geoip: { country_db: %s }
+geoip: { location_db: %s }
 defaults:
   verified_bots:
     dns_timeout: 1m

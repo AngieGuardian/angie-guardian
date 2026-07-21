@@ -264,14 +264,14 @@ func TestConfigValidation(t *testing.T) {
 		"oversized bot cache ttl":                "defaults: { verified_bots: { cache_ttl: 8761h } }",
 		"bot also in ua allowlist":               "defaults: { allowlist: { uas: [ Googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } }",
 		"bot overlaps ua allowlist per-domain":   "domains: { a.test: { allowlist: { uas: [ googlebot ] }, verified_bots: { bots: [ { name: googlebot } ] } } }",
-		"bad country code":                       "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ Netherlands ] } } }",
-		"country in two selectors":               "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] }, challenge: { countries: [ nl ] } } }",
+		"bad country code":                       "geoip: { location_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ Netherlands ] } } }",
+		"country in two selectors":               "geoip: { location_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] }, challenge: { countries: [ nl ] } } }",
 		"asn in two selectors":                   "geoip: { asn_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { asns: [ 64500 ] }, allow: { asns: [ 64500 ] } } }",
-		"geo enabled but inert":                  "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true } }",
+		"geo enabled but inert":                  "geoip: { location_db: /x.mmdb }\ndefaults: { geo: { enabled: true } }",
 		"geo without databases":                  "defaults: { geo: { enabled: true, deny: { countries: [ NL ] } } }",
-		"country rules sans country_db":          "geoip: { asn_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] } } }",
-		"asn rules sans asn_db":                  "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { asns: [ 64500 ] } } }",
-		"bad geo default_action":                 "geoip: { country_db: /x.mmdb }\ndefaults: { geo: { enabled: true, default_action: block, deny: { countries: [ NL ] } } }",
+		"country rules sans location_db":         "geoip: { asn_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { countries: [ NL ] } } }",
+		"asn rules sans asn_db":                  "geoip: { location_db: /x.mmdb }\ndefaults: { geo: { enabled: true, deny: { asns: [ 64500 ] } } }",
+		"bad geo default_action":                 "geoip: { location_db: /x.mmdb }\ndefaults: { geo: { enabled: true, default_action: block, deny: { countries: [ NL ] } } }",
 		"geo on domain without databases":        "domains: { a.test: { geo: { enabled: true, deny: { countries: [ NL ] } } } }",
 		"feed sans source":                       "reputation: { feeds: [ { name: x } ] }",
 		"feed with two sources":                  "reputation: { feeds: [ { name: x, url: \"https://a/b\", file: /a/b } ] }",
@@ -388,7 +388,7 @@ func TestDomainLabel(t *testing.T) {
 
 const geoYAML = `
 geoip:
-  country_db: /var/lib/test/country.mmdb
+  location_db: /var/lib/test/country.mmdb
   asn_db: /var/lib/test/asn.mmdb
 reputation:
   cache_dir: /var/lib/test/feeds
@@ -458,7 +458,7 @@ func TestGeoConfig(t *testing.T) {
 
 	// Feed defaults and the intel bridge.
 	ic := cfg.IntelConfig()
-	if ic.CountryDB == "" || ic.ASNDB == "" || ic.CacheDir == "" {
+	if ic.LocationDB == "" || ic.ASNDB == "" || ic.CacheDir == "" {
 		t.Fatalf("intel config incomplete: %+v", ic)
 	}
 	if len(ic.Feeds) != 2 {

@@ -40,7 +40,7 @@ features:
     details: Read paths clear 75k+ req/s on a single node. Verified tokens are cached in-process (about 144 ns), so returning clients never leave the fast path.
   - icon: 🔭
     title: Observable by default
-    details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard, and a ready-made Grafana dashboard.
+    details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard with activity graphs and a world map of attack origins, and a ready-made Grafana dashboard.
   - icon: 🗄️
     title: Pluggable state stores
     details: memory for dev, embedded pebble or buntdb for a durable single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.

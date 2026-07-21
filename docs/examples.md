@@ -168,8 +168,9 @@ domains:
 ## GeoIP scoping and reputation feeds
 
 Deny or challenge by origin country/ASN, and enforce external blocklists.
-Needs MaxMind-format databases on disk (GeoLite2 or DB-IP); see
-[Bots, GeoIP & Reputation](/guide/bots-ip-intel).
+Needs MaxMind-format databases on disk (GeoLite2 or DB-IP); grab them from
+[the P3TERX mirror or MaxMind](/guide/bots-ip-intel#getting-the-databases),
+then see [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
 ```yaml
 signing_key_file: /var/lib/guardian/ed25519.key
@@ -183,7 +184,7 @@ defaults:
     challenge: { countries: [ CN, RU ] }
 
 geoip:
-  country_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
+  location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 reputation:

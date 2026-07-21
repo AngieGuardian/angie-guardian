@@ -21,6 +21,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/attackmode"
+	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -42,11 +43,24 @@ type AdminServer struct {
 	mux     *http.ServeMux
 	angie   *angieClient // nil = admin.angie_api not configured
 
-	// chartETag is a strong ETag over the vendored Chart.js blob, computed once
-	// at startup. It lets the asset revalidate cheaply (304 on match) so a
-	// guardiand upgrade that changes the blob is picked up immediately instead of
-	// a returning browser pairing a stale library with new dashboard JavaScript.
-	chartETag string
+	// assetETags holds a strong ETag per vendored dashboard asset, keyed by
+	// embedded path and computed once at startup. It lets each asset revalidate
+	// cheaply (304 on match) so a guardiand upgrade that changes a blob is
+	// picked up immediately instead of a returning browser pairing a stale
+	// library with new dashboard JavaScript.
+	assetETags map[string]string
+}
+
+// dashboardAssets are the vendored files the dashboard loads, mapping the
+// served URL to its embedded path and content type. All are static libraries
+// or map data holding no request data, which is why they are served
+// unauthenticated (see handleAsset).
+var dashboardAssets = map[string]struct{ path, contentType string }{
+	"/admin/chart.umd.min.js":           {"vendor/chart.umd.min.js", "text/javascript; charset=utf-8"},
+	"/admin/chart-geo.umd.min.js":       {"vendor/chart-geo.umd.min.js", "text/javascript; charset=utf-8"},
+	"/admin/hammer.min.js":              {"vendor/hammer.min.js", "text/javascript; charset=utf-8"},
+	"/admin/chartjs-plugin-zoom.min.js": {"vendor/chartjs-plugin-zoom.min.js", "text/javascript; charset=utf-8"},
+	"/admin/countries-110m.json":        {"vendor/countries-110m.json", "application/json; charset=utf-8"},
 }
 
 // NewAdminServer builds the admin+metrics handler. The cfg parameter only
@@ -96,14 +110,18 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	// unauthenticated is safe. Off by default; enable with admin.dashboard.
 	if cfg.Admin.Dashboard {
 		s.mux.HandleFunc("GET /admin/dashboard", s.handleDashboard)
-		// Chart.js is vendored (web/vendor) and served same-origin, unauthenticated
-		// for the same reason as the dashboard shell: a <script src> fetch carries
-		// no bearer token, and the asset holds no data. No CDN, works air-gapped.
-		if asset, err := web.FS.ReadFile("vendor/chart.umd.min.js"); err == nil {
-			sum := sha256.Sum256(asset)
-			s.chartETag = `"` + hex.EncodeToString(sum[:16]) + `"`
+		// The chart libraries and map data are vendored (web/vendor) and served
+		// same-origin, unauthenticated for the same reason as the dashboard
+		// shell: a <script src> fetch carries no bearer token, and the assets
+		// hold no data. No CDN, works air-gapped.
+		s.assetETags = make(map[string]string, len(dashboardAssets))
+		for route, a := range dashboardAssets {
+			if blob, err := web.FS.ReadFile(a.path); err == nil {
+				sum := sha256.Sum256(blob)
+				s.assetETags[a.path] = `"` + hex.EncodeToString(sum[:16]) + `"`
+			}
+			s.mux.HandleFunc("GET "+route, s.handleAsset)
 		}
-		s.mux.HandleFunc("GET /admin/chart.umd.min.js", s.handleChartJS)
 	}
 	return s
 }
@@ -237,8 +255,18 @@ func (s *AdminServer) handleBlockList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"count": len(blocks), "complete": complete, "blocks": blocks})
 }
 
+// recentDecisionView adds optional read-time IP intelligence to the ring's
+// immutable request/decision record. Keeping it out of core.RecentDecision
+// avoids a GeoIP lookup on the request hot path and lets refreshed databases
+// improve rows that are already in the ring.
+type recentDecisionView struct {
+	core.RecentDecision
+	intel.Info
+}
+
 // handleDecisions returns the engine's recent non-allow decisions, newest
-// first. Query: ?limit= (default 50), ?action=deny|challenge, ?reason=<prefix>.
+// first, enriched with configured GeoIP/ASN data. Query: ?limit= (default 50),
+// ?action=deny|challenge, ?reason=<prefix>.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
@@ -255,7 +283,9 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	// Filter over the full ring, then cut to limit, so a filtered view is not
 	// starved by unrelated entries.
 	all := s.engine.RecentDecisions(0)
-	out := make([]core.RecentDecision, 0, min(limit, len(all)))
+	out := make([]recentDecisionView, 0, min(limit, len(all)))
+	provider := s.engine.Intel()
+	byIP := make(map[string]intel.Info)
 	for _, d := range all {
 		if action != "" && d.Action != action {
 			continue
@@ -263,7 +293,18 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		if reason != "" && !strings.HasPrefix(d.Reason, reason) {
 			continue
 		}
-		out = append(out, d)
+		row := recentDecisionView{RecentDecision: d}
+		if provider != nil {
+			info, ok := byIP[d.IP]
+			if !ok {
+				if addr, err := netip.ParseAddr(d.IP); err == nil {
+					info = provider.Lookup(addr)
+				}
+				byIP[d.IP] = info
+			}
+			row.Info = info
+		}
+		out = append(out, row)
 		if len(out) == limit {
 			break
 		}
@@ -494,12 +535,18 @@ type countEntry struct {
 }
 
 // offenderIP carries the IP plus whatever GeoIP/ASN detail is configured.
+// City and Subdivision need a City-class location_db and are absent for
+// roughly a fifth of networks even then; AccuracyRadiusKM qualifies them as
+// an area, not a precision (see intel.Info).
 type offenderIP struct {
-	IP      string `json:"ip"`
-	Count   int    `json:"count"`
-	Country string `json:"country,omitempty"`
-	ASN     uint32 `json:"asn,omitempty"`
-	ASOrg   string `json:"as_org,omitempty"`
+	IP               string `json:"ip"`
+	Count            int    `json:"count"`
+	Country          string `json:"country,omitempty"`
+	City             string `json:"city,omitempty"`
+	Subdivision      string `json:"subdivision,omitempty"`
+	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitempty"`
+	ASN              uint32 `json:"asn,omitempty"`
+	ASOrg            string `json:"as_org,omitempty"`
 }
 
 // handleOffenders reports the heaviest sources of non-allow decisions in the
@@ -520,24 +567,41 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 		byPath[normalizePath(d.URI)]++
 	}
 
-	// GeoIP/ASN merge for the top IPs only (bounded lookups, never per-request).
-	// nil Provider is lookup-safe, so this degrades to IP-only when no DBs load.
+	// GeoIP/ASN merge. nil Provider is lookup-safe, so this degrades to IP-only
+	// when no databases load.
 	intel := s.engine.Intel()
 	topIPs := topKEntries(byIP, offenderTopK)
 	ips := make([]offenderIP, 0, len(topIPs))
-	byCountry := map[string]int{}
 	for _, e := range topIPs {
 		row := offenderIP{IP: e.Key, Count: e.Count}
 		if intel != nil {
 			if addr, err := netip.ParseAddr(e.Key); err == nil {
 				info := intel.Lookup(addr)
 				row.Country, row.ASN, row.ASOrg = info.Country, info.ASN, info.ASOrg
-				if info.Country != "" {
-					byCountry[info.Country] += e.Count
-				}
+				row.City, row.Subdivision = info.City, info.Subdivision
+				row.AccuracyRadiusKM = info.AccuracyRadiusKM
 			}
 		}
 		ips = append(ips, row)
+	}
+
+	// The country rollup covers EVERY distinct IP in the window, not just the
+	// top-K rows above: a botnet spreading 200 requests over 200 addresses
+	// would otherwise show as a handful of hits while one noisy IP from
+	// somewhere else outranked it, inverting where the traffic actually came
+	// from. One lookup per distinct IP, bounded by the ring rather than by
+	// request volume, so the cost is flat however large the attack gets.
+	byCountry := map[string]int{}
+	if intel != nil {
+		for ip, n := range byIP {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			if cc := intel.Lookup(addr).Country; cc != "" {
+				byCountry[cc] += n
+			}
+		}
 	}
 
 	out := map[string]any{
@@ -547,7 +611,13 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 		"paths":   topKEntries(byPath, offenderTopK),
 	}
 	if len(byCountry) > 0 {
-		out["countries"] = topKEntries(byCountry, offenderTopK)
+		// Every country, not a top-K slice. Countries are the one bounded
+		// dimension here (at most one per distinct IP in the ring, and in
+		// practice far fewer), unlike attacker-controlled reasons and paths.
+		// Truncating them would silently drop part of the window from both the
+		// map and the table, which is the same under-reporting the rollup above
+		// exists to prevent.
+		out["countries"] = topKEntries(byCountry, len(byCountry))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -806,27 +876,34 @@ func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(page)
 }
 
-// handleChartJS serves the vendored Chart.js library same-origin. Unauthenticated
-// like the dashboard shell (a <script src> fetch sends no bearer token) and safe:
-// the asset is a static library, not data.
+// handleAsset serves a vendored dashboard asset (the chart libraries and the
+// TopoJSON world atlas) same-origin. Unauthenticated like the dashboard shell
+// (a <script src> or atlas fetch sends no bearer token) and safe: these are
+// static libraries and map data, not request data.
 //
-// The URL is fixed (dashboard.html references a stable relative path), so it must
-// not be cached as immutable: a guardiand upgrade changes the blob, and a returning
-// browser holding a year-old copy would pair a stale Chart.js with freshly loaded
-// (no-store) dashboard JavaScript. Instead it revalidates against a content ETag,
-// so a matching browser gets a cheap 304 and a changed blob is fetched fresh.
-func (s *AdminServer) handleChartJS(w http.ResponseWriter, r *http.Request) {
-	asset, err := web.FS.ReadFile("vendor/chart.umd.min.js")
-	if err != nil {
-		http.Error(w, "chart library missing", http.StatusInternalServerError)
+// The URLs are fixed (dashboard.html references stable relative paths), so they
+// must not be cached as immutable: a guardiand upgrade changes a blob, and a
+// returning browser holding a year-old copy would pair a stale library with
+// freshly loaded (no-store) dashboard JavaScript. Instead each revalidates
+// against a content ETag, so a matching browser gets a cheap 304 and a changed
+// blob is fetched fresh.
+func (s *AdminServer) handleAsset(w http.ResponseWriter, r *http.Request) {
+	a, ok := dashboardAssets[r.URL.Path]
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	if s.chartETag != "" {
-		w.Header().Set("ETag", s.chartETag)
+	asset, err := web.FS.ReadFile(a.path)
+	if err != nil {
+		http.Error(w, "dashboard asset missing", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", a.contentType)
+	if etag := s.assetETags[a.path]; etag != "" {
+		w.Header().Set("ETag", etag)
 		// Must revalidate every time; a stale cached copy is never served blind.
 		w.Header().Set("Cache-Control", "no-cache")
-		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, s.chartETag) {
+		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}

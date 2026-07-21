@@ -35,7 +35,7 @@ the actual client address. Otherwise every visitor appears to be the proxy:
 one attacker can score a behavioural block or rate limit that affects everyone.
 
 ```nginx
-# http {} context — use only the exact networks owned by your proxy/CDN.
+# http {} context: use only the exact networks owned by your proxy/CDN.
 set_real_ip_from 10.20.0.0/16;
 set_real_ip_from 2001:db8:1234::/48;
 real_ip_header X-Forwarded-For;       # or your provider's authenticated header
