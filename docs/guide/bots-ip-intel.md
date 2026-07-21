@@ -107,17 +107,22 @@ files unchanged, on a GitHub Actions cron that runs every three days, and the
 ```sh
 sudo mkdir -p /var/lib/GeoIP
 cd /var/lib/GeoIP
-sudo wget https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb
-sudo wget https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb
+sudo curl -fsSL -o GeoLite2-Country.mmdb.new https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb
+sudo curl -fsSL -o GeoLite2-ASN.mmdb.new https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb
+sudo mv GeoLite2-Country.mmdb.new GeoLite2-Country.mmdb
+sudo mv GeoLite2-ASN.mmdb.new GeoLite2-ASN.mmdb
 ```
 
-That is Country (8.8 MB) plus ASN (12 MB). Swap `GeoLite2-Country.mmdb` for
-`GeoLite2-City.mmdb` if you want city and region labels; the same `location_db`
-key takes either file, as the next section explains.
+That is Country (8.8 MB) plus ASN (12 MB); swap Country for `GeoLite2-City.mmdb`
+if you want city and region labels, as the next section explains.
 
-To refresh later, delete the old files first and re-run the two `wget` lines, or
-use [`geoipupdate`](https://github.com/maxmind/geoipupdate) with a free MaxMind
-licence key. The data is MaxMind's, under the
+Guardian polls both files once a minute and reloads on any size or timestamp
+change, so updates need no restart, and a failed reload keeps the previously
+loaded data. Downloading to `.new` and `mv`-ing it into place matters for that
+reason: the rename is atomic, so the poll never catches a half-written database.
+Re-run the snippet from a weekly cron to stay current, or use
+[`geoipupdate`](https://github.com/maxmind/geoipupdate) with a free MaxMind
+licence key, which replaces files the same way. The data is MaxMind's, under the
 [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula).
 
 ### Country or City: both go in `location_db`
