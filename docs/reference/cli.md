@@ -56,21 +56,49 @@ Builds per-domain anomaly baselines offline from Angie JSON access logs. See
 [Train the Anomaly Model](/guide/anomaly).
 
 ```sh
-guardian-train -out model.candidate.json -min-requests 5000 \
-               /var/log/angie/*.access.json
+guardian-train train -out model.candidate.json -min-requests 5000 \
+  -require-domain example.com /var/log/angie/*.access.json*
 ```
+
+### `guardian-train train`
 
 | Flag | Default | Description |
 |---|---|---|
 | `-out <path>` | `model.json` | Output model artifact path. |
-| `-min-requests <n>` | `1000` | Drop domains with fewer usable successful records (entries without a host and responses with status >= 400 are excluded). |
-| `-version` | | Print version and exit. |
+| `-report <path>` | | Write a machine-readable training/input report. |
+| `-min-requests <n>` | `5000` | Minimum eligible records per domain. |
+| `-min-segment-requests <n>` | `500` | Minimum eligible records for an automatic route/method segment. |
+| `-max-segments <n>` | `128` | Maximum retained segments per domain. |
+| `-max-invalid <n>` | `0` | Maximum malformed or schema-invalid log records. |
+| `-require-domain <host>` | | Require this normalized domain in the artifact; repeat for multiple domains. |
 
-Positional arguments are plain JSON access log files to read; the CLI does not
-decompress `.gz` files. Pass `-` to read a decompressed stream (for example,
-`zcat ... | guardian-train -out model.candidate.json -`). Inspect a candidate
-before atomically promoting it to the configured live path; for unattended
-updates use the [preferred systemd timer](/guide/production#running-the-anomaly-trainer).
+Positional arguments can be plain JSON logs, `.gz` logs, or `-` for stdin. A
+training stdin stream is copied uncompressed to a mode-0600 temporary file
+under `$TMPDIR`, because segment discovery and exact aggregation read it twice;
+ensure that filesystem has room for the complete stream. The strict input
+schema and filtering rules are documented in
+[Train the Anomaly Model](/guide/anomaly).
+
+### `guardian-train compare`
+
+Scores the same validation records against the live and candidate artifacts.
+The report marks each domain as `compared`, `added`, `removed`, `skipped`, or
+`uncovered`; added coverage and quiet-but-retained domains do not manufacture a
+drift failure. It exits `3` when an acceptance gate rejects the candidate.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-current <path>` | required | Current live artifact. |
+| `-candidate <path>` | required | Candidate artifact. |
+| `-report <path>` | | Write the complete comparison report. |
+| `-min-requests <n>` | `500` | Minimum validation records per observed domain. |
+| `-max-mean-delta <score>` | `0.10` | Maximum absolute mean-score change per domain. |
+| `-max-p95-delta <score>` | `0.15` | Maximum absolute p95-score change per domain. |
+| `-max-invalid <n>` | `0` | Maximum malformed or schema-invalid validation records. |
+
+`guardian-train -version` (or `--version`) prints the binary version. For unattended candidate
+training, comparison, and atomic promotion, use the
+[preferred systemd timer](/guide/production#running-the-anomaly-trainer).
 
 ## guardian-loadtest
 

@@ -59,8 +59,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
 # "Why would this request be challenged?" Score it against the domain's
 # anomaly model, for tuning challenge_at / deny_at.
 curl -s -H "Authorization: Bearer $TOKEN" \
-     "$A/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
-# {"host":"shop.example.com","scored":true,"score":0.72}
+     "$A/admin/score?host=shop.example.com&method=GET&uri=/cgi-bin/x%3Fa=1&ua=curl/8"
+# {"host":"shop.example.com","method":"GET","route":"/cgi-bin","baseline":"exact","scored":true,"score":0.72}
+
+# Are every configured anomaly scope and loaded artifact covered?
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/anomaly
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
 # replicas refresh automatically and pre-rotation tokens remain valid for at
@@ -111,8 +114,9 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
-status, IP intelligence health (loaded GeoIP databases plus each reputation
-feed's entries, refresh age and last error), and headline counters. It
+status, anomaly baseline coverage and segment health, IP intelligence health
+(loaded GeoIP databases plus each reputation feed's entries, refresh age and
+last error), and headline counters. It
 auto-refreshes on a selectable interval (2s to 60s, or off) chosen in the
 header and remembered per browser. The active-block and recent-decision tables
 paginate at 25 rows. The active-block table is capped at 1000 rows and cached
@@ -140,6 +144,11 @@ path:
   the anomaly-score histogram, read from Prometheus histograms via
   [`GET /admin/distributions`](/reference/admin-api#get-admin-distributions).
   The histogram cards hide themselves until there is data.
+- **Anomaly coverage**: loaded training times and artifact domain counts,
+  configured scope coverage, route/method segment counts, selected fallback
+  levels, and any missing
+  baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
+  and the distribution counters.
 
 ### Top offenders
 

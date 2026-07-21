@@ -407,6 +407,23 @@ func TestAdminScoreNoModel(t *testing.T) {
 	}
 }
 
+func TestAdminAnomalyHealthWithoutConfiguredModel(t *testing.T) {
+	ts, _ := adminServer(t)
+	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/anomaly", adminToken, ""))
+	if models, ok := m["models"].([]any); !ok || len(models) != 0 {
+		t.Fatalf("models = %v, want empty array", m["models"])
+	}
+	scopes, ok := m["scopes"].([]any)
+	if !ok || len(scopes) == 0 {
+		t.Fatalf("scopes = %v, want configured scopes", m["scopes"])
+	}
+	for _, scope := range scopes {
+		if mode := scope.(map[string]any)["mode"]; mode != "off" {
+			t.Fatalf("anomaly mode = %v, want off", mode)
+		}
+	}
+}
+
 func TestAdminConfigView(t *testing.T) {
 	ts, _ := adminServer(t)
 	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/config", adminToken, ""))

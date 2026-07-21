@@ -5,11 +5,17 @@
 package anomaly
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func score(m *Model, host, path, query, ua string) float64 {
+	return m.Score(host, "GET", path, query, ua).Score
+}
 
 // trainBaseline builds a model from synthetic "normal" traffic: a blog with
 // shallow human URLs, one dominant browser population and a bot minority.
@@ -49,12 +55,12 @@ func trainBaseline(t *testing.T) *Model {
 func TestScoreSeparatesNormalFromAnomalous(t *testing.T) {
 	m := trainBaseline(t)
 
-	normal := m.Score("blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
-	weirdPath := m.Score("blog.example.com",
+	normal := score(m, "blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+	weirdPath := score(m, "blog.example.com",
 		"/cgi-bin/luci/;stok=/x?exec=1/qQfk3zqzn0KpcnNIqIz6O0aXBs1", "exec=1&cmd=wget",
 		"Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
-	weirdUA := m.Score("blog.example.com", "/blog/post-7", "", "python-requests/2.31")
-	weirdBoth := m.Score("blog.example.com",
+	weirdUA := score(m, "blog.example.com", "/blog/post-7", "", "python-requests/2.31")
+	weirdBoth := score(m, "blog.example.com",
 		"/cgi-bin/luci/;stok=/x?exec=1/qQfk3zqzn0KpcnNIqIz6O0aXBs1", "exec=1",
 		"zgrab/0.x")
 
@@ -76,7 +82,7 @@ func TestScoreSeparatesNormalFromAnomalous(t *testing.T) {
 	}
 
 	// Unknown domain: no baseline, no opinion.
-	if s := m.Score("other.test", "/anything", "", "zgrab"); s != 0 {
+	if s := score(m, "other.test", "/anything", "", "zgrab"); s != 0 {
 		t.Errorf("unknown domain scored %.3f, want 0", s)
 	}
 }
@@ -101,10 +107,11 @@ func TestTrainerDecodesURIExactlyLikeScorer(t *testing.T) {
 		UserAgent: "Mozilla/5.0 encoded", Status: 200,
 	})
 	m := tr.Finish(1)
-	b := m.Domains["encoded.test"]
-	if b == nil {
+	d := m.Domains["encoded.test"]
+	if d == nil {
 		t.Fatal("encoded.test baseline missing")
 	}
+	b := d.Baseline
 	if b.PathDepth.Mean != 2 || b.PathLen.Mean != float64(len("/shop/item")) || b.QueryParams.Mean != 2 {
 		t.Fatalf("decoded features = depth %.0f, length %.0f, params %.0f; want 2, %d, 2",
 			b.PathDepth.Mean, b.PathLen.Mean, b.QueryParams.Mean, len("/shop/item"))
@@ -112,7 +119,7 @@ func TestTrainerDecodesURIExactlyLikeScorer(t *testing.T) {
 	if _, ok := b.PathPrefixFreq["/shop/item"]; !ok {
 		t.Fatalf("decoded path prefix absent: %v", b.PathPrefixFreq)
 	}
-	if got := m.Score("encoded.test", "/shop/item", "q=a&b c", "Mozilla/5.0 encoded"); got != 0 {
+	if got := score(m, "encoded.test", "/shop/item", "q=a&b c", "Mozilla/5.0 encoded"); got != 0 {
 		t.Fatalf("runtime-equivalent decoded request scored %v, want 0", got)
 	}
 }
@@ -127,18 +134,19 @@ func TestModelRoundTripAndVersionCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := m.Score("blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
-	b := loaded.Score("blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+	a := score(m, "blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+	b := score(loaded, "blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
 	if a != b {
 		t.Fatalf("score changed across save/load: %v != %v", a, b)
 	}
 
 	// Future-versioned artifacts are refused.
 	m.Version = ModelVersion + 1
-	if err := m.Save(path); err != nil {
+	raw, err := json.Marshal(m)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil {
+	if _, err := ParseModel(raw, path); err == nil {
 		t.Fatal("future model version must be refused")
 	}
 }
@@ -148,10 +156,10 @@ func TestModelRoundTripAndVersionCheck(t *testing.T) {
 // request it scores.
 func TestParseModelRejectsBrokenBaselines(t *testing.T) {
 	for name, raw := range map[string]string{
-		"null baseline":     `{"version":1,"kind":"statistical-baseline","domains":{"example.com":null}}`,
-		"negative std":      `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"path_len":{"mean":5,"std":-2}}}}`,
-		"negative requests": `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"requests":-1}}}`,
-		"negative freq":     `{"version":1,"kind":"statistical-baseline","domains":{"example.com":{"ua_freq":{"curl":-0.5}}}}`,
+		"null baseline":     `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"example.com":{"baseline":null}}}`,
+		"negative std":      `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"example.com":{"baseline":{"requests":1,"path_len":{"mean":5,"std":-2}}}}}`,
+		"negative requests": `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"example.com":{"baseline":{"requests":-1}}}}`,
+		"negative freq":     `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"example.com":{"baseline":{"requests":1,"ua_freq":{"curl":-0.5}}}}}`,
 	} {
 		if _, err := ParseModel([]byte(raw), name); err == nil {
 			t.Errorf("%s: expected ParseModel to reject, got nil", name)
@@ -166,12 +174,12 @@ func TestValidateRejectsNonFiniteStats(t *testing.T) {
 	nan := math.NaN()
 	inf := math.Inf(1)
 	for name, m := range map[string]*Model{
-		"nan mean": {Version: 1, Kind: "statistical-baseline",
-			Domains: map[string]*Baseline{"x": {PathLen: Stat{Mean: nan, Std: 1}}}},
-		"inf std": {Version: 1, Kind: "statistical-baseline",
-			Domains: map[string]*Baseline{"x": {PathLen: Stat{Mean: 1, Std: inf}}}},
-		"inf freq": {Version: 1, Kind: "statistical-baseline",
-			Domains: map[string]*Baseline{"x": {UAFreq: map[string]float64{"curl": inf}}}},
+		"nan mean": {Version: ModelVersion, FeatureSchema: FeatureSchema, TrainedAt: time.Now(),
+			Domains: map[string]*DomainModel{"x": {Baseline: &Baseline{Requests: 1, PathLen: Stat{Mean: nan, Std: 1}}}}},
+		"inf std": {Version: ModelVersion, FeatureSchema: FeatureSchema, TrainedAt: time.Now(),
+			Domains: map[string]*DomainModel{"x": {Baseline: &Baseline{Requests: 1, PathLen: Stat{Mean: 1, Std: inf}}}}},
+		"inf freq": {Version: ModelVersion, FeatureSchema: FeatureSchema, TrainedAt: time.Now(),
+			Domains: map[string]*DomainModel{"x": {Baseline: &Baseline{Requests: 1, UAFreq: map[string]float64{"curl": inf}}}}},
 	} {
 		if err := m.validate(); err == nil {
 			t.Errorf("%s: expected validate to reject non-finite value, got nil", name)
@@ -183,7 +191,7 @@ func TestValidateRejectsNonFiniteStats(t *testing.T) {
 // Score. Confirm the load-time rejection is what stops it: a rejected model is
 // never handed to Score.
 func TestNullBaselineRejectedNotScored(t *testing.T) {
-	raw := `{"version":1,"kind":"statistical-baseline","domains":{"example.com":null}}`
+	raw := `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"example.com":{"baseline":null}}}`
 	if _, err := ParseModel([]byte(raw), "probe"); err == nil {
 		t.Fatal("null baseline must be rejected at parse time")
 	}
@@ -192,7 +200,7 @@ func TestNullBaselineRejectedNotScored(t *testing.T) {
 // TestParseModelNormalizesDomainKeys: an equivalent domain spelling must
 // survive parsing in canonical form, matching how Score looks it up.
 func TestParseModelNormalizesDomainKeys(t *testing.T) {
-	raw := `{"version":1,"kind":"statistical-baseline","domains":{"Example.COM.:443":{"requests":100,"ua_freq":{"curl":1}}}}`
+	raw := `{"version":2,"feature_schema":"decoded-uri-method-route","trained_at":"2026-01-01T00:00:00Z","domains":{"Example.COM.:443":{"baseline":{"requests":100,"ua_freq":{"curl":1}}}}}`
 	m, err := ParseModel([]byte(raw), "probe")
 	if err != nil {
 		t.Fatal(err)
@@ -204,15 +212,15 @@ func TestParseModelNormalizesDomainKeys(t *testing.T) {
 
 func TestScoreNormalizesEquivalentHostSpellings(t *testing.T) {
 	m := trainBaseline(t)
-	want := m.Score("blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+	want := score(m, "blog.example.com", "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
 	for _, host := range []string{"BLOG.EXAMPLE.COM:443", "blog.example.com."} {
-		if got := m.Score(host, "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"); got != want {
+		if got := score(m, host, "/blog/post-7", "", "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"); got != want {
 			t.Errorf("Score(%q) = %v, want normalized-domain score %v", host, got, want)
 		}
 	}
 }
 
-func keysOf(m map[string]*Baseline) []string {
+func keysOf(m map[string]*DomainModel) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)
@@ -228,6 +236,6 @@ func BenchmarkScore(b *testing.B) {
 	m := tr.Finish(100)
 	b.ReportAllocs()
 	for b.Loop() {
-		m.Score("bench.test", "/p/7?x=1", "x=1", "Mozilla/5.0 bench")
+		score(m, "bench.test", "/p/7?x=1", "x=1", "Mozilla/5.0 bench")
 	}
 }

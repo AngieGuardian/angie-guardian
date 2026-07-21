@@ -2,93 +2,127 @@
 // Copyright (C) 2026 Melroy van den Berg
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package anomaly implements the statistical baseline anomaly detector
-// (plan §4.3, "start simple"): guardian-train learns per-domain traffic
-// statistics offline from Angie JSON access logs and emits a compact model
-// artifact; the online scorer loads it and scores each request in
-// microseconds against that baseline. The artifact format is versioned so a
-// future ML implementation (Isolation Forest & co.) can slot in behind the
-// same Score() seam — ML stays optional.
+// Package anomaly implements Guardian's offline-trained statistical anomaly
+// model and its bounded online scorer.
 package anomaly
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"time"
-
-	"github.com/melroy89/angie-guardian/internal/safefile"
+	"unicode/utf8"
 
 	"github.com/melroy89/angie-guardian/core/stateless"
+	"github.com/melroy89/angie-guardian/internal/safefile"
 )
 
-// ModelVersion is bumped when the artifact schema changes; a scorer refuses
-// artifacts it does not understand rather than misinterpreting them.
-const ModelVersion = 1
+const (
+	// ModelVersion and FeatureSchema version both the JSON shape and the exact
+	// feature semantics. A model is useful only when trainer and scorer agree.
+	ModelVersion  = 2
+	FeatureSchema = "decoded-uri-method-route"
 
-// Model is the trained artifact: one Baseline per domain.
+	maxModelBytes       = 64 << 20
+	maxArtifactSegments = 4096
+	maxFreqEntries      = 1000
+)
+
+// Model is the complete trained artifact.
 type Model struct {
-	Version   int                  `json:"version"`
-	Kind      string               `json:"kind"` // "statistical-baseline"
-	TrainedAt time.Time            `json:"trained_at"`
-	Domains   map[string]*Baseline `json:"domains"`
+	Version       int                     `json:"version"`
+	FeatureSchema string                  `json:"feature_schema"`
+	TrainedAt     time.Time               `json:"trained_at"`
+	Domains       map[string]*DomainModel `json:"domains"`
 }
 
-// Stat is a feature's learned distribution.
+// DomainModel contains a mandatory domain-wide baseline and optional bounded
+// route/method specialisations.
+type DomainModel struct {
+	Baseline *Baseline `json:"baseline"`
+	Segments []Segment `json:"segments,omitempty"`
+
+	index map[SegmentKey]*Baseline
+}
+
+// Segment identifies one specialised baseline. Empty Method means route-only;
+// empty Route means method-only. Both populated means an exact combination.
+type Segment struct {
+	Method   string    `json:"method,omitempty"`
+	Route    string    `json:"route,omitempty"`
+	Baseline *Baseline `json:"baseline"`
+}
+
+// Stat is a numeric feature's learned distribution.
 type Stat struct {
 	Mean float64 `json:"mean"`
 	Std  float64 `json:"std"`
 }
 
-// Baseline is what "normal" looks like for one domain.
+// Baseline is what ordinary traffic looks like for one domain or segment.
 type Baseline struct {
-	Requests    int64 `json:"requests"`
-	PathDepth   Stat  `json:"path_depth"`
-	PathLen     Stat  `json:"path_len"`
-	PathEntropy Stat  `json:"path_entropy"`
-	QueryParams Stat  `json:"query_params"`
-	// UAFreq and PathPrefixFreq map lowered UA prefixes / first-two-segment
-	// path prefixes to their observed share of traffic, top entries only.
+	Requests       int64              `json:"requests"`
+	PathDepth      Stat               `json:"path_depth"`
+	PathLen        Stat               `json:"path_len"`
+	PathEntropy    Stat               `json:"path_entropy"`
+	QueryParams    Stat               `json:"query_params"`
 	UAFreq         map[string]float64 `json:"ua_freq"`
 	PathPrefixFreq map[string]float64 `json:"path_prefix_freq"`
 }
 
-// zCap is where a z-score saturates to feature score 1.0: four standard
-// deviations from baseline is maximally weird, more adds nothing.
-const zCap = 4.0
+// ScoreResult makes absence and fallback explicit instead of conflating a
+// missing baseline with a perfectly ordinary score of zero.
+type ScoreResult struct {
+	Score float64
+	Found bool
+	Level string // exact | route | method | domain | missing
+	Route string
+}
 
-// stdFloor prevents near-constant features (tiny std) from exploding the
-// z-score on any deviation.
-const stdFloor = 0.5
-
-// Feature weights; they sum to 1 so the final score stays in [0,1].
 const (
-	weightPathShape    = 0.35 // depth+len+entropy combined
+	zCap               = 4.0
+	stdFloor           = 0.5
+	weightPathShape    = 0.35
 	weightQueryParams  = 0.10
 	weightUARarity     = 0.30
 	weightPrefixRarity = 0.25
+	uaPrefixBytes      = 24
 )
 
-// Score rates one request against the domain baseline: 0 = perfectly
-// ordinary, 1 = maximally anomalous. Unknown domains score 0 (no baseline,
-// no opinion — the other pipeline stages still apply).
-func (m *Model) Score(host, path, query, ua string) float64 {
-	b, ok := m.Domains[stateless.NormalizeHost(host)]
-	if !ok {
-		return 0
+// Score selects the most specific sufficiently-trained baseline and scores a
+// request against it. path and query must already be percent-decoded.
+func (m *Model) Score(host, method, path, query, ua string) ScoreResult {
+	d, ok := m.Domains[stateless.NormalizeHost(host)]
+	if !ok || d == nil || d.Baseline == nil {
+		return ScoreResult{Level: "missing", Route: routeKey(path)}
 	}
+	method = strings.ToUpper(method)
+	route := routeKey(path)
+	b, level := d.Baseline, "domain"
+	if candidate := d.lookup(method, route); candidate != nil {
+		b, level = candidate, "exact"
+	} else if candidate := d.lookup("", route); candidate != nil {
+		b, level = candidate, "route"
+	} else if candidate := d.lookup(method, ""); candidate != nil {
+		b, level = candidate, "method"
+	}
+	return ScoreResult{Score: b.score(path, query, ua), Found: true, Level: level, Route: route}
+}
 
+func (b *Baseline) score(path, query, ua string) float64 {
 	pathShape := (b.PathDepth.zScore(float64(pathDepth(path))) +
 		b.PathLen.zScore(float64(len(path))) +
 		b.PathEntropy.zScore(entropy(path))) / 3
-
-	score := weightPathShape*pathShape +
-		weightQueryParams*b.QueryParams.zScore(float64(queryParams(query))) +
-		weightUARarity*rarity(b.UAFreq, uaPrefix(ua)) +
-		weightPrefixRarity*rarity(b.PathPrefixFreq, pathPrefix(path))
-	return math.Min(1, score)
+	return math.Min(1,
+		weightPathShape*pathShape+
+			weightQueryParams*b.QueryParams.zScore(float64(queryParams(query)))+
+			weightUARarity*rarity(b.UAFreq, uaPrefix(ua))+
+			weightPrefixRarity*rarity(b.PathPrefixFreq, pathPrefix(path)))
 }
 
 func (s Stat) zScore(x float64) float64 {
@@ -96,19 +130,18 @@ func (s Stat) zScore(x float64) float64 {
 	return math.Min(1, math.Abs(x-s.Mean)/std/zCap)
 }
 
-// rarity maps an observed traffic share to [0,1]: anything that makes up
-// ≥2% of baseline traffic is fully ordinary; unseen values are fully rare.
 func rarity(freq map[string]float64, key string) float64 {
 	return 1 - math.Min(1, freq[key]*50)
 }
 
-// --- request feature extraction (shared by trainer and scorer) -------------
-
 func pathDepth(path string) int {
-	depth := 0
-	for _, seg := range strings.Split(path, "/") {
-		if seg != "" {
+	depth, inSegment := 0, false
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			inSegment = false
+		} else if !inSegment {
 			depth++
+			inSegment = true
 		}
 	}
 	return depth
@@ -121,8 +154,6 @@ func queryParams(query string) int {
 	return strings.Count(query, "&") + 1
 }
 
-// entropy is the Shannon entropy of the path's bytes — random-looking blobs
-// (scanner payloads, encoded junk) score high, human URLs low.
 func entropy(s string) float64 {
 	if len(s) == 0 {
 		return 0
@@ -131,8 +162,7 @@ func entropy(s string) float64 {
 	for i := 0; i < len(s); i++ {
 		counts[s[i]]++
 	}
-	h := 0.0
-	n := float64(len(s))
+	h, n := 0.0, float64(len(s))
 	for _, c := range counts {
 		if c > 0 {
 			p := float64(c) / n
@@ -142,17 +172,18 @@ func entropy(s string) float64 {
 	return h
 }
 
-// uaPrefix normalizes a User-Agent to its identifying head, so version
-// bumps don't turn every browser into a rarity.
 func uaPrefix(ua string) string {
-	ua = strings.ToLower(ua)
-	if len(ua) > 24 {
-		ua = ua[:24]
+	ua = strings.ToLower(strings.ToValidUTF8(ua, "�"))
+	if len(ua) <= uaPrefixBytes {
+		return ua
 	}
-	return ua
+	end := uaPrefixBytes
+	for end > 0 && !utf8.ValidString(ua[:end]) {
+		end--
+	}
+	return ua[:end]
 }
 
-// pathPrefix is the first two path segments — the "section" of the site.
 func pathPrefix(path string) string {
 	path = strings.ToLower(path)
 	seen := 0
@@ -167,7 +198,51 @@ func pathPrefix(path string) string {
 	return path
 }
 
-// --- artifact I/O -----------------------------------------------------------
+// routeKey deliberately uses only the first decoded segment: it is bounded
+// enough to learn automatically while still separating major site surfaces.
+func routeKey(path string) string {
+	if path == "*" {
+		return "*"
+	}
+	path = strings.ToLower(path)
+	if path == "" || path == "/" {
+		return "/"
+	}
+	if path[0] == '/' {
+		if i := strings.IndexByte(path[1:], '/'); i >= 0 {
+			return path[:i+1]
+		}
+		return path
+	}
+	trimmed := path
+	if i := strings.IndexByte(trimmed, '/'); i >= 0 {
+		trimmed = trimmed[:i]
+	}
+	return "/" + trimmed
+}
+
+func (d *DomainModel) buildIndex() {
+	d.index = make(map[SegmentKey]*Baseline, len(d.Segments))
+	for i := range d.Segments {
+		s := &d.Segments[i]
+		d.index[SegmentKey{Method: s.Method, Route: s.Route}] = s.Baseline
+	}
+}
+
+func (d *DomainModel) lookup(method, route string) *Baseline {
+	if d.index != nil {
+		return d.index[SegmentKey{Method: method, Route: route}]
+	}
+	// Models loaded from disk always have an index. The linear fallback keeps
+	// manually assembled models race-free without mutating them during Score.
+	for i := range d.Segments {
+		s := &d.Segments[i]
+		if s.Method == method && s.Route == route {
+			return s.Baseline
+		}
+	}
+	return nil
+}
 
 func Load(path string) (*Model, error) {
 	raw, err := safefile.Read(path, maxModelBytes)
@@ -177,19 +252,24 @@ func Load(path string) (*Model, error) {
 	return ParseModel(raw, path)
 }
 
-// ParseModel decodes and validates a model artifact from bytes. The cache
-// uses this to parse the same bytes it hashed for change detection, avoiding
-// a second read.
 func ParseModel(raw []byte, path string) (*Model, error) {
 	m := &Model{}
-	if err := json.Unmarshal(raw, m); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(m); err != nil {
+		return nil, fmt.Errorf("parse model %s: %w", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("trailing JSON value")
+		}
 		return nil, fmt.Errorf("parse model %s: %w", path, err)
 	}
 	if m.Version != ModelVersion {
-		return nil, fmt.Errorf("model %s: version %d, this build understands %d", path, m.Version, ModelVersion)
+		return nil, fmt.Errorf("model %s: unsupported format version %d", path, m.Version)
 	}
-	if m.Kind != "statistical-baseline" {
-		return nil, fmt.Errorf("model %s: unknown kind %q", path, m.Kind)
+	if m.FeatureSchema != FeatureSchema {
+		return nil, fmt.Errorf("model %s: unsupported feature schema %q", path, m.FeatureSchema)
 	}
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("model %s: %w", path, err)
@@ -197,82 +277,104 @@ func ParseModel(raw []byte, path string) (*Model, error) {
 	return m, nil
 }
 
-// validate rejects a structurally-valid-but-semantically-broken model at load
-// time, so a bad artifact fails the reload instead of panicking or corrupting
-// scores on every request. In particular a domain mapped to JSON null decodes
-// to a nil *Baseline, which Score would nil-dereference; under the shipped
-// fail-open Angie config that turns every auth request for the host into an
-// error and can bypass Guardian for it (issue #21, finding 4). Keys are
-// normalized to match how Score looks them up (strings.ToLower), so a model
-// key can never silently fail to match.
 func (m *Model) validate() error {
-	normalized := make(map[string]*Baseline, len(m.Domains))
-	for host, b := range m.Domains {
-		if b == nil {
-			return fmt.Errorf("domain %q: null baseline", host)
-		}
-		if b.Requests < 0 {
-			return fmt.Errorf("domain %q: negative requests %d", host, b.Requests)
-		}
-		for name, s := range map[string]Stat{
-			"path_depth": b.PathDepth, "path_len": b.PathLen,
-			"path_entropy": b.PathEntropy, "query_params": b.QueryParams,
-		} {
-			if err := s.validate(); err != nil {
-				return fmt.Errorf("domain %q %s: %w", host, name, err)
-			}
-		}
-		if err := validateFreq(host, "ua_freq", b.UAFreq); err != nil {
-			return err
-		}
-		if err := validateFreq(host, "path_prefix_freq", b.PathPrefixFreq); err != nil {
-			return err
-		}
+	if m.Version != ModelVersion {
+		return fmt.Errorf("unsupported format version %d", m.Version)
+	}
+	if m.FeatureSchema != FeatureSchema {
+		return fmt.Errorf("unsupported feature schema %q", m.FeatureSchema)
+	}
+	if m.TrainedAt.IsZero() {
+		return fmt.Errorf("trained_at is required")
+	}
+	if len(m.Domains) == 0 {
+		return fmt.Errorf("no domain baselines")
+	}
+	normalized := make(map[string]*DomainModel, len(m.Domains))
+	for host, d := range m.Domains {
 		key := stateless.NormalizeHost(host)
+		if key == "" {
+			return fmt.Errorf("domain %q normalizes to empty", host)
+		}
 		if _, dup := normalized[key]; dup {
 			return fmt.Errorf("domain %q: duplicate after host normalization", host)
 		}
-		normalized[key] = b
+		if d == nil || d.Baseline == nil {
+			return fmt.Errorf("domain %q: global baseline is required", host)
+		}
+		if err := d.Baseline.validate(host + " global"); err != nil {
+			return err
+		}
+		if len(d.Segments) > maxArtifactSegments {
+			return fmt.Errorf("domain %q: %d segments exceeds %d", host, len(d.Segments), maxArtifactSegments)
+		}
+		seen := make(map[SegmentKey]bool, len(d.Segments))
+		for i := range d.Segments {
+			s := &d.Segments[i]
+			s.Method = strings.ToUpper(s.Method)
+			s.Route = strings.ToLower(s.Route)
+			if (s.Method == "" && s.Route == "") || (s.Route != "" && routeKey(s.Route) != s.Route) {
+				return fmt.Errorf("domain %q segment %d: invalid method/route %q/%q", host, i, s.Method, s.Route)
+			}
+			if s.Method != "" && !validMethod(s.Method) {
+				return fmt.Errorf("domain %q segment %d: invalid method %q", host, i, s.Method)
+			}
+			mapKey := SegmentKey{Method: s.Method, Route: s.Route}
+			if seen[mapKey] {
+				return fmt.Errorf("domain %q: duplicate segment %q/%q", host, s.Method, s.Route)
+			}
+			seen[mapKey] = true
+			if s.Baseline == nil {
+				return fmt.Errorf("domain %q segment %q/%q: baseline is required", host, s.Method, s.Route)
+			}
+			if err := s.Baseline.validate(fmt.Sprintf("%s segment %s/%s", host, s.Method, s.Route)); err != nil {
+				return err
+			}
+		}
+		sort.Slice(d.Segments, func(i, j int) bool {
+			if d.Segments[i].Method != d.Segments[j].Method {
+				return d.Segments[i].Method < d.Segments[j].Method
+			}
+			return d.Segments[i].Route < d.Segments[j].Route
+		})
+		d.buildIndex()
+		normalized[key] = d
 	}
 	m.Domains = normalized
 	return nil
 }
 
-// validate rejects non-finite or negative distribution parameters. A negative
-// or NaN std would corrupt every z-score computed against it.
-func (s Stat) validate() error {
-	if err := checkFinite("mean", s.Mean); err != nil {
-		return err
+func (b *Baseline) validate(label string) error {
+	if b.Requests <= 0 {
+		return fmt.Errorf("%s: requests must be positive", label)
 	}
-	if err := checkFinite("std", s.Std); err != nil {
-		return err
-	}
-	if s.Std < 0 {
-		return fmt.Errorf("negative std %v", s.Std)
-	}
-	return nil
-}
-
-func validateFreq(host, field string, freq map[string]float64) error {
-	for k, v := range freq {
-		if err := checkFinite(field, v); err != nil {
-			return fmt.Errorf("domain %q %s[%q]: %w", host, field, k, err)
+	for name, s := range map[string]Stat{
+		"path_depth": b.PathDepth, "path_len": b.PathLen,
+		"path_entropy": b.PathEntropy, "query_params": b.QueryParams,
+	} {
+		if !finite(s.Mean) || !finite(s.Std) || s.Mean < 0 || s.Std < 0 {
+			return fmt.Errorf("%s %s: invalid mean/std %v/%v", label, name, s.Mean, s.Std)
 		}
-		if v < 0 {
-			return fmt.Errorf("domain %q %s[%q]: negative frequency %v", host, field, k, v)
+	}
+	for name, freq := range map[string]map[string]float64{"ua_freq": b.UAFreq, "path_prefix_freq": b.PathPrefixFreq} {
+		if len(freq) > maxFreqEntries {
+			return fmt.Errorf("%s %s: too many entries", label, name)
+		}
+		for key, value := range freq {
+			if !finite(value) || value < 0 || value > 1 {
+				return fmt.Errorf("%s %s[%q]: invalid frequency %v", label, name, key, value)
+			}
 		}
 	}
 	return nil
 }
 
-func checkFinite(name string, v float64) error {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return fmt.Errorf("%s is not finite (%v)", name, v)
-	}
-	return nil
-}
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func (m *Model) Save(path string) error {
+	if err := m.validate(); err != nil {
+		return err
+	}
 	raw, err := json.MarshalIndent(m, "", " ")
 	if err != nil {
 		return err
@@ -281,5 +383,21 @@ func (m *Model) Save(path string) error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path) // atomic swap: scorers never see a half-written model
+	return os.Rename(tmp, path)
+}
+
+// HasDomain reports whether a usable global baseline exists for host.
+func (m *Model) HasDomain(host string) bool {
+	d := m.Domains[stateless.NormalizeHost(host)]
+	return d != nil && d.Baseline != nil
+}
+
+// DomainSummary exposes bounded artifact metadata without returning mutable
+// baseline internals.
+func (m *Model) DomainSummary() map[string]int {
+	out := make(map[string]int, len(m.Domains))
+	for host, d := range m.Domains {
+		out[host] = len(d.Segments)
+	}
+	return out
 }

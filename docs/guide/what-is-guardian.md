@@ -32,13 +32,12 @@ pipeline. Everything is per-domain configurable.
 - Tamper detection on proof-of-work challenge IDs: each challenge is
   single-spend and bound to `{host, client IP}`, so a forged, replayed or
   cross-domain challenge ID is rejected and scored as a tamper event.
-- Statistical anomaly scoring: `guardian-train` learns per-domain baselines
-  from Angie JSON access logs offline; the online scorer rates each unvouched
-  request that reaches it in about 260 ns and drives challenge/deny plus
-  difficulty escalation. Valid PoW tokens short-circuit this stage after the
-  signature checks. The
-  model artifact is versioned and hot-swapped, so an ML implementation can
-  slot in behind the same seam later.
+- Statistical anomaly scoring: `guardian-train` learns domain and bounded
+  route/method baselines from Angie JSON access logs offline; the
+  sub-microsecond online scorer rates each unvouched request and drives
+  challenge/deny plus difficulty escalation. Valid PoW tokens short-circuit
+  this stage after the signature checks. The model artifact is self-describing
+  and hot-swapped, so another detector can slot in behind the same seam later.
 
 ### 2. The proof-of-work challenge layer, only for suspicious or new clients
 
@@ -62,8 +61,8 @@ Guardian offers two ways to run, sharing one decision core:
 
 - **Sidecar (default, full-featured).** A Go daemon wired into Angie with
   stock `auth_request` directives. This is the complete implementation:
-  proof-of-work, behavioural IP blocking, and anomaly scoring all require the
-  shared store the sidecar owns. Start here.
+  proof-of-work and behavioural IP blocking use the shared store it owns;
+  anomaly scoring and verified-bot DNS are also sidecar-only. Start here.
 - **WASM module (optional, stateless WAF).** The store-free checks (allowlist,
   denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
   in-process inside Angie via its WASM support. It is stateless WAF-only. See

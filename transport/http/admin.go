@@ -94,6 +94,7 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/offenders", s.auth(s.handleOffenders))
 	s.mux.HandleFunc("GET /admin/angie", s.auth(s.handleAngie))
 	s.mux.HandleFunc("GET /admin/score", s.auth(s.handleScore))
+	s.mux.HandleFunc("GET /admin/anomaly", s.auth(s.handleAnomaly))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
 	s.mux.HandleFunc("POST /admin/reload", s.auth(s.handleReload))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
@@ -399,9 +400,11 @@ func (s *AdminServer) challengeStats() map[string]any {
 // touches the hot path. Empty (but well-formed) when metrics are disabled.
 func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request) {
 	out := map[string]any{
-		"solve_time": emptyHistogram(),
-		"anomaly":    emptyHistogram(),
-		"per_domain": map[string]map[string]float64{},
+		"solve_time":        emptyHistogram(),
+		"anomaly":           emptyHistogram(),
+		"anomaly_selection": map[string]map[string]float64{},
+		"anomaly_misses":    map[string]float64{},
+		"per_domain":        map[string]map[string]float64{},
 	}
 	if s.metrics == nil {
 		writeJSON(w, http.StatusOK, out)
@@ -424,6 +427,33 @@ func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request
 			// Labelled by domain; sum every domain's buckets into one
 			// distribution (a per-domain split can come later if wanted).
 			out["anomaly"] = sumHistograms(mf.GetMetric())
+		case "guardian_anomaly_baseline_selections_total":
+			selection := map[string]map[string]float64{}
+			for _, m := range mf.GetMetric() {
+				var domain, level string
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "domain" {
+						domain = l.GetValue()
+					} else if l.GetName() == "level" {
+						level = l.GetValue()
+					}
+				}
+				if selection[domain] == nil {
+					selection[domain] = map[string]float64{}
+				}
+				selection[domain][level] += m.GetCounter().GetValue()
+			}
+			out["anomaly_selection"] = selection
+		case "guardian_anomaly_baseline_misses_total":
+			misses := map[string]float64{}
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "domain" {
+						misses[l.GetValue()] += m.GetCounter().GetValue()
+					}
+				}
+			}
+			out["anomaly_misses"] = misses
 		case "guardian_decisions_total":
 			perDomain := map[string]map[string]float64{}
 			for _, m := range mf.GetMetric() {
@@ -677,12 +707,84 @@ func (s *AdminServer) handleScore(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "host query param required"})
 		return
 	}
-	score := s.engine.ScoreRequest(host, q.Get("uri"), q.Get("ua"))
-	if score < 0 {
+	method := q.Get("method")
+	if method == "" {
+		method = "GET"
+	}
+	result := s.engine.ScoreRequest(host, method, q.Get("uri"), q.Get("ua"))
+	if !result.Found {
 		writeJSON(w, http.StatusOK, map[string]any{"host": host, "scored": false, "reason": "no anomaly model for this domain"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"host": host, "scored": true, "score": score})
+	writeJSON(w, http.StatusOK, map[string]any{"host": host, "scored": true, "score": result.Score,
+		"baseline": result.Level, "route": result.Route, "method": strings.ToUpper(method)})
+}
+
+// handleAnomaly exposes bounded model and configured-scope health. It does
+// not return learned frequencies or raw model contents.
+func (s *AdminServer) handleAnomaly(w http.ResponseWriter, _ *http.Request) {
+	type modelView struct {
+		Path      string         `json:"path"`
+		TrainedAt time.Time      `json:"trained_at"`
+		Domains   map[string]int `json:"domains"`
+	}
+	type scopeView struct {
+		Scope    string `json:"scope"`
+		Host     string `json:"host,omitempty"`
+		Path     string `json:"path,omitempty"`
+		Mode     string `json:"mode"`
+		Model    string `json:"model"`
+		Coverage string `json:"coverage"`
+		Segments int    `json:"segments,omitempty"`
+	}
+	statuses := s.engine.AnomalyModels()
+	models := make([]modelView, 0, len(statuses))
+	byPath := make(map[string]map[string]int, len(statuses))
+	for _, status := range statuses {
+		models = append(models, modelView{Path: status.Path, TrainedAt: status.TrainedAt, Domains: status.Domains})
+		byPath[status.Path] = status.Domains
+	}
+	mode := func(a core.AnomalyConfig) string {
+		if !a.Enabled {
+			return "off"
+		}
+		if a.ObserveOnly {
+			return "observe"
+		}
+		return "enforce"
+	}
+	makeScope := func(scope, host, path string, a core.AnomalyConfig) scopeView {
+		v := scopeView{Scope: scope, Host: host, Path: path, Mode: mode(a), Model: a.Model, Coverage: "off"}
+		if !a.Enabled {
+			return v
+		}
+		if host == "" {
+			v.Coverage = "dynamic"
+			return v
+		}
+		segments, ok := byPath[a.Model][host]
+		if ok {
+			v.Coverage, v.Segments = "ready", segments
+		} else {
+			v.Coverage = "missing"
+		}
+		return v
+	}
+	cfg := s.engine.Config()
+	scopes := []scopeView{makeScope("defaults", "", "", cfg.Defaults.WAF.Anomaly)}
+	hosts := make([]string, 0, len(cfg.DomainViews()))
+	for host := range cfg.DomainViews() {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	for _, host := range hosts {
+		dc := cfg.DomainViews()[host]
+		scopes = append(scopes, makeScope("domain", host, "", dc.WAF.Anomaly))
+		for _, override := range dc.PathOverrideViews() {
+			scopes = append(scopes, makeScope("path", host, override.Path, override.Config.WAF.Anomaly))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "scopes": scopes})
 }
 
 func (s *AdminServer) handleRotateKey(w http.ResponseWriter, r *http.Request) {
@@ -939,6 +1041,7 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		RulesFile       string   `json:"waf_rules_file,omitempty"`
 		DisabledRuleIDs []string `json:"waf_disabled_rule_ids,omitempty"`
 		Anomaly         bool     `json:"waf_anomaly"`
+		AnomalyObserve  bool     `json:"waf_anomaly_observe_only"`
 		Honeypot        bool     `json:"waf_honeypot"`
 		IPBehaviour     bool     `json:"waf_ip_behaviour"`
 		Geo             bool     `json:"geo"`
@@ -954,7 +1057,8 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 			PoWBase: dc.PoW.BaseDifficulty, PoWMax: dc.PoW.MaxDifficulty,
 			Keywords: dc.WAF.Keywords.Enabled, RulesFile: dc.WAF.Keywords.RulesFile,
 			DisabledRuleIDs: dc.WAF.Keywords.DisabledRuleIDs, Anomaly: dc.WAF.Anomaly.Enabled,
-			Honeypot: dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,
+			AnomalyObserve: dc.WAF.Anomaly.ObserveOnly,
+			Honeypot:       dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,
 			Geo: dc.Geo.Enabled, Reputation: dc.Reputation.Enabled,
 		}
 	}

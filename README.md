@@ -31,11 +31,11 @@ pipeline. Everything is per-domain configurable.
    - tamper detection on proof-of-work challenge IDs: each challenge is
      single-spend and bound to `{host, client IP}`, so a forged, replayed or
      cross-domain challenge ID is rejected and scored as a tamper event
-   - statistical anomaly scoring: `guardian-train` learns per-domain
-     baselines from Angie JSON access logs offline; the online scorer rates
-     each unvouched request that reaches it in ~260ns and drives challenge/
-     deny + difficulty escalation (valid PoW tokens short-circuit this stage,
-     after signature checks)
+   - statistical anomaly scoring: `guardian-train` learns domain and bounded
+     route/method baselines from Angie JSON access logs offline; the
+     sub-microsecond online scorer rates each unvouched request that reaches it
+     and drives challenge/deny + difficulty escalation (valid PoW tokens
+     short-circuit this stage, after signature checks)
 
 2. **Proof-of-Work challenge layer**, only for suspicious or new clients:
    - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver
@@ -54,8 +54,8 @@ Guardian offers two ways to run, sharing one decision core:
 
 - **Sidecar (default, full-featured).** A Go daemon wired into Angie with
   stock `auth_request` directives. This is the complete implementation:
-  proof-of-work, behavioural IP blocking, and anomaly scoring all require the
-  shared store the sidecar owns. Start here.
+  proof-of-work and behavioural IP blocking use the shared store it owns;
+  anomaly scoring and verified-bot DNS are also sidecar-only. Start here.
 - **WASM module (optional, stateless WAF).** The store-free checks (allowlist,
   denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
   in-process inside Angie via its WASM support, for operators who prefer that
@@ -74,24 +74,25 @@ ride past the WAF.
 
 - **Metrics**: Prometheus `/metrics` on the admin listener (open to
   scrapers): decisions by action/reason/domain, challenge lifecycle, PoW
-  solve-time and anomaly-score histograms, blocks placed, store op latency,
-  and end-to-end `Evaluate()` latency. Import `deploy/grafana-dashboard.json`.
+  solve-time and anomaly-score histograms, anomaly baseline selections/misses,
+  blocks placed, store op latency, and end-to-end `Evaluate()` latency. Import
+  `deploy/grafana-dashboard.json`.
 - **Admin API**: bearer-token JSON API on the same listener: inspect/place/
   clear IP blocks (`/admin/blocks/{ip}`), list a bounded page of active blocks
   (`/admin/blocks`), read the recent deny/challenge feed (`/admin/decisions`)
   and its rollup (`/admin/stats`), score a hypothetical request against the
-  anomaly model (`GET /admin/score`), rotate the signing key, and view the
-  active per-domain config. Refuses to expose itself on a non-loopback address
-  without a token.
+  anomaly model (`GET /admin/score`), inspect configured baseline coverage
+  (`GET /admin/anomaly`), rotate the signing key, and view the active per-domain
+  config. Refuses to expose itself on a non-loopback address without a token.
 - **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
   internal page at `/admin/dashboard`, driven entirely by the token-guarded
   admin API; guardiand prints the bare login URL at startup and never embeds a
   configured/persistent token in logs (see `admin.token_file`). It shows active
   blocks with one-click block/unblock, the filterable recent decisions feed,
-  challenge/solve counters, per-domain status, activity graphs, and (with a
-  `geoip.location_db` loaded) a zoomable world map of where non-allow decisions
-  come from. Charts and map data are bundled with the daemon, so the page needs
-  no CDN and works air-gapped. See USAGE.md § 4.
+  challenge/solve counters, per-domain status, anomaly coverage/segment health,
+  activity graphs, and (with a `geoip.location_db` loaded) a zoomable world map
+  of where non-allow decisions come from. Charts and map data are bundled with
+  the daemon, so the page needs no CDN and works air-gapped. See USAGE.md § 4.
 - **Key rotation**: `POST /admin/rotate-key` atomically archives the current
   Ed25519 key and generates a new one; `previous_key_dir` is required. Live
   replicas sharing both paths refresh automatically. Retired keys accept only

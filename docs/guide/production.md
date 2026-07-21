@@ -200,8 +200,11 @@ templates. The timer runs weekly with up to 30 minutes of random delay; the
 one-shot service trains at low CPU/I/O priority in a hardened, networkless
 sandbox. Its update helper reads plain and gzip-compressed rotations, rejects a
 trainer/daemon version mismatch, a candidate that omits an expected domain, or
-one that exceeds the malformed-line limit. It keeps the previous artifact and
-promotes with an atomic rename.
+one that exceeds the malformed/schema-invalid line limit. When a live artifact
+already exists, it scores the configured comparison window against both the
+live and candidate artifacts and rejects insufficient coverage or excessive
+mean/p95 score drift. It keeps JSON reports and the previous artifact, then
+promotes an accepted candidate with an atomic rename.
 
 Install the trainer from the same release archive as the daemon, then install
 and configure the templates:
@@ -230,10 +233,16 @@ sudo journalctl -u guardian-train.service -n 50 --no-pager
 
 The unit runs as root because it must read restricted Angie logs and promote a
 root-owned model under `/etc`, but its systemd sandbox hides Guardian's
-service-owned state and secrets, removes network access and makes the rest of
-the filesystem read-only. Keep `/etc/guardian/model.json` read-only to the
-`guardian` daemon, just like `guardian.yaml` and the WAF rules: a compromised
-daemon must not be able to replace the baseline it enforces.
+service-owned runtime state, removes network access and makes the rest of the
+filesystem read-only. The promotion directory remains visible and writable, so
+keep unrelated secrets outside `/etc/guardian` where practical. Keep
+`/etc/guardian/model.json` read-only to the `guardian` daemon, just like
+`guardian.yaml` and the WAF rules: a compromised daemon must not be able to
+replace the baseline it enforces. The template also starts memory reclaim at
+1 GiB and caps the batch at 2 GiB, so hostile high-cardinality input fails the
+job instead of exhausting the host. If a measured representative run genuinely
+needs more, raise `MemoryHigh` and `MemoryMax` with a systemd drop-in rather
+than removing the cap.
 
 For the first model, promote the file before enabling `waf.anomaly`, then test
 and reload the config:
@@ -259,17 +268,30 @@ Before enabling the timer, define its input window and acceptance checks in
 
 - Rebuild from the whole representative window, including the relevant rotated
   logs. Training is not incremental; feeding only the newest file forgets the
-  older traffic distribution.
+  older traffic distribution. Segment discovery and exact aggregation make two
+  complete passes, so compressed inputs are decompressed twice; size the timer's
+  runtime window accordingly.
+- Set `GUARDIAN_TRAIN_EXPECTED_DOMAINS` to every named domain that enables
+  anomaly scoring. The job rejects the candidate if any required domain lacks
+  the configured minimum number of eligible requests.
 - Do not promote a window dominated by an attack, load test, launch or outage.
-  Successful responses below status 400 are eligible, so a successful bot
-  campaign can otherwise become part of “normal”.
-- Require a zero exit status and check the printed list contains every expected
-  domain with a credible request count. Malformed JSON lines are skipped rather
-  than fatal, so alert on an unexpected `unparseable` count. Domains below
-  `-min-requests` are omitted, and the command fails without writing a model only
-  when no domain reaches the floor.
-- After promotion, confirm the reload log and watch `guardian_anomaly_score` for
-  distribution drift before tightening either enforcement threshold.
+  Successful allowed responses below status 400 are eligible, so a successful
+  bot campaign can otherwise become part of “normal”.
+- Keep `GUARDIAN_TRAIN_MAX_INVALID=0` unless you have investigated and accepted
+  a specific logging defect. Required fields, types, bounds, duplicate keys,
+  method/URI syntax, status range, and Guardian action are validated strictly.
+  If the log directory also contains unprotected vhosts, narrow
+  `GUARDIAN_TRAIN_LOG_PATTERN` so their empty Guardian actions never enter this
+  job.
+- Size `GUARDIAN_TRAIN_MIN_SEGMENT_REQUESTS` and
+  `GUARDIAN_TRAIN_MAX_SEGMENTS` so useful route/method baselines have real
+  support without turning every endpoint into its own thin population.
+- Prefer a held-out `GUARDIAN_TRAIN_COMPARE_LOG_PATTERN` when retention permits.
+  Tune the mean and p95 delta gates from deliberate site changes, and inspect
+  `/var/lib/guardian-training/comparison-report.json` before relaxing them.
+- After promotion, confirm the reload log and watch the dashboard plus
+  `guardian_anomaly_baseline_misses_total`, baseline-selection counters, and
+  `guardian_anomaly_score` before tightening either enforcement threshold.
 
 The timer is intentionally weekly rather than hourly or daily: refreshing too
 quickly can teach a temporary event as normal before anyone notices. Retrain

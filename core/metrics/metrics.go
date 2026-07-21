@@ -20,17 +20,19 @@ import (
 type Metrics struct {
 	reg *prometheus.Registry
 
-	decisions    *prometheus.CounterVec // by action, reason_category, domain
-	challenge    *prometheus.CounterVec // by outcome: issued|escalated|solved|failed
-	solveTime    prometheus.Histogram   // client-reported solve time, seconds
-	anomalyScore *prometheus.HistogramVec
-	blocksPlaced *prometheus.CounterVec // by reason_category
-	botVerify    *prometheus.CounterVec // by bot (config-bounded), result
-	storeOps     *prometheus.CounterVec // by op, status
-	storeLatency *prometheus.HistogramVec
-	evalLatency  prometheus.Histogram
-	feedEntries  *prometheus.GaugeVec   // by feed
-	feedRefresh  *prometheus.CounterVec // by feed, status
+	decisions           *prometheus.CounterVec // by action, reason_category, domain
+	challenge           *prometheus.CounterVec // by outcome: issued|escalated|solved|failed
+	solveTime           prometheus.Histogram   // client-reported solve time, seconds
+	anomalyScore        *prometheus.HistogramVec
+	anomalyBaselineMiss *prometheus.CounterVec
+	anomalySelection    *prometheus.CounterVec
+	blocksPlaced        *prometheus.CounterVec // by reason_category
+	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
+	storeOps            *prometheus.CounterVec // by op, status
+	storeLatency        *prometheus.HistogramVec
+	evalLatency         prometheus.Histogram
+	feedEntries         *prometheus.GaugeVec   // by feed
+	feedRefresh         *prometheus.CounterVec // by feed, status
 
 	blockLookups     *prometheus.CounterVec // by source (mirror|store), outcome (hit|miss)
 	offloadEntries   *prometheus.GaugeVec   // by sink (mirror|nftables)
@@ -75,6 +77,14 @@ func New() *Metrics {
 			Help:    "Distribution of anomaly scores by domain.",
 			Buckets: prometheus.LinearBuckets(0, 0.1, 11),
 		}, []string{"domain"}),
+		anomalyBaselineMiss: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "anomaly_baseline_misses_total",
+			Help: "Anomaly scoring attempts without a domain baseline.",
+		}, []string{"domain"}),
+		anomalySelection: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "anomaly_baseline_selections_total",
+			Help: "Selected anomaly baseline level (exact|route|method|domain|missing).",
+		}, []string{"domain", "level"}),
 		blocksPlaced: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "blocks_placed_total",
 			Help: "Behavioural IP blocks placed, by reason category.",
@@ -181,6 +191,16 @@ func (m *Metrics) AnomalyScore(domain string, score float64) {
 		return
 	}
 	m.anomalyScore.WithLabelValues(domain).Observe(score)
+}
+
+func (m *Metrics) AnomalyBaseline(domain, level string) {
+	if m == nil {
+		return
+	}
+	m.anomalySelection.WithLabelValues(domain, level).Inc()
+	if level == "missing" {
+		m.anomalyBaselineMiss.WithLabelValues(domain).Inc()
+	}
 }
 
 func (m *Metrics) BlockPlaced(reason string) {

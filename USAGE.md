@@ -577,8 +577,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
 # "Why would this request be challenged?" Score it against the domain's
 # anomaly model, for tuning challenge_at / deny_at.
 curl -s -H "Authorization: Bearer $TOKEN" \
-     "$A/admin/score?host=shop.example.com&uri=/cgi-bin/x?a=1&ua=curl/8"
-# {"host":"shop.example.com","scored":true,"score":0.72}
+     "$A/admin/score?host=shop.example.com&method=GET&uri=/cgi-bin/x%3Fa=1&ua=curl/8"
+# {"host":"shop.example.com","method":"GET","route":"/cgi-bin","baseline":"exact","scored":true,"score":0.72}
+
+# Loaded anomaly artifacts plus coverage/mode for every configured scope.
+curl -s -H "Authorization: Bearer $TOKEN" $A/admin/anomaly
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
 # replicas refresh automatically. Pre-rotation tokens remain valid for at most
@@ -625,9 +628,9 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 The dashboard shows active blocks (with one-click unblock and a block-an-IP
 form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
-status, IP intelligence health (loaded GeoIP databases plus each reputation
-feed's entries, refresh age and last error), and headline counters,
-auto-refreshing every 5 seconds. The page is a
+status, anomaly baseline coverage and segment health, IP intelligence health
+(loaded GeoIP databases plus each reputation feed's entries, refresh age and
+last error), and headline counters, auto-refreshing every 5 seconds. The page is a
 static shell: it stores no secrets, stays off unless enabled, and every data
 call goes to the token-guarded `/admin/*` endpoints. The shell can still be
 publicly reachable on an external admin bind, so keep this listener on
@@ -635,28 +638,34 @@ loopback or a firewalled management network.
 
 ## 5. Train the anomaly model
 
-Once JSON logs have accumulated, build a candidate per-domain baseline offline.
+Once JSON logs have accumulated, build a candidate domain and route/method
+baseline offline.
 Inspect it before atomically promoting it to the path configured by
 `anomaly.model`; `guardiand` hot-swaps a valid replacement without a restart:
 
 ```sh
-guardian-train -out model.candidate.json \
-               -min-requests 5000 \
-               /var/log/angie/*.access.json
-
-# guardian-train does not decompress .gz files itself:
-zcat /var/log/angie/example.com.access.json.*.gz | \
-  guardian-train -out model.candidate.json -min-requests 5000 -
+guardian-train train \
+  -out model.candidate.json \
+  -report training-report.json \
+  -min-requests 5000 \
+  -min-segment-requests 500 \
+  -max-segments 128 \
+  -max-invalid 0 \
+  -require-domain example.com \
+  /var/log/angie/*.access.json*
 ```
 
 For production, use the shipped `deploy/guardian-train.service` and
 `deploy/guardian-train.timer` instead of a bare cron entry. The helper validates
-and promotes a candidate atomically while retaining the last-good artifact; see
+the strict log schema, verifies expected domains, compares the candidate with
+the active artifact, and promotes atomically while retaining the last-good
+artifact; see
 the [production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#running-the-anomaly-trainer).
-Records without a host and responses with status >= 400 are excluded, but
-successful bot requests remain eligible. Domains below `-min-requests` usable
-records are dropped. Training and scoring normalize host and percent-decode the
-path and query identically before deriving features.
+The CLI reads plain and gzip-compressed logs directly. Responses with status
+400 or higher and requests Guardian challenged, denied, or shed are excluded.
+Malformed or schema-invalid records reject training by default. Training and
+scoring normalize host and percent-decode path/query identically before deriving
+features.
 
 ## 6. Load-test your deployment
 
@@ -768,10 +777,10 @@ not read by the verifier.
 Instead of the sidecar, you can run Guardian's **stateless WAF checks**
 in-process inside Angie via its WebAssembly support. This path does the
 store-free checks only (allowlist, denylist, honeypot, keyword/regex
-signatures); proof-of-work, behavioural IP blocking, and anomaly scoring need
-the shared store and remain sidecar-only. Use it when you want the WASM
-integration and the stateless WAF subset is enough, or alongside a backend that
-handles the rest.
+signatures); proof-of-work and behavioural IP blocking need sidecar state,
+while anomaly scoring also remains sidecar-only. Use it when you want the WASM
+integration and the stateless WAF subset is enough, or alongside a backend
+that handles the rest.
 
 Build the module (architecture-independent):
 
