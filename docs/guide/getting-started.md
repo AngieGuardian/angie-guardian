@@ -43,14 +43,23 @@ rules directly from that directory.
 
 Every release publishes a `SHA256SUMS` file next to the archives, listing the
 SHA-256 digest of each one. Downloading it alongside the archive lets you
-confirm the file arrived intact and matches what the release pipeline built:
+confirm the file arrived intact and matches what the release pipeline built.
+
+::: warning Download SHA256SUMS into the same directory as the archive
+`sha256sum` looks for the archives in the current working directory, under the
+names listed inside `SHA256SUMS`. If the two files sit in different
+directories, it verifies nothing at all and reports
+`SHA256SUMS: no file was verified`. That is not a pass: check for a line
+ending in `OK` before installing.
+:::
+
+Run both commands from the directory holding the archive you downloaded above:
 
 ```sh
+# Same directory as angie-guardian-1.0.0-linux-amd64.tar.gz
 wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/1.0.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
 ```
-
-Run it from the directory holding the archive:
 
 ```
 angie-guardian-1.0.0-linux-amd64.tar.gz: OK
