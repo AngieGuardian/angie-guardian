@@ -52,6 +52,11 @@ admin:
   # ready"). Read the token from token_file and paste it into the page;
   # persistent secrets are never logged. Off by default.
   dashboard: true
+  # Per-instance live decision window used by recent stats, offenders and the
+  # dashboard charts. Start-time only; changing it requires a restart. This is
+  # deliberately bounded and cleared on restart—use /metrics with
+  # Prometheus/Grafana for historical analysis. Default 4096, maximum 16384.
+  # recent_size: 4096
   # Show real server traffic on the dashboard (per-domain requests, in-flight
   # connections, response codes, bandwidth) by reading Angie's own HTTP API:
   # data Guardian never sees on its stateless allow path. guardiand fetches it

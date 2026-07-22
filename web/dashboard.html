@@ -69,6 +69,10 @@
   #gate h1 { justify-content: center; }
   h2 { font-size: 0.85rem; font-weight: 600; color: var(--ink-2);
        text-transform: uppercase; letter-spacing: 0.04em; margin: 1.75rem 0 0.5rem; }
+  h2.section-tools { display: flex; align-items: center; justify-content: space-between;
+                     gap: 0.5rem; flex-wrap: wrap; }
+  h2.section-tools .chart-window-tools { text-transform: none; letter-spacing: normal;
+                                         font-weight: 400; }
   .meta { color: var(--muted); font-size: 0.8rem; }
   button { font: inherit; color: var(--ink); background: var(--surface);
            border: 1px solid var(--border); border-radius: 6px;
@@ -106,6 +110,10 @@
                 border-radius: 10px; padding: 0.8rem 1rem 0.9rem; min-width: 0; }
   .chart-card .label { color: var(--ink-2); font-size: 0.8rem;
                        display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; }
+  .chart-window-tools { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .chart-window-tools select { font: inherit; color: var(--ink); background: var(--surface);
+                               border: 1px solid var(--border); border-radius: 6px;
+                               padding: 0.12rem 0.35rem; cursor: pointer; }
   .chart-card .canvas-wrap { position: relative; height: 220px; margin-top: 0.5rem; }
   .chart-card canvas { max-width: 100%; }
 
@@ -258,7 +266,19 @@
     </table>
   </div>
 
-  <h2>Activity <span class="meta">(recent ring, non-allow decisions)</span></h2>
+  <h2 class="section-tools">
+    <span>Activity <span class="meta">(recent ring, non-allow decisions)</span></span>
+    <span class="chart-window-tools">
+      <label class="meta" for="chart-window">Window</label>
+      <select id="chart-window" aria-label="Decision chart time window">
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="1h">1h</option>
+        <option value="all" selected>all</option>
+      </select>
+    </span>
+  </h2>
   <div class="charts">
     <div class="chart-card">
       <div class="label"><span>Decisions over time</span>
@@ -273,7 +293,8 @@
   </div>
   <div class="charts" style="grid-template-columns:1fr;">
     <div class="chart-card">
-      <div class="label"><span>Decisions by reason over time</span></div>
+      <div class="label"><span>Decisions by reason over time</span>
+        <span class="meta" id="chart-reasons-window"></span></div>
       <div class="canvas-wrap"><canvas id="chart-reasons"></canvas></div>
     </div>
   </div>
@@ -507,8 +528,11 @@
     return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
   };
 
-  // Last fetched decisions, re-rendered locally when a filter changes.
+  // Detailed rows stay bounded for the table and geo map. The compact feed can
+  // use the full configured ring without transferring request or GeoIP detail.
   let lastDecisions = [];
+  let lastChartDecisions = [];
+  let lastDecisionWindow = null;
   let lastBlocks = { blocks: [] };
   let lastBlocksAt = 0;
   // Set when the active-block fetch failed (the store is unreachable), so the
@@ -702,25 +726,25 @@
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
   };
 
-  // Bucket timestamped records into ~nBuckets slots across their own [oldest,
-  // newest] span (adaptive: seconds under attack, hours when quiet). Returns
-  // {labels, at, spanMs}. keyFn maps a record to a series key; series is the
-  // ordered list of keys to emit a count-array for.
-  const bucketize = (records, keyFn, series, nBuckets) => {
-    if (!records.length) return { labels: [], counts: {}, spanMs: 0 };
-    const times = records.map((d) => new Date(d.time).getTime());
-    const lo = Math.min(...times), hi = Math.max(...times);
+  // Bucket records across an explicit [lo, hi] interval. Fixed bounds make a
+  // selected 15m mean 15m even when only one event happened, and keeping all
+  // buckets preserves honest empty time on the chart.
+  const bucketize = (records, keyFn, series, nBuckets, lo, hi) => {
     const span = Math.max(hi - lo, 1);
-    const n = Math.min(nBuckets, Math.max(1, records.length));
+    const n = nBuckets;
     const width = span / n;
     const counts = {}; series.forEach((s) => (counts[s] = new Array(n).fill(0)));
     const labels = new Array(n);
     const fmt = span > 6 * 3600e3
       ? (t) => new Date(t).toLocaleDateString()
-      : (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      : span <= 30 * 60e3
+        ? (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     for (let i = 0; i < n; i++) labels[i] = fmt(lo + (i + 0.5) * width);
-    records.forEach((d, idx) => {
-      const b = Math.min(n - 1, Math.floor((times[idx] - lo) / width));
+    records.forEach((d) => {
+      const t = new Date(d.time).getTime();
+      if (!Number.isFinite(t) || t < lo || t > hi) return;
+      const b = Math.min(n - 1, Math.floor((t - lo) / width));
       const k = keyFn(d);
       if (counts[k]) counts[k][b]++;
     });
@@ -778,14 +802,65 @@
     return map;
   };
 
+  const CHART_WINDOW_KEY = "guardian_dashboard_chart_window";
+  const CHART_WINDOW_MS = {
+    "5m": 5 * 60e3, "15m": 15 * 60e3, "30m": 30 * 60e3, "1h": 60 * 60e3,
+  };
+  const storedChartWindow = sessionStorage.getItem(CHART_WINDOW_KEY);
+  let chartWindow = storedChartWindow === "all" || CHART_WINDOW_MS[storedChartWindow]
+    ? storedChartWindow : "all";
+
+  const durationLabel = (ms) => {
+    if (ms < 90e3) return Math.max(1, Math.round(ms / 1000)) + "s";
+    const minutes = Math.max(1, Math.round(ms / 60e3));
+    if (minutes < 60) return minutes + "m";
+    const hours = Math.round(minutes / 60);
+    return hours < 48 ? hours + "h" : Math.round(hours / 24) + "d";
+  };
+
+  const chartBounds = (now) => {
+    if (chartWindow !== "all") return { lo: now - CHART_WINDOW_MS[chartWindow], hi: now };
+    const window = lastDecisionWindow || {};
+    const start = window.full && window.oldest ? window.oldest : (window.started_at || window.oldest);
+    const parsed = start ? new Date(start).getTime() : NaN;
+    // A brand-new or metadata-free ring still gets a useful, stable axis.
+    const lo = Number.isFinite(parsed) && parsed < now ? parsed : now - 5 * 60e3;
+    return { lo, hi: now };
+  };
+
+  const chartCoverageLabel = (count, bounds, now) => {
+    const window = lastDecisionWindow || {};
+    if (chartWindow === "all") {
+      return count ? count + " decisions across " + durationLabel(now - bounds.lo) + " retained"
+        : (window.full ? "no retained activity" : "no activity since daemon start");
+    }
+    const oldest = window.oldest ? new Date(window.oldest).getTime() : NaN;
+    const started = window.started_at ? new Date(window.started_at).getTime() : NaN;
+    if (window.full && Number.isFinite(oldest) && oldest > bounds.lo) {
+      return "showing retained " + durationLabel(now - oldest) + " of selected " + chartWindow;
+    }
+    if (!window.full && Number.isFinite(started) && started > bounds.lo) {
+      const observed = durationLabel(now - started);
+      return count ? count + " decisions in " + observed + " since daemon start"
+        : "no decisions in " + observed + " since daemon start";
+    }
+    return count ? count + " decisions in " + chartWindow : "no decisions in " + chartWindow;
+  };
+
   const renderCharts = () => {
     if (!window.Chart) return; // vendored lib failed to load; skip silently
-    const decisions = lastDecisions;
+    const now = Date.now();
+    const bounds = chartBounds(now);
+    const decisions = lastChartDecisions.filter((d) => {
+      const t = new Date(d.time).getTime();
+      return Number.isFinite(t) && t >= bounds.lo && t <= bounds.hi;
+    });
 
     // 1. Decisions over time: stacked area, deny vs challenge.
-    const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge"], 32);
-    $("chart-decisions-window").textContent = decisions.length
-      ? decisions.length + " decisions" : "no recent activity";
+    const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge"], 32, bounds.lo, bounds.hi);
+    const coverage = chartCoverageLabel(decisions.length, bounds, now);
+    $("chart-decisions-window").textContent = coverage;
+    $("chart-reasons-window").textContent = coverage;
     upsertChart("chart-decisions", (c) => ({
       type: "line",
       data: { labels: dt.labels, datasets: [
@@ -810,7 +885,7 @@
     for (const cat of present) {
       if (!cats.includes(cat)) cats.push(cat);
     }
-    const rr = bucketize(decisions, (d) => d.reason.split(":")[0], cats, 32);
+    const rr = bucketize(decisions, (d) => d.reason.split(":")[0], cats, 32, bounds.lo, bounds.hi);
     const rc = REASON_COLORS(themeColors());
     upsertChart("chart-reasons", (c) => ({
       type: "bar",
@@ -1581,9 +1656,11 @@
       : Promise.resolve(lastBlocks);
     // blocksRequest is awaited for its side effect (it sets lastBlocks, which
     // renderBlocks reads); the resolved value itself is not needed here.
-    const [stats, , decisions, config, intel, dist, offenders, angie, anomaly] = await Promise.all([
+    const [stats, , decisions, chartDecisions, config, intel, dist, offenders, angie, anomaly] = await Promise.all([
       api("/admin/stats"), blocksRequest,
-      api("/admin/decisions?limit=512"), api("/admin/config"),
+      api("/admin/decisions?limit=512"),
+      api("/admin/decisions?view=compact&limit=all"),
+      api("/admin/config"),
       api("/admin/intel"),
       // Distributions are best-effort: a failure (metrics off, older server)
       // must not sink the tick, so it resolves to null and the charts skip.
@@ -1644,6 +1721,8 @@
 
     // Recent decisions (rendered through the active filters).
     lastDecisions = decisions.decisions;
+    lastChartDecisions = chartDecisions.decisions;
+    lastDecisionWindow = chartDecisions.window;
     renderDecisions();
 
     // Reason rollup.
@@ -1692,7 +1771,7 @@
     }));
     $("intel-empty").hidden = feeds.length > 0;
 
-    // Charts consume lastDecisions + lastChallenges set above, no extra fetch.
+    // Charts consume the compact ring feed + lastChallenges set above.
     renderCharts();
 
     $("refreshed").textContent = "updated " + new Date().toLocaleTimeString();
@@ -1754,6 +1833,12 @@
     localStorage.setItem(INTERVAL_KEY, String(intervalMs));
     armTimer();
     if (intervalMs > 0) tick();
+  });
+  $("chart-window").value = chartWindow;
+  $("chart-window").addEventListener("change", (e) => {
+    chartWindow = e.target.value;
+    sessionStorage.setItem(CHART_WINDOW_KEY, chartWindow);
+    renderCharts();
   });
   $("logout").addEventListener("click", () => logout());
 

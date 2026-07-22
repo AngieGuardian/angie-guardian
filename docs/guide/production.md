@@ -462,8 +462,10 @@ remote OOM). The client-keyed structures and their caps:
   unapplied store work are retained. If every entry is protected, unseen keys
   remain uncached until a drainer makes room, rather than erasing pending
   reconciliation state.
-- **Recent-decisions ring** (admin/dashboard feed): fixed 512 entries
-  (~100 KiB), overwrite-oldest. Holds raw host/URI/UA but never grows.
+- **Recent-decisions ring** (admin/dashboard feed): bounded by
+  `admin.recent_size` (default 4096, maximum 16384), overwrite-oldest. It holds
+  raw host/URI/UA strings, so exact bytes vary with traffic, but entry count
+  never grows past the configured cap.
 - **Bot-verification in-flight map**: bounded by concurrent lookups, not
   distinct IPs (entries are added and removed within one call, and a
   concurrency cap sheds excess). The verification *results* live in the store

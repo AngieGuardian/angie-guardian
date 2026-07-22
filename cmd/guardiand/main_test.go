@@ -129,6 +129,11 @@ func TestStaticConfigChanges(t *testing.T) {
 		t.Fatalf("dynamic-only config reported static changes: %v", got)
 	}
 
+	recentSize := daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: memory }\nadmin: { recent_size: 8192 }\n")
+	if got, want := staticConfigChanges(base, recentSize), []string{"admin.recent_size"}; !slices.Equal(got, want) {
+		t.Fatalf("recent-size changes = %v, want %v", got, want)
+	}
+
 	changed := daemonTestConfig(t, "listen: 127.0.0.1:9090\nstore: { backend: redis, addr: 127.0.0.1:6379 }\n")
 	want := []string{"listen", "store.addr", "store.backend"}
 	if got := staticConfigChanges(base, changed); !slices.Equal(got, want) {

@@ -353,3 +353,32 @@ func TestDashboardHealthSurface(t *testing.T) {
 			"dashboard instead of showing the health banner")
 	}
 }
+
+func TestDashboardRecentWindowSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, needle := range []string{
+		`id="chart-window"`,
+		`value="5m"`, `value="15m"`, `value="30m"`, `value="1h"`, `value="all"`,
+		`id="chart-decisions-window"`, `id="chart-reasons-window"`,
+		`api("/admin/decisions?limit=512")`,
+		`api("/admin/decisions?view=compact&limit=all")`,
+		`const bucketize = (records, keyFn, series, nBuckets, lo, hi)`,
+		`const n = nBuckets`,
+		`sessionStorage.setItem(CHART_WINDOW_KEY, chartWindow)`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard recent-window surface missing %q", needle)
+		}
+	}
+	for _, stale := range []string{
+		`Math.min(...times)`,
+		`api("/admin/decisions?limit=4096")`,
+	} {
+		if bytes.Contains(page, []byte(stale)) {
+			t.Errorf("dashboard still contains data-derived/unbounded chart path %q", stale)
+		}
+	}
+}

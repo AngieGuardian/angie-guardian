@@ -132,7 +132,8 @@ Lift a block.
 ### `GET /admin/decisions`
 
 The recent deny/challenge feed, newest first, from an in-process ring buffer
-(per instance, cleared on restart). When GeoIP/ASN databases are configured,
+(per instance, cleared on restart, capacity set by `admin.recent_size`). When
+GeoIP/ASN databases are configured,
 each row may also contain `country`, `city`, `subdivision`,
 `accuracy_radius_km`, `asn`, and `as_org`. These optional fields are looked up
 when the feed is read, once per distinct IP in the response; they do not add
@@ -142,9 +143,31 @@ Query parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `limit` | `50` | Maximum entries returned. |
+| `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
 | `action` | | Filter: `deny` or `challenge`. |
 | `reason` | | Filter by reason prefix, e.g. `waf`. |
+| `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing. |
+
+Both views include retention metadata. `truncated` describes the response limit,
+while `window.full` says whether the ring itself has overwritten older decisions.
+Together with `started_at` and the retained oldest/newest timestamps, clients can
+distinguish an empty covered interval from unavailable history.
+
+```json
+{
+  "count": 512,
+  "truncated": true,
+  "window": {
+    "available": 4096,
+    "capacity": 4096,
+    "full": true,
+    "started_at": "2026-07-22T00:00:00Z",
+    "oldest": "2026-07-22T00:18:00Z",
+    "newest": "2026-07-22T00:26:00Z"
+  },
+  "decisions": []
+}
+```
 
 ### `GET /admin/stats`
 
@@ -211,8 +234,8 @@ path. Feeds the dashboard's distribution charts and anomaly coverage warning.
 
 The heaviest sources of non-allow decisions in the recent window: top IPs,
 reason categories and request paths, plus a country rollup when GeoIP is loaded.
-Counts the in-process decision ring exactly (bounded, microseconds per request,
-no hot-path cost). The window is the ring, so it covers challenged/denied
+Counts the in-process decision ring exactly (bounded by `admin.recent_size`,
+with no extra hot-path work). The window is the ring, so it covers challenged/denied
 traffic, not allows. Paths are query-stripped; GeoIP/ASN is merged for the top
 IPs only, and the country rollup is omitted when no databases are loaded.
 
@@ -225,7 +248,7 @@ case, and in practice by the number of countries with traffic.
 
 ```json
 {
-  "window": 512,
+  "window": 4096,
   "ips": [{"ip":"203.0.113.10","count":30,"country":"RU","asn":64500,"as_org":"Example Carrier"},
           {"ip":"84.86.0.1","count":12,"country":"NL","city":"Schagen",
            "subdivision":"NH","accuracy_radius_km":10,"asn":1136,"as_org":"KPN B.V."}],
@@ -451,8 +474,9 @@ with `422` and the running config stays active.
 {"reloaded":true}
 ```
 
-Listener addresses, the store backend, signing key paths and the admin token
-setup are fixed at startup; changing those fields still requires a restart
+Listener addresses, the store backend, signing key paths, admin token setup and
+`admin.recent_size` are fixed at startup; changing those fields still requires
+a restart
 (the reload is rejected with `422`, leaving the active config unchanged).
 
 ## Dashboard
@@ -468,4 +492,7 @@ token-guarded `/admin/*` endpoints. See
 recent-decision data refresh every five seconds; the active-block list is
 capped at 1000 rows, cached for one minute, and refreshed immediately after a
 block/unblock action. Incomplete mirror counts are reported as lower bounds
-without a fallback full-store scan.
+without a fallback full-store scan. The activity charts share fixed-axis
+`5m / 15m / 30m / 1h / all` controls over a compact full-ring feed; detailed table
+and GeoIP rows remain capped at 512. This is a per-instance live incident view.
+Use `/metrics` with Prometheus retention and Grafana for historical analysis.
