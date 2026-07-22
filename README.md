@@ -3,50 +3,199 @@
 A Web Application Firewall (WAF) and proof-of-work bot firewall for
 [Angie](https://angie.software/), written in Go.
 
-Guardian runs as a sidecar daemon next to Angie and is wired into the request
-path with stock `auth_request` directives, so there is no custom Angie build
-and no C module. Every request to a protected `server {}` block triggers a fast
-internal subrequest to Guardian, which answers **allow**, **challenge**, or
-**deny**.
+Guardian protects Angie-hosted websites and APIs from malicious traffic,
+abusive bots, and automated attacks while legitimate visitors can continue to
+the site normally. It allows trusted requests, challenges suspicious clients
+with proof of work, and blocks clear threats.
 
 ## Features
 
-Two cooperating subsystems sharing one config, one datastore, and one decision
-pipeline. Everything is per-domain configurable.
+Guardian combines a request-time WAF with proof-of-work challenges. Policy is
+configurable per domain, so one instance can protect multiple vhosts.
 
-1. **WAF layer**, runs on every request:
-   - hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
-     construction), matched against the decoded path and query, the
-     User-Agent, and any named request header, with optional HTTP-method filters;
-     valid bound PoW tokens satisfy challenge-only matches, while deny/block
-     matches remain terminal
-   - behavioural IP blocking with exponential backoff (signature hits,
-     PoW failures, tamper events)
-   - honeypot trap paths: one hit = instant deny and, when behavioural
-     scoring is enabled, a persistent IP block
-   - verified-bot allowlisting: search crawlers (Googlebot, bingbot, ...) are
-     admitted by reverse-DNS + forward-confirmed identity with store-backed
-     caching, never by their forgeable User-Agent string; proven impostors
-     are denied and scored
-   - tamper detection on proof-of-work challenge IDs: each challenge is
-     single-spend and bound to `{host, client IP}`, so a forged, replayed or
-     cross-domain challenge ID is rejected and scored as a tamper event
-   - statistical anomaly scoring: `guardian-train` learns domain and bounded
-     route/method baselines from Angie JSON access logs offline; the
-     sub-microsecond online scorer rates each unvouched request that reaches it
-     and drives challenge/deny + difficulty escalation (valid PoW tokens
-     short-circuit this stage, after signature checks)
+- **Hot-reloadable WAF:** RE2 keyword and regex rules for paths, queries,
+  User-Agents, headers, and HTTP methods.
+- **Adaptive bot defence:** behavioural scoring, honeypots, IP blocking,
+  GeoIP/reputation checks, and verified-bot DNS validation.
+- **Proof-of-work passes:** adaptive SHA-256 browser challenges followed by a
+  cheaply validated Ed25519-signed cookie; an optional no-JS fallback is
+  available.
+- **Replay resistance:** challenges are single-use and bound to the domain and
+  client IP.
+- **Anomaly detection:** optional offline training from Angie access logs with
+  fast scoring in the live request path.
+- **Resilient deployment:** persistent keys, shared stores for replicas, safe
+  reloads, and fail-open or fail-closed integration.
 
-2. **Proof-of-Work challenge layer**, only for suspicious or new clients:
-   - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver
-     (works on plain-http origins too); difficulty tunes in 2x steps
-     (`base_difficulty: 5.25`) and escalates with suspicion
-   - Ed25519-signed JWT cookie on success; cheap re-validation afterwards
-   - **persistent shared signing key**, so restarts don't log everyone out,
-     and replicas behind a load balancer can share one key
-   - spent-challenge tracking from day 1 (no mint-twice replay)
-   - optional no-JS meta-refresh fallback (a five-second wait instead of hash
-     work, so weaker than the normal proof-of-work path)
+## Quick start
+
+Install a pinned `linux-amd64` or `linux-arm64` package from the
+[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
+then follow the release-first
+[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started).
+The archive contains the binaries, example configuration, starter WAF rules,
+Angie snippets, and systemd unit; operators do not need Go or a repository
+checkout.
+
+```sh
+# After downloading and extracting a pinned release:
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
+```
+
+For containers and persistent state, see the
+[production Docker guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#docker).
+
+## Documentation
+
+Guides, examples, and the complete configuration and API reference are
+published at **<https://angie-guardian-31c118.pages.melroy.org/>**.
+
+## How it works
+
+Angie remains in the request path and keeps serving the site's existing static,
+`try_files`, FastCGI, or reverse-proxy handler. Guardian is a sidecar decision
+service: Angie sends it a bodyless internal authorization subrequest and acts on
+the resulting allow, challenge, or deny response. The first diagram follows that
+live request lifecycle; the second separates the supporting policy, state,
+training, and operations plane from the hot path.
+
+```plantuml
+@startuml
+skinparam backgroundColor #F8FAFC
+skinparam shadowing false
+skinparam roundCorner 12
+skinparam defaultFontName Sans-Serif
+skinparam sequence {
+  ArrowColor #2563EB
+  LifeLineBorderColor #475569
+  LifeLineBackgroundColor #F8FAFC
+  ParticipantBorderColor #475569
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantFontColor #0F172A
+  ActorBorderColor #475569
+  ActorFontColor #0F172A
+  GroupBorderColor #64748B
+  GroupFontColor #0F172A
+}
+hide footbox
+
+title Angie Guardian - Live Request Path
+actor "Visitor/Bot" as Client
+participant "Angie vhost" as Angie
+participant "guardiand" as Guardian
+participant "Original site handler\n(backend)" as Backend
+
+Client -[#2563EB]> Angie: Request
+Angie -[#2563EB]> Guardian: Can this request continue?
+
+alt ALLOW
+  Guardian -[#15803D]> Angie: Allow
+  Angie -[#15803D]> Backend: Continue to the site
+  Backend -[#15803D]> Client: Site response
+else CHALLENGE
+  Guardian -[#D97706]> Angie: Challenge
+  Angie -[#D97706]> Client: Proof-of-work page
+  Client -[#D97706]> Angie: Solve challenge
+  Angie -[#D97706]> Guardian: Verify solution
+  Guardian -[#D97706]> Angie: Grant signed pass
+  Angie -[#D97706]> Client: Signed pass
+  Client -[#15803D]> Angie: Retry original request
+  Angie -[#15803D]> Guardian: Check signed pass
+  Guardian -[#15803D]> Angie: Allow
+  Angie -[#15803D]> Backend: Continue to the site
+  Backend -[#15803D]> Client: Site response
+else DENY
+  Guardian -[#B91C1C]> Angie: Deny
+  Angie -[#B91C1C]> Client: Block request
+else GUARDIAN UNAVAILABLE - FAIL OPEN
+  Angie -[#15803D]> Backend: Continue to the site
+  Backend -[#15803D]> Client: Site response
+end
+
+note over Angie, Backend #E8F5E9
+  Remove the fail-open error_page mapping to choose fail-closed.
+end note
+
+@enduml
+```
+
+The same sidecar loads policy and key material, owns stateful protection, and
+exposes a separate operations listener. Offline training and optional
+integrations feed this supporting plane without sitting in the live request
+path.
+
+```plantuml
+@startuml
+skinparam backgroundColor transparent
+skinparam shadowing false
+skinparam roundCorner 12
+skinparam defaultFontName Sans-Serif
+skinparam ArrowFontSize 11
+skinparam activity {
+  BorderColor #475569
+  FontColor #0F172A
+  BackgroundColor #F8FAFC
+}
+skinparam partition {
+  BorderColor #475569
+  FontColor #0F172A
+}
+
+partition #F5F3FF "Angie Guardian - Policy, State, Training, and Operations" {
+  start
+
+  if (Integration path?) then (full sidecar)
+    fork
+      -[#64748B,dashed]->
+      :<b>Load policy</b>\nConfig, WAF rules, keys, and threat data; <<#F8FAFC>>
+    fork again
+      -[#2563EB]->
+      :<b>Optional offline training</b>\nAccess logs -> anomaly model; <<#DBEAFE>>
+    end fork
+
+    -[#2563EB]->
+    :<b>Activate a validated snapshot</b>\nKeep the last good version if reload fails; <<#FFF7E6>>
+
+    fork
+      -[#64748B,dashed]->
+      :<b>Stateful protection</b>\nBlocks, challenges, and counters; <<#F1F5F9>>
+    fork again
+      -[#7C3AED]->
+      :<b>Operations</b>\nDashboard, API, health, and metrics; <<#F8FAFC>>
+    fork again
+      -[#B91C1C,dashed]->
+      :<b>Optional nftables</b>\nDrop known blocks before Angie; <<#FDECEC>>
+    end fork
+    stop
+  else (optional WASM alternative)
+    -[#9333EA,dashed]->
+    :<b>Run stateless policy inside Angie</b>\nStore-free WAF only; no PoW or shared state; <<#F3E8FF>>
+    stop
+  endif
+}
+
+@enduml
+```
+
+## Performance
+
+Guardian is built for Angie's authorization hot path. A local loopback test on
+an AMD Ryzen Threadripper 7960X with 64 connections produced these throughput
+results, measured in requests per second:
+
+| Store backend | Allow requests/s | Returning-client requests/s | Challenges issued/s |
+|---|---:|---:|---:|
+| In-memory store (ephemeral) | 169,000 | 159,000 | 156,000 |
+| Pebble (async, default) | 177,000 | 154,000 | 39,000 |
+| Pebble (sync, fully durable) | 172,000 | 155,000 | 25,000 |
+| BuntDB (async) | 175,000 | 153,000 | 36,000 |
+| Redis/Valkey | 96,000 | 94,000 | 34,000 |
+
+The read path remained above 94,000 requests/s across every backend. Challenge
+issuance is write-heavy, which explains the difference between the in-memory
+and durable stores. See the
+[load-testing guide](https://angie-guardian-31c118.pages.melroy.org/guide/load-testing)
+for scenarios, latency percentiles, methodology, and reproduction commands.
 
 ## Integration paths
 
@@ -72,129 +221,85 @@ ride past the WAF.
 
 ## Operations
 
-- **Metrics**: Prometheus `/metrics` on the admin listener (open to
-  scrapers): decisions by action/reason/domain, challenge lifecycle, PoW
-  solve-time and anomaly-score histograms, anomaly baseline selections/misses,
-  blocks placed, store op latency, and end-to-end `Evaluate()` latency. Import
-  `deploy/grafana-dashboard.json`.
-  `deploy/alerts.yaml` ships ready-made Prometheus alert rules; the one that
-  matters most is `guardian_store_up == 0`, which is the only signal that
-  Guardian has silently degraded to fail-open. `/readyz` reports the same thing
-  to an orchestrator, separately from the liveness `/healthz`.
-- **Admin API**: bearer-token JSON API on the same listener: inspect/place/
-  clear IP blocks (`/admin/blocks/{ip}`), list a bounded page of active blocks
-  (`/admin/blocks`), read the recent deny/challenge feed (`/admin/decisions`)
-  and its rollup (`/admin/stats`), score a hypothetical request against the
-  anomaly model (`GET /admin/score`), inspect configured baseline coverage
-  (`GET /admin/anomaly`), rotate the signing key, and view the active per-domain
-  config. Refuses to expose itself on a non-loopback address without a token.
-- **Reporting dashboard** (optional, `admin.dashboard: true`): a built-in
-  internal page at `/admin/dashboard`, driven entirely by the token-guarded
-  admin API; guardiand prints the bare login URL at startup and never embeds a
-  configured/persistent token in logs (see `admin.token_file`). It shows active
-  blocks with one-click block/unblock, the filterable recent decisions feed,
-  challenge/solve counters, per-domain status, anomaly coverage/segment health,
-  activity graphs, and (with a `geoip.location_db` loaded) a zoomable world map
-  of where non-allow decisions come from. Charts and map data are bundled with
-  the daemon, so the page needs no CDN and works air-gapped. See USAGE.md § 4.
-- **Key rotation**: `POST /admin/rotate-key` atomically archives the current
-  Ed25519 key and generates a new one; `previous_key_dir` is required. Live
-  replicas sharing both paths refresh automatically. Retired keys accept only
-  tokens issued before rotation, with a maximum lifetime of seven days; older
-  archives may remain on disk but are ignored by the active verifier.
-- **Hot reload**: `SIGHUP` (or `POST /admin/reload`) re-reads `guardian.yaml`
-  and applies it without a restart: domains, lists, thresholds, difficulty,
-  GeoIP/feed sources, log level. Active blocks and issued tokens survive; a
-  config that fails validation, or changes a startup-only listener/store/key/
-  admin field, is rejected and the running config stays live.
-- **Stores**: `memory` (dev/ephemeral), `pebble` or `buntdb` (durable, single
-  box), or `redis`/`valkey` (multi-instance replicas behind a load balancer,
-  sharing blocks + spent challenges + the signing key).
+- **Observability:** Prometheus metrics, health/readiness checks, a bundled
+  [Grafana dashboard](deploy/grafana-dashboard.json), and
+  [alert rules](deploy/alerts.yaml).
+- **Admin API and dashboard:** token-protected block management, recent
+  decisions, anomaly/config status, and an optional air-gapped web dashboard.
+- **Safe maintenance:** hot reload keeps the last-good configuration active;
+  signing keys can be rotated without immediately invalidating existing passes.
+- **Flexible state:** `memory`, `pebble`, or `buntdb` for one instance;
+  `redis`/`valkey` for shared multi-instance deployments.
 
-## Testing
+See [USAGE.md](USAGE.md) for endpoints, authentication, dashboard setup, reload,
+and key-rotation details.
 
-The full suite runs via `go test`. Unit tests cover every core package
-(engine pipeline, PoW/JWT/key rotation, WAF rules + scoreboard + signed IDs,
-anomaly scorer, all three stores) plus the HTTP `auth_request` and admin
-transports, using `miniredis` for the redis backend so no external services
-are required.
+## Security
 
-```sh
-go test ./...            # whole suite
-go test -race ./...      # with the race detector
-go test ./core/...       # a subtree
-go test -run TestEvaluate ./core   # a single test by name
-```
+Guardian's [security model and limitations](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)
+spell out what it defends against and what it deliberately does not. To report a
+vulnerability, see [SECURITY.md](SECURITY.md); please do not open a public issue.
 
-On top of the unit suite, an **end-to-end suite** (`test/e2e/`, gated behind the
-`e2e` build tag) boots the real `Angie → guardiand → whoami` Docker stack with
-[testcontainers-go](https://golang.testcontainers.org/) and drives traffic
-*through Angie*: solving a real PoW challenge, exercising the WAF
-`deny`/`block`/`challenge` actions and behavioural blocking, the fail-open mode,
-and the `/metrics` + admin-API report surface. It needs Docker and is excluded
-from the default `go test ./...`:
+## License
+
+[AGPL-3.0](LICENSE), © Melroy van den Berg
+
+---
+
+## Development
+
+Everything below this line is for contributors building, testing, or changing
+Angie Guardian. Operators can stop here and use the documentation linked above.
+
+### Testing
+
+The default suite is self-contained; Docker is only needed for end-to-end tests.
+
+| Check | Command | Purpose |
+|---|---|---|
+| Unit | `go test ./...` | Core, stores, and HTTP transports |
+| Race detector | `go test -race ./...` | Concurrency regressions |
+| End-to-end | `make e2e` | Real Angie → guardiand → backend stack |
+| Fuzz | `make fuzz` | Untrusted and hot-reloaded parsers |
+| Benchmarks | `go test -bench=. -benchmem ./core/... ./core/pow/...` | Request hot paths |
+
+The [end-to-end suite](test/e2e/) covers proof-of-work, WAF outcomes,
+behavioural blocking, fail-open, metrics, and the Admin API. CI runs it on
+`main` and release tags; run it locally before merging stack-level changes.
+Commit useful fuzz crashers from `testdata/fuzz/` as regression seeds.
+
+#### Seed the dashboard
+
+Run a throwaway instance and generate representative dashboard traffic from two
+shells:
 
 ```sh
-make e2e                 # or: go test -tags e2e ./test/e2e/...
+go run ./cmd/guardiand -config test/seed/guardian.seed.yaml
+make seed                  # two minutes
+make seed SEEDTIME=5m      # optional longer run
 ```
 
-CI runs the e2e suite on protected refs (`main` and release tags), where the
-protected Docker runner is available. Run it on feature branches with
-`make e2e` before merging changes that affect the real stack.
+Open <http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token>. The linked
+[seed configuration](test/seed/guardian.seed.yaml) is memory-only and intended
+for local development. `make seed` creates a realistic traffic mix; use
+`guardian-loadtest` for throughput measurements.
 
-Every parser that ingests untrusted or hot-reloaded input (URI percent-decode,
-WAF rules file, `guardian.yaml`, the anomaly model artifact, the PoW redeem
-payload) has a fuzz target. A parser panic in a fail-open WAF silently drops
-protection, so these guard against it. Run them when touching a parser:
+### Building from source
+
+The required Go toolchain is pinned in [go.mod](go.mod). Build the three sidecar
+binaries into `dist/`, or additionally build the optional WASM module:
 
 ```sh
-make fuzz                 # every target, 30s each (FUZZTIME=2m to dig deeper)
+make build
+make wasm
 ```
 
-A discovered crasher is written under `testdata/fuzz/`; commit that file to
-turn it into a permanent regression seed.
+The documentation site can be previewed with `make docs-dev` or built with
+`make docs`.
 
-Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly
-scoring) also carry benchmarks:
+### Performance testing
 
-```sh
-go test -bench=. -benchmem ./core/... ./core/pow/...
-```
-
-### Seeding a dashboard (developers only)
-
-Reviewing a dashboard change against empty charts tells you nothing, and the
-screenshot in the docs has to be regenerated from *something*. `test/seed/`
-drives a throwaway local guardiand with a representative traffic mix: visitors
-that solve the proof of work, ones that abandon the interstitial, a bot
-submitting a bad nonce, scanners that trip the shipped signature rules into
-denies and behavioural blocks, and plain allowed traffic. Two shells from the
-repo root:
-
-```sh
-go run ./cmd/guardiand -config test/seed/guardian.seed.yaml   # throwaway instance
-make seed                                                     # 2m of traffic (SEEDTIME=5m)
-```
-
-Then open <http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token>. The
-seed config uses the memory store, a fixed dev token and a deliberately low PoW
-difficulty, so there is nothing to clean up and thousands of challenges solve in
-seconds. It is **not** a load test — `cmd/guardian-loadtest` is the tool that
-measures throughput; this one optimises for a realistic *mix* at a gentle rate.
-
-```sh
-# Or point it at an instance you already have running:
-go run ./test/seed -url http://127.0.0.1:8071 -d 2m \
-    -admin http://127.0.0.1:8072 -token "$TOKEN"
-```
-
-The target must run with `trusted_proxy: true` (the seeder stands in for Angie
-and sets the `X-Guardian-*` headers itself). With `-admin`/`-token` it prints a
-summary of what it produced.
-
-## Performance
-
-Guardian must never be the bottleneck behind Angie. `guardian-loadtest` drives
+`guardian-loadtest` drives
 the hot path over keepalive HTTP the way Angie does and reports throughput and
 latency percentiles.
 
@@ -273,7 +378,7 @@ The `redis` backend works with both Redis and
 [Valkey](https://valkey.io/) (a drop-in replacement, same wire protocol and same
 `backend: redis` value).
 
-### Reproduce
+#### Reproduce
 
 ```sh
 go build ./cmd/guardiand ./cmd/guardian-loadtest
@@ -302,48 +407,7 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
 Micro-benchmarks for the hot functions (`Evaluate`, PoW verification, anomaly
 scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/pow/...`
 
-## Quick start
-
-Normal operators should install a pinned, prebuilt release: choose the
-`linux-amd64` or `linux-arm64` package under **Assets > Packages** on the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
-extract it, then follow the release-first
-[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started).
-The archive contains the binaries, `guardian.example.yaml`, the starter WAF
-rules, Angie snippets, and systemd unit, so the primary installation needs
-neither a repository checkout nor Go.
-
-```sh
-# After downloading and extracting the pinned release:
-sudo install -Dm755 guardiand /usr/local/bin/guardiand
-```
-
-The guide then installs the canonical config and required rules, wires Angie,
-and starts the hardened systemd unit with consistent production paths. Source
-builds are documented there as an optional contributor/advanced path. For a
-prebuilt container with persistent state, use the separate
-[production Docker guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#docker);
-`deploy/docker` is the demo/developer harness and builds the working tree.
-
-## Documentation
-
-The full documentation (guides, examples, and a complete option/API
-reference) is published at:
-
-**<https://angie-guardian-31c118.pages.melroy.org/>**
-
-It lives in [`docs/`](docs/) as a VitePress site, published via
-GitLab Pages on every push to `main`. Browse it locally with
-`make docs-dev`, or build the static site with `make docs`.
-
-## Usage
-
-See **[USAGE.md](USAGE.md)** for a step-by-step guide: configuring Guardian,
-wiring it into Angie, running it under systemd, operating it through the admin
-API, training the anomaly model, load-testing, and multi-instance (redis)
-deployment.
-
-## Architecture
+### Architecture
 
 All decision logic lives behind a single transport-agnostic seam:
 
@@ -371,13 +435,3 @@ cmd/             guardiand (sidecar), guardian-train (offline anomaly training),
 deploy/          Angie snippets, systemd unit, rules, Grafana dashboard, alert rules
 web/             challenge/denied pages (self-contained HTML + JS solver)
 ```
-
-## Security
-
-Guardian's [security model and limitations](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)
-spell out what it defends against and what it deliberately does not. To report a
-vulnerability, see [SECURITY.md](SECURITY.md); please do not open a public issue.
-
-## License
-
-[AGPL-3.0](LICENSE), © Melroy van den Berg
