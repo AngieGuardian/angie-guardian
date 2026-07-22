@@ -110,6 +110,9 @@ func TestDomainMerge(t *testing.T) {
 // bits), including for unknown hosts falling back to defaults.
 func TestBuiltinDifficultyDefaults(t *testing.T) {
 	cfg := loadTestConfig(t, "store: { backend: memory }\ndomains: { bare.test: }\n")
+	if cfg.Admin.RecentSize != defaultRecentSize {
+		t.Fatalf("admin.recent_size = %d, want default %d", cfg.Admin.RecentSize, defaultRecentSize)
+	}
 	for _, dc := range []*DomainConfig{
 		&cfg.Defaults,
 		cfg.DomainFor("bare.test"),
@@ -253,6 +256,8 @@ func TestConfigValidation(t *testing.T) {
 		"nonnumeric trusted proxy port":          "listen: 0.0.0.0:http\ntrusted_proxy: true",
 		"malformed admin listen":                 "admin: { listen: malformed, token: secret }",
 		"nonloopback admin without token":        "admin: { listen: 0.0.0.0:8072 }",
+		"negative recent size":                   "admin: { recent_size: -1 }",
+		"oversized recent size":                  "admin: { recent_size: 16385 }",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
 		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
 		"oversized max_block_ttl":                "defaults: { waf: { ip_behaviour: { max_block_ttl: 8761h } } }",

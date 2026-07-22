@@ -66,7 +66,7 @@ type Engine struct {
 	enforcer *enforce.Manager     // nil = mirror/offload disabled (store-only enforcement)
 	attack   *attackmode.Detector // nil = attack mode disabled (always Normal)
 	health   *health.Checker      // nil = no store probe (readiness reports unavailable)
-	recent   recentRing           // last non-allow decisions, for the admin API
+	recent   *recentRing          // last non-allow decisions, for the admin API
 	stages   []Stage
 	log      *slog.Logger
 	lifeMu   sync.Mutex // serializes Reload and Close
@@ -202,11 +202,12 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		return nil, err
 	}
 	e := &Engine{
-		store: st,
-		pow:   powMgr,
-		bots:  botverify.New(st, log),
-		board: NewScoreboard(st, log),
-		log:   log,
+		store:  st,
+		pow:    powMgr,
+		bots:   botverify.New(st, log),
+		board:  NewScoreboard(st, log),
+		recent: newRecentRing(cfg.Admin.RecentSize),
+		log:    log,
 		stages: []Stage{
 			// Pipeline order per plan §3; first terminal decision wins.
 			// Signatures run before the token stage so vouched clients keep
@@ -329,6 +330,13 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 // structured decision log).
 func (e *Engine) RecentDecisions(limit int) []RecentDecision {
 	return e.recent.list(limit)
+}
+
+// RecentDecisionSnapshot returns recent decisions and their retention state
+// from one locked point-in-time view. Admin responses use it so entries and
+// coverage metadata cannot disagree during concurrent evaluation.
+func (e *Engine) RecentDecisionSnapshot() RecentDecisionSnapshot {
+	return e.recent.snapshot(0)
 }
 
 // reasonCategory collapses a full reason string ("waf:dotfile-probe",

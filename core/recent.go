@@ -28,45 +28,89 @@ type RecentDecision struct {
 	Reason string    `json:"reason"`
 }
 
-// recentSize bounds the ring. 512 entries × ~200 bytes ≈ 100 KiB, fixed.
-const recentSize = 512
+// The recent-decision ring is deliberately a bounded, per-instance live view,
+// not a historical store. The default and cap are validated by Config.finalize;
+// keep the zero-value fallback here so recentRing remains useful in tests and
+// embedded code that constructs one directly.
+const (
+	defaultRecentSize = 4096
+	maxRecentSize     = 16384
+)
+
+// RecentDecisionSnapshot is one consistent copy of the live ring plus the
+// retention state needed to describe its coverage honestly.
+type RecentDecisionSnapshot struct {
+	Decisions []RecentDecision
+	Capacity  int
+	Full      bool
+	StartedAt time.Time
+}
 
 // recentRing is a fixed-size overwrite-oldest buffer. Only challenged/denied
 // requests pass through it, so the mutex sees a tiny fraction of traffic and
 // never the allow fast path. Per-instance by design: replicas each report
 // their own recent feed (cross-instance aggregation is a metrics concern).
 type recentRing struct {
-	mu   sync.Mutex
-	buf  [recentSize]RecentDecision
-	next int  // index the next entry is written at
-	full bool // buf has wrapped at least once
+	mu    sync.Mutex
+	buf   []RecentDecision
+	next  int  // index the next entry is written at
+	count int  // initialized entries, up to len(buf)
+	full  bool // at least one older entry has been overwritten
+	// startedAt is when this ring began observing decisions. It distinguishes
+	// an empty covered interval from time before this process existed.
+	startedAt time.Time
+}
+
+func newRecentRing(size int) *recentRing {
+	if size <= 0 {
+		size = defaultRecentSize
+	}
+	return &recentRing{buf: make([]RecentDecision, size), startedAt: time.Now()}
 }
 
 func (r *recentRing) add(d RecentDecision) {
 	r.mu.Lock()
+	if len(r.buf) == 0 {
+		r.buf = make([]RecentDecision, defaultRecentSize)
+		r.startedAt = time.Now()
+	}
+	if r.count == len(r.buf) {
+		r.full = true
+	} else {
+		r.count++
+	}
 	r.buf[r.next] = d
 	r.next++
-	if r.next == recentSize {
+	if r.next == len(r.buf) {
 		r.next = 0
-		r.full = true
 	}
 	r.mu.Unlock()
 }
 
-// list returns up to limit entries, newest first. limit <= 0 means all.
-func (r *recentRing) list(limit int) []RecentDecision {
+// snapshot returns up to limit entries, newest first, together with retention
+// metadata captured under the same lock. limit <= 0 means all.
+func (r *recentRing) snapshot(limit int) RecentDecisionSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n := r.next
-	if r.full {
-		n = recentSize
+	capacity := len(r.buf)
+	if capacity == 0 {
+		capacity = defaultRecentSize
 	}
+	n := r.count
 	if limit <= 0 || limit > n {
 		limit = n
 	}
 	out := make([]RecentDecision, 0, limit)
 	for i := 1; i <= limit; i++ {
-		out = append(out, r.buf[(r.next-i+recentSize)%recentSize])
+		out = append(out, r.buf[(r.next-i+len(r.buf))%len(r.buf)])
 	}
-	return out
+	return RecentDecisionSnapshot{
+		Decisions: out,
+		Capacity:  capacity,
+		Full:      r.full,
+		StartedAt: r.startedAt,
+	}
 }
+
+// list returns up to limit entries, newest first. limit <= 0 means all.
+func (r *recentRing) list(limit int) []RecentDecision { return r.snapshot(limit).Decisions }

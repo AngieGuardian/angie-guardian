@@ -268,33 +268,105 @@ type recentDecisionView struct {
 	intel.Info
 }
 
+// recentDecisionCompact is the chart feed: enough to bucket the two time
+// series without repeatedly transferring or enriching full request rows.
+type recentDecisionCompact struct {
+	Time   time.Time `json:"time"`
+	Action string    `json:"action"`
+	Reason string    `json:"reason"`
+}
+
+type recentWindowView struct {
+	Available int        `json:"available"`
+	Capacity  int        `json:"capacity"`
+	Full      bool       `json:"full"`
+	StartedAt time.Time  `json:"started_at"`
+	Oldest    *time.Time `json:"oldest,omitempty"`
+	Newest    *time.Time `json:"newest,omitempty"`
+}
+
+func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
+	view := recentWindowView{
+		Available: len(snap.Decisions), Capacity: snap.Capacity,
+		Full: snap.Full, StartedAt: snap.StartedAt,
+	}
+	if len(snap.Decisions) > 0 {
+		newest := snap.Decisions[0].Time
+		oldest := snap.Decisions[len(snap.Decisions)-1].Time
+		view.Newest, view.Oldest = &newest, &oldest
+	}
+	return view
+}
+
 // handleDecisions returns the engine's recent non-allow decisions, newest
-// first, enriched with configured GeoIP/ASN data. Query: ?limit= (default 50),
-// ?action=deny|challenge, ?reason=<prefix>.
+// first. The default detailed view is enriched with configured GeoIP/ASN data;
+// view=compact returns only time/action/reason for live charts. Query: ?limit=
+// (default 50, or "all" for the bounded ring), ?action=deny|challenge,
+// ?reason=<prefix>, ?view=compact.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
 	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be a positive integer"})
-			return
+		if v == "all" {
+			limit = 0
+		} else {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be a positive integer or all"})
+				return
+			}
+			limit = n
 		}
-		limit = n
+	}
+	view := q.Get("view")
+	if view != "" && view != "compact" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "view must be compact when set"})
+		return
 	}
 	action, reason := q.Get("action"), q.Get("reason")
 
 	// Filter over the full ring, then cut to limit, so a filtered view is not
 	// starved by unrelated entries.
-	all := s.engine.RecentDecisions(0)
-	out := make([]recentDecisionView, 0, min(limit, len(all)))
+	snap := s.engine.RecentDecisionSnapshot()
+	all := snap.Decisions
+	responseLimit := limit
+	if responseLimit == 0 || responseLimit > len(all) {
+		responseLimit = len(all)
+	}
+	matches := func(d core.RecentDecision) bool {
+		return (action == "" || d.Action == action) &&
+			(reason == "" || strings.HasPrefix(d.Reason, reason))
+	}
+
+	if view == "compact" {
+		out := make([]recentDecisionCompact, 0, responseLimit)
+		matched := 0
+		for _, d := range all {
+			if !matches(d) {
+				continue
+			}
+			matched++
+			if len(out) < responseLimit {
+				out = append(out, recentDecisionCompact{Time: d.Time, Action: d.Action, Reason: d.Reason})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"count": len(out), "truncated": matched > len(out),
+			"window": recentWindow(snap), "decisions": out,
+		})
+		return
+	}
+
+	out := make([]recentDecisionView, 0, responseLimit)
 	provider := s.engine.Intel()
 	byIP := make(map[string]intel.Info)
+	matched := 0
 	for _, d := range all {
-		if action != "" && d.Action != action {
+		if !matches(d) {
 			continue
 		}
-		if reason != "" && !strings.HasPrefix(d.Reason, reason) {
+		matched++
+		if len(out) == responseLimit {
 			continue
 		}
 		row := recentDecisionView{RecentDecision: d}
@@ -309,11 +381,11 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 			row.Info = info
 		}
 		out = append(out, row)
-		if len(out) == limit {
-			break
-		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "decisions": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(out), "truncated": matched > len(out),
+		"window": recentWindow(snap), "decisions": out,
+	})
 }
 
 // Coarse, stable readiness reasons. They are the entire failure vocabulary of
@@ -406,7 +478,7 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 			blocksComplete = mirror.Complete
 		}
 	}
-	recent := s.engine.RecentDecisions(0)
+	recent := s.engine.RecentDecisionSnapshot().Decisions
 	byAction := map[string]int{}
 	byReason := map[string]int{}
 	for _, d := range recent {
@@ -766,11 +838,11 @@ type offenderIP struct {
 // handleOffenders reports the heaviest sources of non-allow decisions in the
 // recent window: top IPs, reason categories, and request paths, plus a country
 // rollup when GeoIP is loaded. It counts the in-process RecentDecisions ring
-// exactly (bounded to 512 entries, microseconds per request); no Count-Min
-// Sketch, no engine change, and nothing on the hot path. The window is the ring,
-// so it covers challenged/denied traffic, not allows (which are never recorded).
+// exactly (bounded to the configured admin.recent_size); no Count-Min Sketch
+// and nothing extra on the hot path. The window is the ring, so it covers
+// challenged/denied traffic, not allows (which are never recorded).
 func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
-	decisions := s.engine.RecentDecisions(0)
+	decisions := s.engine.RecentDecisionSnapshot().Decisions
 
 	byIP := map[string]int{}
 	byReason := map[string]int{}

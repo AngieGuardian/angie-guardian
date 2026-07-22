@@ -6,6 +6,7 @@ package httptransport
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -67,7 +68,7 @@ func reportServer(t *testing.T, yaml string) (*httptest.Server, *core.Engine) {
 	return ts, engine
 }
 
-func loadAdminReportConfig(t *testing.T, yaml string) *core.Config {
+func loadAdminReportConfig(t testing.TB, yaml string) *core.Config {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
@@ -78,6 +79,69 @@ func loadAdminReportConfig(t *testing.T, yaml string) *core.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func BenchmarkRecentAdmin(b *testing.B) {
+	const benchmarkYAML = `
+store: { backend: memory }
+defaults:
+  denylist:
+    ips: [ "0.0.0.0/0" ]
+`
+	for _, size := range []int{512, 4096, 16384, 65536} {
+		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
+			cfg := loadAdminReportConfig(b, benchmarkYAML)
+			// Include one deliberately over-cap size to show the cost curve. The
+			// engine constructor accepts an already-finalized Config; production
+			// config loading still enforces the cap.
+			cfg.Admin.RecentSize = size
+			st := store.NewMemory()
+			defer st.Close()
+			engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer engine.Close()
+			ctx := context.Background()
+			for i := 0; i < size; i++ {
+				ip := fmt.Sprintf("10.%d.%d.%d", (i>>16)&255, (i>>8)&255, i&255)
+				engine.Evaluate(ctx, &core.RequestContext{
+					Host: "protected.example", Method: "GET",
+					URI:        fmt.Sprintf("/wp-login.php?attempt=%d&source=distributed-scan", i),
+					RemoteAddr: ip,
+					UserAgent:  "Mozilla/5.0 (compatible; GuardianBenchmarkBot/1.0; +https://example.invalid/bot)",
+				})
+			}
+			handler := NewAdminServer(engine, cfg, nil, adminToken, "", "", nil, slog.Default())
+			for _, tc := range []struct {
+				name string
+				path string
+			}{
+				{name: "stats", path: "/admin/stats"},
+				{name: "offenders", path: "/admin/offenders"},
+				{name: "decisions-detailed-512", path: "/admin/decisions?limit=512"},
+				{name: "decisions-compact-all", path: "/admin/decisions?view=compact&limit=all"},
+			} {
+				b.Run(tc.name, func(b *testing.B) {
+					b.ReportAllocs()
+					var responseBytes int64
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+						req.Header.Set("Authorization", "Bearer "+adminToken)
+						rec := httptest.NewRecorder()
+						handler.ServeHTTP(rec, req)
+						if rec.Code != http.StatusOK {
+							b.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+						}
+						responseBytes += int64(rec.Body.Len())
+					}
+					b.StopTimer()
+					b.ReportMetric(float64(responseBytes)/float64(b.N), "B/response")
+				})
+			}
+		})
+	}
 }
 
 func TestAdminBlockList(t *testing.T) {
@@ -144,6 +208,13 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 		t.Fatalf("decisions count = %v, want 3 (allow must not be recorded)", m["count"])
 	}
 	ds := m["decisions"].([]any)
+	window := m["window"].(map[string]any)
+	if window["available"] != float64(3) || window["capacity"] != float64(4096) || window["full"] != false {
+		t.Fatalf("decision window = %v, want 3/4096 not-full", window)
+	}
+	if window["started_at"] == nil || window["oldest"] == nil || window["newest"] == nil {
+		t.Fatalf("decision window lacks coverage timestamps: %v", window)
+	}
 	if newest := ds[0].(map[string]any); newest["ip"] != "203.0.113.3" || newest["reason"] != "denylist:ip" {
 		t.Fatalf("newest decision = %v, want ip=203.0.113.3 reason=denylist:ip", newest)
 	}
@@ -158,6 +229,24 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	if m["count"] != float64(2) {
 		t.Fatalf("limit=2 count = %v, want 2", m["count"])
 	}
+	if m["truncated"] != true {
+		t.Fatalf("limit=2 truncated = %v, want true", m["truncated"])
+	}
+	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?view=compact&limit=all", adminToken, ""))
+	if m["count"] != float64(3) || m["truncated"] != false {
+		t.Fatalf("compact decisions = %v, want all 3 untruncated", m)
+	}
+	compact := m["decisions"].([]any)[0].(map[string]any)
+	for _, key := range []string{"time", "action", "reason"} {
+		if _, ok := compact[key]; !ok {
+			t.Errorf("compact decision missing %s: %v", key, compact)
+		}
+	}
+	for _, key := range []string{"host", "ip", "method", "uri", "ua", "country", "asn"} {
+		if value, ok := compact[key]; ok {
+			t.Errorf("compact decision unexpectedly contains %s=%v", key, value)
+		}
+	}
 	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?action=challenge", adminToken, ""))
 	if m["count"] != float64(0) {
 		t.Fatalf("action=challenge count = %v, want 0", m["count"])
@@ -168,6 +257,9 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	}
 	if resp := adminReq(t, ts, "GET", "/admin/decisions?limit=bogus", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad limit: status = %d, want 400", resp.StatusCode)
+	}
+	if resp := adminReq(t, ts, "GET", "/admin/decisions?view=verbose", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad view: status = %d, want 400", resp.StatusCode)
 	}
 
 	// Stats roll the same window up by action and reason category.
@@ -224,6 +316,37 @@ func TestAdminDecisionsGeoDetail(t *testing.T) {
 		if value, ok := partial[key]; ok {
 			t.Errorf("%s should be omitted when unavailable, got %v", key, value)
 		}
+	}
+
+	compact := decodeJSON(t, adminReq(t, ts, http.MethodGet,
+		"/admin/decisions?view=compact&limit=all", adminToken, ""))
+	for _, value := range compact["decisions"].([]any) {
+		row := value.(map[string]any)
+		for _, key := range []string{"ip", "country", "city", "subdivision", "accuracy_radius_km", "asn", "as_org"} {
+			if got, ok := row[key]; ok {
+				t.Errorf("compact GeoIP decision unexpectedly contains %s=%v", key, got)
+			}
+		}
+	}
+}
+
+func TestAdminDecisionWindowWrapsAtConfiguredSize(t *testing.T) {
+	yaml := strings.Replace(reportYAML, "admin: { dashboard: true }",
+		"admin: { dashboard: true, recent_size: 2 }", 1)
+	ts, engine := reportServer(t, yaml)
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+		engine.Evaluate(context.Background(), &core.RequestContext{
+			Host: "site.test", Method: "GET", URI: "/probe", RemoteAddr: ip, UserAgent: "curl/8",
+		})
+	}
+	out := decodeJSON(t, adminReq(t, ts, http.MethodGet,
+		"/admin/decisions?view=compact&limit=all", adminToken, ""))
+	if out["count"] != float64(2) || out["truncated"] != false {
+		t.Fatalf("wrapped response = %v, want two retained rows and no response truncation", out)
+	}
+	window := out["window"].(map[string]any)
+	if window["available"] != float64(2) || window["capacity"] != float64(2) || window["full"] != true {
+		t.Fatalf("wrapped window = %v, want available=capacity=2 full=true", window)
 	}
 }
 

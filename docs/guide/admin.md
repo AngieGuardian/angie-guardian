@@ -42,6 +42,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 # in-process ring buffer (per instance, cleared on restart).
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
+# Compact full-ring feed for live charting (still bounded by admin.recent_size).
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit=all"
+
 # A small "right now" rollup: active blocks, recent counts by action and
 # reason category, and the PoW lifecycle (challenges issued/solved/failed +
 # average solve seconds). (Long-horizon numbers live in /metrics.)
@@ -166,8 +169,10 @@ drawn entirely from data the dashboard already fetches, at no cost to the hot
 path:
 
 - **Activity**: decisions over time (deny vs challenge) and by reason category,
-  bucketed from the recent-decisions ring, plus the proof-of-work funnel
-  (issued, solved, failed).
+  bucketed from the recent-decisions ring with shared fixed-axis
+  **5m / 15m / 30m / 1h / all** controls, plus the proof-of-work funnel (issued,
+  solved, failed). Coverage labels distinguish a complete selected interval,
+  history overwritten by a full ring, and time before this daemon started.
 - **Distributions**: per-domain traffic volume, the solve-time histogram and
   the anomaly-score histogram, read from Prometheus histograms via
   [`GET /admin/distributions`](/reference/admin-api#get-admin-distributions).
@@ -177,6 +182,12 @@ path:
   levels, and any missing
   baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
   and the distribution counters.
+
+The activity charts are a bounded, per-instance incident view. Their compact
+feed can use the full configured ring without repeatedly transferring detailed
+request and GeoIP fields; the decision table and map stay capped at 512 rows.
+For hours, days, alerting, or fleet-wide history, scrape `/metrics` with
+Prometheus and use Grafana rather than enlarging this in-memory window.
 
 ### Top offenders
 

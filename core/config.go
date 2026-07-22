@@ -122,6 +122,11 @@ type AdminConfig struct {
 	Listen string `yaml:"listen"` // empty disables the admin+metrics server
 	Token  string `yaml:"token"`  // bearer token; or ADMIN_TOKEN env var
 
+	// RecentSize bounds the per-instance, in-memory non-allow decision window.
+	// It is scanned by live admin reports, cleared on restart, and intentionally
+	// not a replacement for Prometheus/Grafana history. Start-time only.
+	RecentSize int `yaml:"recent_size"`
+
 	// TokenFile persists an auto-generated bearer token (like the PoW signing
 	// key: created 0600 on first start, never regenerated). Used when Token
 	// and ADMIN_TOKEN are unset, so the operator never invents a token by
@@ -953,6 +958,15 @@ func (c *Config) finalize() error {
 	}
 	if c.Admin.Token == "" {
 		c.Admin.Token = os.Getenv("ADMIN_TOKEN")
+	}
+	if c.Admin.RecentSize == 0 {
+		c.Admin.RecentSize = defaultRecentSize
+	}
+	if c.Admin.RecentSize < 0 {
+		return fmt.Errorf("admin.recent_size must be > 0, got %d", c.Admin.RecentSize)
+	}
+	if c.Admin.RecentSize > maxRecentSize {
+		return fmt.Errorf("admin.recent_size must be <= %d, got %d", maxRecentSize, c.Admin.RecentSize)
 	}
 	if c.Admin.Listen != "" {
 		if err := validateListenAddress("admin.listen", c.Admin.Listen); err != nil {
