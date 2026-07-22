@@ -83,9 +83,11 @@ wrong and the protections above weaken or invert:
 
 ## Fail-open by design
 
-If Guardian is unreachable, Angie bypasses it and serves the request. If one
-internal stage errors, that stage abstains and later stages still run; only
-when none returns a terminal decision does the request default to allow. This
+If Guardian is unreachable, its internal Angie auth location converts that
+upstream failure to `204`; `auth_request` treats it as allow and resumes the
+vhost's original static, FastCGI, or proxy handler. If one internal Guardian
+stage errors, that stage abstains and later stages still run; only when none
+returns a terminal decision does the request default to allow. This
 availability choice avoids making the WAF a single point of failure. A full
 Guardian outage is a *protection* outage: the site keeps serving, but
 unfiltered. Monitor for it: the systemd unit is `Type=notify` with a watchdog,

@@ -80,7 +80,7 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
 
 // requestContext builds the core request from the X-Guardian-* headers the
-// Angie snippet sets on the subrequest, falling back to the subrequest's own
+// Angie snippets set on the subrequest, falling back to the subrequest's own
 // fields so Guardian also behaves sanely when probed directly.
 func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 	host := headerOr(r, "X-Guardian-Host", r.Host)

@@ -36,7 +36,7 @@ Substitute the version you selected. On ARM64, also replace `amd64` with
 The extracted directory contains `guardiand`, the `guardian-train` and
 `guardian-loadtest` companion tools, the optional `guardian.wasm`, the
 canonical `guardian.example.yaml`, and the complete `deploy/` directory. The
-installation below uses the binary, systemd unit, Angie snippet, and starter
+installation below uses the binary, systemd unit, Angie snippets, and starter
 rules directly from that directory.
 
 ### Verify the download (optional)
@@ -196,24 +196,26 @@ recommended annotated profile instead.
 
 ## 3. Install and wire the Angie configuration
 
-Install the shipped per-server snippet
-([`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf))
-at the path used by the examples:
+Install the two shipped Angie snippets,
+[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf)
+and
+[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf),
+at the paths used by the examples:
 
 ```sh
 sudo install -Dm644 deploy/angie-guardian.conf \
   /etc/angie/angie-guardian.conf
+sudo install -Dm644 deploy/angie-guardian-location.conf \
+  /etc/angie/angie-guardian-location.conf
 ```
 
-Edit that installed file and replace **both**
-`proxy_pass http://your_backend` placeholders with the upstream for the real
-site. If its existing configuration already declares `location /`, merge the
-Guardian directives from the shipped block into it; Angie rejects duplicate
-locations.
-
-```sh
-sudoedit /etc/angie/angie-guardian.conf
-```
+For the normal fail-open installation, do not edit either file.
+`angie-guardian.conf` contains reusable internal Guardian endpoints and no
+site backend. `angie-guardian-location.conf` contains handler-neutral
+authorization directives that normally go beside it at `server {}` scope and
+are inherited by the vhost's content locations. The [Angie guide's fail-mode
+section](/guide/angie#fail-open-without-duplicating-the-site-handler) documents
+the deliberate edit for a fail-closed deployment.
 
 Add the keepalive upstream once inside Angie's `http {}` context (either in
 `/etc/angie/angie.conf` or a file it includes there):
@@ -225,15 +227,21 @@ upstream guardian {
 }
 ```
 
-Then include the installed snippet inside each protected `server {}` block:
+Then include both snippets once inside each protected `server {}` block. Every
+content location in that vhost inherits Guardian. Leave all existing static,
+FastCGI, or reverse-proxy locations unchanged:
 
 ```nginx
 include /etc/angie/angie-guardian.conf;
+include /etc/angie/angie-guardian-location.conf;
 ```
 
 The [full Angie guide](/guide/angie) explains real client-IP restoration,
 fail-open versus fail-closed operation, request and connection limits, logging,
-and request-body limitations. Review those choices before production use.
+request-body limitations, and a complete static + `try_files` + PHP-FPM
+example (including the static-only `$uri $uri/ =404` form), server-level
+snippet includes that add sibling asset locations, and the one
+`auth_request off` needed in an internal PHP front-controller target.
 
 Do not reload Angie yet: Guardian should be healthy first. Validate the edited
 configuration now so syntax or duplicate-location errors are caught safely:
@@ -273,7 +281,7 @@ sudo systemctl reload angie
 
 Request the real protected URL through Angie. A raw `curl` has no Guardian
 cookie, so it should receive the challenge page rather than silently reaching
-the backend:
+the site's original static, FastCGI, or proxy handler:
 
 ```sh
 curl -i https://example.com/

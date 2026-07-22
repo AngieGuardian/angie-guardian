@@ -57,6 +57,8 @@ services:
         condition: service_started
     volumes:
       - ./angie.nft.conf:/etc/angie/angie.conf:ro
+      - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
+      - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
     ports:
       # The protected site and the guardiand admin API are both published
       # through Angie's namespace (guardiand shares it). Overridable so the

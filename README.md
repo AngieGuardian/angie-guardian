@@ -310,7 +310,7 @@ Normal operators should install a pinned, prebuilt release: choose the
 extract it, then follow the release-first
 [Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started).
 The archive contains the binaries, `guardian.example.yaml`, the starter WAF
-rules, Angie snippet, and systemd unit, so the primary installation needs
+rules, Angie snippets, and systemd unit, so the primary installation needs
 neither a repository checkout nor Go.
 
 ```sh

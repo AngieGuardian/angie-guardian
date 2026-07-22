@@ -120,9 +120,9 @@ authoritative mirror can fast-pass a clean token. An unseeded or
 capacity-incomplete mirror, and a `read_through` mirror such as Redis in
 `auto` mode, cannot prove a miss without a store read, so Guardian sheds the
 request rather than risk letting a token bypass a block held only in the
-store. This is the middle ground between fail-open (dump the flood on the
-backend) and silently weakening policy under pressure. Set the bound to a few
-times your core count and test it with your chosen mirror mode.
+store. This is the middle ground between fail-open (continue into the vhost's
+original handler) and silently weakening policy under pressure. Set the bound
+to a few times your core count and test it with your chosen mirror mode.
 
 ## Fleet coordination
 

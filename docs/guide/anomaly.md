@@ -74,13 +74,14 @@ and separate files make it obvious which traffic trained which baseline. One
 combined file also works, since every record carries its own `host` field, and
 you can pass either shape to `guardian-train`.
 
-::: warning `$guardian_action` needs the Guardian snippet
+::: warning `$guardian_action` needs the Guardian protection include
 The format logs `$guardian_action`, which is set by
 `auth_request_set $guardian_action $upstream_http_x_guardian_action;` in
-[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf). In a `server {}` block that does not include the
-Guardian snippet the variable is empty and the strict trainer rejects that
-record. Wire up [Angie](/guide/angie) first and confirm the log contains a
-Guardian action before collecting the training window.
+[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf).
+For a request location that does not include the Guardian protection snippet,
+the variable is empty and the strict trainer rejects that record. Wire up
+[Angie](/guide/angie) first and confirm the log contains a Guardian action
+before collecting the training window.
 :::
 
 Then wait. The baseline is only as good as the traffic behind it, so let logs

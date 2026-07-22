@@ -13,11 +13,10 @@ import (
 )
 
 // TestFailOpenWhenGuardianDown exercises Angie's fail mode. The harness ships
-// the documented default (fail-OPEN) via `error_page 500 = @guardian_bypass`
-// in angie.docker.conf: when the guardiand sidecar is unreachable, the
-// auth_request subrequest errors, Angie turns that into a 500, and the bypass
-// route serves the backend anyway. So a sidecar outage does not take the site
-// down.
+// the documented default (fail-OPEN) in deploy/angie-guardian.conf: when the
+// guardiand sidecar is unreachable, the internal auth location maps its own
+// upstream error to 204. auth_request treats that as allow and resumes the
+// site's original handler, so a sidecar outage does not take the site down.
 //
 // This test stops guardiand, asserts the backend is still served, then restarts
 // it and waits for health so the rest of the suite is unaffected. It is written
@@ -38,8 +37,7 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 	stopGuardiand(t)
 
 	// With the sidecar down, the site must still serve the backend (fail-open).
-	// Use an allowlist-shaped and a normal path to be sure it's the bypass, not
-	// a cached allow.
+	// Use a normal path to prove the original backend handler resumes.
 	resp := get(t, "/still-up", powHost, browserUA, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("fail-open: status %d with guardiand down, want 200 (backend served)", resp.StatusCode)
@@ -50,8 +48,8 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 }
 
 // NOTE on fail-CLOSED: the opposite behaviour (site returns 500 when guardiand
-// is down) is produced by removing `error_page 500 = @guardian_bypass` from the
-// Angie config. Reproducing it here would require a second Angie config +
+// is down) is produced by removing the fail-open 5xx error_page from the
+// internal auth location. Reproducing it here would require a second Angie config +
 // reload within one stack; the harness deliberately ships fail-open (the
 // documented default), and deploy/docker/README.md documents the one-line
 // toggle to reproduce fail-closed manually. The toggle itself is a pure Angie

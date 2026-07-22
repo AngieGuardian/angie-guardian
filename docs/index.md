@@ -54,7 +54,7 @@ features:
 For a normal Linux host, install a pinned `amd64` or `arm64` archive from the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases).
 It includes the binaries, canonical annotated config, starter WAF rules, Angie
-snippet, and systemd unit; no repository checkout or Go toolchain is required.
+snippets, and systemd unit; no repository checkout or Go toolchain is required.
 
 ```sh
 # After selecting, downloading, and extracting a versioned release:

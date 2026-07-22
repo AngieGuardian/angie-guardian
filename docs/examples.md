@@ -235,6 +235,9 @@ upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;
 }
+upstream my_application {
+    server 127.0.0.1:8080;  # replace with the real application endpoint
+}
 limit_req_zone  $binary_remote_addr zone=guard:10m rate=30r/s;
 limit_conn_zone $binary_remote_addr zone=gconn:10m;
 
@@ -249,10 +252,14 @@ server {
     limit_req_status  429;
     limit_conn_status 429;
 
-    # Guardian: auth_request wiring + challenge/pass/denied routes. Adapt the
-    # file's two http://your_backend placeholders before including it; it
-    # already declares location /, so do not add another root location here.
+    # Reusable Guardian endpoints; this file contains no site backend.
     include /etc/angie/angie-guardian.conf;
+    # Handler-neutral protection inherited by every content location.
+    include /etc/angie/angie-guardian-location.conf;
+
+    location / {
+        proxy_pass http://my_application;
+    }
 
     # JSON access log feeding guardian-train (format from deploy/angie-json-log.conf).
     access_log /var/log/angie/example.com.access.json guardian_json;

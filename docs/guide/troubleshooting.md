@@ -13,7 +13,7 @@ plain HTTP, so the browser refuses to store it and arrives at the next request
 still unvouched. Guardian sets the cookie `Secure` by default and only drops it
 when Angie tells it the connection is plain HTTP.
 
-**Fix:** make sure Angie passes the scheme through. The auth subrequest must
+**Fix:** make sure Angie passes the scheme through. The solution endpoint must
 carry `X-Guardian-Proto: $scheme` (it's in the shipped
 [`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf)). If you serve the site over plain HTTP on purpose,
 that header lets Guardian drop `Secure` so the cookie sticks; if you serve
@@ -45,17 +45,22 @@ WAF, GeoIP, and reputation challenge policies still apply); see
 ## "Guardian is down but the site still works"
 
 This is **fail-open** working as designed. When guardiand is unreachable, Angie's
-`error_page 500 = @guardian_bypass` serves the request unfiltered rather than
-erroring. The site stays up; it is just unprotected until Guardian returns.
+internal auth location converts its own upstream error to `204`, so
+`auth_request` allows the request and Angie resumes the vhost's original
+static, FastCGI, or proxy handler. The site stays up; it is just unprotected
+until Guardian returns.
 
 **Don't mistake this for health.** Alert on it: watch the systemd unit
 (`Type=notify` marks the service failed if it wedges), the `/metrics` endpoint,
 and store connectivity via `guardian_store_up`. `deploy/alerts.yaml` ships the
 rules; see [Alerting](/guide/production#alerting).
 
-To verify the bypass is wired correctly, stop guardiand and confirm the site
-still serves; if it returns 500 instead, the `@guardian_bypass` fallback is
-missing from your Angie config.
+To verify fail-open is wired correctly, stop guardiand and confirm the site
+still serves. If it returns 500 instead, check the 5xx `error_page` and
+`@guardian_fail_open` target in `deploy/angie-guardian.conf`. To deliberately
+fail closed, comment out that `error_page`; you may then also comment out the
+unused named location, but removing only the still-referenced target makes the
+Angie configuration invalid.
 
 ## `/readyz` says degraded
 
