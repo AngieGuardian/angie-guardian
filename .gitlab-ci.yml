@@ -103,6 +103,7 @@ docs:
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
       changes:
         - docs/**/*
+        - .gitlab-ci.yml
   script:
     - cd docs
     - npm ci
@@ -354,8 +355,8 @@ docker-release:
     - docker logout "$CI_REGISTRY"
 
 # --- Documentation site (GitLab Pages) --------------------------------------
-# Builds the VitePress site from docs/ and publishes it via Pages on every
-# push to the default branch. The site's base path is derived from
+# Builds the VitePress site from docs/ and publishes it via Pages on pushes to
+# the default branch that touch the site. The site's base path is derived from
 # $CI_PAGES_URL so it works whether Pages serves from a subpath
 # (https://host/angie-guardian/) or a root domain.
 pages:
@@ -365,8 +366,16 @@ pages:
     key: vitepress
     paths:
       - docs/node_modules/
+  # Only republish when the site (or this job's own definition) actually
+  # changes, so a Go-only commit does not rebuild and redeploy an identical
+  # site. `.gitlab-ci.yml` is watched too: the build steps and the base-path
+  # logic below live in this file, so without it a change to how the site is
+  # built or published would never reach Pages.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - docs/**/*
+        - .gitlab-ci.yml
   script:
     - cd docs
     - npm ci
