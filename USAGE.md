@@ -6,7 +6,7 @@ For an overview of what Guardian is and how it works, see the
 
 For a first host installation, start with the release-first
 [Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started):
-it selects a prebuilt archive and installs the config, rules, Angie snippet,
+it selects a prebuilt archive and installs the config, rules, Angie snippets,
 and systemd unit at the exact paths used below. This file is the deeper
 configuration and operations reference after that initial flow.
 
@@ -410,10 +410,9 @@ make of this IP?", use `GET /admin/intel/<ip>`.
 
 ## 2. Wire it into Angie
 
-Add the keepalive upstream once in the `http {}` context. Copy/adapt the
-per-server snippet, replace both `proxy_pass http://your_backend` placeholders,
-and merge its Guardian directives into an existing `location /` rather than
-declaring a second one:
+Add the keepalive upstream once in the `http {}` context. Then include both
+reusable files once in each protected vhost. The handler-neutral protection
+directives are inherited by its content locations:
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -423,12 +422,37 @@ upstream guardian {
 }
 
 # each protected server {} block:
-include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
+include /etc/angie/angie-guardian.conf;
+include /etc/angie/angie-guardian-location.conf;
+
+location / {
+    proxy_pass http://my_application;     # or keep try_files/static/FastCGI
+}
 ```
 
-`deploy/angie-guardian.conf` documents the fail-open toggle (what happens when
-the sidecar is down) and the challenge/pass/denied routes. Two header relays in
-that snippet matter beyond routing: `X-Guardian-Difficulty` carries an
+One daemon/upstream serves every vhost: `$host` selects its `domains:` policy,
+and unknown hosts use `defaults`. `deploy/angie-guardian.conf` owns only the
+internal auth/challenge/pass/denied routes; it no longer assumes the site is a
+reverse proxy. `deploy/angie-guardian-location.conf` adds protection without
+choosing a content handler. At server scope it also covers sibling locations
+created by includes such as `snippets/general.conf`, so it need not be repeated
+for robots.txt, favicon, manifests, or static-asset regexes. For a `try_files`
+front controller, add `auth_request off` to the `internal` FastCGI target to
+avoid a second auth subrequest; never do that if the PHP location is externally
+reachable.
+
+For a static-only `try_files $uri $uri/ =404` location, Guardian runs first,
+then Angie serves the file/directory or returns the normal 404. Public sibling
+locations inherit the same check automatically.
+
+Fail-open is handled inside the auth subrequest: a Guardian timeout or 5xx is
+converted to `204`, so Angie resumes the original static, FastCGI, or proxy
+handler. Application-origin errors are untouched. Comment out the 5xx
+`error_page` in `/__guardian/auth` to fail closed instead; the unused
+`@guardian_fail_open` location can then also be commented out.
+
+Two header relays in the snippets matter beyond routing:
+`X-Guardian-Difficulty` carries an
 escalated difficulty (WAF signature hit, anomaly score) from the auth decision
 into the issued challenge, and `X-Guardian-Proto` (`$scheme`) tells Guardian
 whether the token cookie may carry the `Secure` flag; without it a plain-http

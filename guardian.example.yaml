@@ -250,8 +250,9 @@ defaults:
     # each hit and can cost the store a write per issued challenge, and the
     # shipped Angie glue FAILS OPEN when the sidecar is unreachable. Always
     # pair Guardian with Angie's own limit_req/limit_conn ahead of the auth
-    # subrequest: ready-made snippets are in deploy/angie-guardian.conf and
-    # the "Rate limiting" section of the Angie guide.
+    # subrequest: ready-made snippets are in deploy/angie-guardian.conf,
+    # deploy/angie-guardian-location.conf, and the "Rate limiting" section of
+    # the Angie guide.
     # issuance_rate_limit: 60/min
     # noscript_fallback serves no-JS clients a meta-refresh page: a minimum 5s
     # wait substitutes for hash work. The wait costs an attacker no computation
@@ -290,8 +291,8 @@ defaults:
     # keep every entry as narrow as possible (trailing slash = prefix match),
     # and scope it to the domain that needs it, not defaults: an entry here is
     # inherited by every host, known or not. ACME http-01 is the classic case;
-    # terminate it in a dedicated Angie location BEFORE auth_request (commented
-    # snippet in deploy/angie-guardian.conf) so it never reaches Guardian, or
+    # terminate it in a dedicated Angie location with `auth_request off`
+    # (example in deploy/angie-guardian.conf) so it never reaches Guardian, or
     # allowlist "/.well-known/acme-challenge/" only on the domains whose
     # certificates you renew that way. To merely skip the PoW interstitial for
     # public assets like /robots.txt, use a per-path overlay instead

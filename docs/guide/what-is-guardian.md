@@ -5,9 +5,9 @@ firewall for [Angie](https://en.angie.software/), written in Go.
 
 Guardian runs as a sidecar daemon next to Angie and is wired into the request
 path with stock `auth_request` directives, so there is no custom Angie build
-and no C module. Every request to a protected `server {}` block triggers a fast
-internal subrequest to Guardian, which answers **allow**, **challenge**, or
-**deny**.
+and no C module. Every non-exempt request in a protected `server {}` block
+triggers a fast internal subrequest to Guardian, which answers **allow**,
+**challenge**, or **deny**.
 
 ## Two cooperating subsystems
 

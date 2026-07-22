@@ -2,15 +2,46 @@
 
 Guardian hooks into Angie with stock `auth_request` directives: no custom
 build, no C module. Angie makes a fast internal subrequest to the sidecar for
-every request to a protected `server {}` block.
+every request handled by a protected location.
 
-## The two snippets
+## One daemon, many virtual hosts
 
-Add the keepalive upstream once in the `http {}` context. Then copy/adapt the
-per-server snippet for each protected vhost: replace both
-`proxy_pass http://your_backend` placeholders. The shipped file already
-declares `location /`; if your vhost has one, merge its Guardian directives
-into that location instead of creating a duplicate.
+Guardian is already multi-domain. Angie sends `$host` as `X-Guardian-Host`,
+and the daemon selects the matching `domains:` policy in `guardian.yaml`
+(case-insensitive, with a port or trailing dot ignored). Hosts without an
+explicit entry use `defaults`. One `guardiand` listener and one Angie
+`upstream guardian` can therefore protect many `server {}` blocks; you do not
+need one daemon or one edited Guardian snippet per domain.
+
+The Angie integration has three deliberately separate pieces:
+
+1. Define the keepalive `upstream guardian` once in `http {}`.
+2. Include `angie-guardian.conf` unchanged in each protected `server {}`. It
+   owns only Guardian's internal auth/challenge/denied endpoints.
+3. Include `angie-guardian-location.conf` beside it at `server {}` scope. Its
+   handler-neutral directives are inherited by all of that vhost's locations.
+
+This separation makes the same server glue work for a reverse proxy, static
+files, FastCGI, `try_files`, or a mixture of them.
+
+The two per-vhost files are separate for **scope**, not because the protection
+directives require a `location` block. `angie-guardian.conf` always belongs at
+`server {}` scope because it declares Guardian's internal and named locations.
+`angie-guardian-location.conf` only activates the authorization check, and its
+directives are valid at either `server` or `location` scope:
+
+- Include both files at `server {}` scope to protect the whole vhost. This is
+  the normal and safest setup: exact paths, asset regexes, and other sibling
+  locations inherit Guardian automatically.
+- For deliberately selective protection, include `angie-guardian.conf` at
+  server scope, but include `angie-guardian-location.conf` only inside the
+  public locations Guardian should check. Other locations then incur no
+  Guardian subrequest at all.
+
+If these were merged, including the server endpoints would necessarily enable
+Guardian for the entire vhost; selective deployments would have to disable it
+again in every other location. Keeping activation separate supports both
+models without duplicating the challenge/fail-open plumbing.
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -19,12 +50,149 @@ upstream guardian {
     keepalive 64;
 }
 
-# each protected server {} block, after adapting backend placeholders:
-include /etc/angie/angie-guardian.conf;   # from deploy/angie-guardian.conf
+# Only for this reverse-proxy example; static/FastCGI sites do not need it.
+upstream my_application {
+    server 127.0.0.1:8080;
+}
+
+# each protected server {} block:
+include /etc/angie/angie-guardian.conf;
+include /etc/angie/angie-guardian-location.conf;
+
+location / {
+    proxy_pass http://my_application;
+}
 ```
 
 [`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf) documents the fail-open toggle (what happens when
-the sidecar is down) and the challenge/pass/denied routes.
+the sidecar is down) and the challenge/pass/denied routes. The companion
+[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf)
+contains only directives valid in `server` or `location` context.
+
+## Static files and a PHP front controller
+
+Do not invent a proxy upstream for a site that Angie already serves with
+`root`, `try_files`, and FastCGI. Add the reusable Guardian includes at server
+scope and leave the site's content directives alone:
+
+For a static-only site, that is simply:
+
+```nginx
+server {
+    server_name static.example.com;
+    root /var/www/static.example.com;
+
+    include /etc/angie/angie-guardian.conf;
+    include /etc/angie/angie-guardian-location.conf;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+An existing file or directory is served only after Guardian allows the
+request; a missing path remains the site's normal `404`. If your vhost defines
+additional public `location` blocks—directly or through another included
+file—they are siblings of `location /`, not children of it. Because the
+protection include is at server scope, those locations inherit Guardian
+automatically; there is no need to repeat the include in every asset location.
+An `allow all` in an exact `robots.txt` location affects Angie's address-access
+module; it does not cancel the separately inherited `auth_request`. Likewise,
+`expires`, `add_header`, and `access_log off` in asset locations do not disable
+Guardian. A hidden-file location that immediately `return 404`s remains an
+intentional early rejection rather than a protection bypass.
+
+The PHP front-controller form follows the same rule:
+
+```nginx
+server {
+    server_name example.com;
+    root /var/www/example/public;
+
+    # Reused unchanged in every protected vhost.
+    include /etc/angie/angie-guardian.conf;
+    include /etc/angie/angie-guardian-location.conf;
+
+    location / {
+        # Existing site behavior stays exactly as it was.
+        try_files $uri /index.php$is_args$args;
+    }
+
+    location ~ ^/index\.php(/|$) {
+        default_type application/x-httpd-php;
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php-fpm.sock; # use your real PHP-FPM target
+
+        # Only try_files may enter this location. The original request was
+        # already authorized in location /, so do not authorize it again.
+        auth_request off;
+        internal;
+    }
+}
+```
+
+`try_files` serves an existing static file only after the access phase, so the
+file is protected. Its fallback is an internal redirect to the FastCGI
+location. `auth_request off` in that `internal` location avoids doing two auth
+subrequests for one request and is safe because an external request cannot
+enter it. If your PHP location is publicly reachable instead, do **not** turn
+authorization off there.
+
+Angie selects only one content location. Independent sibling locations such
+as `/api/`, `/assets/`, or a WebSocket endpoint do not pass through
+`location /` when a more specific location wins. This is why server-scope
+inheritance is the default:
+
+```nginx
+server {
+    include /etc/angie/angie-guardian.conf;
+    include /etc/angie/angie-guardian-location.conf;
+
+    location ^~ /.well-known/acme-challenge/ {
+        auth_request off;                 # deliberate public exception
+        root /var/www/acme;
+    }
+
+    location /assets/ { root /srv/site; }
+    location /api/    { proxy_pass http://api; }
+}
+```
+
+Use `auth_request off` only for deliberate exceptions: public health/ACME
+endpoints you truly want unprotected, or a non-public internal target reached
+only after an already-authorized location. If you want Guardian on only part
+of a vhost, omit the server-scope protection include and place it directly in
+each selected public location instead.
+
+Inheritance can be overridden by a child location. Audit any location that
+already declares `auth_request`/`auth_request off`; it will not inherit the
+server-level Guardian check. Also note that Angie inherits `error_page`
+directives only when the child declares none of its own. A child with a custom
+`error_page` remains denied when Guardian returns 401/403, but it will lose the
+styled challenge/denied diversion unless you place the protection include at
+that location level alongside its error-page rules.
+
+## Fail-open without duplicating the site handler
+
+Fail-open remains the shipped default. The internal `/__guardian/auth`
+location intercepts only a Guardian connection failure, timeout, or 5xx and
+turns it into `204`. `auth_request` treats that as allow and resumes the
+original location, whether it uses static files, `try_files`, FastCGI, or
+`proxy_pass`.
+
+This is intentionally not a generic `@guardian_bypass` content location: such
+a location would have to repeat the site's `proxy_pass` or FastCGI/static
+logic, would drift from the real handler, and could not be shared by different
+domains. Errors returned later by the application or PHP-FPM are not
+intercepted by Guardian's fail-open rule. To fail closed, comment out the 5xx
+`error_page` line inside `/__guardian/auth`; the now-unused
+`@guardian_fail_open` location may then also be commented out. Removing only
+the named location while it is still referenced is an invalid Angie config.
+
+Fail-open preserves availability, not protection. Keep Angie's `limit_req`
+and `limit_conn` in front of Guardian; they still apply while the daemon is
+down and bound what reaches the original handler.
 
 ## Preserve the real client IP behind a proxy or CDN
 
@@ -50,8 +218,9 @@ the result in access logs before enabling behavioural blocking or nftables
 offload.
 
 ::: info Fail-open by default
-If the sidecar is unreachable, traffic passes through unprotected rather than
-taking your site down. The toggle is documented in the snippet itself.
+If the sidecar is unreachable, Angie resumes the vhost's original content
+handler unprotected rather than taking your site down. The toggle is documented
+in the server snippet itself.
 :::
 
 ## JSON access logs (for the anomaly trainer)

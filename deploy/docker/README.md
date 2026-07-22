@@ -103,12 +103,14 @@ assertions depend on those exact values.
   guardiand service, then `curl -H 'X-Guardian-IP: 9.9.9.9' http://127.0.0.1:8071/auth`
   the sidecar trusts the header when reached directly.
 
-- **Fail-closed:** comment out `error_page 500 = @guardian_bypass;` in
-  `angie.docker.conf`, `docker compose restart angie`, stop guardiand, and the
-  site returns 500 instead of serving the backend.
+- **Fail-closed:** comment out the `error_page 500 502 503 504 =
+  @guardian_fail_open;` line in the mounted top-level
+  `deploy/angie-guardian.conf`, `docker compose restart angie`, stop guardiand,
+  and the site returns 500 instead of resuming the backend handler.
 
 ## Notes on the configs here vs `deploy/`
 
-Both `angie.docker.conf` and the top-level `deploy/angie-guardian.conf` use a
-rewrite plus a pathless `proxy_pass` in named locations, because Angie rejects
-a URI part on `proxy_pass` there.
+Both harness configs include the exact top-level `deploy/angie-guardian.conf`
+and `deploy/angie-guardian-location.conf` files shipped to operators. The
+server glue uses a rewrite plus a pathless `proxy_pass` in named locations,
+because Angie rejects a URI part on `proxy_pass` there.
