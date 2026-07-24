@@ -130,6 +130,18 @@ func TestCounterCacheStoreDown(t *testing.T) {
 	}
 }
 
+// Flush must not claim success when the store is down: the queue drains
+// (every round fails and parks its delta back locally), yet nothing was
+// pushed, and shutdown should log that instead of reporting a clean flush.
+func TestCounterCacheFlushReportsUnpushedDeltas(t *testing.T) {
+	c := NewCounterCache(failingStore{})
+	c.Go = func(f func()) { f() }
+	c.Incr("k", time.Minute)
+	if err := c.Flush(context.Background()); err == nil {
+		t.Fatal("flush with the store down returned nil; the delta was silently dropped")
+	}
+}
+
 type failOnceStore struct {
 	Store
 	failed atomic.Bool

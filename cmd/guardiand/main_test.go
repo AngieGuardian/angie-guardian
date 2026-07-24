@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -173,5 +174,47 @@ func TestStaticConfigChanges(t *testing.T) {
 	syncFlip := daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: pebble, path: /tmp/g, sync: true }\n")
 	if got, want := staticConfigChanges(staticConfigFrom(runningPebble), syncFlip), []string{"store.sync"}; !slices.Equal(got, want) {
 		t.Fatalf("sync-flip changes = %v, want %v", got, want)
+	}
+}
+
+// Every AdminConfig field is consumed once at startup when the admin server is
+// built, so every field must appear in staticConfigChanges. A field missing
+// from the list makes its reload succeed while changing nothing, with
+// Engine.Config then misreporting the running state (this happened to
+// metrics_auth). Perturb each field and demand the reload is rejected.
+func TestStaticConfigChangesCoversEveryAdminField(t *testing.T) {
+	base := staticConfigFrom(daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: memory }\n"))
+	// A struct field compares as a unit, so flipping any one leaf inside it
+	// proves the whole field participates in the diff.
+	var perturb func(v reflect.Value) bool
+	perturb = func(v reflect.Value) bool {
+		switch v.Kind() {
+		case reflect.String:
+			v.SetString(v.String() + "x")
+		case reflect.Bool:
+			v.SetBool(!v.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			v.SetInt(v.Int() + 1)
+		case reflect.Struct:
+			for i := range v.NumField() {
+				if perturb(v.Field(i)) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+		return true
+	}
+	rt := reflect.TypeFor[core.AdminConfig]()
+	for i := range rt.NumField() {
+		next := daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: memory }\n")
+		if !perturb(reflect.ValueOf(&next.Admin).Elem().Field(i)) {
+			t.Fatalf("admin field %s has kind %s: teach this test to perturb it", rt.Field(i).Name, rt.Field(i).Type.Kind())
+		}
+		if got := staticConfigChanges(base, next); len(got) == 0 {
+			t.Errorf("changing admin.%s reports no static change: a reload would silently ignore it", rt.Field(i).Name)
+		}
 	}
 }

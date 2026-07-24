@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"hash/maphash"
 	"sync"
 	"time"
@@ -234,7 +235,7 @@ func (c *CounterCache) Flush(ctx context.Context) error {
 		idle := len(c.queue) == 0 && c.workers == 0
 		c.mu.Unlock()
 		if idle {
-			return nil
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -242,6 +243,24 @@ func (c *CounterCache) Flush(ctx context.Context) error {
 		case <-tick.C:
 		}
 	}
+
+	// Quiescence means the queue drained, not that every push landed: a failed
+	// store round parks its delta back in the entry's pending slot. The likely
+	// real-world loss case is the store being unreachable at shutdown, so
+	// count what is still unpushed and report it instead of claiming success.
+	c.mu.Lock()
+	left := 0
+	now = c.now().UnixNano()
+	for _, e := range c.m {
+		if e.pending > 0 && now < e.expires {
+			left++
+		}
+	}
+	c.mu.Unlock()
+	if left > 0 {
+		return fmt.Errorf("%d counter keys still hold unpushed deltas after flush (store unreachable?)", left)
+	}
+	return nil
 }
 
 // incrOverflowLocked increments a count-min sketch. Returning the minimum of

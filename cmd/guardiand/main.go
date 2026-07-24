@@ -386,11 +386,15 @@ loop:
 	}
 	// Traffic has drained; push the counter caches' unpushed deltas before the
 	// deferred store Close runs, so shared/durable backends keep the last
-	// windows' counts across the restart.
-	if err := guard.FlushCounters(ctx); err != nil {
+	// windows' counts across the restart. The flushes get their own budget: a
+	// slow drain can consume the shutdown context entirely, and an expired
+	// context here would silently drop the deltas this step exists to keep.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer flushCancel()
+	if err := guard.FlushCounters(flushCtx); err != nil {
 		log.Warn("counter flush incomplete at shutdown", "err", err)
 	}
-	if err := powMgr.FlushCounters(ctx); err != nil {
+	if err := powMgr.FlushCounters(flushCtx); err != nil {
 		log.Warn("pow counter flush incomplete at shutdown", "err", err)
 	}
 	return nil
@@ -432,6 +436,7 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 	add("admin.dashboard", running.admin.Dashboard != next.Admin.Dashboard)
 	add("admin.recent_size", running.admin.RecentSize != next.Admin.RecentSize)
 	add("admin.angie_api", running.admin.AngieAPI != next.Admin.AngieAPI)
+	add("admin.metrics_auth", running.admin.MetricsAuth != next.Admin.MetricsAuth)
 	add("store.backend", running.store.Backend != next.Store.Backend)
 	add("store.path", running.store.Path != next.Store.Path)
 	add("store.addr", running.store.Addr != next.Store.Addr)
