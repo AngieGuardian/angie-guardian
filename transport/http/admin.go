@@ -324,7 +324,7 @@ func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
 // first. The default detailed view is enriched with configured GeoIP/ASN data;
 // view=compact returns only time/action/reason for live charts. Query: ?limit=
 // (default 50, or "all" for the bounded ring), ?action=deny|challenge,
-// ?reason=<prefix>, ?view=compact.
+// ?reason=<prefix>, ?ip=<exact ip>, ?view=compact.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
@@ -346,6 +346,17 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, reason := q.Get("action"), q.Get("reason")
+	// ?ip= is an exact match after canonicalisation, so the dashboard's IP
+	// lookup covers the whole ring rather than a substring of a page of it.
+	ip := q.Get("ip")
+	if ip != "" {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ip: " + err.Error()})
+			return
+		}
+		ip = addr.Unmap().String()
+	}
 
 	// Filter over the full ring, then cut to limit, so a filtered view is not
 	// starved by unrelated entries.
@@ -357,7 +368,8 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	matches := func(d core.RecentDecision) bool {
 		return (action == "" || d.Action == action) &&
-			(reason == "" || strings.HasPrefix(d.Reason, reason))
+			(reason == "" || strings.HasPrefix(d.Reason, reason)) &&
+			(ip == "" || d.IP == ip)
 	}
 
 	if view == "compact" {

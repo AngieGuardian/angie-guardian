@@ -29,6 +29,16 @@
 //
 //	go run ./test/seed -url http://127.0.0.1:18071 -d 2m \
 //	    -admin http://127.0.0.1:18072 -token "$TOKEN"
+//
+// The seed config also loads committed GeoIP/ASN fixtures and a demo
+// reputation feed (see gengeoip and guardian.seed.yaml), so the geo surfaces
+// and the IP lookup panel are part of the demo. Two addresses are staged for
+// pasting into the lookup: starOffender probes every round and accumulates a
+// deep decision history plus a behavioural block, and manualBlockIP carries a
+// hand-placed admin block but sends no traffic (the empty-ring case). The
+// summary prints ready-made ?ip= links for both.
+//
+//go:generate go run ./gengeoip -dir .
 package main
 
 import (
@@ -83,6 +93,19 @@ var (
 // guardian.seed.yaml, so the decision is a terminal denylist hit rather than
 // anything the WAF or the scoreboard decided.
 func (s *seeder) denylistIP() string { return fmt.Sprintf("203.0.113.%d", s.intn(14)+241) }
+
+// feedIP returns an address inside the demo-blocklist reputation feed
+// (test/seed/seed-blocklist.txt), so the decision is a reputation deny.
+func (s *seeder) feedIP() string { return fmt.Sprintf("203.0.113.%d", s.intn(16)+224) }
+
+const (
+	// starOffender probes every round: the address to paste into the IP
+	// lookup panel for a deep history (and, quickly, a behavioural block).
+	starOffender = "203.0.113.66"
+	// manualBlockIP gets a hand-placed admin block and never sends traffic:
+	// the lookup's blocked-but-nothing-in-the-ring case.
+	manualBlockIP = "198.51.100.250"
+)
 
 type seeder struct {
 	base, allowHost string
@@ -203,8 +226,9 @@ func (s *seeder) visitor(host, uri, ip, ua string, redeem, valid bool) {
 // scanner probes signature-matching paths from a small IP pool. The starter
 // rules deny most of these and block a couple, and the repeats push offenders
 // over the behavioural threshold.
-func (s *seeder) scanner() {
-	ip := s.clientIP("203.0.113", 60)
+func (s *seeder) scanner() { s.scan(s.clientIP("203.0.113", 60)) }
+
+func (s *seeder) scan(ip string) {
 	for range 1 + s.intn(3) {
 		s.do(http.MethodGet, "/auth", s.pick(hosts), s.pick(badPaths), ip, s.pick(badUAs), nil)
 	}
@@ -236,6 +260,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A hand-placed admin block on an address that sends no traffic, so the
+	// blocks table shows the manual kind and the IP lookup has a blocked-but-
+	// quiet address to demo. Best-effort: seeding works without admin access.
+	if *admin != "" && *token != "" {
+		placeManualBlock(strings.TrimRight(*admin, "/"), *token)
+	}
+
 	deadline := time.Now().Add(*duration)
 	for round := 1; time.Now().Before(deadline); round++ {
 		var wg sync.WaitGroup
@@ -262,6 +293,17 @@ func main() {
 		// Scanners: denies plus behavioural blocks.
 		for range 3 + s.intn(4) {
 			spawn(s.scanner)
+		}
+		// The star offender probes every round, so the IP lookup demo has an
+		// address with a deep decision history.
+		spawn(func() { s.scan(starOffender) })
+		// Traffic from the demo reputation feed's range: reputation denies,
+		// and feed-hit chips on those IPs in the lookup.
+		for range 1 + s.intn(2) {
+			spawn(func() {
+				s.do(http.MethodGet, "/auth", s.pick(hosts), s.pick(paths),
+					s.feedIP(), s.pick(uas), nil)
+			})
 		}
 		// Crawlers falling into a honeypot trap: an instant deny plus a block.
 		for range 1 + s.intn(2) {
@@ -294,6 +336,27 @@ func main() {
 
 	if *admin != "" && *token != "" {
 		printSummary(strings.TrimRight(*admin, "/"), *token)
+	}
+}
+
+// placeManualBlock puts an admin block on manualBlockIP, reusing the same
+// endpoint the dashboard's block form calls.
+func placeManualBlock(admin, token string) {
+	req, err := http.NewRequest(http.MethodPut, admin+"/admin/blocks/"+manualBlockIP,
+		strings.NewReader(`{"reason":"manual: abuse report","ttl":"45m"}`))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "seed: manual block not placed: %v\n", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "seed: manual block not placed: status %d\n", resp.StatusCode)
 	}
 }
 
@@ -335,4 +398,6 @@ func printSummary(admin, token string) {
 		}
 		fmt.Println()
 	}
+	fmt.Printf("ip lookup demo  %s/admin/dashboard?ip=%s (repeat offender)\n", admin, starOffender)
+	fmt.Printf("                %s/admin/dashboard?ip=%s (manual block, quiet)\n", admin, manualBlockIP)
 }

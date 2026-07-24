@@ -23,6 +23,22 @@ signing_key_file: test/seed/.seed-ed25519.key
 store:
   backend: memory
 
+# Committed demo fixtures (regenerate with `go generate ./test/seed`): they
+# map the seeder's documentation ranges to a spread of countries/cities/ASNs,
+# so the Geo columns, the world map, the country rollup and the IP lookup
+# panel all light up. Paths are relative to the repo root, like rules_file.
+geoip:
+  location_db: test/seed/seed-city.mmdb
+  asn_db: test/seed/seed-asn.mmdb
+
+# One local demo feed: the seeder sends traffic from its range, producing
+# reputation:demo-blocklist denies and feed-hit chips in the IP lookup.
+reputation:
+  feeds:
+    - name: demo-blocklist
+      file: test/seed/seed-blocklist.txt
+      action: deny
+
 admin:
   listen: 127.0.0.1:18072
   token: seed-demo-token
@@ -33,6 +49,9 @@ defaults:
   # (TEST-NET-3, reserved for documentation, so it can never be a real client).
   denylist:
     ips: [ "203.0.113.240/28" ]
+  # Opt every domain in to the demo feed above.
+  reputation:
+    enabled: true
   pow:
     enabled: true
     base_difficulty: 4

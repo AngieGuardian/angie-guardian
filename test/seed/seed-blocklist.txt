@@ -1,0 +1,5 @@
+# Demo reputation feed for the seed config (guardian.seed.yaml): the seeder
+# sends traffic from this range so the dashboard shows reputation:demo-blocklist
+# denies and the IP lookup card shows a feed hit. TEST-NET-3 documentation
+# space; never a real client.
+203.0.113.224/28
