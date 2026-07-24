@@ -230,6 +230,33 @@ defaults:
 	}
 }
 
+// A custom thresholds entry at the defaults level must merge with the
+// built-ins, not replace them: tamper/pow_fail scoring is documented as on by
+// default and must survive an operator adding one unrelated rate.
+func TestThresholdsMergeWithBuiltins(t *testing.T) {
+	cfg := loadTestConfig(t, `
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      thresholds:
+        notfound_rate: 20/min
+        tamper: 3/min
+`)
+	th := cfg.Defaults.WAF.IPBehaviour.Thresholds
+	if got := th["notfound_rate"]; got.Count != 20 {
+		t.Errorf("custom threshold lost: %+v", got)
+	}
+	if got := th["tamper"]; got.Count != 3 {
+		t.Errorf("operator override of a built-in must win: %+v", got)
+	}
+	for _, event := range []string{"signature", "pow_fail", "bot_spoof"} {
+		if _, ok := th[event]; !ok {
+			t.Errorf("built-in threshold %q wiped by a custom entry", event)
+		}
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	t.Setenv("ADMIN_TOKEN", "")
 	for name, yaml := range map[string]string{
@@ -592,6 +619,28 @@ func TestPathOverlayDecodedMatch(t *testing.T) {
 	// Unknown hosts fall back to defaults, which never have overlays.
 	if cfg.ConfigFor("unknown.test", "/api/x") != &cfg.Defaults {
 		t.Error("unknown host must resolve to defaults regardless of path")
+	}
+}
+
+// TestPathOverlayNormalizedMatch: overlay selection happens on the
+// dot-segment-normalized path (what Angie actually serves), so "/api/../x"
+// can neither adopt the lax /api/ overlay nor escape a strict one.
+func TestPathOverlayNormalizedMatch(t *testing.T) {
+	cfg := loadTestConfig(t, pathOverlayYAML)
+	for uri, wantBase := range map[string]float64{
+		"/api/../admin/panel":        6, // serves /admin/panel: strict overlay applies
+		"/static/../api/v1/x":        5, // serves /api/v1/x: that overlay applies
+		"/api/../../admin/./panel":   6, // ".." above root clamps at /
+		"//admin//panel":             6, // duplicate slashes merge like Angie's merge_slashes
+		"/api/%2e%2e/admin/panel":    6, // encoded dot segments decode before cleaning
+		"/api/v1/solve/../solve?x=1": 6, // exact key still reachable through a dot segment
+	} {
+		if got := cfg.ConfigFor("example.com", uri).PoW.BaseDifficulty; got != wantBase {
+			t.Errorf("ConfigFor(%q).base = %v, want %v", uri, got, wantBase)
+		}
+	}
+	if cfg.ConfigFor("example.com", "/api/../api/x").PoW.Enabled {
+		t.Error("/api/../api/x serves /api/x and must keep the /api/ overlay")
 	}
 }
 

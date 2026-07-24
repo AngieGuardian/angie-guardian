@@ -91,16 +91,11 @@ type denylistStage struct{}
 func (denylistStage) Name() string { return "denylist" }
 
 func (denylistStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	addr, err := netip.ParseAddr(req.RemoteAddr)
-	if err != nil {
+	if _, err := netip.ParseAddr(req.RemoteAddr); err != nil {
 		return nil, fmt.Errorf("unparseable client IP %q: %w", req.RemoteAddr, err)
 	}
-	if env.domain.Denylist.MatchIP(addr) {
-		return &Decision{
-			Action: ActionDeny,
-			Reason: "denylist:ip",
-			Events: []Event{{Type: "deny", Detail: "static denylist hit"}},
-		}, nil
+	if d, ok := stateless.CheckDenylist(req, &env.domain.Denylist); ok {
+		return &d, nil
 	}
 	return nil, nil
 }

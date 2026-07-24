@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -220,7 +221,7 @@ func evalAllowlist(req *RequestContext, dr *DomainRules) (Decision, bool) {
 // Exported so the sidecar's allowlist stage shares this exact logic with the
 // WASM guest and the two can never drift.
 func CheckAllowlist(req *RequestContext, l *ListConfig) (Decision, bool) {
-	if l.MatchPath(RequestPath(req.URI)) {
+	if l.MatchPath(NormalizePath(RequestPath(req.URI))) {
 		return Decision{Action: ActionAllow, Reason: "allowlist:path"}, true
 	}
 	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
@@ -233,16 +234,29 @@ func CheckAllowlist(req *RequestContext, l *ListConfig) (Decision, bool) {
 }
 
 func evalDenylist(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	addr, err := netip.ParseAddr(req.RemoteAddr)
-	if err != nil {
-		return Decision{}, false
-	}
-	if dr.Denylist.MatchIP(addr) {
+	return CheckDenylist(req, &dr.Denylist)
+}
+
+// CheckDenylist runs the static denylist (IP, UA, path), the mirror image of
+// CheckAllowlist: every list dimension an operator can configure is enforced,
+// not just IPs. Exported so the sidecar's denylist stage shares this exact
+// logic with the WASM guest and the two can never drift.
+func CheckDenylist(req *RequestContext, l *ListConfig) (Decision, bool) {
+	deny := func(reason string) (Decision, bool) {
 		return Decision{
 			Action: ActionDeny,
-			Reason: "denylist:ip",
+			Reason: reason,
 			Events: []Event{{Type: "deny", Detail: "static denylist hit"}},
 		}, true
+	}
+	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
+		return deny("denylist:ip")
+	}
+	if l.MatchUA(req.UserAgent) {
+		return deny("denylist:ua")
+	}
+	if l.MatchPath(NormalizePath(RequestPath(req.URI))) {
+		return deny("denylist:path")
 	}
 	return Decision{}, false
 }
@@ -258,7 +272,7 @@ func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) (Decision, bool) {
 	if !hp.Enabled || len(hp.Paths) == 0 {
 		return Decision{}, false
 	}
-	if MatchPathList(hp.Paths, DecodePath(RequestPath(req.URI))) {
+	if MatchPathList(hp.Paths, NormalizePath(RequestPath(req.URI))) {
 		return Decision{
 			Action: ActionDeny,
 			Reason: "honeypot:path",
@@ -343,6 +357,29 @@ func DecodePath(p string) string {
 	}
 	if d, err := url.PathUnescape(p); err == nil {
 		return d
+	}
+	return p
+}
+
+// NormalizePath percent-decodes a request path and resolves dot segments and
+// duplicate slashes the way the web server does before serving ("/a/../b" ->
+// "/b", "//x" -> "/x"), preserving a trailing slash. Every path-scoped policy
+// match (allowlist, honeypot, per-path overlays) must use this form: matching
+// the raw URI instead would let "/static/../admin" adopt or escape a policy
+// for a path Angie never serves. WAF signature matching deliberately keeps the
+// un-cleaned decoded path so traversal rules still see "../" attempts.
+func NormalizePath(p string) string {
+	p = DecodePath(p)
+	if p == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(p, "/")
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = path.Clean(p)
+	if trailingSlash && p != "/" {
+		p += "/"
 	}
 	return p
 }

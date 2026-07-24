@@ -1058,12 +1058,23 @@ func (c *Config) finalize() error {
 	if c.Defaults.WAF.IPBehaviour.MaxBlockTTL == 0 {
 		c.Defaults.WAF.IPBehaviour.MaxBlockTTL = Duration(4 * time.Hour)
 	}
+	// The built-in thresholds merge into whatever the operator wrote (their
+	// value wins per key) instead of applying only when the map is absent.
+	// A nil-only fill would make `thresholds: {notfound_rate: 20/min}` silently
+	// wipe tamper/pow_fail scoring — contradicting the documented "scored by
+	// default" contract — and behave differently from a domain-level overlay,
+	// where yaml decodes into the inherited map and entries always merge.
 	if c.Defaults.WAF.IPBehaviour.Thresholds == nil {
-		c.Defaults.WAF.IPBehaviour.Thresholds = map[string]Rate{
-			"signature": {Count: 10, Per: time.Minute},
-			"pow_fail":  {Count: 10, Per: time.Minute},
-			"tamper":    {Count: 10, Per: time.Minute},
-			"bot_spoof": {Count: 5, Per: time.Minute},
+		c.Defaults.WAF.IPBehaviour.Thresholds = make(map[string]Rate, 4)
+	}
+	for event, rate := range map[string]Rate{
+		"signature": {Count: 10, Per: time.Minute},
+		"pow_fail":  {Count: 10, Per: time.Minute},
+		"tamper":    {Count: 10, Per: time.Minute},
+		"bot_spoof": {Count: 5, Per: time.Minute},
+	} {
+		if _, ok := c.Defaults.WAF.IPBehaviour.Thresholds[event]; !ok {
+			c.Defaults.WAF.IPBehaviour.Thresholds[event] = rate
 		}
 	}
 	if c.Defaults.VerifiedBots.DNSTimeout == 0 {
@@ -1831,10 +1842,11 @@ func (dc *DomainConfig) ForPath(decodedPath string) *DomainConfig {
 }
 
 // ConfigFor resolves a host plus request URI to the effective config. The
-// path is matched percent-decoded (the honeypot/WAF convention), so an
-// encoded /api%2Fv1/ cannot dodge a path override.
+// path is matched percent-decoded and dot-segment-normalized (what Angie will
+// actually serve), so neither an encoded /api%2Fv1/ nor a /api/../secret can
+// dodge or hijack a path override.
 func (c *Config) ConfigFor(host, uri string) *DomainConfig {
-	return c.DomainFor(host).ForPath(stateless.DecodePath(stateless.RequestPath(uri)))
+	return c.DomainFor(host).ForPath(stateless.NormalizePath(stateless.RequestPath(uri)))
 }
 
 // PoWAnywhere reports whether PoW is enabled at the domain level or in any of

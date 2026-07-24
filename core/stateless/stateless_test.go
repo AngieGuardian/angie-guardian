@@ -21,6 +21,8 @@ domains:
       paths: [ "/robots.txt", "/.well-known/" ]
     denylist:
       ips: [ "198.51.100.66" ]
+      uas: [ "badbot" ]
+      paths: [ "/blocked/" ]
     honeypot:
       enabled: true
       paths: [ "/wp-login.php", "/admin-old/" ]
@@ -75,6 +77,11 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		{"defaults denylist", req("other.test", "203.0.113.5", "/", "curl"), ActionDeny, "denylist:ip"},
 		{"defaults allow", req("other.test", "192.0.2.1", "/", "curl"), ActionAllow, "default"},
 		{"host case + port normalized", req("SITE.test:443", "198.51.100.66", "/page", "curl"), ActionDeny, "denylist:ip"},
+		{"honeypot dot-segment", req("site.test", "192.0.2.8", "/x/../wp-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
+		{"allowlist path no dot-segment escape", req("site.test", "198.51.100.66", "/.well-known/../secret", "curl"), ActionDeny, "denylist:ip"},
+		{"denylist ua", req("site.test", "192.0.2.7", "/page", "BadBot/1.0"), ActionDeny, "denylist:ua"},
+		{"denylist path prefix", req("site.test", "192.0.2.7", "/blocked/thing", "Mozilla"), ActionDeny, "denylist:path"},
+		{"denylist path dot-segment", req("site.test", "192.0.2.7", "/x/../blocked/thing", "Mozilla"), ActionDeny, "denylist:path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
