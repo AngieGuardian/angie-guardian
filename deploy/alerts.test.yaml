@@ -75,7 +75,7 @@ tests:
             exp_annotations:
               summary: 'Guardian store error rate above 5% on guardian:9101'
               description: 'More than 5% of store operations failed over the last 10 minutes (20%). Individual stages abstain on a store error, so protection is degrading unevenly rather than cleanly failing open.'
-              runbook_url: https://angieguardian.org/guide/production#store-backends
+              runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
 
   - interval: 1m
     name: an idle instance with the same error ratio stays quiet
@@ -291,7 +291,7 @@ tests:
             exp_annotations:
               summary: 'Guardian nftables offload degraded on guardian:9101'
               description: 'The nftables enforcement sink is unhealthy; Guardian is enforcing blocks in-daemon instead of in the kernel. Traffic is still protected. Usually a missing capability (CAP_NET_ADMIN) or an nft table removed out of band; see /admin/offload for the error.'
-              runbook_url: https://angieguardian.org/guide/production#enforcement-offload
+              runbook_url: https://angieguardian.org/guide/block-offload
       - eval_time: 15m
         alertname: GuardianAttackMode
         exp_alerts:
@@ -324,7 +324,7 @@ tests:
             exp_annotations:
               summary: 'Guardian is shedding load on guardian:9101'
               description: 'Guardian has been shedding requests continuously for 10 minutes (1/s). The instance is saturated: add capacity, or move to a faster store backend.'
-              runbook_url: https://angieguardian.org/guide/production#performance
+              runbook_url: https://angieguardian.org/guide/production#gc-tuning-for-peak-throughput
       - eval_time: 25m
         alertname: GuardianStatelessSpendFallback
         exp_alerts:
@@ -336,7 +336,7 @@ tests:
             exp_annotations:
               summary: 'Guardian single-spend CAS failing on guardian:9101'
               description: 'Challenge redemption cannot complete its compare-and-swap, so single-spend has degraded to per-replica and a solved challenge can be replayed against another instance. Check GuardianStoreDown and GuardianStoreErrors first; this rarely fires on its own.'
-              runbook_url: https://angieguardian.org/guide/production#store-backends
+              runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
 
   - interval: 1m
     name: a healthy instance triggers nothing at all
