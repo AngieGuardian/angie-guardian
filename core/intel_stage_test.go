@@ -18,25 +18,31 @@ import (
 )
 
 // intelEngine builds an engine with real mmdb fixtures and a local deny feed:
-//   - 198.51.100.0/24 -> NL, AS64500 (the "home" network)
-//   - 203.0.113.0/24  -> RU (deny-listed country)
-//   - 192.0.2.0/24    -> CN (challenge-listed country)
-//   - 100.64.7.0/24   -> deny reputation feed
-//   - 100.64.8.0/24   -> challenge reputation feed
+//   - 198.51.100.0/24    -> NL, AS64500 (the "home" network)
+//   - 203.0.113.0/24     -> RU (deny-listed country)
+//   - 192.0.2.0/24       -> CN (challenge-listed country)
+//   - 100.64.7.0/24      -> deny reputation feed
+//   - 100.64.8.0/24      -> challenge reputation feed
+//   - 2001:db8:f00d::/48 -> RU, 2001:db8:cafe::/48 -> CN (v6 twins of the geo
+//     policies), 2001:db8:a5a5::/48 -> AS64666, 2001:db8:bad::/48 in the deny
+//     feed: the same intel stages keyed by IPv6 clients.
 func intelEngine(t *testing.T) (*Engine, *pow.Manager) {
 	t.Helper()
 	dir := t.TempDir()
 	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{
-		"198.51.100.0/24": "NL",
-		"203.0.113.0/24":  "RU",
-		"192.0.2.0/24":    "CN",
+		"198.51.100.0/24":    "NL",
+		"203.0.113.0/24":     "RU",
+		"192.0.2.0/24":       "CN",
+		"2001:db8:f00d::/48": "RU",
+		"2001:db8:cafe::/48": "CN",
 	})
 	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{
-		"198.51.100.0/24": 64500,
-		"100.64.9.0/24":   64666,
+		"198.51.100.0/24":    64500,
+		"100.64.9.0/24":      64666,
+		"2001:db8:a5a5::/48": 64666,
 	})
 	denyFeed := filepath.Join(dir, "deny.list")
-	if err := os.WriteFile(denyFeed, []byte("100.64.7.0/24\n"), 0o644); err != nil {
+	if err := os.WriteFile(denyFeed, []byte("100.64.7.0/24\n2001:db8:bad::/48\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	chalFeed := filepath.Join(dir, "challenge.list")
@@ -125,6 +131,21 @@ func TestIntelStages(t *testing.T) {
 		// Deny-listed geo also applies to non-browser clients.
 		{"geo deny hits curl too",
 			req("x.test", "203.0.113.5", "/", "curl/8.0"), ActionDeny, "geo:country:RU", 0},
+		// The same geo and reputation policies keyed by IPv6 clients, with
+		// mmdb lookups against v6 networks. Mixed-case and expanded textual
+		// forms must resolve identically: the stages parse the string once.
+		{"v6 deny-listed country",
+			req("x.test", "2001:db8:f00d::1", "/", ua), ActionDeny, "geo:country:RU", 0},
+		{"v6 deny-listed country, expanded mixed-case form",
+			req("x.test", "2001:0DB8:F00D:0000:0000:0000:0000:0001", "/", ua), ActionDeny, "geo:country:RU", 0},
+		{"v6 challenge-listed country",
+			req("x.test", "2001:db8:cafe::1", "/", ua), ActionChallenge, "geo:country:CN", 4},
+		{"v6 challenge-listed asn",
+			req("x.test", "2001:DB8:A5A5::1", "/", ua), ActionChallenge, "geo:asn:64666", 4},
+		{"v6 deny feed hit",
+			req("x.test", "2001:db8:bad::1", "/", ua), ActionDeny, "reputation:bad-actors", 0},
+		{"v6 outside every policy browses normally",
+			req("x.test", "2001:db8:1::1", "/", ua), ActionChallenge, "pow:no_token", 4},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

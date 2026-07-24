@@ -20,11 +20,11 @@ defaults:
   waf:
     ip_behaviour: { enabled: true, block_ttl: 15m }
   allowlist:
-    ips: [ "10.0.0.0/8" ]
+    ips: [ "10.0.0.0/8", "2001:db8:a110::/48" ]
     uas: [ "HealthBot" ]
     paths: [ "/robots.txt" ]
   denylist:
-    ips: [ "203.0.113.0/24", "10.0.0.66" ]
+    ips: [ "203.0.113.0/24", "10.0.0.66", "2001:db8:bad::/48" ]
 domains:
   nowaf.test:
     waf: { ip_behaviour: { enabled: false } }
@@ -66,6 +66,12 @@ func TestPipeline(t *testing.T) {
 		{"allowlist precedence", req("x.test", "10.0.0.66", "/page", "curl"), ActionAllow, "allowlist:ip"},
 		// Unparseable IP: denylist stage errors, pipeline fails open.
 		{"garbage ip fails open", req("x.test", "not-an-ip", "/page", "curl"), ActionAllow, "default"},
+		// IPv6 ranges, including non-canonical textual forms of the client IP.
+		{"allowlist ip v6", req("x.test", "2001:db8:a110::7", "/page", "Mozilla"), ActionAllow, "allowlist:ip"},
+		{"allowlist ip v6 mixed case", req("x.test", "2001:0DB8:A110::7", "/page", "Mozilla"), ActionAllow, "allowlist:ip"},
+		{"denylist v6", req("x.test", "2001:db8:bad::5", "/page", "curl"), ActionDeny, "denylist:ip"},
+		{"denylist v6 expanded form", req("x.test", "2001:0db8:0bad:0000:0000:0000:0000:0005", "/page", "curl"), ActionDeny, "denylist:ip"},
+		{"v6 outside every range", req("x.test", "2001:db8:cafe::1", "/page", "Mozilla"), ActionAllow, "default"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,11 +152,19 @@ func TestVerifiedBotStage(t *testing.T) {
 			// third parties can aim these hosts at any site, so a Googlebot
 			// claim from one is an impersonation.
 			"66.249.93.77": {"google-proxy-66-249-93-77.google.com."},
+			// A crawler arriving over IPv6: PTR on the v6 source, AAAA-style
+			// forward confirmation.
+			"2001:db8:60::1": {"crawl-v6.googlebot.com."},
+			// Valid v6 rDNS pointing at googlebot, but the forward record
+			// resolves to a different v6 address: an impostor.
+			"2001:db8:bad::66": {"fake-v6.googlebot.com."},
 		},
 		fwd: map[string][]string{
 			"crawl-66-249-66-1.googlebot.com":      {"66.249.66.1"},
 			"scraper.evil.example":                 {"192.0.2.66"},
 			"google-proxy-66-249-93-77.google.com": {"66.249.93.77"},
+			"crawl-v6.googlebot.com":               {"2001:db8:60::1"},
+			"fake-v6.googlebot.com":                {"2001:db8:60::1"},
 		},
 		err: map[string]error{"198.51.100.3": &net.DNSError{Err: "i/o timeout", IsTimeout: true}},
 	})
@@ -162,6 +176,8 @@ func TestVerifiedBotStage(t *testing.T) {
 		reason string
 	}{
 		{"verified crawler allowed", req("x.test", "66.249.66.1", "/page", googlebotUA), ActionAllow, "verified_bot:googlebot"},
+		{"verified v6 crawler allowed", req("x.test", "2001:db8:60::1", "/page", googlebotUA), ActionAllow, "verified_bot:googlebot"},
+		{"v6 forward mismatch is an impostor", req("x.test", "2001:db8:bad::66", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
 		{"no rDNS is an impostor", req("x.test", "203.0.113.50", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
 		{"foreign rDNS is an impostor", req("x.test", "192.0.2.66", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
 		{"google.com proxy rDNS is not googlebot", req("x.test", "66.249.93.77", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
@@ -233,5 +249,48 @@ func TestBehaviourBlock(t *testing.T) {
 	}
 	if d := e.Evaluate(ctx, req("x.test", ip, "/", "Mozilla")); d.Action != ActionAllow {
 		t.Fatalf("unblocked IP should be allowed again, got %s", d.Action)
+	}
+}
+
+// TestBehaviourBlockIPv6 proves a behavioural block placed under one textual
+// form of an IPv6 address is enforced and liftable under every other form:
+// block key canonicalization (case, zero expansion, IPv4-mapped) is what the
+// enforcement path relies on when Angie and the admin API spell the same
+// client differently.
+func TestBehaviourBlockIPv6(t *testing.T) {
+	ctx := context.Background()
+	e := testEngine(t)
+
+	// Placed in a non-canonical form, enforced against every spelling.
+	if err := e.BlockIP(ctx, "2001:0DB8::66", "test_abuse", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for _, form := range []string{
+		"2001:db8::66",
+		"2001:0DB8::66",
+		"2001:0db8:0000:0000:0000:0000:0000:0066",
+	} {
+		if d := e.Evaluate(ctx, req("x.test", form, "/", "Mozilla")); d.Action != ActionDeny || d.Reason != "behaviour_block:test_abuse" {
+			t.Errorf("%s: got %s/%s, want deny/behaviour_block:test_abuse", form, d.Action, d.Reason)
+		}
+	}
+	// Unblock via yet another form lifts it for all of them.
+	if err := e.UnblockIP(ctx, "2001:0db8:0:0:0:0:0:66"); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Evaluate(ctx, req("x.test", "2001:db8::66", "/", "Mozilla")); d.Action != ActionAllow {
+		t.Fatalf("unblocked v6 IP should be allowed again, got %s/%s", d.Action, d.Reason)
+	}
+
+	// A dual-stack listener reports a v4 client as ::ffff:a.b.c.d; the block
+	// must land on (and be enforced against) the plain v4 identity.
+	if err := e.BlockIP(ctx, "::ffff:198.51.100.80", "test_abuse", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Evaluate(ctx, req("x.test", "198.51.100.80", "/", "Mozilla")); d.Action != ActionDeny {
+		t.Fatalf("mapped-form block must deny the plain v4 client, got %s/%s", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(ctx, req("x.test", "::ffff:198.51.100.80", "/", "Mozilla")); d.Action != ActionDeny {
+		t.Fatalf("mapped-form client must hit the same block, got %s/%s", d.Action, d.Reason)
 	}
 }

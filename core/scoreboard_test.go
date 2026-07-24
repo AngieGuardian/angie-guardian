@@ -101,6 +101,89 @@ func TestBlockBackoff(t *testing.T) {
 	}
 }
 
+// TestBlockKeyCanonicalIPv6 pins the canonical store key for every textual
+// form an IPv6 client can arrive as: mixed case, expanded zeros, and the
+// IPv4-mapped form a dual-stack listener reports for a v4 client. A zone
+// identifier is part of the address identity and survives; garbage passes
+// through verbatim (fail-open).
+func TestBlockKeyCanonicalIPv6(t *testing.T) {
+	cases := map[string]string{
+		"2001:0DB8:0000:0000:0000:0000:0000:0001": "block:2001:db8::1",
+		"2001:DB8::1":         "block:2001:db8::1",
+		"::FFFF:198.51.100.7": "block:198.51.100.7",
+		"fe80::1%eth0":        "block:fe80::1%eth0",
+		"not-an-ip":           "block:not-an-ip",
+	}
+	for in, want := range cases {
+		if got := BlockKey(in); got != want {
+			t.Errorf("BlockKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestThresholdBlocksIPv6SharedCounter: events arriving under different
+// textual forms of one IPv6 address share a single counter, and the block is
+// readable via any form. Without canonicalization each form would count
+// separately and the threshold would never trip.
+func TestThresholdBlocksIPv6SharedCounter(t *testing.T) {
+	ctx := context.Background()
+	board, st := testBoard(t)
+	forms := []string{
+		"2001:DB8::7",
+		"2001:0db8:0000:0000:0000:0000:0000:0007",
+		"2001:db8::7",
+	}
+	for i, form := range forms {
+		hit, err := board.RecordEvent(ctx, form, "signature", 3, time.Minute, 15*time.Minute, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := i == len(forms)-1; hit != want {
+			t.Fatalf("event %d (%s): hit=%v, want %v (forms must share one counter)", i+1, form, hit, want)
+		}
+	}
+	if reason, ok := scoreboardBlocked(t, st, "2001:0DB8::0007"); !ok || reason != "threshold:signature" {
+		t.Fatalf("block via yet another form = %q %v, want threshold:signature true", reason, ok)
+	}
+
+	// The IPv4-mapped form shares identity with the plain v4 address.
+	for _, form := range []string{"::ffff:203.0.113.80", "203.0.113.80", "::FFFF:203.0.113.80"} {
+		if hit, err := board.RecordEvent(ctx, form, "pow_fail", 3, time.Minute, time.Minute, time.Hour); err != nil {
+			t.Fatal(err)
+		} else if want := form == "::FFFF:203.0.113.80"; hit != want {
+			t.Fatalf("%s: hit=%v, want %v", form, hit, want)
+		}
+	}
+	if _, ok := scoreboardBlocked(t, st, "203.0.113.80"); !ok {
+		t.Fatal("mapped-form events must land on the v4 identity's block")
+	}
+}
+
+// TestBlockBackoffIPv6SharedOffenses: repeat blocks of the same IPv6 address
+// under different textual forms share the backoff counter, so the second
+// block doubles the TTL instead of restarting at base.
+func TestBlockBackoffIPv6SharedOffenses(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	board := NewScoreboard(st, slog.Default())
+
+	if err := board.Block(ctx, "2001:DB8::9", "flood", time.Hour, 4*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := board.Block(ctx, "2001:0db8::9", "flood", time.Hour, 4*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	exp, ok := st.ExpiresAt(BlockKey("2001:db8::9"))
+	if !ok || exp.IsZero() {
+		t.Fatal("block not placed under the canonical key")
+	}
+	// Offense 2 doubles the 1h base to 2h; a split counter would leave it at 1h.
+	if until := time.Until(exp); until < 90*time.Minute {
+		t.Fatalf("second block via another textual form expires in %v, want ~2h (shared backoff counter)", until)
+	}
+}
+
 // TestBlockBackoffNoOverflow guards the exponential backoff against a config
 // with no cap (max_block_ttl <= 0). Without the hard ceiling the doubling
 // overflows time.Duration negative around ~43 offenses, and a <= 0 TTL is

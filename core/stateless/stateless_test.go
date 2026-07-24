@@ -5,6 +5,7 @@
 package stateless
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -360,6 +361,13 @@ func TestClientIP(t *testing.T) {
 		"2001:db8::abcd":    "2001:db8::abcd", // BARE IPv6, hex tail
 		"203.0.113.9":       "203.0.113.9",
 		"":                  "",
+		// Zone identifiers (link-local sources) survive both the bracketed
+		// and bare forms; textual case is preserved (canonicalization is the
+		// consumer's job, e.g. core.BlockKey).
+		"[fe80::2%eth0]:443":  "fe80::2%eth0",
+		"fe80::2%eth0":        "fe80::2%eth0",
+		"[2001:DB8::A]:443":   "2001:DB8::A",
+		"::ffff:198.51.100.7": "::ffff:198.51.100.7",
 	}
 	for in, want := range cases {
 		if got := ClientIP(in); got != want {
@@ -374,5 +382,57 @@ func TestUnparseableIPNoMatch(t *testing.T) {
 	gc := mustGuestConfig(t, `domains: { a: { denylist: { ips: [ "203.0.113.0/24" ] } } }`)
 	if d := gc.Evaluate(req("a", "not-an-ip", "/", "curl")); d.Action != ActionAllow {
 		t.Fatalf("garbage IP should fall through to allow, got %s/%s", d.Action, d.Reason)
+	}
+}
+
+// TestListConfigIPv6 covers CIDR and bare-address matching for IPv6 ranges:
+// v6 prefixes contain v6 addresses, an IPv4-mapped client address still hits
+// a plain v4 prefix (MatchIP unmaps), a v6 address never bleeds into a v4
+// range, and a zoned (link-local) address matches no prefix at all, which is
+// netip.Prefix.Contains semantics this codebase relies on.
+func TestListConfigIPv6(t *testing.T) {
+	l := &ListConfig{IPs: []string{
+		"2001:db8::/32",    // v6 CIDR
+		"2001:db8:ffff::9", // bare v6 address
+		"192.0.2.0/24",     // v4 CIDR
+		"fe80::/10",        // link-local range
+	}}
+	if err := l.Compile(); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]bool{
+		"2001:db8::1":         true,  // inside the v6 CIDR
+		"2001:db8:ffff::9":    true,  // bare v6 entry, exact
+		"2001:db8:ffff::a":    true,  // still inside 2001:db8::/32
+		"2001:db9::1":         false, // adjacent v6 range
+		"::ffff:192.0.2.7":    true,  // mapped v4 client hits the v4 CIDR
+		"::ffff:198.51.100.7": false, // mapped v4 outside every range
+		"192.0.2.7":           true,
+		"fe80::1":             true,  // link-local, no zone
+		"fe80::1%eth0":        false, // zoned addresses never match a prefix
+	}
+	for ip, want := range cases {
+		if got := l.MatchIP(netip.MustParseAddr(ip)); got != want {
+			t.Errorf("MatchIP(%s) = %v, want %v", ip, got, want)
+		}
+	}
+}
+
+// TestDenylistIPv6TextualForms drives the full stateless evaluate path with a
+// v6 denylist: the client IP arrives as a string, so mixed-case and expanded
+// textual forms must still land inside the range.
+func TestDenylistIPv6TextualForms(t *testing.T) {
+	gc := mustGuestConfig(t, `domains: { a: { denylist: { ips: [ "2001:db8:bad::/48" ] } } }`)
+	for _, ip := range []string{
+		"2001:db8:bad::1",
+		"2001:0DB8:0BAD::1",
+		"2001:0db8:0bad:0000:0000:0000:0000:0099",
+	} {
+		if d := gc.Evaluate(req("a", ip, "/", "curl")); d.Action != ActionDeny || d.Reason != "denylist:ip" {
+			t.Errorf("%s: got %s/%s, want deny/denylist:ip", ip, d.Action, d.Reason)
+		}
+	}
+	if d := gc.Evaluate(req("a", "2001:db8:cafe::1", "/", "curl")); d.Action != ActionAllow {
+		t.Errorf("2001:db8:cafe::1 should not match 2001:db8:bad::/48, got %s/%s", d.Action, d.Reason)
 	}
 }

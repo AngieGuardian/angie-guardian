@@ -194,6 +194,52 @@ func TestVerifyDeduplicatesConcurrentLookups(t *testing.T) {
 	}
 }
 
+// TestVerifyIPv6Confirmed: the full rDNS + forward-confirm dance for a
+// crawler arriving over IPv6. The PTR lookup receives the v6 source address
+// and the forward confirmation compares genuine 16-byte AAAA answers against
+// it (no Unmap collapse involved, unlike the mapped-v4 case below).
+func TestVerifyIPv6Confirmed(t *testing.T) {
+	r := &fakeResolver{
+		ptr: map[string][]string{"2001:4860:4860::8888": {"crawl-v6.googlebot.com."}},
+		fwd: map[string][]string{"crawl-v6.googlebot.com": {"2001:4860:4860::8888"}},
+	}
+	v := newTestVerifier(t, r)
+	res := v.Verify(context.Background(), "2001:4860:4860::8888", Options{})
+	if res.Status != StatusConfirmed {
+		t.Fatalf("status = %v, want confirmed", res.Status)
+	}
+	if !res.MatchesDomains([]string{"googlebot.com"}) {
+		t.Error("confirmed v6 crawler should match googlebot.com")
+	}
+}
+
+// TestVerifyIPv6ForwardMismatchIsDefinitive: a v6 client whose PTR names a
+// crawler host, but whose AAAA record points at a different v6 address, is a
+// proven impostor, exactly like the v4 case.
+func TestVerifyIPv6ForwardMismatchIsDefinitive(t *testing.T) {
+	r := &fakeResolver{
+		ptr: map[string][]string{"2001:db8::bad": {"fake.googlebot.com."}},
+		fwd: map[string][]string{"fake.googlebot.com": {"2001:4860:4860::8888"}},
+	}
+	v := newTestVerifier(t, r)
+	if res := v.Verify(context.Background(), "2001:db8::bad", Options{}); res.Status != StatusNone {
+		t.Fatalf("status = %v, want none", res.Status)
+	}
+}
+
+// TestVerifyIPv6ForwardMixedFamilies: forward records often carry both A and
+// AAAA answers; a match on any one of them confirms.
+func TestVerifyIPv6ForwardMixedFamilies(t *testing.T) {
+	r := &fakeResolver{
+		ptr: map[string][]string{"2001:db8:60::1": {"crawl.googlebot.com."}},
+		fwd: map[string][]string{"crawl.googlebot.com": {"66.249.66.1", "2001:db8:60::1"}},
+	}
+	v := newTestVerifier(t, r)
+	if res := v.Verify(context.Background(), "2001:db8:60::1", Options{}); res.Status != StatusConfirmed {
+		t.Fatalf("status = %v, want confirmed", res.Status)
+	}
+}
+
 func TestVerifyMappedIPv4Forward(t *testing.T) {
 	// Forward lookups often return the 16-byte IPv4-in-IPv6 form; the
 	// comparison must unmap both sides.

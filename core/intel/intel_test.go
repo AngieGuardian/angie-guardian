@@ -80,6 +80,7 @@ func TestProviderGeoLookup(t *testing.T) {
 	})
 	asnDB := inteltest.WriteASNDB(t, dir, map[string]uint32{
 		"198.51.100.0/24": 64500,
+		"2001:db8::/32":   64510,
 	})
 	p, err := New(Config{LocationDB: countryDB, ASNDB: asnDB}, testLogger())
 	if err != nil {
@@ -91,8 +92,13 @@ func TestProviderGeoLookup(t *testing.T) {
 	if info.Country != "NL" || info.ASN != 64500 || info.ASOrg != "Test AS" {
 		t.Fatalf("unexpected info: %+v", info)
 	}
-	if info = p.Lookup(netip.MustParseAddr("2001:db8::1")); info.Country != "DE" || info.ASN != 0 {
+	if info = p.Lookup(netip.MustParseAddr("2001:db8::1")); info.Country != "DE" || info.ASN != 64510 {
 		t.Fatalf("unexpected v6 info: %+v", info)
+	}
+	// Textual form is irrelevant once parsed; an expanded/mixed-case literal
+	// is the same netip.Addr and must hit the same v6 network.
+	if info = p.Lookup(netip.MustParseAddr("2001:0DB8:0000:0000:0000:0000:0000:0001")); info.Country != "DE" {
+		t.Fatalf("expanded-form v6 lookup failed: %+v", info)
 	}
 	// Unknown IP (private range): all zero values.
 	if info = p.Lookup(netip.MustParseAddr("10.0.0.1")); info != (Info{}) {
@@ -114,6 +120,9 @@ func TestProviderCityLookup(t *testing.T) {
 		// Country-level record: the real database leaves city and subdivision
 		// out for ~20% of networks, and pins those at a huge radius.
 		"203.0.113.0/24": {Country: "US", AccuracyRadiusKM: 1000},
+		// A v6 network with full city detail: the real GeoLite2-City database
+		// carries v6 networks alongside v4 in the same tree.
+		"2001:db8:c1::/48": {Country: "DE", City: "Berlin", Subdivision: "BE", AccuracyRadiusKM: 20},
 	})
 	p, err := New(Config{LocationDB: cityDB}, testLogger())
 	if err != nil {
@@ -141,6 +150,12 @@ func TestProviderCityLookup(t *testing.T) {
 
 	if info = p.Lookup(netip.MustParseAddr("10.0.0.1")); info != (Info{}) {
 		t.Fatalf("want zero Info for unknown IP, got %+v", info)
+	}
+
+	// A v6 client resolves city detail exactly like a v4 one.
+	info = p.Lookup(netip.MustParseAddr("2001:db8:c1::7"))
+	if info.Country != "DE" || info.City != "Berlin" || info.Subdivision != "BE" || info.AccuracyRadiusKM != 20 {
+		t.Fatalf("v6 city record: %+v", info)
 	}
 }
 
@@ -338,7 +353,7 @@ func TestCloseCancelsInflightFetch(t *testing.T) {
 func TestFileFeedLoadAndReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.list")
-	if err := os.WriteFile(path, []byte("203.0.113.0/24\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("203.0.113.0/24\n2001:db8:bad::/48\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	p, err := New(Config{Feeds: []FeedConfig{
@@ -351,6 +366,13 @@ func TestFileFeedLoadAndReload(t *testing.T) {
 
 	if name, ok := p.FeedMatch(netip.MustParseAddr("203.0.113.5"), FeedActionDeny); !ok || name != "local" {
 		t.Fatalf("want deny hit on local, got (%q, %v)", name, ok)
+	}
+	// A v6 range in the same feed matches v6 clients, and only those.
+	if _, ok := p.FeedMatch(netip.MustParseAddr("2001:db8:bad::9"), FeedActionDeny); !ok {
+		t.Fatal("v6 feed entry did not match a v6 client inside the range")
+	}
+	if _, ok := p.FeedMatch(netip.MustParseAddr("2001:db8:cafe::9"), FeedActionDeny); ok {
+		t.Fatal("v6 client outside the range must not match")
 	}
 	if _, ok := p.FeedMatch(netip.MustParseAddr("203.0.113.5"), FeedActionChallenge); ok {
 		t.Fatal("action filter must not match a deny feed as challenge")

@@ -19,14 +19,21 @@ import (
 // admin API and enforcement reconciler enumerate its dedicated store index.
 const blockKeyPrefix = "block:"
 
+// canonIP reduces every textual form of the same address (mixed case,
+// expanded zeros, IPv4-mapped IPv6 as produced by a dual-stack listener) to
+// one canonical string, so all scoreboard keys agree on the client identity.
+// Unparseable input passes through verbatim (fail-open, matching the
+// pipeline's stance on a garbage RemoteAddr).
+func canonIP(ip string) string {
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		return addr.Unmap().String()
+	}
+	return ip
+}
+
 // BlockKey is the store key holding an active behavioural block for an IP.
 // Written by the scoreboard, read by the behaviour-block pipeline stage.
-func BlockKey(ip string) string {
-	if addr, err := netip.ParseAddr(ip); err == nil {
-		ip = addr.Unmap().String()
-	}
-	return blockKeyPrefix + ip
-}
+func BlockKey(ip string) string { return blockKeyPrefix + canonIP(ip) }
 
 func blockCountKey(ip string) string { return "blkct:" + ip }
 
@@ -64,6 +71,10 @@ func (s *Scoreboard) RecordEvent(ctx context.Context, ip, evtype string, limit i
 	if limit <= 0 || window <= 0 {
 		return false, nil
 	}
+	// Canonicalize once so the event counter, backoff counter and block key
+	// (via Block below) all see the same identity whatever textual form the
+	// transport delivered.
+	ip = canonIP(ip)
 	bucket := s.now().Unix() / max(int64(window/time.Second), 1)
 	key := fmt.Sprintf("ev:%s:%s:%d", evtype, ip, bucket)
 	n, err := s.store.Incr(ctx, key, 2*window)
@@ -86,6 +97,7 @@ const hardMaxBlockTTL = 30 * 24 * time.Hour // 30 days
 // the same IP within 24h doubles the TTL, capped at maxBlockTTL (or a hard
 // 30-day ceiling when no cap is configured).
 func (s *Scoreboard) Block(ctx context.Context, ip, reason string, ttl, maxBlockTTL time.Duration) error {
+	ip = canonIP(ip) // one backoff counter per client, whatever textual form arrived
 	cap := maxBlockTTL
 	if cap <= 0 {
 		cap = hardMaxBlockTTL
