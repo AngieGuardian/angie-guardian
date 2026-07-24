@@ -164,7 +164,10 @@
   .chip.challenge::before { background: var(--warning); }
   .chip.on::before { background: var(--good); }
 
-  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  /* Domains carries eight columns against the two of the reason rollup, so it
+     takes two thirds of the row rather than half: an even split squeezes the
+     host names into one character per line. */
+  .cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; }
   @media (max-width: 56rem) { .cols { grid-template-columns: minmax(0, 1fr); } }
 
   /* Toolbars (block form, decision filters) */
