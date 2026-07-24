@@ -21,6 +21,43 @@ HTTPS, the header should be `https` and the loop shouldn't happen. Terminating
 TLS upstream? Ensure `$scheme` reflects the *client's* scheme, not the
 Angie→backend hop.
 
+## The challenge page says "Solver error"
+
+The interstitial renders, but instead of counting hashes the status line
+reports "Solver error" and asks for a reload (depending on the browser's
+worker-blocking behaviour it may instead sit at "Starting…" forever). The
+browser console shows a Content-Security-Policy violation like:
+
+```
+Content-Security-Policy: The page's settings blocked a worker script
+(worker-src) at blob:https://example.com/... from being executed because it
+violates the following directive: "script-src 'unsafe-inline' 'self'"
+```
+
+**Cause:** the site's CSP is being applied to the challenge page, whose PoW
+solver runs in a `blob:` Web Worker that a normal site policy (rightly)
+forbids. In Angie, a server-level `add_header Content-Security-Policy ...` in
+the vhost is inherited by every location that defines no `add_header` of its
+own, so it lands on the interstitial when the challenge location does not set
+headers itself. This happens with a `deploy/angie-guardian.conf` copied before
+the snippet set a location CSP, or with hand-written glue.
+
+**Fix:** update `/etc/angie/angie-guardian.conf` to the current shipped
+snippet (it is versioned with the release archive) and reload Angie. It gives
+`@guardian_challenge` and `@guardian_denied` their own page-fitted
+`Content-Security-Policy`, which also stops the vhost's server-level headers
+from being inherited there; the site-wide CSP itself needs no change. With
+hand-written glue, add the same `add_header` line from the shipped snippet to
+your challenge location. Do **not** fix it by adding `worker-src blob:` to the
+site-wide policy: that weakens the whole site for one internal page.
+
+If the vhost sets other server-wide headers (`Strict-Transport-Security` is
+the one that matters), re-add them in those two locations; see
+[Site security headers and the challenge page](/guide/angie#site-security-headers-and-the-challenge-page).
+The same symptom can also come from a CDN or proxy in front of Angie that
+injects a CSP onto every response passing through it; exempt the interstitial
+there.
+
 ## Legitimate visitors get challenged or blocked
 
 **A shared source IP (office NAT, corporate proxy) gets blocked.** Behavioural

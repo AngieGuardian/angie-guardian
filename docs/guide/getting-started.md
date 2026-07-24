@@ -220,6 +220,14 @@ are inherited by the vhost's content locations. The [Angie guide's fail-mode
 section](/guide/angie#fail-open-without-duplicating-the-site-handler) documents
 the deliberate edit for a fail-closed deployment.
 
+Does the vhost set site-wide security headers with `add_header`
+(Content-Security-Policy, Strict-Transport-Security)? The snippet already
+keeps the site's CSP off Guardian's challenge and denied pages (the pages
+carry their own strict CSP), so the vhost policy needs no change; but that
+also stops other server-wide `add_header` directives from applying to those
+two pages, so re-add HSTS there if you rely on it. Details in
+[Site security headers and the challenge page](/guide/angie#site-security-headers-and-the-challenge-page).
+
 Add the keepalive upstream once inside Angie's `http {}` context (either in
 `/etc/angie/angie.conf` or a file it includes there):
 

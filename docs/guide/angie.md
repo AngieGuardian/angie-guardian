@@ -270,6 +270,60 @@ limit_req_status  429;
 limit_conn_status 429;
 ```
 
+## Site security headers and the challenge page
+
+Many vhosts set site-wide security headers with `add_header`: a
+Content-Security-Policy, Strict-Transport-Security, X-Frame-Options and so
+on. In Angie (as in nginx), `add_header` directives are inherited from
+`server {}` scope into a location only when that location defines no
+`add_header` of its own. Without countermeasures, those site headers would
+therefore also be attached to the responses Angie proxies from Guardian,
+including the challenge interstitial.
+
+For most headers that is harmless. For a site CSP it is not: browsers enforce
+every `Content-Security-Policy` header on a response, and the interstitial
+needs things a good site policy has no reason to allow, namely an inline
+script and style, a `blob:` Web Worker running the PoW solver, and a
+same-origin `fetch` that submits the solution. Under a typical site policy
+(no `worker-src`, so the worker falls back to a `script-src` without
+`blob:`), the solver is blocked: the page renders but reports "Solver error"
+(or, depending on the browser, sits at "Starting…" forever), and the browser
+console shows a violation like
+
+```
+Content-Security-Policy: The page's settings blocked a worker script
+(worker-src) at blob:https://example.com/... from being executed because it
+violates the following directive: "script-src 'unsafe-inline' 'self'"
+```
+
+The shipped `deploy/angie-guardian.conf` therefore gives `@guardian_challenge`
+and `@guardian_denied` their own `add_header Content-Security-Policy`, fitted
+to exactly what each page uses and nothing more. That one directive does two
+jobs: Guardian's pages carry a strict policy of their own, and, by the
+inheritance rule above, the vhost's server-level `add_header` set (site CSP
+included) stops applying to them. Loosening the site-wide CSP instead, by
+adding `worker-src blob:` to it, would weaken the whole site to fix one
+internal page; don't do that.
+
+The flip side of that cancellation is that it covers **all** inherited
+`add_header` directives, not just the CSP. If the vhost sets other
+server-wide headers on every response, re-add them explicitly inside both
+locations; this is one of the deliberate snippet edits, like the fail-mode
+choice. `Strict-Transport-Security` is the case worth caring about: for a
+fresh visitor the interstitial is typically the *first* response the browser
+receives, so if you rely on HSTS, mirror the vhost's exact value there:
+
+```nginx
+location @guardian_challenge {
+    # ... shipped directives, including the page CSP ...
+    add_header Strict-Transport-Security "max-age=63072000" always;  # match your vhost
+}
+```
+
+Headers your backend application sets on its own responses are unrelated to
+any of this: Guardian's pages never pass through the backend, and
+`auth_request` responses never reach the client.
+
 ## Request types and edge cases
 
 Guardian's auth subrequest carries only the request line and headers, never the

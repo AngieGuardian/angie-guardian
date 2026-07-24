@@ -39,6 +39,13 @@ func TestBrowserGetIsChallenged(t *testing.T) {
 	if !strings.Contains(body, "guardian-data") || !strings.Contains(body, "challenge") {
 		t.Fatalf("response is not the PoW interstitial; body:\n%s", body)
 	}
+	// The snippet's location-scoped CSP must reach the client: it permits the
+	// blob: solver worker and, by defining an add_header in the location,
+	// stops a vhost-level site CSP from applying to (and breaking) this page.
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "worker-src blob:") {
+		t.Fatalf("interstitial Content-Security-Policy = %q, want worker-src blob:", csp)
+	}
 }
 
 // TestNonBrowserUAIsChallenged confirms command-line clients cannot bypass
