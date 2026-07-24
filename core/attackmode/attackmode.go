@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/internal/jitter"
 )
 
 // Level is the posture. Higher is more hostile.
@@ -374,6 +375,13 @@ func (d *Detector) Close() {
 
 func (d *Detector) run(ctx context.Context) {
 	defer d.wg.Done()
+	// A random startup phase spreads the per-tick posture-vote store write
+	// across the fleet; the bucket cadence itself stays exact so window rates
+	// are unaffected. A fleet restarted together would otherwise publish votes
+	// and probe the shared vote keys in lockstep.
+	if !jitter.Sleep(ctx, jitter.Phase(bucketWidth)) {
+		return
+	}
 	t := time.NewTicker(bucketWidth)
 	defer t.Stop()
 	for {

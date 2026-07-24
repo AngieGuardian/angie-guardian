@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/internal/jitter"
 )
 
 // Probe cadence. Compile-time constants on purpose: no operator story
@@ -155,7 +156,9 @@ func (c *Checker) Start(ctx context.Context) {
 
 func (c *Checker) loop(ctx context.Context) {
 	defer c.wg.Done()
-	t := time.NewTicker(c.interval)
+	// Jittered interval: a fleet whose replicas start probing at the same
+	// instant must not hit the shared store in lockstep on every tick.
+	t := time.NewTimer(jitter.Frac(c.interval, jitter.Fraction))
 	defer t.Stop()
 	for {
 		select {
@@ -163,6 +166,7 @@ func (c *Checker) loop(ctx context.Context) {
 			return
 		case <-t.C:
 			c.probe(ctx)
+			t.Reset(jitter.Frac(c.interval, jitter.Fraction))
 		}
 	}
 }

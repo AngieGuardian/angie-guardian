@@ -16,6 +16,7 @@ import (
 
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/internal/jitter"
 )
 
 // sinkQueueCap bounds each sink's event queue. A wedged sink (hung netlink)
@@ -297,7 +298,9 @@ func (m *Manager) Status() Status {
 func (m *Manager) runReconcile(ctx context.Context) {
 	defer m.wg.Done()
 	m.reconcileOnce(ctx)
-	t := time.NewTicker(m.cfg.ReconcileInterval)
+	// Jittered interval so a fleet restarted together does not scan the shared
+	// block index in lockstep every tick. A manual kick still runs immediately.
+	t := time.NewTimer(jitter.Frac(m.cfg.ReconcileInterval, jitter.Fraction))
 	defer t.Stop()
 	for {
 		select {
@@ -305,6 +308,7 @@ func (m *Manager) runReconcile(ctx context.Context) {
 			return
 		case <-t.C:
 			m.reconcileOnce(ctx)
+			t.Reset(jitter.Frac(m.cfg.ReconcileInterval, jitter.Fraction))
 		case <-m.kick:
 			m.reconcileOnce(ctx)
 		}

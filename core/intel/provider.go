@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/metrics"
+	"github.com/melroy89/angie-guardian/internal/jitter"
 )
 
 // pollInterval is how often mmdb files and local file feeds are checked for
@@ -251,7 +252,9 @@ func (p *Provider) refreshLoop(f *feed) {
 			p.log.Info("feed refreshed", "feed", f.cfg.Name, "entries", st.entries)
 		}
 		p.reportFeed(f)
-		timer.Reset(next)
+		// Jitter both the steady refresh and the retry: a fleet that lost the
+		// feed origin together must not re-hammer it in lockstep.
+		timer.Reset(jitter.Frac(next, jitter.Fraction))
 	}
 }
 
