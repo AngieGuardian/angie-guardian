@@ -195,6 +195,27 @@ func TestStoreOutageFailOpen(t *testing.T) {
 		}
 		return id
 	}
+	// statefulJourney runs journey and requires the challenge to come from
+	// the stateful issuance path. A single attempt may draw the stateless
+	// fallback even with the store up: the store client's per-op budget is
+	// deliberately tight (core/store/redis.go), so one slow SET on a loaded
+	// runner makes guardian fail open by design. Only issuance that stays
+	// stateless across attempts is a failure. The attempt cap keeps both
+	// call sites together well inside the 8/h issuance limit the journeys
+	// share (they run as the compose gateway IP).
+	statefulJourney := func(stage string) {
+		t.Helper()
+		const attempts = 3
+		var id string
+		for i := 1; i <= attempts; i++ {
+			if id = journey(stage); !strings.HasPrefix(id, "s1.") {
+				return
+			}
+			t.Logf("%s: attempt %d/%d drew the stateless fallback (transient store timeout); retrying", stage, i, attempts)
+			time.Sleep(2 * time.Second)
+		}
+		t.Fatalf("%s: challenge %q still stateless after %d attempts; want stateful with the store up", stage, id, attempts)
+	}
 	// hammer drives /challenge as ip until the issuance limiter answers 429.
 	// The limit is 8/h (guardian.e2e-chaos.yaml): low, because each pre-limit
 	// request during the outage pays the store timeouts before the stateless
@@ -344,9 +365,7 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	// --- baseline: store up ---------------------------------------------------
 
 	waitStatus(chaosAdmin+"/readyz", http.StatusOK, 45*time.Second, "baseline")
-	if id := journey("baseline"); strings.HasPrefix(id, "s1.") {
-		t.Fatalf("baseline challenge %q is stateless; want stateful with the store up", id)
-	}
+	statefulJourney("baseline")
 
 	if r := chaosAdminReq(http.MethodPut, "/admin/blocks/"+blockedIP,
 		`{"reason":"chaos-e2e","ttl":"30m"}`); r.StatusCode != http.StatusOK {
@@ -392,9 +411,7 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	if s := authStatus(recoveredIP); s != http.StatusForbidden {
 		t.Fatalf("post-recovery block not enforced: /auth = %d, want 403", s)
 	}
-	if id := journey("recovery"); strings.HasPrefix(id, "s1.") {
-		t.Fatalf("recovery challenge %q is stateless; want stateful with the store back", id)
-	}
+	statefulJourney("recovery")
 	hammer(hammerIP, "recovery")
 }
 
