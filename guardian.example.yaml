@@ -25,15 +25,24 @@ log_level: info
 # set the line below, otherwise guardiand refuses to start.
 # trusted_proxy: true
 
+# require_proxied is a tripwire on top of that isolation: it rejects guard
+# requests that arrive WITHOUT the X-Guardian-* headers the Angie glue always
+# sets, instead of processing them under their socket address (rejects surface
+# in the unproxied-rejects metric). It does NOT stop a direct client that
+# deliberately forges the headers, so it complements listener isolation rather
+# than replacing it. Off by default so probing guardiand directly (dev, tests,
+# curl) keeps working; /healthz and the denied page are never gated.
+# require_proxied: true
+
 # Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
 # /metrics, /healthz, /readyz, and the optional static dashboard shell are open; every
 # JSON/data /admin route requires the bearer token. A non-loopback bind without
 # a configured token is refused at startup, but a bearer token alone does not
 # make a remote bind safe: the listener speaks plain HTTP (the token would
-# cross the wire in clear) and /metrics stays unauthenticated. Keep it on
-# loopback or a firewalled management network, and put a TLS/mTLS reverse
-# proxy in front for any cross-network hop. Leave admin.listen empty to
-# disable it.
+# cross the wire in clear) and /metrics is unauthenticated unless metrics_auth
+# below is enabled. Keep it on loopback or a firewalled management network,
+# and put a TLS/mTLS reverse proxy in front for any cross-network hop. Leave
+# admin.listen empty to disable it.
 admin:
   listen: 127.0.0.1:8072
   # Bearer token resolution: `token` (or the ADMIN_TOKEN env var) wins;
@@ -65,6 +74,15 @@ admin:
   # angie_api:
   #   url: http://127.0.0.1:81/status   # Angie's api location
   #   timeout: 2s                        # per-fetch cap (default 2s)
+  # metrics_auth puts /metrics behind the same bearer token. Off by default so
+  # scrapers need no secret, but worth enabling on a routable admin bind:
+  # /metrics exposes every protected vhost name plus per-domain traffic and
+  # attack posture. /healthz and /readyz always stay unauthenticated so
+  # orchestrator probes keep working. Prometheus sends the token via
+  # authorization.credentials / credentials_file; pair it with a stable token
+  # (token or token_file), since an ephemeral per-start token would break the
+  # scrape config on every restart.
+  # metrics_auth: true
 
 # Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
 # missing; NEVER regenerated on restart, so restarts don't log clients out
