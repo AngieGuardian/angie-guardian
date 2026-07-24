@@ -106,13 +106,15 @@ type Config struct {
 	TrustedProxy bool `yaml:"trusted_proxy"`
 	// RequireProxied rejects guard requests (auth/challenge/pass) that arrive
 	// without the X-Guardian-* headers the Angie glue always sets, instead of
-	// falling back to the socket address. Defense in depth for the listener's
-	// header trust: if the guard port is ever reachable directly (firewall
-	// mistake, shared host), a direct client could otherwise spoof
-	// X-Guardian-IP to exhaust a victim's challenge budget or attribute
-	// tamper scores to an innocent IP. Off by default so probing Guardian
-	// directly (dev, tests, curl) keeps working; healthz and the denied page
-	// are never gated.
+	// falling back to the socket address. A tripwire for the listener's header
+	// trust: if the guard port is ever reachable directly (firewall mistake,
+	// shared host), stray traffic is refused and surfaces in the
+	// unproxied-rejects metric instead of being processed under its socket
+	// identity. It is not a spoofing defense: a deliberate direct client can
+	// still send forged X-Guardian-* headers and pass this gate, so listener
+	// isolation (see TrustedProxy) remains the only control that prevents
+	// spoofing. Off by default so probing Guardian directly (dev, tests, curl)
+	// keeps working; healthz and the denied page are never gated.
 	RequireProxied bool                 `yaml:"require_proxied"`
 	Admin          AdminConfig          `yaml:"admin"`
 	Store          StoreConfig          `yaml:"store"`

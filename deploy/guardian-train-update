@@ -11,6 +11,12 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 dry_run=${GUARDIAN_TRAIN_DRY_RUN:-0}
+case $dry_run in
+  0|1) ;;
+  # Anything else must abort: "true" or "yes" would arithmetic-evaluate to 0
+  # and silently run a real promotion the operator believed was a dry run.
+  *) printf 'guardian-train update: GUARDIAN_TRAIN_DRY_RUN must be 0 or 1, got: %s\n' "$dry_run" >&2; exit 2 ;;
+esac
 case ${1:-} in
   --dry-run) dry_run=1 ;;
   '') ;;

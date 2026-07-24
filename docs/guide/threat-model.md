@@ -74,10 +74,14 @@ wrong and the protections above weaken or invert:
   another IP, frame it into a block, or ride an allowlisted identity. Guardian
   **refuses to start** on a non-loopback `listen` unless you set
   `trusted_proxy: true` to assert you have isolated the listener to Angie. Keep
-  that promise (loopback, private network, firewall, or mTLS). As defense in
-  depth, `require_proxied: true` makes the guard endpoints reject any request
-  that arrives without the `X-Guardian-*` headers instead of falling back to
-  the socket address, so a firewall mistake exposes nothing spoofable.
+  that promise (loopback, private network, firewall, or mTLS). As a tripwire,
+  `require_proxied: true` makes the guard endpoints reject any request that
+  arrives without the `X-Guardian-*` headers instead of falling back to the
+  socket address, and counts the rejects in
+  `guardian_unproxied_rejects_total`, so bypass traffic surfaces instead of
+  being processed under its own socket identity. It is not a spoofing
+  defense: a direct client that forges the headers still passes it, so the
+  isolation promise above stays load-bearing.
 - **The admin API is bearer-token protected and should stay off the public
   internet.** Bind `admin.listen` to loopback or a management interface.
   Guardian refuses a non-loopback admin bind without a token. The listener is

@@ -84,11 +84,12 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 
 // proxiedOnly enforces require_proxied: when enabled, a guard request without
 // the X-Guardian-IP header the Angie glue always sets is rejected instead of
-// falling back to the socket address. That fallback is what a direct client
-// would abuse to spoof another client's identity (exhaust a victim's
-// challenge budget, attribute tamper scores to an innocent IP), so behind a
-// correctly wired glue this gate only ever fires on traffic that bypassed
-// Angie. Read live from the config so a hot reload can toggle it.
+// falling back to the socket address. Behind a correctly wired glue this gate
+// only ever fires on traffic that bypassed Angie, which is exactly what it
+// exists to surface. It is a tripwire, not a spoofing defense: a direct
+// client that sends a forged X-Guardian-IP passes it, and only listener
+// isolation prevents that. Read live from the config so a hot reload can
+// toggle it.
 func (s *Server) proxiedOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.engine.Config().RequireProxied && r.Header.Get("X-Guardian-IP") == "" {
