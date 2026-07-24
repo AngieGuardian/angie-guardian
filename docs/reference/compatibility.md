@@ -77,33 +77,6 @@ warning, rather than failing to load outright.
 - **Major (`1.x` → `2.0`):** read the release notes first; there will be an
   explicit migration section.
 
-## Pre-1.0 upgrade notes
-
-Breaking changes shipped before the 1.0 freeze, so an in-place upgrade does not
-fail-open your estate by refusing to start:
-
-**Upgrading from 0.9.0 or earlier to a current 0.9.x:**
-
-- **`geoip.country_db` was renamed to `geoip.location_db`** (it now accepts the
-  Country *or* City database). Config parsing is strict, so a config still using
-  `country_db` makes `guardiand` exit at startup. Rename the key before
-  restarting; run `guardiand -t -config guardian.yaml` with the new binary to
-  verify.
-- **The anomaly model format moved to version 2** (new `feature_schema`). A
-  `model.json` trained by an older `guardian-train` is rejected at startup as
-  fatal. Retrain with the matching `guardian-train` before restarting the
-  daemon, or temporarily unset `waf.anomaly.model`.
-- **The shipped `guardiand.service` now mounts `/etc/guardian` read-only**
-  (`ConfigurationDirectoryMode=0710`, no `ReadWritePaths=/etc/guardian`). If
-  your `signing_key_file`, `token_file` or `previous_key_dir` live under
-  `/etc/guardian`, `POST /admin/rotate-key` will fail on the read-only
-  filesystem. Either move key material to `/var/lib/guardian` (the packaged
-  default) or restore `ReadWritePaths=` for your key paths in a drop-in.
-
-Always run `guardiand -t` with the **new** binary against your existing config
-before restarting the service; it catches the first two classes without
-touching live traffic.
-
 ## Notes on the naming (settled at 1.0)
 
 A deliberate pass over the config surface before the freeze kept it as-is: it
