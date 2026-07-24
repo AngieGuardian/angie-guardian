@@ -66,9 +66,10 @@ admin:
   # deliberately bounded and cleared on restart—use /metrics with
   # Prometheus/Grafana for historical analysis. Default 4096, maximum 16384.
   # recent_size: 4096
-  # Show real server traffic on the dashboard (per-domain requests, in-flight
-  # connections, response codes, bandwidth) by reading Angie's own HTTP API:
-  # data Guardian never sees on its stateless allow path. guardiand fetches it
+  # Show real server traffic on the dashboard (per-domain requests and rates,
+  # connections, response codes, bandwidth, upstream peer health, proxy-cache
+  # hit rates, rate-limit zones, shared memory) by reading Angie's own HTTP
+  # API: data Guardian never sees on its allow path. guardiand fetches it
   # server-side and relays it behind the admin token, so keep Angie's API on
   # loopback (see deploy/angie-status.conf for the Angie side). Off when unset.
   # angie_api:

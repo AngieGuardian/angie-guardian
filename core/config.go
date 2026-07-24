@@ -163,20 +163,22 @@ type AdminConfig struct {
 	// admin surface exposes nothing extra unless asked to.
 	Dashboard bool `yaml:"dashboard"`
 
-	// AngieAPI, when set, lets the dashboard show real traffic (per-domain
-	// requests, in-flight connections, response codes, bandwidth) that Guardian
-	// itself never sees, by reading Angie's own HTTP API. Off when unset.
+	// AngieAPI, when set, lets the dashboard show what Guardian itself never
+	// sees, by reading Angie's own HTTP API: per-domain requests and bandwidth,
+	// connections, upstream peer health, proxy-cache hit rates, Angie's own rate
+	// limit zones and shared memory pressure. Off when unset.
 	AngieAPI AngieAPIConfig `yaml:"angie_api"`
 }
 
 // AngieAPIConfig points guardiand at Angie's HTTP API location so the admin
-// server can proxy its status zones to the dashboard. This is a read of another
-// service; it never touches Guardian's hot path.
+// server can relay its status endpoints to the dashboard. This is a read of
+// another service; it never touches Guardian's hot path.
 type AngieAPIConfig struct {
 	// URL is the base of Angie's http_api location (e.g. http://127.0.0.1:81/status/).
-	// Empty disables the integration. guardiand only ever appends fixed,
-	// known-safe suffixes (/http/server_zones, /http/location_zones) to it, so
-	// there is no client-controlled request target.
+	// Empty disables the integration. guardiand only ever appends a fixed,
+	// known-safe set of suffixes (see angiePaths in transport/http/angie.go:
+	// /angie/, /connections/, /slabs/ and the /http/ zone endpoints), so there is
+	// no client-controlled request target.
 	URL string `yaml:"url"`
 	// Timeout bounds each fetch from Angie's API. Default 2s.
 	Timeout Duration `yaml:"timeout"`

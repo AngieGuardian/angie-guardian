@@ -332,26 +332,48 @@ denied".
 
 ### `GET /admin/angie`
 
-Relays Angie's own [HTTP API][angie-api] status zones: real per-domain
-requests, in-flight connections, response codes and bandwidth that Guardian
-never sees on its stateless allow path. Requires
-[`admin.angie_api`](/reference/configuration#admin); returns
+Relays Angie's own [HTTP API][angie-api]: the real per-domain traffic, backend
+health and cache behaviour that Guardian never sees on its stateless allow path.
+Requires [`admin.angie_api`](/reference/configuration#admin); returns
 `{"enabled": false}` when unconfigured.
 
 [angie-api]: https://en.angie.software/angie/docs/configuration/modules/http/http_api/
 
-guardiand fetches Angie's API server-side (keep it on loopback) and relays only
-the fixed traffic-zone endpoints. It degrades rather than fails: the response
-always carries `enabled`, and an `error` string appears only when no zone
-endpoint is reachable; a missing `location_zones` (no location has a
-`status_zone`) still returns the server zones. See
+guardiand fetches Angie's API server-side (keep it on loopback) and relays a
+fixed set of endpoints, each under its own key, with Angie's own JSON passed
+through unchanged:
+
+| Key | Angie endpoint | Needs |
+| --- | --- | --- |
+| `angie` | `/angie/` | always present |
+| `connections` | `/connections/` | always present |
+| `server_zones` | `/http/server_zones/` | `status_zone` in a `server {}` |
+| `location_zones` | `/http/location_zones/` | `status_zone` in a `location {}` |
+| `caches` | `/http/caches/` | a `proxy_cache_path` |
+| `limit_conns` | `/http/limit_conns/` | a `limit_conn_zone` |
+| `limit_reqs` | `/http/limit_reqs/` | a `limit_req_zone` |
+| `upstreams` | `/http/upstreams/` | `zone` in an `upstream {}` |
+| `slabs` | `/slabs/` | any shared memory zone |
+
+The endpoints are read concurrently and cached for ~3s. `as_of` carries the read
+time per relayed key, which is what the dashboard differences Angie's cumulative
+counters against to show per-second rates.
+
+It degrades rather than fails: the response always carries `enabled`, a key is
+simply absent when Angie has no such zone configured (that endpoint 404s), and
+an `error` string appears only when no endpoint at all is reachable. See
 [Enabling the Angie API](/guide/admin#enabling-the-angie-api).
 
 ```json
 {"enabled":true,
+ "angie":{"version":"1.12.1","generation":7,"load_time":"2026-07-24T20:38:03.930Z"},
+ "connections":{"accepted":86880,"dropped":0,"active":39,"idle":55},
  "server_zones":{"example.com":{"requests":{"total":152340,"processing":7},
    "responses":{"200":140100,"404":8900},"data":{"received":48219000,"sent":1329000000}}},
- "location_zones":{"/api/":{"requests":{"total":88010}}}}
+ "location_zones":{"/api/":{"requests":{"total":88010}}},
+ "upstreams":{"backend":{"peers":{"10.0.0.2:8080":{"state":"up",
+   "health":{"fails":0,"downtime":0,"response_time":9}}},"keepalive":1}},
+ "as_of":{"angie":"2026-07-24T22:27:40.989Z","server_zones":"2026-07-24T22:27:40.989Z"}}
 ```
 
 When Angie's API is unreachable:

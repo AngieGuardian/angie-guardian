@@ -133,6 +133,14 @@ func TestAdminAngieRelaysZones(t *testing.T) {
 		Enabled     bool            `json:"enabled"`
 		Error       string          `json:"error"`
 		ServerZones json.RawMessage `json:"server_zones"`
+		Angie       struct {
+			Version string `json:"version"`
+		} `json:"angie"`
+		Connections struct {
+			Accepted int64 `json:"accepted"`
+		} `json:"connections"`
+		Upstreams map[string]json.RawMessage `json:"upstreams"`
+		AsOf      map[string]string          `json:"as_of"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode /admin/angie: %v", err)
@@ -150,6 +158,33 @@ func TestAdminAngieRelaysZones(t *testing.T) {
 	}
 	if len(zones) == 0 {
 		t.Fatalf("server_zones is empty; expected at least one status_zone with traffic")
+	}
+
+	// The dashboard's other panels come from separate API endpoints. Against a
+	// real Angie these assertions are what pins the exact suffixes: a wrong path
+	// 404s and is silently treated as "not configured", which a mock cannot
+	// catch. angie/connections always exist; upstreams needs a `zone` in the
+	// upstream block (angie.docker.conf sets one on the backend).
+	if out.Angie.Version == "" {
+		t.Errorf("angie.version missing: the /angie endpoint did not relay")
+	}
+	if out.Connections.Accepted == 0 {
+		t.Errorf("connections.accepted = 0; the /connections endpoint did not relay")
+	}
+	if _, ok := out.Upstreams["backend"]; !ok {
+		t.Errorf("upstreams missing the zoned backend upstream: %v", out.Upstreams)
+	}
+	// Every relayed endpoint carries the read time the dashboard differences
+	// counters against.
+	for _, key := range []string{"angie", "connections", "server_zones", "upstreams"} {
+		stamp, ok := out.AsOf[key]
+		if !ok {
+			t.Errorf("as_of[%s] missing: %v", key, out.AsOf)
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
+			t.Errorf("as_of[%s] = %q is not RFC3339: %v", key, stamp, err)
+		}
 	}
 }
 

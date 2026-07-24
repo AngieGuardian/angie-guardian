@@ -57,12 +57,23 @@ type cachedZones struct {
 // zone the operator did not configure a status_zone for.
 var errZoneAbsent = errors.New("angie status zone not configured")
 
-// The two Angie API endpoints the dashboard consumes. Fixed constants, never
-// built from request input. Trailing slash matches Angie's documented API tree
-// paths (GET /status/http/server_zones/).
+// The Angie API endpoints the dashboard consumes. Fixed constants, never built
+// from request input. Trailing slash matches Angie's documented API tree paths
+// (GET /status/http/server_zones/).
+//
+// Not fetched, deliberately: /resolvers/ (Angie's DNS internals, unrelated to the
+// traffic picture), the stream/ subtree, keyvals and metric_zones. Endpoints an
+// operator has not configured a zone for simply 404 and are skipped.
 var angiePaths = []struct{ key, suffix string }{
+	{"angie", "/angie/"},
+	{"connections", "/connections/"},
 	{"server_zones", "/http/server_zones/"},
 	{"location_zones", "/http/location_zones/"},
+	{"caches", "/http/caches/"},
+	{"limit_conns", "/http/limit_conns/"},
+	{"limit_reqs", "/http/limit_reqs/"},
+	{"upstreams", "/http/upstreams/"},
+	{"slabs", "/slabs/"},
 }
 
 const (
@@ -91,18 +102,28 @@ func newAngieClient(cfg core.AngieAPIConfig, log *slog.Logger) *angieClient {
 	}
 }
 
+// sample is one endpoint's payload plus the instant it was read from Angie. The
+// dashboard differences consecutive samples into per-second rates, so it needs
+// the time the data was *fetched*, not the time it was relayed: polling faster
+// than the cache TTL would otherwise pair two identical readings and report a
+// false 0/s.
+type sample struct {
+	body []byte
+	at   time.Time
+}
+
 // fetch retrieves one fixed Angie API endpoint, serving a fresh-enough cached
 // copy when available. Returns the raw JSON body (Angie's own structure, passed
-// through verbatim), errZoneAbsent when the endpoint 404s (no status_zone), or a
-// transport/decode error. Concurrent misses for the same suffix are collapsed
-// into one upstream request via singleflight so aligned multi-tab polls hit
-// Angie once, and both success and 404 outcomes are cached.
-func (a *angieClient) fetch(suffix string) ([]byte, error) {
-	if body, absent, ok := a.lookup(suffix); ok {
-		if absent {
-			return nil, errZoneAbsent
+// through verbatim) with its read time, errZoneAbsent when the endpoint 404s (no
+// status_zone), or a transport/decode error. Concurrent misses for the same
+// suffix are collapsed into one upstream request via singleflight so aligned
+// multi-tab polls hit Angie once, and both success and 404 outcomes are cached.
+func (a *angieClient) fetch(suffix string) (sample, error) {
+	if c, ok := a.lookup(suffix); ok {
+		if c.absent {
+			return sample{}, errZoneAbsent
 		}
-		return body, nil
+		return sample{body: c.body, at: c.at}, nil
 	}
 
 	// singleflight dedupes concurrent misses; the shared result is then cached,
@@ -111,42 +132,41 @@ func (a *angieClient) fetch(suffix string) ([]byte, error) {
 	// request for the others; the client's own Timeout still bounds it.
 	res, err, _ := a.group.Do(suffix, func() (any, error) {
 		// A racing caller may have populated the cache while we queued.
-		if body, absent, ok := a.lookup(suffix); ok {
-			if absent {
-				return nil, errZoneAbsent
+		if c, ok := a.lookup(suffix); ok {
+			if c.absent {
+				return sample{}, errZoneAbsent
 			}
-			return body, nil
+			return sample{body: c.body, at: c.at}, nil
 		}
 		return a.fetchUpstream(suffix)
 	})
 	if err != nil {
-		return nil, err
+		return sample{}, err
 	}
-	return res.([]byte), nil
+	return res.(sample), nil
 }
 
-// lookup returns a still-fresh cached entry: (body, absent, true) on a hit,
-// (nil, false, false) on a miss or expiry.
-func (a *angieClient) lookup(suffix string) ([]byte, bool, bool) {
+// lookup returns a still-fresh cached entry, or ok=false on a miss or expiry.
+func (a *angieClient) lookup(suffix string) (cachedZones, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if c, ok := a.cached[suffix]; ok && time.Since(c.at) < a.ttl {
-		return c.body, c.absent, true
+		return c, true
 	}
-	return nil, false, false
+	return cachedZones{}, false
 }
 
 // fetchUpstream performs the real HTTP read, validates the payload, and caches
 // the outcome. Runs under singleflight, so only one of a burst executes it.
-func (a *angieClient) fetchUpstream(suffix string) ([]byte, error) {
+func (a *angieClient) fetchUpstream(suffix string) (sample, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, a.base+suffix, nil)
 	if err != nil {
-		return nil, err
+		return sample{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return nil, err
+		return sample{}, err
 	}
 	defer resp.Body.Close()
 
@@ -154,10 +174,10 @@ func (a *angieClient) fetchUpstream(suffix string) ([]byte, error) {
 	// so we neither warn nor re-request it every tick.
 	if resp.StatusCode == http.StatusNotFound {
 		a.store(suffix, cachedZones{absent: true, at: time.Now()})
-		return nil, errZoneAbsent
+		return sample{}, errZoneAbsent
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &angieStatusError{code: resp.StatusCode}
+		return sample{}, &angieStatusError{code: resp.StatusCode}
 	}
 
 	// Read one byte past the cap so a body that would exceed the limit is
@@ -165,20 +185,21 @@ func (a *angieClient) fetchUpstream(suffix string) ([]byte, error) {
 	// otherwise cache as "successful" and later fail to re-encode).
 	body, err := io.ReadAll(io.LimitReader(resp.Body, angieMaxResponse+1))
 	if err != nil {
-		return nil, err
+		return sample{}, err
 	}
 	if len(body) > angieMaxResponse {
-		return nil, errors.New("angie api response exceeds " + strconv.Itoa(angieMaxResponse) + " bytes")
+		return sample{}, errors.New("angie api response exceeds " + strconv.Itoa(angieMaxResponse) + " bytes")
 	}
 	// Validate before caching: a 200 with malformed (or truncated) JSON must not
 	// be stored as a good result, or the dashboard gets an empty-but-200 render
 	// and the bad entry sticks for the whole TTL.
 	if !json.Valid(body) {
-		return nil, errors.New("angie api returned invalid JSON")
+		return sample{}, errors.New("angie api returned invalid JSON")
 	}
 
-	a.store(suffix, cachedZones{body: body, at: time.Now()})
-	return body, nil
+	at := time.Now()
+	a.store(suffix, cachedZones{body: body, at: at})
+	return sample{body: body, at: at}, nil
 }
 
 func (a *angieClient) store(suffix string, c cachedZones) {
@@ -193,42 +214,66 @@ func (e *angieStatusError) Error() string {
 	return "angie api returned status " + http.StatusText(e.code)
 }
 
-// handleAngie relays Angie's status zones to the dashboard. The response always
-// carries an "enabled" flag and, on any fetch failure, a short "error" string,
-// so the dashboard can show "Angie API unreachable" without the whole render
-// tick failing. The zone payloads are Angie's own JSON, merged into one object.
+// handleAngie relays Angie's status endpoints to the dashboard. The response
+// always carries an "enabled" flag and, on any fetch failure, a short "error"
+// string, so the dashboard can show "Angie API unreachable" without the whole
+// render tick failing. The payloads are Angie's own JSON, merged into one object,
+// alongside an "as_of" map giving each one's read time so the dashboard can turn
+// Angie's cumulative counters into per-second rates.
+//
+// The endpoints are read concurrently: they are independent loopback reads, and
+// a dashboard on a 2s interval should not pay for nine of them in series.
 func (s *AdminServer) handleAngie(w http.ResponseWriter, r *http.Request) {
 	if s.angie == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
+
+	type result struct {
+		key string
+		s   sample
+		err error
+	}
+	results := make([]result, len(angiePaths))
+	var wg sync.WaitGroup
+	for i, p := range angiePaths {
+		wg.Go(func() {
+			got, err := s.angie.fetch(p.suffix)
+			results[i] = result{key: p.key, s: got, err: err}
+		})
+	}
+	wg.Wait()
+
 	out := map[string]any{"enabled": true}
+	asOf := map[string]string{}
 	var firstErr error
 	got := 0
-	for _, p := range angiePaths {
-		body, err := s.angie.fetch(p.suffix)
-		if err != nil {
+	for i, r := range results {
+		if r.err != nil {
 			// A 404 is a normal result, not a failure: the operator simply did
-			// not configure a status_zone for this endpoint (commonly true of
-			// location_zones). Skip it silently; the panel renders from whatever
-			// zones do exist. Only genuine failures are worth a log line, and the
-			// fetch layer caches even the 404 so this does not repeat every tick.
-			if !errors.Is(err, errZoneAbsent) {
-				s.log.Warn("angie api fetch failed", "endpoint", p.suffix, "err", err)
+			// not configure a zone for this endpoint (commonly true of
+			// location_zones, caches, limit zones and upstreams). Skip it
+			// silently; the dashboard hides that panel and renders the rest. Only
+			// genuine failures are worth a log line, and the fetch layer caches
+			// even the 404 so this does not repeat every tick.
+			if !errors.Is(r.err, errZoneAbsent) {
+				s.log.Warn("angie api fetch failed", "endpoint", angiePaths[i].suffix, "err", r.err)
 				if firstErr == nil {
-					firstErr = err
+					firstErr = r.err
 				}
 			}
 			continue
 		}
-		out[p.key] = json.RawMessage(body)
+		out[r.key] = json.RawMessage(r.s.body)
+		asOf[r.key] = r.s.at.UTC().Format(time.RFC3339Nano)
 		got++
 	}
-	// Only surface an error when we got nothing usable; otherwise the panel
-	// renders from the zones we do have (e.g. server_zones without any
+	// Only surface an error when we got nothing usable; otherwise the panels
+	// render from the endpoints we do have (e.g. server_zones without any
 	// location_zones configured).
 	if got == 0 && firstErr != nil {
 		out["error"] = firstErr.Error()
 	}
+	out["as_of"] = asOf
 	writeJSON(w, http.StatusOK, out)
 }

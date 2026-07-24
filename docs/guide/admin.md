@@ -279,13 +279,14 @@ table beside the map remains the complete, exact view.
 ### Server traffic (Angie API)
 
 Guardian never sees allowed traffic on its stateless hot path, so real
-per-domain request counts, live in-flight connections, response-code mix and
-bandwidth can only come from Angie itself. Point guardiand at Angie's HTTP API
-with `admin.angie_api` and the dashboard grows a **Server traffic** section
-reading it through [`GET /admin/angie`](/reference/admin-api#get-admin-angie).
-See [Enabling the Angie API](#enabling-the-angie-api) below. The section hides
-itself when unconfigured and shows "Angie API unreachable" (without breaking the
-rest of the page) when Angie's API is down.
+per-domain request counts, live connections, response-code mix, backend health
+and cache behaviour can only come from Angie itself. Point guardiand at Angie's
+HTTP API with `admin.angie_api` and the dashboard grows a **Server traffic**
+section reading it through
+[`GET /admin/angie`](/reference/admin-api#get-admin-angie). See
+[Enabling the Angie API](#enabling-the-angie-api) below. The section hides itself
+when unconfigured and shows "Angie API unreachable" (without breaking the rest of
+the page) when Angie's API is down.
 
 The page is a static shell: it stores no secrets, stays off unless enabled,
 and every data call goes to the token-guarded `/admin/*` endpoints. The shell
@@ -355,7 +356,28 @@ management interface) exactly as shown.
 
 The relay is a plain read of another local service; it is never on Guardian's
 request hot path. Only fixed API paths are fetched (no request-controlled
-target), each with a short timeout, no redirect following, a capped response
-read, and a ~3-second cache so several open dashboard tabs do not multiply load
-on Angie. A missing `location_zones` (no location has a `status_zone`) is fine:
-the per-domain server zones still show.
+target), concurrently, each with a short timeout, no redirect following, a capped
+response read, and a ~3-second cache so several open dashboard tabs do not
+multiply load on Angie.
+
+### What each panel needs
+
+The section shows whatever Angie reports and hides the rest, so a plain setup
+with one `status_zone` is already useful. Each extra Angie directive lights up
+one more panel:
+
+| Panel | Shows | Needs in Angie |
+| --- | --- | --- |
+| Tiles, request rate, response codes, per-zone table | version and uptime, connections, per-vhost requests, rates, response classes, TLS handshake failures, bandwidth | `status_zone` in `server {}` (the tiles for version and connections always work) |
+| Location zones | the same per path | `status_zone` in `location {}` |
+| Upstreams | peer state, active/total requests, failures, downtime, header and response latency | `zone <name> <size>;` in `upstream {}` |
+| Proxy caches | hit ratio, hit/stale/miss/expired/bypass mix, how full each cache is | a `proxy_cache_path` (its `keys_zone`) |
+| Rate limits | passed, delayed, rejected, exhausted per zone | `limit_req_zone` / `limit_conn_zone` |
+| Shared memory | pages used per slab zone and **allocation failures**, which mean the zone is sized too small | any shared memory zone (always present) |
+
+Angie's counters are cumulative since it started, so the dashboard differences
+consecutive samples into per-second rates; the rate chart fills in from the
+moment the page is opened. A reload (`generation` / `load_time` changing) resets
+that history rather than showing a bogus spike.
+
+Nothing here needs Angie PRO.

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/metrics"
@@ -75,21 +76,43 @@ func TestAngieRequiresAuth(t *testing.T) {
 	}
 }
 
-// TestAngieRelay: a mock Angie API's zone JSON is relayed under server_zones /
-// location_zones, and only the two fixed paths are ever requested.
+// TestAngieRelay: a mock Angie API's JSON is relayed under one key per fixed
+// endpoint, each stamped in as_of, and only those fixed paths are ever requested.
 func TestAngieRelay(t *testing.T) {
+	// One recognisable payload per endpoint, so a key/suffix mix-up shows up as a
+	// wrong marker rather than passing silently.
+	bodies := map[string]string{
+		"angie":          `{"version":"1.12.1","generation":7,"load_time":"2026-07-24T20:38:03.930Z"}`,
+		"connections":    `{"accepted":86880,"dropped":0,"active":39,"idle":55}`,
+		"server_zones":   `{"example.com":{"requests":{"total":42,"processing":3}}}`,
+		"location_zones": `{"/api":{"requests":{"total":7}}}`,
+		"caches":         `{"apihot":{"size":7737344,"max_size":20971520,"cold":false}}`,
+		"limit_conns":    `{"addr":{"passed":149,"rejected":0}}`,
+		"limit_reqs":     `{"ip":{"passed":75212,"delayed":836,"rejected":0}}`,
+		"upstreams":      `{"backend":{"peers":{"127.0.0.1:8999":{"state":"up"}},"keepalive":1}}`,
+		"slabs":          `{"SSL":{"pages":{"used":2544,"free":0}}}`,
+	}
+	bySuffix := map[string]string{}
+	wantPaths := map[string]bool{}
+	for _, p := range angiePaths {
+		body, ok := bodies[p.key]
+		if !ok {
+			t.Fatalf("test payload missing for angie endpoint %q", p.key)
+		}
+		bySuffix["/status"+p.suffix] = body
+		wantPaths["/status"+p.suffix] = true
+	}
+
 	var paths sync.Map
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths.Store(r.URL.Path, true)
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/status/http/server_zones/":
-			_, _ = w.Write([]byte(`{"example.com":{"requests":{"total":42,"processing":3}}}`))
-		case "/status/http/location_zones/":
-			_, _ = w.Write([]byte(`{"/api":{"requests":{"total":7}}}`))
-		default:
+		body, ok := bySuffix[r.URL.Path]
+		if !ok {
 			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
 	}))
 	defer upstream.Close()
 
@@ -110,14 +133,39 @@ func TestAngieRelay(t *testing.T) {
 	if ex["total"].(float64) != 42 || ex["processing"].(float64) != 3 {
 		t.Errorf("server_zones relay wrong: %v", ex)
 	}
-	if _, ok := out["location_zones"].(map[string]any); !ok {
-		t.Errorf("location_zones missing: %v", out["location_zones"])
+
+	// Every configured endpoint relays under its own key, and carries a parseable
+	// read time: the dashboard differences those to get per-second rates.
+	asOf, ok := out["as_of"].(map[string]any)
+	if !ok {
+		t.Fatalf("as_of missing or wrong type: %v", out["as_of"])
+	}
+	for _, p := range angiePaths {
+		if _, ok := out[p.key].(map[string]any); !ok {
+			t.Errorf("%s missing from relay: %v", p.key, out[p.key])
+		}
+		stamp, ok := asOf[p.key].(string)
+		if !ok {
+			t.Errorf("as_of[%s] missing: %v", p.key, asOf[p.key])
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
+			t.Errorf("as_of[%s] = %q is not RFC3339: %v", p.key, stamp, err)
+		}
+	}
+	// A couple of spot checks on the deeper structures, which the dashboard
+	// indexes into directly.
+	up := out["upstreams"].(map[string]any)["backend"].(map[string]any)
+	if peers, ok := up["peers"].(map[string]any); !ok || peers["127.0.0.1:8999"] == nil {
+		t.Errorf("upstream peers relay wrong: %v", up)
+	}
+	if v := out["angie"].(map[string]any)["version"]; v != "1.12.1" {
+		t.Errorf("angie version relay wrong: %v", v)
 	}
 
-	// Only the two fixed suffixes were ever fetched — no client-controlled path.
+	// Only the fixed suffixes were ever fetched — no client-controlled path.
 	paths.Range(func(k, _ any) bool {
-		p := k.(string)
-		if p != "/status/http/server_zones/" && p != "/status/http/location_zones/" {
+		if p := k.(string); !wantPaths[p] {
 			t.Errorf("unexpected upstream path requested: %q", p)
 		}
 		return true
@@ -264,11 +312,11 @@ func TestAngieSingleflight(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Two fixed suffixes. Even with 20 concurrent callers all missing the empty
-	// cache, singleflight should collapse each suffix's burst, so hits stays low
-	// (a handful at most, not ~40). Assert well under the no-collapse count.
-	if got := hits.Load(); got > 6 {
-		t.Errorf("upstream hits = %d, want a small number (singleflight should collapse concurrent misses)", got)
+	// Even with 20 concurrent callers all missing the empty cache, singleflight
+	// should collapse each suffix's burst, so hits stays near one per suffix
+	// rather than 20 per suffix. Assert well under the no-collapse count.
+	if want, got := 3*len(angiePaths), int(hits.Load()); got > want {
+		t.Errorf("upstream hits = %d, want at most %d (singleflight should collapse concurrent misses)", got, want)
 	}
 }
 
@@ -283,11 +331,11 @@ func TestAngieCaches(t *testing.T) {
 	defer upstream.Close()
 
 	ts := angieAdminServer(t, upstream.URL+"/status")
-	// Two admin calls; each fetches two fixed suffixes, but within the TTL the
-	// second call serves both from cache. So exactly 2 upstream hits total.
+	// Two admin calls; each fetches every fixed suffix, but within the TTL the
+	// second call serves them all from cache. So one upstream hit per suffix.
 	adminReq(t, ts, http.MethodGet, "/admin/angie", adminToken, "")
 	adminReq(t, ts, http.MethodGet, "/admin/angie", adminToken, "")
-	if got := hits.Load(); got != 2 {
-		t.Errorf("upstream hits = %d, want 2 (second call should be cached)", got)
+	if want, got := len(angiePaths), int(hits.Load()); got != want {
+		t.Errorf("upstream hits = %d, want %d (second call should be cached)", got, want)
 	}
 }

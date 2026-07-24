@@ -116,6 +116,10 @@
                                padding: 0.12rem 0.35rem; cursor: pointer; }
   .chart-card .canvas-wrap { position: relative; height: 220px; margin-top: 0.5rem; }
   .chart-card canvas { max-width: 100%; }
+  /* Horizontal bar charts (per-zone, per-peer, per-cache) need room per row. */
+  .chart-card .canvas-wrap.tall { height: 320px; }
+  /* A charts row holding one full-width card. */
+  .charts.wide { grid-template-columns: 1fr; }
 
   /* World map: full-width card sitting above the offender tables. */
   #geomap-card { grid-template-columns: 1fr; margin-bottom: 0.75rem; }
@@ -155,6 +159,21 @@
   td.num, td.time { font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.wrap { word-break: break-all; max-width: 26rem; }
   .empty { color: var(--muted); padding: 0.7rem 0.75rem; }
+
+  /* Usage bars inside a table cell (cache fill, slab pages): the number stays
+     the fact, the bar only makes the outliers findable while scanning. Amber
+     from 70%, red from 90%, where a zone is close to evicting or failing. */
+  .fill { display: flex; align-items: center; gap: 0.5rem;
+          font-variant-numeric: tabular-nums; }
+  .bar { position: relative; width: 4rem; height: 0.4rem; flex: none;
+         border-radius: 3px; background: var(--grid); overflow: hidden; }
+  .bar > span { position: absolute; inset: 0 auto 0 0; background: var(--good); }
+  .bar.warn > span { background: var(--warning); }
+  .bar.hot > span { background: var(--critical); }
+  /* Counters that only ever mean trouble (rejected, exhausted, slab allocation
+     failures, peers down). Red is never the only cue: the column header says
+     what the number is. */
+  td.bad, .sub.bad { color: var(--critical); }
 
   /* Action chips: colored dot + text label, never color alone */
   .chip { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
@@ -496,23 +515,120 @@
   <h2 id="angie-h2" hidden>Server traffic
     <span class="meta">from Angie's API (includes allowed traffic Guardian never records)</span></h2>
   <div class="empty" id="angie-note" hidden></div>
+  <div class="tiles" id="angie-tiles" hidden>
+    <div class="tile" id="ta-version-tile" hidden><div class="label">Angie</div>
+      <div class="value text" id="ta-version">–</div>
+      <div class="sub" id="ta-version-sub"></div></div>
+    <div class="tile" id="ta-conns-tile" hidden><div class="label">Connections</div>
+      <div class="value" id="ta-conns">–</div>
+      <div class="sub" id="ta-conns-sub"></div></div>
+    <div class="tile" id="ta-accepted-tile" hidden><div class="label">Accepted</div>
+      <div class="value" id="ta-accepted">–</div>
+      <div class="sub" id="ta-accepted-sub"></div></div>
+    <div class="tile" id="ta-req-tile" hidden><div class="label">Requests</div>
+      <div class="value" id="ta-req">–</div>
+      <div class="sub" id="ta-req-sub"></div></div>
+    <div class="tile" id="ta-peers-tile" hidden><div class="label">Upstream peers</div>
+      <div class="value text" id="ta-peers">–</div>
+      <div class="sub" id="ta-peers-sub"></div></div>
+    <div class="tile" id="ta-cache-tile" hidden><div class="label">Cache hit ratio</div>
+      <div class="value" id="ta-cache">–</div>
+      <div class="sub" id="ta-cache-sub"></div></div>
+  </div>
+  <!-- Angie's counters are cumulative since start, so the live view is the rate
+       chart; the doughnut beside it keeps the lifetime composition. -->
   <div class="charts" id="angie-charts" hidden>
     <div class="chart-card">
-      <div class="label"><span>Requests per zone</span>
-        <span class="meta">total, since Angie start</span></div>
-      <div class="canvas-wrap"><canvas id="chart-angie-requests"></canvas></div>
+      <div class="label"><span>Request rate</span>
+        <span class="meta" id="angie-rate-meta">by response class, per second</span></div>
+      <div class="canvas-wrap"><canvas id="chart-angie-rate"></canvas></div>
     </div>
     <div class="chart-card">
       <div class="label"><span>Response codes</span>
-        <span class="meta">all zones</span></div>
+        <span class="meta">all zones, since Angie start</span></div>
       <div class="canvas-wrap"><canvas id="chart-angie-responses"></canvas></div>
+    </div>
+  </div>
+  <div class="charts wide" id="angie-zone-chart" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Responses per zone</span>
+        <span class="meta" id="angie-zone-meta">by class, since Angie start</span></div>
+      <div class="canvas-wrap tall"><canvas id="chart-angie-zones"></canvas></div>
     </div>
   </div>
   <div class="tablewrap" id="angie-table-wrap" hidden style="margin-top:0.75rem;">
     <table>
-      <thead><tr><th>Zone</th><th>Requests</th><th>In&nbsp;flight</th>
+      <thead><tr><th>Zone</th><th>Requests</th><th>Rate</th><th>In&nbsp;flight</th>
+                 <th>Discarded</th><th>2xx</th><th>4xx</th><th>5xx</th>
+                 <th id="angie-tls-th" hidden>TLS&nbsp;fails</th>
                  <th>Received</th><th>Sent</th></tr></thead>
       <tbody id="angie-zones"></tbody>
+    </table>
+  </div>
+
+  <h2 id="angie-loc-h2" hidden>Location zones
+    <span class="meta">per-path counters (status_zone inside location blocks)</span></h2>
+  <div class="tablewrap" id="angie-loc-wrap" hidden>
+    <table>
+      <thead><tr><th>Location</th><th>Requests</th><th>Rate</th><th>Discarded</th>
+                 <th>2xx</th><th>4xx</th><th>5xx</th><th>Received</th><th>Sent</th></tr></thead>
+      <tbody id="angie-locations"></tbody>
+    </table>
+  </div>
+
+  <h2 id="angie-up-h2" hidden>Upstreams
+    <span class="meta">backend peers Angie proxies to</span></h2>
+  <div class="charts wide" id="angie-up-chart" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Peer latency</span>
+        <span class="meta">average time to header and to full response</span></div>
+      <div class="canvas-wrap tall"><canvas id="chart-angie-latency"></canvas></div>
+    </div>
+  </div>
+  <div class="tablewrap" id="angie-up-wrap" hidden style="margin-top:0.75rem;">
+    <table>
+      <thead><tr><th>Upstream</th><th>Peer</th><th>State</th><th>Active</th><th>Requests</th>
+                 <th>Rate</th><th>Fails</th><th>Unavail</th><th>Downtime</th>
+                 <th>Header</th><th>Response</th><th>Sent</th><th>Received</th></tr></thead>
+      <tbody id="angie-upstreams"></tbody>
+    </table>
+  </div>
+
+  <h2 id="angie-cache-h2" hidden>Proxy caches
+    <span class="meta">what Angie served without touching a backend</span></h2>
+  <div class="charts wide" id="angie-cache-chart" hidden>
+    <div class="chart-card">
+      <div class="label"><span>Cache composition</span>
+        <span class="meta">share of responses, since Angie start</span></div>
+      <div class="canvas-wrap tall"><canvas id="chart-angie-cache"></canvas></div>
+    </div>
+  </div>
+  <div class="tablewrap" id="angie-cache-wrap" hidden style="margin-top:0.75rem;">
+    <table>
+      <thead><tr><th>Cache</th><th>Used</th><th>Fill</th><th>Hit&nbsp;ratio</th><th>Hit</th>
+                 <th>Stale</th><th>Miss</th><th>Expired</th><th>Bypass</th>
+                 <th>Written</th></tr></thead>
+      <tbody id="angie-caches"></tbody>
+    </table>
+  </div>
+
+  <h2 id="angie-limit-h2" hidden>Rate limits
+    <span class="meta">Angie's own limit_req / limit_conn zones</span></h2>
+  <div class="tablewrap" id="angie-limit-wrap" hidden>
+    <table>
+      <thead><tr><th>Zone</th><th>Type</th><th>Passed</th><th>Delayed</th><th>Rejected</th>
+                 <th>Exhausted</th><th>Skipped</th></tr></thead>
+      <tbody id="angie-limits"></tbody>
+    </table>
+  </div>
+
+  <h2 id="angie-slab-h2" hidden>Shared memory
+    <span class="meta">slab zones; allocation failures mean the zone is too small</span></h2>
+  <div class="tablewrap" id="angie-slab-wrap" hidden>
+    <table>
+      <thead><tr><th>Zone</th><th>Pages&nbsp;used</th><th>Pages&nbsp;free</th><th>Used</th>
+                 <th>Alloc&nbsp;fails</th></tr></thead>
+      <tbody id="angie-slabs"></tbody>
     </table>
   </div>
 </main>
@@ -594,6 +710,27 @@
     const u = ["B", "KB", "MB", "GB", "TB"];
     const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
     return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+  };
+  // Thousands-separated integer, for Angie's counter columns (they reach the
+  // millions on a busy box and are unreadable as bare digits).
+  const count = (n) => Math.round(Number(n) || 0).toLocaleString();
+  // Angie reports peer latency and downtime in milliseconds.
+  const millis = (v) => {
+    const n = Number(v);
+    if (!isFinite(n) || n < 0) return "–";
+    if (n === 0) return "0";
+    if (n < 1000) return Math.round(n) + " ms";
+    if (n < 60e3) return (n / 1000).toFixed(1) + " s";
+    if (n < 3600e3) return Math.round(n / 60e3) + " m";
+    return (n / 3600e3).toFixed(1) + " h";
+  };
+  // A per-second rate, with just enough precision to stay readable: whole
+  // numbers when busy, two decimals when almost idle. null = not known yet.
+  const perSec = (r) => {
+    if (r === null || r === undefined || !isFinite(r)) return "–";
+    if (r >= 100) return Math.round(r).toLocaleString() + "/s";
+    if (r >= 10) return r.toFixed(1) + "/s";
+    return r.toFixed(2) + "/s";
   };
 
   // Detailed rows stay bounded for the table and geo map. The compact feed can
@@ -1353,77 +1490,492 @@
     return b;
   };
 
-  let lastAngie = null; // set in render(); re-rendered on theme change
+  // --- Angie API panels ----------------------------------------------------
+  // Everything Angie reports is either a gauge (active connections, cache size,
+  // peer latency) or a counter accumulated since it started. A counter total
+  // says what this box has ever served, not what it is doing now, so counters
+  // are differenced between samples into per-second rates.
+  //
+  // Samples are stamped with the *server-side* read time (as_of), not the
+  // browser clock: guardiand caches each Angie endpoint for ~3s, so a dashboard
+  // on the 2s interval would otherwise pair two identical readings and report a
+  // false 0/s. When as_of has not moved, the previous rate is kept as-is.
+  let lastAngie = null;         // set in render(); re-rendered on theme change
+  let angieSamples = new Map(); // counter key -> {v, t, rate}
+  let angieHistory = [];        // [{t, "2xx": rate, ...}] for the live chart
+  let angieLoadTime = null;     // Angie's load_time; a change resets the above
+  const ANGIE_HISTORY = 180;    // samples kept (15m at the default 5s interval)
+
+  const rateOf = (key, value, t) => {
+    const v = Number(value);
+    if (!isFinite(v)) return null;
+    const prev = angieSamples.get(key);
+    if (!prev) { angieSamples.set(key, { v, t, rate: null }); return null; }
+    // Same server-side sample: keep the last rate rather than dividing by a
+    // zero interval or reporting no traffic.
+    if (t <= prev.t) return prev.rate;
+    // A counter that went backwards means Angie restarted: re-baseline on this
+    // sample instead of drawing a negative rate.
+    const rate = v < prev.v ? null : (v - prev.v) / ((t - prev.t) / 1000);
+    angieSamples.set(key, { v, t, rate });
+    return rate;
+  };
+
+  // One colour mapping for response classes across every Angie chart, so a
+  // colour always means the same thing. Each chart carries a legend, and the
+  // tables repeat the numbers, so nothing here is colour-only.
+  const RESP_CLASSES = ["2xx", "3xx", "4xx", "5xx"];
+  const respColors = (c) => [c.good, c.muted, c.warning, c.critical];
+
+  // Peer state -> chip class. Angie's open-source states only; PRO's
+  // health-check states fall through to the neutral chip.
+  const PEER_CHIP = {
+    up: "on", busy: "on", down: "deny", unavailable: "deny",
+    recovering: "challenge", draining: "challenge",
+  };
+  const PEER_DOWN = new Set(["down", "unavailable"]);
+
+  // A counter that is only ever bad news (rejected requests, allocation
+  // failures, 5xx): rendered red once it moves. null renders as "not reported".
+  const badNum = (n) => {
+    if (n === null || n === undefined) return td("num", "–");
+    const v = Number(n) || 0;
+    return td("num" + (v > 0 ? " bad" : ""), count(v));
+  };
+
+  // Horizontal bar charts hold one row per zone/peer/cache, so a fixed canvas
+  // height turns three rows into three slabs of colour. Size the canvas to the
+  // rows it actually has and cap the bar thickness.
+  const ANGIE_ROW_PX = 34;
+  const sizeRows = (id, rows) => {
+    const wrap = $(id).parentElement;
+    wrap.style.height = Math.max(160, Math.min(380, rows * ANGIE_ROW_PX + 96)) + "px";
+  };
+
+  // A usage cell: percentage as text, bar for scanning a long table.
+  const fillCell = (ratio) => {
+    if (ratio === null || ratio === undefined || !isFinite(ratio)) return td("num", "–");
+    const p = Math.max(0, Math.min(1, ratio));
+    const cell = td("num", "");
+    const wrap = el("div", "fill");
+    wrap.appendChild(el("span", null, Math.round(p * 100) + "%"));
+    const bar = el("div", "bar" + (p >= 0.9 ? " hot" : p >= 0.7 ? " warn" : ""));
+    const inner = el("span");
+    inner.style.width = (p * 100).toFixed(1) + "%";
+    bar.appendChild(inner);
+    wrap.appendChild(bar);
+    cell.appendChild(wrap);
+    return cell;
+  };
+
+  // Every panel below the "Server traffic" heading. All are hidden first and
+  // then shown only where Angie actually reported something, so an operator
+  // never sees an empty table for a feature they have not configured.
+  const ANGIE_PANELS = ["angie-tiles", "angie-charts", "angie-zone-chart",
+    "angie-table-wrap", "angie-loc-h2", "angie-loc-wrap", "angie-up-h2",
+    "angie-up-chart", "angie-up-wrap", "angie-cache-h2", "angie-cache-chart",
+    "angie-cache-wrap", "angie-limit-h2", "angie-limit-wrap", "angie-slab-h2",
+    "angie-slab-wrap"];
 
   const renderAngie = (data) => {
     lastAngie = data;
     const h2 = $("angie-h2"), note = $("angie-note");
-    const charts = $("angie-charts"), tableWrap = $("angie-table-wrap");
-    // Not configured (or fetch failed entirely): hide the whole section.
-    if (!data || data.enabled === false) {
-      h2.hidden = note.hidden = charts.hidden = tableWrap.hidden = true;
-      return;
-    }
+    ANGIE_PANELS.forEach((id) => { $(id).hidden = true; });
+    // Not configured (or the fetch failed entirely): hide the whole section.
+    if (!data || data.enabled === false) { h2.hidden = note.hidden = true; return; }
     h2.hidden = false;
     // Configured but unreachable: show a note, hide the data widgets.
     if (data.error) {
       note.hidden = false;
       note.textContent = "Angie API unreachable: " + data.error;
-      charts.hidden = tableWrap.hidden = true;
       return;
     }
-    note.hidden = false; note.textContent = ""; note.hidden = true;
+    note.hidden = true; note.textContent = "";
+    const charting = !!window.Chart;
 
-    const zones = data.server_zones || {};
-    const names = Object.keys(zones).sort();
-    const hasData = names.length > 0;
-    charts.hidden = tableWrap.hidden = !hasData;
-    if (!hasData) return;
-    if (!window.Chart) return;
-    const c = themeColors();
+    // Sample times come from the relay. Fall back to the browser clock so an
+    // older guardiand that does not send as_of still renders.
+    const stamps = data.as_of || {};
+    const at = (key) => {
+      const t = Date.parse(stamps[key]);
+      return isFinite(t) ? t : Date.now();
+    };
 
-    // Requests-per-zone bar chart.
-    upsertChart("chart-angie-requests", (cc) => ({
-      type: "bar",
-      data: { labels: names, datasets: [{
-        data: names.map((z) => (zones[z].requests || {}).total || 0),
-        backgroundColor: cc.good, borderWidth: 0,
-      }] },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        scales: {
-          x: { grid: { display: false }, ticks: { color: cc.muted, maxRotation: 0, autoSkip: true } },
-          y: { beginAtZero: true, grid: { color: cc.grid }, ticks: { color: cc.muted, precision: 0 } },
-        },
-        plugins: { legend: { display: false } },
-      },
-    }));
-
-    // Response-code mix across all zones (doughnut 2xx/3xx/4xx/5xx).
-    const totals = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
-    for (const z of names) {
-      const b = bucketResponses(zones[z].responses);
-      for (const k in totals) totals[k] += b[k];
+    // A reload re-creates Angie's shared memory zones, so samples taken before
+    // it would difference against counters that no longer relate to them.
+    const ang = data.angie || null;
+    const loadTime = ang ? ang.load_time || null : null;
+    if (loadTime !== angieLoadTime) {
+      angieLoadTime = loadTime;
+      angieSamples = new Map();
+      angieHistory = [];
     }
-    upsertChart("chart-angie-responses", (cc) => ({
-      type: "doughnut",
-      data: { labels: Object.keys(totals), datasets: [{
-        data: Object.values(totals),
-        backgroundColor: [cc.good, cc.muted, cc.warning, cc.critical], borderWidth: 0,
-      }] },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { position: "right", labels: { color: cc.ink, boxWidth: 12 } } },
-      },
-    }));
 
-    // Per-zone detail table.
-    $("angie-zones").replaceChildren(...names.map((z) => {
-      const req = zones[z].requests || {}, dta = zones[z].data || {};
-      return row(td("wrap", z), td("num", String(req.total || 0)),
-        td("num", String(req.processing || 0)),
-        td("num", bytes(dta.received || 0)), td("num", bytes(dta.sent || 0)));
-    }));
+    // --- server zones: the per-vhost traffic Guardian cannot see itself ---
+    const zones = data.server_zones || {};
+    const zoneAt = at("server_zones");
+    const zoneStats = Object.keys(zones).sort().map((z) => {
+      const s = zones[z] || {};
+      return {
+        name: z, req: s.requests || {}, dta: s.data || {}, ssl: s.ssl || null,
+        cls: bucketResponses(s.responses),
+        rate: rateOf("zone:" + z, (s.requests || {}).total, zoneAt),
+      };
+    });
+    const totals = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+    let totalReq = 0, processing = 0;
+    for (const s of zoneStats) {
+      for (const k of RESP_CLASSES) totals[k] += s.cls[k];
+      totalReq += Number(s.req.total) || 0;
+      processing += Number(s.req.processing) || 0;
+    }
+    const totalRate = rateOf("requests", totalReq, zoneAt);
+    const classRates = {};
+    for (const k of RESP_CLASSES) classRates[k] = rateOf("class:" + k, totals[k], zoneAt);
+
+    // Append to the live rate series only on a genuinely new sample.
+    const newest = angieHistory.length ? angieHistory[angieHistory.length - 1].t : 0;
+    if (zoneStats.length && zoneAt > newest &&
+        RESP_CLASSES.some((k) => classRates[k] !== null)) {
+      const point = { t: zoneAt };
+      for (const k of RESP_CLASSES) point[k] = Math.max(0, classRates[k] || 0);
+      angieHistory.push(point);
+      if (angieHistory.length > ANGIE_HISTORY) angieHistory.shift();
+    }
+
+    // --- upstreams: one row per peer, flattened across upstreams ---
+    const upstreams = data.upstreams || {};
+    const upAt = at("upstreams");
+    const peers = [];
+    for (const name of Object.keys(upstreams).sort()) {
+      const u = upstreams[name] || {};
+      for (const addr of Object.keys(u.peers || {})) {
+        const p = u.peers[addr] || {};
+        peers.push({
+          up: name, addr, p, keepalive: u.keepalive,
+          health: p.health || {}, selected: p.selected || {},
+          rate: rateOf("peer:" + name + "|" + addr, (p.selected || {}).total, upAt),
+        });
+      }
+    }
+    const peersDown = peers.filter((x) => PEER_DOWN.has(String(x.p.state || ""))).length;
+
+    // --- caches: served-from-cache vs went-to-backend, and how full ---
+    const caches = data.caches || {};
+    const cacheStats = Object.keys(caches).sort().map((n) => {
+      const c = caches[n] || {};
+      const resp = (k) => Number((c[k] || {}).responses) || 0;
+      const written = (k) => Number((c[k] || {}).bytes_written) || 0;
+      const hit = resp("hit"), fresh = resp("stale") + resp("updating") + resp("revalidated");
+      const miss = resp("miss"), expired = resp("expired"), bypass = resp("bypass");
+      const served = hit + fresh;
+      const total = served + miss + expired + bypass;
+      const size = Number(c.size) || 0, max = Number(c.max_size) || 0;
+      return {
+        name: n, cold: c.cold === true, hit, fresh, miss, expired, bypass, served, total,
+        ratio: total ? served / total : null, size, max, fill: max ? size / max : null,
+        written: written("miss") + written("expired") + written("bypass"),
+      };
+    });
+    const cacheTotal = cacheStats.reduce((a, c) => a + c.total, 0);
+    const cacheServed = cacheStats.reduce((a, c) => a + c.served, 0);
+
+    // --- KPI tiles ---
+    const tile = (id, on, value, sub, bad) => {
+      $(id + "-tile").hidden = !on;
+      if (!on) return;
+      $(id).textContent = value;
+      const s = $(id + "-sub");
+      s.textContent = sub || "";
+      s.className = "sub" + (bad ? " bad" : "");
+    };
+    tile("ta-version", !!ang, ang ? String(ang.version || "?") : "",
+      ang ? [ang.generation !== undefined ? "gen " + ang.generation : null,
+        hasTime(ang.load_time) ? "reloaded " + relTime(ang.load_time) : null,
+      ].filter(Boolean).join(" · ") : "");
+    if (ang) {
+      $("ta-version").title = [ang.address ? "on " + ang.address : null,
+        ang.build_time ? "built " + new Date(ang.build_time).toLocaleDateString() : null,
+      ].filter(Boolean).join(", ");
+    }
+    const conn = data.connections || null;
+    const dropped = conn ? Number(conn.dropped) || 0 : 0;
+    tile("ta-conns", !!conn, conn ? count(conn.active) : "",
+      conn ? count(conn.idle) + " idle · " + count(dropped) + " dropped" : "", dropped > 0);
+    tile("ta-accepted", !!conn,
+      conn ? perSec(rateOf("accepted", conn.accepted, at("connections"))) : "",
+      conn ? count(conn.accepted) + " accepted since start" : "");
+    tile("ta-req", zoneStats.length > 0, perSec(totalRate),
+      count(processing) + " in flight · " + count(totalReq) + " total");
+    tile("ta-peers", peers.length > 0, (peers.length - peersDown) + "/" + peers.length,
+      peersDown ? peersDown + " down" : "all healthy", peersDown > 0);
+    $("ta-peers").className = "value text" + (peersDown ? " down" : "");
+    tile("ta-cache", cacheTotal > 0, pct(cacheServed / cacheTotal),
+      cacheStats.length + " caches · " + bytes(cacheStats.reduce((a, c) => a + c.size, 0)) + " stored");
+    $("angie-tiles").hidden = !["ta-version", "ta-conns", "ta-accepted", "ta-req",
+      "ta-peers", "ta-cache"].some((id) => !$(id + "-tile").hidden);
+
+    // --- server-zone charts and table ---
+    if (zoneStats.length) {
+      $("angie-table-wrap").hidden = false;
+      const hasTLS = zoneStats.some((s) => s.ssl);
+      $("angie-tls-th").hidden = !hasTLS;
+      $("angie-zones").replaceChildren(...zoneStats.map((s) => {
+        const cells = [td("wrap", s.name), td("num", count(s.req.total)),
+          td("num", perSec(s.rate)), td("num", count(s.req.processing)),
+          td("num", count(s.req.discarded)),
+          td("num", count(s.cls["2xx"])), td("num", count(s.cls["4xx"])),
+          badNum(s.cls["5xx"])];
+        if (hasTLS) {
+          const cell = badNum(s.ssl
+            ? (Number(s.ssl.failed) || 0) + (Number(s.ssl.timedout) || 0) : null);
+          if (s.ssl) {
+            cell.title = count(s.ssl.handshaked) + " handshakes, " +
+              count(s.ssl.reuses) + " reused";
+          }
+          cells.push(cell);
+        }
+        cells.push(td("num", bytes(s.dta.received)), td("num", bytes(s.dta.sent)));
+        return row(...cells);
+      }));
+    }
+    if (charting && zoneStats.length) {
+      $("angie-charts").hidden = false;
+      $("angie-rate-meta").textContent = angieHistory.length < 2
+        ? "by response class, per second (collecting…)"
+        : "by response class, per second, since this page opened";
+      const labels = angieHistory.map((p) => new Date(p.t)
+        .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      upsertChart("chart-angie-rate", (cc) => ({
+        type: "line",
+        data: { labels, datasets: RESP_CLASSES.map((k, i) => ({
+          label: k, data: angieHistory.map((p) => p[k]),
+          borderColor: respColors(cc)[i], backgroundColor: alpha(respColors(cc)[i], 0.25),
+          borderWidth: 2, pointRadius: 0, fill: true, tension: 0.25,
+        })) },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { intersect: false, mode: "index" },
+          scales: {
+            x: { stacked: true, grid: { color: cc.grid },
+                 ticks: { color: cc.muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+            // No precision:0 here: a quiet site runs at fractions of a request
+            // per second, and rounding the axis would flatten it to zero.
+            y: { stacked: true, beginAtZero: true, grid: { color: cc.grid },
+                 ticks: { color: cc.muted } },
+          },
+          plugins: { legend: { labels: { color: cc.ink, boxWidth: 12 } } },
+        },
+      }));
+
+      // Lifetime response mix, the counterpart to the live chart beside it.
+      upsertChart("chart-angie-responses", (cc) => ({
+        type: "doughnut",
+        data: { labels: RESP_CLASSES, datasets: [{
+          data: RESP_CLASSES.map((k) => totals[k]),
+          backgroundColor: respColors(cc), borderWidth: 0,
+        }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { position: "right", labels: { color: cc.ink, boxWidth: 12 } } },
+        },
+      }));
+
+      // Zones compared, stacked by response class. Horizontal because vhost
+      // names are long, capped at the busiest 10 with the rest called out in
+      // the label rather than silently dropped.
+      const ranked = zoneStats.slice().sort((a, b) =>
+        RESP_CLASSES.reduce((n, k) => n + b.cls[k] - a.cls[k], 0));
+      const top = ranked.slice(0, 10);
+      $("angie-zone-chart").hidden = false;
+      $("angie-zone-meta").textContent = ranked.length > top.length
+        ? "by class, busiest " + top.length + " of " + ranked.length + " zones"
+        : "by class, since Angie start";
+      sizeRows("chart-angie-zones", top.length);
+      upsertChart("chart-angie-zones", (cc) => ({
+        type: "bar",
+        data: { labels: top.map((s) => s.name), datasets: RESP_CLASSES.map((k, i) => ({
+          label: k, data: top.map((s) => s.cls[k]),
+          backgroundColor: respColors(cc)[i], borderRadius: 2, maxBarThickness: 26,
+          // A hairline in the surface colour separates touching segments.
+          borderColor: cc.surface, borderWidth: 1,
+        })) },
+        options: {
+          indexAxis: "y",
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { intersect: false, mode: "index" },
+          scales: {
+            x: { stacked: true, beginAtZero: true, grid: { color: cc.grid },
+                 ticks: { color: cc.muted, precision: 0 } },
+            y: { stacked: true, grid: { display: false }, ticks: { color: cc.muted } },
+          },
+          plugins: { legend: { labels: { color: cc.ink, boxWidth: 12 } } },
+        },
+      }));
+    }
+
+    // --- location zones (a status_zone inside a location block) ---
+    const locations = data.location_zones || {};
+    const locAt = at("location_zones");
+    const locNames = Object.keys(locations).sort();
+    if (locNames.length) {
+      $("angie-loc-h2").hidden = $("angie-loc-wrap").hidden = false;
+      $("angie-locations").replaceChildren(...locNames.map((l) => {
+        const s = locations[l] || {}, req = s.requests || {}, dta = s.data || {};
+        const cls = bucketResponses(s.responses);
+        return row(td("wrap", l), td("num", count(req.total)),
+          td("num", perSec(rateOf("loc:" + l, req.total, locAt))),
+          td("num", count(req.discarded)),
+          td("num", count(cls["2xx"])), td("num", count(cls["4xx"])), badNum(cls["5xx"]),
+          td("num", bytes(dta.received)), td("num", bytes(dta.sent)));
+      }));
+    }
+
+    // --- upstream peers ---
+    if (peers.length) {
+      $("angie-up-h2").hidden = $("angie-up-wrap").hidden = false;
+      $("angie-upstreams").replaceChildren(...peers.map((x) => {
+        const state = String(x.p.state || "unknown");
+        const chip = td(null, "");
+        chip.appendChild(el("span", "chip " + (PEER_CHIP[state] || ""), state));
+        const peer = td("wrap", (x.p.server || x.addr) + (x.p.backup ? " (backup)" : ""));
+        const upCell = td("wrap", x.up);
+        if (x.keepalive !== undefined) upCell.title = "keepalive: " + count(x.keepalive);
+        return row(upCell, peer, chip,
+          td("num", count(x.selected.current)), td("num", count(x.selected.total)),
+          td("num", perSec(x.rate)),
+          badNum(x.health.fails), badNum(x.health.unavailable),
+          td("num", x.health.downtime ? millis(x.health.downtime) : "0"),
+          td("num", millis(x.health.header_time)), td("num", millis(x.health.response_time)),
+          td("num", bytes((x.p.data || {}).sent)), td("num", bytes((x.p.data || {}).received)));
+      }));
+    }
+    if (charting && peers.length) {
+      $("angie-up-chart").hidden = false;
+      const shown = peers.slice(0, 12);
+      sizeRows("chart-angie-latency", shown.length);
+      upsertChart("chart-angie-latency", (cc) => ({
+        type: "bar",
+        data: {
+          labels: shown.map((x) => x.up + " · " + x.addr),
+          datasets: [
+            { label: "to header", data: shown.map((x) => Number(x.health.header_time) || 0),
+              backgroundColor: cc.series[0], borderWidth: 0, borderRadius: 2, maxBarThickness: 12 },
+            { label: "to full response", data: shown.map((x) => Number(x.health.response_time) || 0),
+              backgroundColor: cc.series[1], borderWidth: 0, borderRadius: 2, maxBarThickness: 12 },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { intersect: false, mode: "index" },
+          scales: {
+            x: { beginAtZero: true, grid: { color: cc.grid },
+                 title: { display: true, text: "milliseconds", color: cc.muted },
+                 ticks: { color: cc.muted } },
+            y: { grid: { display: false }, ticks: { color: cc.muted } },
+          },
+          plugins: { legend: { labels: { color: cc.ink, boxWidth: 12 } } },
+        },
+      }));
+    }
+
+    // --- proxy caches ---
+    if (cacheStats.length) {
+      $("angie-cache-h2").hidden = $("angie-cache-wrap").hidden = false;
+      $("angie-caches").replaceChildren(...cacheStats.map((c) => {
+        const name = td("wrap", "");
+        name.appendChild(el("span", null, c.name));
+        // "cold" means the loader is still walking the cache directory, so the
+        // size below is still climbing towards the real figure.
+        if (c.cold) {
+          name.appendChild(document.createTextNode(" "));
+          name.appendChild(el("span", "chip challenge", "loading"));
+        }
+        return row(name,
+          td("num", bytes(c.size) + (c.max ? " / " + bytes(c.max) : "")),
+          fillCell(c.fill),
+          td("num", c.ratio === null ? "–" : pct(c.ratio)),
+          td("num", count(c.hit)), td("num", count(c.fresh)), td("num", count(c.miss)),
+          td("num", count(c.expired)), td("num", count(c.bypass)),
+          td("num", bytes(c.written)));
+      }));
+    }
+    const cacheActive = cacheStats.filter((c) => c.total > 0);
+    if (charting && cacheActive.length) {
+      $("angie-cache-chart").hidden = false;
+      // Fixed hue per outcome (never re-assigned by rank or filtered set), from
+      // the page's categorical set: green for what the cache served, warm hues
+      // for what it had to fetch.
+      const segments = [
+        ["hit", (c) => c.hit, 2], ["stale / revalidated", (c) => c.fresh, 4],
+        ["miss", (c) => c.miss, 1], ["expired", (c) => c.expired, 3],
+        ["bypass", (c) => c.bypass, 5],
+      ];
+      sizeRows("chart-angie-cache", cacheActive.length);
+      upsertChart("chart-angie-cache", (cc) => ({
+        type: "bar",
+        data: {
+          labels: cacheActive.map((c) => c.name),
+          datasets: segments.map(([label, pick, hue]) => ({
+            label, data: cacheActive.map((c) => (pick(c) / c.total) * 100),
+            backgroundColor: cc.series[hue], borderRadius: 2, maxBarThickness: 26,
+            borderColor: cc.surface, borderWidth: 1,
+          })),
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { intersect: false, mode: "index" },
+          scales: {
+            x: { stacked: true, beginAtZero: true, max: 100, grid: { color: cc.grid },
+                 ticks: { color: cc.muted, callback: (v) => v + "%" } },
+            y: { stacked: true, grid: { display: false }, ticks: { color: cc.muted } },
+          },
+          plugins: {
+            legend: { labels: { color: cc.ink, boxWidth: 12 } },
+            tooltip: { callbacks: { label: (i) => i.dataset.label + ": " + i.parsed.x.toFixed(1) + "%" } },
+          },
+        },
+      }));
+    }
+
+    // --- Angie's own rate limits (limit_req / limit_conn) ---
+    const limitRows = [];
+    for (const [zone, z] of Object.entries(data.limit_reqs || {})) {
+      limitRows.push({ zone, kind: "requests", z, delayed: true });
+    }
+    for (const [zone, z] of Object.entries(data.limit_conns || {})) {
+      limitRows.push({ zone, kind: "connections", z, delayed: false });
+    }
+    if (limitRows.length) {
+      $("angie-limit-h2").hidden = $("angie-limit-wrap").hidden = false;
+      limitRows.sort((a, b) => a.zone.localeCompare(b.zone) || a.kind.localeCompare(b.kind));
+      // Delayed is the limiter working as configured (a burst being paced), so
+      // it stays neutral; rejected, exhausted and skipped are the failures.
+      $("angie-limits").replaceChildren(...limitRows.map((r) => row(
+        td("wrap", r.zone), td(null, r.kind), td("num", count(r.z.passed)),
+        r.delayed ? td("num", count(r.z.delayed)) : td("num", "–"),
+        badNum(r.z.rejected), badNum(r.z.exhausted), badNum(r.z.skipped))));
+    }
+
+    // --- shared memory zones ---
+    const slabRows = Object.entries(data.slabs || {}).map(([name, z]) => {
+      const pages = (z || {}).pages || {};
+      let fails = 0;
+      for (const slot of Object.values((z || {}).slots || {})) fails += Number(slot.fails) || 0;
+      const used = Number(pages.used) || 0, free = Number(pages.free) || 0;
+      return { name, used, free, fails, fill: used + free ? used / (used + free) : null };
+    });
+    if (slabRows.length) {
+      $("angie-slab-h2").hidden = $("angie-slab-wrap").hidden = false;
+      // Trouble first: allocation failures, then the fullest zones.
+      slabRows.sort((a, b) => b.fails - a.fails || (b.fill || 0) - (a.fill || 0) ||
+        a.name.localeCompare(b.name));
+      $("angie-slabs").replaceChildren(...slabRows.map((s) => row(
+        td("wrap", s.name), td("num", count(s.used)), td("num", count(s.free)),
+        fillCell(s.fill), badNum(s.fails))));
+    }
   };
 
   const renderDecisions = () => {
@@ -1664,7 +2216,6 @@
     ok === false ? "degraded" : ok === true ? "ok" : "observing");
 
   const pct = (v) => (typeof v === "number" ? (v * 100).toFixed(1) + "%" : "–");
-  const count = (v) => (typeof v === "number" ? Math.round(v) : 0);
 
   // renderHealth drives the banner, the Store tile and the System health card
   // from the /admin/stats health object the dashboard already fetches each
