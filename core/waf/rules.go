@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -75,6 +76,11 @@ type rulesFileYAML struct {
 // RuleSet is an immutable compiled rules file; swapped atomically on reload.
 type RuleSet struct {
 	Rules []Rule
+
+	// Warnings are non-fatal lint notes surfaced at load time (e.g. a regex
+	// that can never fire because it contains an uppercase literal while the
+	// matcher lowercases its input). They do not fail the load.
+	Warnings []string
 
 	headerTargets []string // sorted union of every rule's header targets
 	needsMethod   bool     // any rule carries a methods restriction
@@ -267,6 +273,15 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: rule %s: %w", path, ry.ID, err)
 			}
+			// The matcher lowercases path/query/UA/headers before running a rule,
+			// so a regex with an uppercase literal (not a metacharacter like \S)
+			// and no case-insensitive flag can never match. Warn rather than
+			// reject: it is a config mistake, not a parse error.
+			if lit := uppercaseLiteral(expr); lit != "" {
+				rs.Warnings = append(rs.Warnings, fmt.Sprintf(
+					"rule %s: regex %q can never match (input is lowercased; the literal %q is uppercase). Use a lowercase pattern or add (?i).",
+					ry.ID, expr, lit))
+			}
 			r.regexes = append(r.regexes, re)
 		}
 		rs.Rules = append(rs.Rules, r)
@@ -281,6 +296,71 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 	}
 	slices.Sort(rs.headerTargets)
 	return rs, nil
+}
+
+// uppercaseLiteral returns an uppercase-ASCII literal run the regex cannot
+// match without, or "" if the regex can still match some lowercase input. It
+// parses the pattern with regexp/syntax and inspects only OpLiteral nodes
+// without the FoldCase flag, so metacharacters (\S, \B, \D, an inline (?i)
+// group, a character class) are never mistaken for a literal, and a literal
+// that is skippable (S?elect, (FOO)*bar) or has a live sibling branch
+// (SELECT|select) is not flagged. Since the matcher always lowercases its
+// input, an unavoidable literal makes the whole regex dead.
+func uppercaseLiteral(expr string) string {
+	re, err := syntax.Parse(expr, syntax.Perl)
+	if err != nil {
+		return "" // already reported as a compile error by the caller
+	}
+	return requiredUppercaseLiteral(re)
+}
+
+// requiredUppercaseLiteral reports whether every string this subexpression
+// accepts must contain a case-sensitively matched uppercase-ASCII literal,
+// returning one such literal run, or "" if some accepting path avoids them.
+func requiredUppercaseLiteral(re *syntax.Regexp) string {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if re.Flags&syntax.FoldCase != 0 {
+			return ""
+		}
+		var run []rune
+		for _, r := range re.Rune {
+			if r >= 'A' && r <= 'Z' {
+				run = append(run, r)
+			} else if len(run) > 0 {
+				return string(run)
+			}
+		}
+		return string(run)
+	case syntax.OpConcat, syntax.OpCapture, syntax.OpPlus:
+		// Every sub must be traversed (OpPlus at least once): dead if any is.
+		for _, sub := range re.Sub {
+			if lit := requiredUppercaseLiteral(sub); lit != "" {
+				return lit
+			}
+		}
+	case syntax.OpAlternate:
+		// Dead only if every branch is; one live branch keeps the rule alive.
+		lit := ""
+		for _, sub := range re.Sub {
+			l := requiredUppercaseLiteral(sub)
+			if l == "" {
+				return ""
+			}
+			if lit == "" {
+				lit = l
+			}
+		}
+		return lit
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return requiredUppercaseLiteral(re.Sub[0])
+		}
+		// OpStar, OpQuest and {0,n} can match zero iterations, so the literal
+		// inside is avoidable; everything else (classes, anchors) has no
+		// case-sensitive literal to require.
+	}
+	return ""
 }
 
 // VariantSpec names one effective rule set to precompile: a rules file plus
@@ -442,7 +522,7 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 		c.byKey[key] = v
 	}
 	for _, f := range c.files {
-		if _, err := f.load(); err != nil {
+		if _, err := f.load(log); err != nil {
 			return nil, err
 		}
 		for _, v := range f.variants {
@@ -455,11 +535,21 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 	return c, nil
 }
 
+// logRuleWarnings emits every non-fatal lint note a compiled rule set carries.
+func logRuleWarnings(log *slog.Logger, path string, rs *RuleSet) {
+	if log == nil {
+		return
+	}
+	for _, w := range rs.Warnings {
+		log.Warn("waf rule warning", "file", path, "warning", w)
+	}
+}
+
 // load reads, compiles and installs the rules file and every variant filtered
 // from it, returning the content hash so the poller can record what it
 // loaded. All variants are validated before any is installed, so a failure
 // leaves every currently serving set unchanged.
-func (f *ruleFile) load() (uint64, error) {
+func (f *ruleFile) load(log *slog.Logger) (uint64, error) {
 	raw, err := safefile.Read(f.path, maxRulesBytes)
 	if err != nil {
 		return 0, err
@@ -468,6 +558,7 @@ func (f *ruleFile) load() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	logRuleWarnings(log, f.path, rs)
 	sets := make([]*RuleSet, len(f.variants))
 	for i, v := range f.variants {
 		filtered, err := rs.filter(v.disabled)
@@ -531,6 +622,7 @@ func (c *RuleCache) reloadChanged() {
 			f.hash.Store(hash) // don't retry-spam the same broken version
 			continue
 		}
+		logRuleWarnings(c.log, f.path, rs)
 		// Validate every variant before installing any: an update that removes
 		// or renames a rule ID some scope still disables is rejected wholesale,
 		// so a formerly-disabled rule can never become active silently. To

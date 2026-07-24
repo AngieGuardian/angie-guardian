@@ -141,6 +141,50 @@ func TestRuleValidation(t *testing.T) {
 	}
 }
 
+func TestDeadUppercaseRegexWarns(t *testing.T) {
+	// The matcher lowercases input, so a case-sensitive uppercase literal can
+	// never fire: warn, but do not reject.
+	dead := map[string]string{
+		"bare uppercase":    "rules: [ { id: a, regexes: [ 'SELECT' ] } ]",
+		"uppercase in word": "rules: [ { id: b, regexes: [ 'union\\s+SELECT' ] } ]",
+		"dead alternation":  "rules: [ { id: c, regexes: [ 'SELECT|UNION' ] } ]",
+		"plus group":        "rules: [ { id: d, regexes: [ '(FOO)+bar' ] } ]",
+	}
+	for name, body := range dead {
+		rs, err := compileRules([]byte(body), "test")
+		if err != nil {
+			t.Fatalf("%s: unexpected compile error: %v", name, err)
+		}
+		if len(rs.Warnings) == 0 {
+			t.Errorf("%s: expected a dead-regex warning, got none", name)
+		}
+	}
+
+	// Lowercase literals, case-insensitive flags, uppercase metacharacters
+	// (\S, \b, a character class) and avoidable uppercase (an optional or
+	// starred group, a live lowercase alternation branch) all still match
+	// lowercased input, so no warning.
+	live := map[string]string{
+		"lowercase":          "rules: [ { id: a, regexes: [ 'union\\s+select' ] } ]",
+		"case-insensitive":   "rules: [ { id: b, regexes: [ '(?i)SELECT' ] } ]",
+		"metachar \\S":       "rules: [ { id: c, regexes: [ 'a\\S+b' ] } ]",
+		"metachar \\b":       "rules: [ { id: d, regexes: [ '\\bwp-login\\b' ] } ]",
+		"optional uppercase": "rules: [ { id: e, regexes: [ 'S?elect' ] } ]",
+		"live alternation":   "rules: [ { id: f, regexes: [ 'SELECT|select' ] } ]",
+		"starred group":      "rules: [ { id: g, regexes: [ '(FOO)*bar' ] } ]",
+		"optional group":     "rules: [ { id: h, regexes: [ '(?:UNION )?select' ] } ]",
+	}
+	for name, body := range live {
+		rs, err := compileRules([]byte(body), "test")
+		if err != nil {
+			t.Fatalf("%s: unexpected compile error: %v", name, err)
+		}
+		if len(rs.Warnings) != 0 {
+			t.Errorf("%s: unexpected warning(s): %v", name, rs.Warnings)
+		}
+	}
+}
+
 func TestRulesRejectTrailingYAMLDocument(t *testing.T) {
 	body := "rules: [ { id: first, keywords: [x] } ]\n---\nrules: [ { id: hidden, keywords: [y] } ]\n"
 	if _, err := compileRules([]byte(body), "test"); err == nil {
