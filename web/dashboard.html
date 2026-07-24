@@ -365,6 +365,7 @@
     </div>
     <div class="meta" id="lu-intel"></div>
     <div id="lu-feeds"></div>
+    <div class="toolbar" id="lu-dec-totals" style="margin:0.6rem 0 0;" hidden></div>
     <div class="tablewrap scrolly" style="margin-top:0.6rem;">
       <table>
         <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
@@ -1520,7 +1521,30 @@
     history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
   };
 
-  const renderLookupDecisions = (rows) => {
+  // Totals over exactly the rows the table lists: how many decisions this IP
+  // has and how they split by action. Ring-bounded like the table itself, which
+  // the footnote spells out; whole=false means the server did not support ?ip=
+  // and the counts cover only the rows this page happens to hold, so say so
+  // rather than passing a partial count off as the total.
+  const ACTION_ORDER = ["deny", "challenge"];
+  const renderLookupTotals = (rows, whole) => {
+    const counts = new Map();
+    for (const d of rows) counts.set(d.action, (counts.get(d.action) || 0) + 1);
+    const rank = (a) => {
+      const i = ACTION_ORDER.indexOf(a);
+      return i < 0 ? ACTION_ORDER.length : i;
+    };
+    const actions = [...counts.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    const box = $("lu-dec-totals");
+    box.replaceChildren(
+      el("strong", null, rows.length + (rows.length === 1 ? " decision" : " decisions")),
+      ...actions.map((a) => el("span", "chip " + a, counts.get(a) + " " + a)),
+      ...(whole ? [] : [el("span", "meta", "(from the rows already fetched)")]));
+    box.hidden = rows.length === 0;
+  };
+
+  const renderLookupDecisions = (rows, whole) => {
+    renderLookupTotals(rows, whole);
     $("lu-decisions").replaceChildren(...rows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
@@ -1597,7 +1621,7 @@
     }
 
     renderLookupDecisions(ring ? ring.decisions || []
-      : lastDecisions.filter((d) => d.ip === lookupIP));
+      : lastDecisions.filter((d) => d.ip === lookupIP), !!ring);
     $("lookup-card").hidden = false;
     $("lookup-clear").hidden = false;
   };
