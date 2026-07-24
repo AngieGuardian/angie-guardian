@@ -30,3 +30,42 @@ func TestPebbleConformance(t *testing.T) {
 		})
 	}
 }
+
+// TestPebbleSweepExpired proves the janitor physically removes expired records
+// (not just hides them at read time) while leaving live and permanent keys, and
+// that Close is idempotent.
+func TestPebbleSweepExpired(t *testing.T) {
+	st, err := NewPebble(t.TempDir(), PebbleOptions{})
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	ctx := t.Context()
+	if err := st.Set(ctx, "dead", []byte("x"), 30*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Set(ctx, "live", []byte("y"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Set(ctx, "perm", []byte("z"), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	st.sweepExpired()
+
+	// The expired record must be physically gone from the LSM, not merely
+	// filtered by the expiry decode.
+	if _, _, err := st.db.Get([]byte("dead")); err == nil {
+		t.Error("expired record still physically present after sweep")
+	}
+	for _, key := range []string{"live", "perm"} {
+		if _, ok, err := st.Get(ctx, key); err != nil || !ok {
+			t.Errorf("sweep removed live key %q (ok=%v err=%v)", key, ok, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("second Close must be a no-op, got: %v", err)
+	}
+}

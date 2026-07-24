@@ -30,10 +30,19 @@ import (
 //     store's job, not this one's.
 //
 // Prefix Scan uses a bounded, natively-sorted iterator (no post-sort).
+//
+// Because expiry is read-time only, a janitor sweeps the keyspace periodically
+// and physically deletes expired records; without it every challenge, spent
+// marker and counter would live on disk forever and scans would degrade as
+// they skip an ever-growing corpse pile.
 type Pebble struct {
 	db        *pebble.DB
 	writeOpts *pebble.WriteOptions
 	locks     shardLocks
+
+	done      chan struct{}
+	janitorWG sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // PebbleOptions selects the durability profile.
@@ -54,7 +63,57 @@ func NewPebble(dir string, opts PebbleOptions) (*Pebble, error) {
 	if opts.Sync {
 		wo = pebble.Sync
 	}
-	return &Pebble{db: db, writeOpts: wo, locks: newShardLocks()}, nil
+	p := &Pebble{db: db, writeOpts: wo, locks: newShardLocks(), done: make(chan struct{})}
+	p.janitorWG.Add(1)
+	go p.janitor()
+	return p, nil
+}
+
+// pebbleJanitorInterval paces the expired-record sweep. Each sweep is a full
+// keyspace iteration, but with the janitor running the keyspace stays bounded
+// by live records plus at most one interval's worth of freshly expired ones.
+const pebbleJanitorInterval = time.Minute
+
+func (p *Pebble) janitor() {
+	defer p.janitorWG.Done()
+	ticker := time.NewTicker(pebbleJanitorInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.sweepExpired()
+		}
+	}
+}
+
+// sweepExpired physically deletes every record whose expiry has passed. Each
+// candidate is re-checked under its shard lock before deletion, since it may
+// have been rewritten live after the iterator snapshot. Deletes are unsynced
+// on purpose: losing one to a crash only re-exposes an expired record, which
+// reads as absent anyway and is re-collected by the next sweep.
+func (p *Pebble) sweepExpired() {
+	iter, err := p.db.NewIter(nil)
+	if err != nil {
+		return
+	}
+	var expired [][]byte
+	now := time.Now().UnixNano()
+	for iter.First(); iter.Valid(); iter.Next() {
+		exp, _, ok := splitExpiry(iter.Value())
+		if !ok || (exp != 0 && exp <= now) {
+			expired = append(expired, append([]byte(nil), iter.Key()...))
+		}
+	}
+	_ = iter.Close()
+	for _, key := range expired {
+		unlock := p.locks.lock(key)
+		if _, _, ok, err := p.getExpiry(key); err == nil && !ok {
+			_ = p.db.Delete(key, pebble.NoSync)
+		}
+		unlock()
+	}
 }
 
 func (p *Pebble) Get(_ context.Context, key string) ([]byte, bool, error) {
@@ -208,7 +267,16 @@ func (p *Pebble) MaxPostureVote(ctx context.Context, excludeInstanceID string) (
 	return maxPostureVoteVia(ctx, p, excludeInstanceID)
 }
 
-func (p *Pebble) Close() error { return p.db.Close() }
+// Close stops the janitor and closes the DB. Idempotent: extra calls are no-ops.
+func (p *Pebble) Close() error {
+	var err error
+	p.closeOnce.Do(func() {
+		close(p.done)
+		p.janitorWG.Wait()
+		err = p.db.Close()
+	})
+	return err
+}
 
 // pebbleNoopLogger silences Pebble's internal info/fatal logging, which would
 // otherwise print operational lines (e.g. "Found 0 WALs") to stderr.

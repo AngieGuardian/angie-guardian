@@ -56,9 +56,11 @@ type CounterCache struct {
 	workers int                    // live drain goroutines, capped at maxFlushWorkers
 	// capacityProtected means the last attempt to make room found that every
 	// entry carried unpushed work. New, previously unseen keys are then left
-	// uncached until a drainer releases an entry; existing hot keys keep their
-	// exact local count and reconciliation state.
+	// uncached until a drainer releases an entry or the paced re-sweep
+	// (nextRoomSweep) finds expired entries to reclaim; existing hot keys keep
+	// their exact local count and reconciliation state.
 	capacityProtected bool
+	nextRoomSweep     int64 // unix nanos: earliest next O(n) room sweep while protected
 	// overflow is a bounded count-min sketch used only while every primary
 	// cache entry is protected by unpushed work. It keeps repeat requests from
 	// an unseen key counting upward instead of returning 1 forever. Hash
@@ -212,28 +214,35 @@ func (c *CounterCache) incrOverflowLocked(key string, now int64, ttl time.Durati
 	return minimum
 }
 
-// makeCounterRoomLocked preserves every entry that still owns unpushed work
-// (either queued/in-flight in dirty, or retained in counterEntry.pending after
-// queue saturation) and bulk-evicts only clean cache entries. Bulk eviction
-// makes the O(n) scan rare instead of paying it for every new key at capacity.
-// If all entries are protected, new keys are shed until releaseLocked marks
-// that capacity may be reclaimed again. c.mu must be held.
+// makeCounterRoomLocked preserves every entry that still owns live unpushed
+// work and bulk-evicts the rest: clean cached totals, and expired entries even
+// when they retained a pending delta — the window is over, so that delta is
+// unpushable anyway (flushKey drops expired windows). Without the expired-entry
+// rule, a rotating-IP flood during a store outage would fill the cache with
+// never-rebumped protected entries and permanently degrade all new keys to the
+// overflow sketch. Bulk eviction makes the O(n) scan rare instead of paying it
+// for every new key at capacity; while every slot is protected the scan re-runs
+// at most once per second (nextRoomSweep), so expired entries are reclaimed as
+// their windows lapse without an O(n) cost per shed key. c.mu must be held.
 func (c *CounterCache) makeCounterRoomLocked() bool {
 	if len(c.m) < maxCounterEntries {
 		return true
 	}
-	if c.capacityProtected {
+	now := c.now().UnixNano()
+	if c.capacityProtected && now < c.nextRoomSweep {
 		return false
 	}
 	for key, e := range c.m {
-		if e.pending == 0 && c.dirty[key] == nil {
+		if c.dirty[key] == nil && (e.pending == 0 || now >= e.expires) {
 			delete(c.m, key)
 		}
 	}
 	if len(c.m) < maxCounterEntries {
+		c.capacityProtected = false
 		return true
 	}
 	c.capacityProtected = true
+	c.nextRoomSweep = now + time.Second.Nanoseconds()
 	return false
 }
 

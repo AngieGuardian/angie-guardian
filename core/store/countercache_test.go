@@ -565,6 +565,53 @@ func TestCounterCacheProtectedCapacityCountsUnseenKey(t *testing.T) {
 	}
 }
 
+// A rotating-key flood during a store outage fills every slot with protected
+// (pending-carrying) entries. Once their windows expire they must become
+// reclaimable — the pending delta is unpushable anyway — or every future
+// unseen key would be counted only by the overflow sketch until restart.
+func TestCounterCacheReclaimsExpiredProtectedEntries(t *testing.T) {
+	c := NewCounterCache(failingStore{})
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	c.mu.Lock()
+	for i := 0; i < maxCounterEntries; i++ {
+		key := fmt.Sprintf("flood-%d", i)
+		c.m[key] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
+	}
+	c.capacityProtected = true
+	c.nextRoomSweep = base.Add(time.Second).UnixNano()
+	c.mu.Unlock()
+
+	// Inside the flood window, before the next paced sweep: shed to the sketch.
+	if n := c.Incr("fresh", time.Minute); n != 1 {
+		t.Fatalf("overflow count = %d, want 1", n)
+	}
+	c.mu.Lock()
+	_, cached := c.m["fresh"]
+	c.mu.Unlock()
+	if cached {
+		t.Fatal("fresh key must be shed while every slot is live-protected")
+	}
+
+	// After the windows lapse, the sweep reclaims the expired protected entries
+	// and new keys get exact primary-cache counting again.
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if n := c.Incr("fresh2", time.Minute); n != 1 {
+		t.Fatalf("post-reclaim count = %d, want 1", n)
+	}
+	c.mu.Lock()
+	_, cached = c.m["fresh2"]
+	size := len(c.m)
+	c.mu.Unlock()
+	if !cached {
+		t.Fatal("expired protected entries were not reclaimed for a new key")
+	}
+	if size >= maxCounterEntries {
+		t.Errorf("cache size %d still at capacity after reclaim", size)
+	}
+}
+
 // TestCounterCacheMonotonicMerge: an out-of-order flush carrying a stale
 // (smaller) shared total must never roll the local count backward. Two local
 // bumps return 1 then 2; landing shared=2 then a late shared=1 must leave the

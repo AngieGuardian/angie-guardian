@@ -29,10 +29,11 @@ import (
 // Reads lazy-expire on access (delete-on-read under the write lock), so an
 // expired key is filtered even before the janitor sweeps it.
 type ShardedMemory struct {
-	shards  []shard
-	mask    uint32
-	central shardCentral
-	done    chan struct{}
+	shards    []shard
+	mask      uint32
+	central   shardCentral
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // entry is one stored value with its optional expiry (zero = no expiry).
@@ -437,8 +438,9 @@ func (s *ShardedMemory) MaxPostureVote(_ context.Context, excludeInstanceID stri
 	return maxLevel, nil
 }
 
+// Close stops the janitor. Idempotent: extra calls are no-ops.
 func (s *ShardedMemory) Close() error {
-	close(s.done)
+	s.closeOnce.Do(func() { close(s.done) })
 	return nil
 }
 
