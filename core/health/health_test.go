@@ -171,6 +171,12 @@ func TestProbeObservesClockSkew(t *testing.T) {
 	buf := &logBuffer{}
 	c := newChecker(t, cs, rec, slog.New(slog.NewTextHandler(buf, nil)))
 
+	// One full probe covers the wiring (skew is only observed on a successful
+	// round). The follow-up steps drive observeClockSkew directly:
+	// boundedProbe deliberately rejects a probe that starts before the
+	// previous attempt's bookkeeping is cleared, so back-to-back probe()
+	// calls are racy by design and would skip the observation on a slow
+	// runner.
 	c.probe(context.Background())
 	skew, ok := rec.lastSkew()
 	if !ok || skew < 85 || skew > 95 {
@@ -182,7 +188,7 @@ func TestProbeObservesClockSkew(t *testing.T) {
 
 	// Back under the threshold: gauge follows, transition logged once.
 	cs.offset = 0
-	c.probe(context.Background())
+	c.observeClockSkew(context.Background())
 	if skew, _ := rec.lastSkew(); skew > 1 || skew < -1 {
 		t.Errorf("skew after recovery = %v, want ~0", skew)
 	}
@@ -193,7 +199,7 @@ func TestProbeObservesClockSkew(t *testing.T) {
 	// A failing TIME call must not clear or update the gauge, only skip.
 	before := len(rec.skews)
 	cs.err = errors.New("no TIME for you")
-	c.probe(context.Background())
+	c.observeClockSkew(context.Background())
 	if len(rec.skews) != before {
 		t.Errorf("skew reported despite ServerTime error")
 	}
