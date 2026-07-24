@@ -332,9 +332,14 @@ total bypass. The allowlist supports:
 | `uas` | list | Case-insensitive substring match on User-Agent. Empty or whitespace-only entries are rejected. |
 | `paths` | list | Exact match, or prefix match when the entry ends with `/`. |
 
-The denylist evaluates only `ips` (CIDRs or bare IPv4/IPv6 addresses).
-Although `uas` and `paths` are accepted by the shared list schema, they are
-not deny conditions; do not configure them under `denylist`.
+The denylist enforces the same three options symmetrically: a match on
+`ips`, `uas`, or `paths` is a terminal deny (reasons `denylist:ip`,
+`denylist:ua`, `denylist:path`). Path entries match the decoded, normalized
+request path, so encoded or dot-segment spellings of a listed path still
+match. Keep `denylist.uas` entries narrow for the mirrored reason to the
+allowlist warning below: the header is client-controlled, so a broad
+substring (`bot`, say) hard-blocks every legitimate client that happens to
+carry it, while an actual attacker just changes their UA.
 
 `uas` is a plain substring match on a client-controlled, freely forgeable
 header. Reserve it for UAs you control (an internal uptime monitor, say).
