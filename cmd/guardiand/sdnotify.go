@@ -27,13 +27,13 @@ import (
 // /healthz, or ctx/timeout elapses. It is what makes the systemd READY=1
 // signal honest: "active" then means the auth hot path (and admin listener,
 // if enabled) is actually accepting, not just that the process is alive.
-func waitListening(ctx context.Context, cfg *core.Config, timeout time.Duration) error {
+func waitListening(ctx context.Context, listen, adminListen string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	targets := []string{"http://" + displayAddr(cfg.Listen) + "/healthz"}
-	if cfg.Admin.Listen != "" {
-		targets = append(targets, "http://"+displayAddr(cfg.Admin.Listen)+"/healthz")
+	targets := []string{"http://" + displayAddr(listen) + "/healthz"}
+	if adminListen != "" {
+		targets = append(targets, "http://"+displayAddr(adminListen)+"/healthz")
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -66,7 +66,7 @@ func waitListening(ctx context.Context, cfg *core.Config, timeout time.Duration)
 // answers its health probe. Keeping the callback separate makes the failure
 // contract testable without a live systemd notification socket.
 func signalReadyWhenListening(ctx context.Context, cfg *core.Config, timeout time.Duration, ready func()) error {
-	if err := waitListening(ctx, cfg, timeout); err != nil {
+	if err := waitListening(ctx, cfg.Listen, cfg.Admin.Listen, timeout); err != nil {
 		return err
 	}
 	ready()

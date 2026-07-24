@@ -903,10 +903,18 @@ func difficultyBits(d float64) int { return int(math.Round(d * 4)) }
 //   - Paths: exact match, or prefix match when the entry ends with "/"
 type ListConfig = stateless.ListConfig
 
+// maxConfigBytes bounds guardian.yaml reads; defaultListen is the guard
+// listen applied when the config omits one. Shared by LoadConfig/finalize and
+// the lenient ListenAddrs so the healthcheck probe can never drift from what
+// the daemon actually binds.
+const (
+	maxConfigBytes = 4 << 20
+	defaultListen  = "127.0.0.1:8071"
+)
+
 // LoadConfig reads, validates and resolves guardian.yaml. Per-domain configs
 // are precomputed here so the request hot path is a single map lookup.
 func LoadConfig(path string) (*Config, error) {
-	const maxConfigBytes = 4 << 20
 	raw, err := safefile.Read(path, maxConfigBytes)
 	if err != nil {
 		return nil, err
@@ -930,6 +938,32 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// ListenAddrs leniently extracts the guard and admin listen addresses from a
+// config file without validating the rest of it. The -healthcheck probe uses
+// it so a half-edited or otherwise invalid guardian.yaml cannot fail a probe
+// of an already-running, healthy daemon (which would crash-loop the service on
+// the bad config). It applies the same default guard listen as finalize but
+// runs no other validation, and tolerates unknown fields for the same reason.
+func ListenAddrs(path string) (listen, adminListen string, err error) {
+	raw, err := safefile.Read(path, maxConfigBytes)
+	if err != nil {
+		return "", "", err
+	}
+	var probe struct {
+		Listen string `yaml:"listen"`
+		Admin  struct {
+			Listen string `yaml:"listen"`
+		} `yaml:"admin"`
+	}
+	if err := yaml.Unmarshal(raw, &probe); err != nil {
+		return "", "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	if probe.Listen == "" {
+		probe.Listen = defaultListen
+	}
+	return probe.Listen, probe.Admin.Listen, nil
+}
+
 // decodeStrict decodes a yaml.Node into v with unknown-field checking, which
 // yaml.Node.Decode does not do on its own. It re-marshals the node and runs it
 // through a KnownFields decoder, so a typo inside a per-domain overlay (e.g.
@@ -948,7 +982,7 @@ func decodeStrict(node *yaml.Node, v any) error {
 
 func (c *Config) finalize() error {
 	if c.Listen == "" {
-		c.Listen = "127.0.0.1:8071"
+		c.Listen = defaultListen
 	}
 	if err := validateListenAddress("listen", c.Listen); err != nil {
 		return err

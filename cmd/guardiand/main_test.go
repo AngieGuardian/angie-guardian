@@ -41,6 +41,33 @@ func writeDaemonTestConfig(t *testing.T, body string) string {
 	return path
 }
 
+// -healthcheck must probe the running daemon even when the on-disk config was
+// edited into an invalid state, or a bad edit would crash-loop a healthy,
+// fail-open-serving service. checkHealth extracts only the listen addresses,
+// which must succeed where full config load fails.
+func TestCheckHealthUsesInvalidConfigAddresses(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid listen line, but a bogus field elsewhere that fails strict load.
+	path := writeDaemonTestConfig(t, "listen: "+u.Host+"\nnonsense_field: true\n")
+	if _, err := core.LoadConfig(path); err == nil {
+		t.Fatal("expected LoadConfig to reject the invalid config")
+	}
+	if err := checkHealth(path, time.Second); err != nil {
+		t.Fatalf("healthcheck must succeed against a reachable listener despite an invalid config: %v", err)
+	}
+}
+
 func TestSignalReadyOnlyAfterListenerResponds(t *testing.T) {
 	called := false
 	cfg := daemonTestConfig(t, "listen: 127.0.0.1:0\n")

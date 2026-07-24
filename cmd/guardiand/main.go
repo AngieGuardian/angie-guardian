@@ -79,11 +79,15 @@ func main() {
 }
 
 func checkHealth(configPath string, timeout time.Duration) error {
-	cfg, err := core.LoadConfig(configPath)
+	// Only the listen addresses are needed, extracted leniently: a probe of a
+	// healthy running daemon must not fail just because the on-disk config was
+	// edited into an invalid state (that would crash-loop the service, an
+	// availability own-goal for a fail-open product).
+	listen, adminListen, err := core.ListenAddrs(configPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("read listen addresses: %w", err)
 	}
-	return waitListening(context.Background(), cfg, timeout)
+	return waitListening(context.Background(), listen, adminListen, timeout)
 }
 
 func run(configPath string) error {
