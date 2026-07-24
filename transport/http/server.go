@@ -64,17 +64,39 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 	}
 	s.deniedHTML, _ = web.FS.ReadFile("denied.html")
 
-	s.mux.HandleFunc("GET /auth", s.handleAuth)
-	s.mux.HandleFunc("GET /challenge", s.handleChallenge)
+	// The endpoints that trust X-Guardian-* identity headers sit behind the
+	// require_proxied gate; /healthz (probed headerless by the systemd
+	// healthcheck) and /denied (static page, the glue sets no headers on it)
+	// never are.
+	s.mux.HandleFunc("GET /auth", s.proxiedOnly(s.handleAuth))
+	s.mux.HandleFunc("GET /challenge", s.proxiedOnly(s.handleChallenge))
 	s.mux.HandleFunc("/denied", s.handleDenied)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	// The pass endpoint under both its internal name and its public path, so
 	// Guardian also works probed directly (tests, dev without Angie).
 	for _, p := range []string{"/pass", PassPath} {
-		s.mux.HandleFunc("POST "+p, s.handlePassSolve)
-		s.mux.HandleFunc("GET "+p, s.handlePassNoJS)
+		s.mux.HandleFunc("POST "+p, s.proxiedOnly(s.handlePassSolve))
+		s.mux.HandleFunc("GET "+p, s.proxiedOnly(s.handlePassNoJS))
 	}
 	return s
+}
+
+// proxiedOnly enforces require_proxied: when enabled, a guard request without
+// the X-Guardian-IP header the Angie glue always sets is rejected instead of
+// falling back to the socket address. That fallback is what a direct client
+// would abuse to spoof another client's identity (exhaust a victim's
+// challenge budget, attribute tamper scores to an innocent IP), so behind a
+// correctly wired glue this gate only ever fires on traffic that bypassed
+// Angie. Read live from the config so a hot reload can toggle it.
+func (s *Server) proxiedOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.engine.Config().RequireProxied && r.Header.Get("X-Guardian-IP") == "" {
+			s.metrics.UnproxiedReject()
+			http.Error(w, "direct access rejected: proxied requests required", http.StatusForbidden)
+			return
+		}
+		h(w, r)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }

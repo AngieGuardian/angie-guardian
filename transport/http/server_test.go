@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -175,6 +176,45 @@ func TestAuthEndpoint(t *testing.T) {
 	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "203.0.113.9", "/robots.txt", "curl"), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("allowlisted path: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// require_proxied must reject identity-trusting endpoints when the
+// X-Guardian-* headers are absent (the request bypassed the Angie glue), and
+// must leave /healthz and /denied open: the systemd healthcheck probes
+// headerless and the glue sets no headers on @guardian_denied.
+func TestRequireProxiedGate(t *testing.T) {
+	ts := testServerWithYAML(t, "require_proxied: true\n"+testYAML)
+
+	for _, path := range []string{"/auth", "/challenge", "/pass", PassPath} {
+		resp := do(t, "GET", ts.URL+path, nil, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s without X-Guardian-IP: status = %d, want 403", path, resp.StatusCode)
+		}
+	}
+
+	// With the glue headers present, evaluation proceeds normally.
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0"), nil)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Guardian-Action") != "allow" {
+		t.Fatalf("proxied allow: status = %d action = %q", resp.StatusCode, resp.Header.Get("X-Guardian-Action"))
+	}
+
+	if resp := do(t, "GET", ts.URL+"/healthz", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz must stay open under require_proxied: status = %d", resp.StatusCode)
+	}
+	// /denied always answers 403, but it must be the styled HTML page, not
+	// the plain-text gate rejection: the glue sets no headers on it.
+	resp = do(t, "GET", ts.URL+"/denied", nil, nil)
+	if ct := resp.Header.Get("Content-Type"); resp.StatusCode != http.StatusForbidden ||
+		!strings.HasPrefix(ct, "text/html") {
+		t.Errorf("/denied: status = %d content-type = %q, want the styled 403 page", resp.StatusCode, ct)
+	}
+
+	// Default-off: the same headerless probe keeps working (dev, tests, curl).
+	off := testServer(t)
+	if resp := do(t, "GET", off.URL+"/auth", nil, nil); resp.StatusCode == http.StatusForbidden &&
+		resp.Header.Get("X-Guardian-Action") == "" {
+		t.Fatalf("require_proxied off must fall back to the socket address, got bare %d", resp.StatusCode)
 	}
 }
 

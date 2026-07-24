@@ -53,6 +53,7 @@ type Metrics struct {
 	attackTransitions *prometheus.CounterVec // by to, reason
 	attackSignal      *prometheus.GaugeVec   // by signal; current window value
 	shed              *prometheus.CounterVec // load-shed decisions by outcome
+	unproxiedRejects  prometheus.Counter     // require_proxied gate rejections
 }
 
 // New builds the collector set for a process using the named store backend.
@@ -182,6 +183,10 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "shed_total",
 			Help: "Load-shed decisions under saturation by outcome (pass_token|shed).",
 		}, []string{"outcome"}),
+		unproxiedRejects: f.NewCounter(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "unproxied_rejects_total",
+			Help: "Guard requests rejected by require_proxied for missing X-Guardian-* headers; nonzero means something reaches the guard port without going through Angie.",
+		}),
 	}
 }
 
@@ -393,4 +398,13 @@ func (m *Metrics) Shed(outcome string) {
 		return
 	}
 	m.shed.WithLabelValues(outcome).Inc()
+}
+
+// UnproxiedReject counts one guard request rejected by the require_proxied
+// gate (no X-Guardian-* headers, so it did not come through the Angie glue).
+func (m *Metrics) UnproxiedReject() {
+	if m == nil {
+		return
+	}
+	m.unproxiedRejects.Inc()
 }
