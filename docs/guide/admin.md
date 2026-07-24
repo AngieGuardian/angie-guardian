@@ -100,6 +100,35 @@ curl -s $A/metrics | grep guardian_
 The full endpoint list with request/response shapes is in the
 [Admin API reference](/reference/admin-api).
 
+### Blocking an IP range at runtime
+
+`PUT /admin/blocks/{ip}` takes single addresses only; runtime blocks are
+exact-key entries so they stay cheap on the hot path and offloadable to the
+kernel. To drop a whole range without a restart, use a local deny feed: a
+`file:` feed is hot-reloaded on change, so appending a CIDR takes effect
+within moments.
+
+```yaml
+reputation:
+  feeds:
+    - name: ops-blocklist
+      file: /etc/guardian/ops-blocklist.txt   # hot-reloaded on change
+      action: deny
+```
+
+```sh
+echo "10.16.0.0/12  # scraper botnet, ticket OPS-123" >> /etc/guardian/ops-blocklist.txt
+```
+
+Matching IPs are denied with reason `reputation:ops-blocklist`, visible in the
+decisions feed and the dashboard like any other deny. To lift the block,
+remove the line; entries have no TTL. In a fleet, publish the list over HTTP
+as a `url:` feed instead and every instance picks it up on its refresh
+interval. Details and caveats are in
+[IP reputation feeds](/guide/bots-ip-intel#ip-reputation-feeds); the static
+per-domain `denylist.ips` remains the right place for ranges that should be
+part of the durable config rather than an operational action.
+
 ## The reporting dashboard
 
 Set `admin.dashboard: true`, start guardiand, and open the URL it prints:
