@@ -205,6 +205,13 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	if body.Reason == "" {
 		body.Reason = "admin"
 	}
+	// The reason is later reflected into the X-Guardian-Reason response header
+	// and the structured decision log, so control characters (CR/LF included)
+	// are rejected rather than stored.
+	if len(body.Reason) > 200 || strings.ContainsFunc(body.Reason, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "reason must be at most 200 characters without control characters"})
+		return
+	}
 	if err := s.engine.BlockIP(r.Context(), ip, body.Reason, ttl); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

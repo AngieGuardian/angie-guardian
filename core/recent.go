@@ -37,6 +37,25 @@ const (
 	maxRecentSize     = 16384
 )
 
+// Per-entry field caps. URI and UA are attacker-supplied and can each run to
+// the proxy's full header budget (~8 KiB); uncapped, a hostile flood could pin
+// capacity*16KiB (hundreds of MiB at maxRecentSize) in a diagnostics buffer.
+// Truncation keeps the ring's worst case attacker-independent while leaving
+// entries plenty descriptive for a live operator view.
+const (
+	maxRecentURILen = 2048
+	maxRecentUALen  = 512
+)
+
+// truncateRecent caps s at n bytes, marking the cut so an operator can tell a
+// truncated value from a naturally short one.
+func truncateRecent(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 // RecentDecisionSnapshot is one consistent copy of the live ring plus the
 // retention state needed to describe its coverage honestly.
 type RecentDecisionSnapshot struct {
@@ -69,6 +88,8 @@ func newRecentRing(size int) *recentRing {
 }
 
 func (r *recentRing) add(d RecentDecision) {
+	d.URI = truncateRecent(d.URI, maxRecentURILen)
+	d.UA = truncateRecent(d.UA, maxRecentUALen)
 	r.mu.Lock()
 	if len(r.buf) == 0 {
 		r.buf = make([]RecentDecision, defaultRecentSize)

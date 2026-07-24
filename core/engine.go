@@ -57,7 +57,11 @@ const (
 // Engine runs the ordered decision pipeline. This is THE seam: every
 // transport wraps Evaluate and nothing else.
 type Engine struct {
-	snap     atomic.Pointer[engineSnapshot]
+	snap atomic.Pointer[engineSnapshot]
+	// lastCfg mirrors the active snapshot's config and is never nil'd, so the
+	// per-request Config() accessor stays panic-free for straggler requests
+	// racing Close during shutdown (they fail open like Evaluate does).
+	lastCfg  atomic.Pointer[Config]
 	store    store.Store
 	pow      *pow.Manager // nil when no signing key is configured: PoW stages inert
 	bots     *botverify.Verifier
@@ -226,6 +230,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		},
 	}
 	e.snap.Store(snap)
+	e.lastCfg.Store(snap.cfg)
 	return e, nil
 }
 
@@ -252,6 +257,7 @@ func (e *Engine) Reload(cfg *Config) error {
 	startSnapshot(snap)
 	snap.intel.SetMetrics(e.metrics)
 	old = e.snap.Swap(snap)
+	e.lastCfg.Store(snap.cfg)
 	old.release() // resources close after the final in-flight evaluator releases
 	// attack_mode is hot-reloadable: push the new thresholds/effects into the
 	// live detector (nil-safe).
@@ -379,8 +385,8 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 		var blocked bool
 		switch ev.Type {
 		case EventInstantBlock:
-			blocked = true
 			err = e.board.Block(ctx, ip, ev.Detail, ib.BlockTTL.Std(), ib.MaxBlockTTL.Std())
+			blocked = err == nil
 		default:
 			if rate, ok := ib.Thresholds[ev.Type]; ok {
 				limit := rate.Count
@@ -570,6 +576,10 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	// prove that a miss is unblocked without consulting the store. Store I/O is
 	// intentionally forbidden on the shed path, so reject the request instead
 	// of letting a token bypass a block known only to another replica/the store.
+	// The nil-enforcer check is a deliberate availability trade-off, not an
+	// oversight: with no mirror at all (store-only embeddings, unit tests)
+	// every block is unknowable here, and rejecting would strip the shed
+	// fast-pass from every token holder; guardiand always attaches a mirror.
 	if e.enforcer != nil && e.enforcer.ReadThrough() {
 		return ShedReject
 	}
@@ -619,13 +629,25 @@ func (e *Engine) PoWManager() *pow.Manager { return e.pow }
 func (e *Engine) BotVerifier() *botverify.Verifier { return e.bots }
 
 // Intel exposes the intel provider for admin inspection (may be nil; its
-// methods are nil-safe).
-func (e *Engine) Intel() *intel.Provider { return e.snap.Load().intel }
+// methods are nil-safe). Nil after Close.
+func (e *Engine) Intel() *intel.Provider {
+	if snap := e.snap.Load(); snap != nil {
+		return snap.intel
+	}
+	return nil
+}
 
 // Config exposes the currently active configuration. Callers must treat it as
 // a point-in-time snapshot: a hot reload swaps it, so hold the returned
-// pointer for one request, never across requests.
-func (e *Engine) Config() *Config { return e.snap.Load().cfg }
+// pointer for one request, never across requests. After Close it keeps
+// returning the last active config, so straggler requests racing shutdown
+// read stale-but-valid policy instead of panicking.
+func (e *Engine) Config() *Config {
+	if snap := e.snap.Load(); snap != nil {
+		return snap.cfg
+	}
+	return e.lastCfg.Load()
+}
 
 // AnomalyModels returns immutable metadata for the currently loaded artifacts.
 func (e *Engine) AnomalyModels() []anomaly.ModelStatus {

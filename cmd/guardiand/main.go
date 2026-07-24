@@ -283,6 +283,13 @@ func run(configPath string) error {
 		default:
 			return fmt.Errorf("admin.listen %s is not loopback but no admin.token or admin.token_file is set; refusing to expose an unauthenticated admin API", cfg.Admin.Listen)
 		}
+		if !isLoopback(cfg.Admin.Listen) {
+			// The /admin/* API is bearer-gated, but the scrape/probe endpoints
+			// deliberately are not; on a routable bind that trade-off must be a
+			// visible choice, not a surprise.
+			log.Warn("admin.listen is not loopback: /metrics, /healthz and /readyz are served without authentication on this interface; restrict reachability at the firewall or scrape via loopback",
+				"addr", cfg.Admin.Listen)
+		}
 
 		admin = &http.Server{
 			Addr: cfg.Admin.Listen,
@@ -399,6 +406,7 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 	add("store.addr", running.store.Addr != next.Store.Addr)
 	add("store.password", running.store.Password != next.Store.Password)
 	add("store.db", running.store.DB != next.Store.DB)
+	add("store.sync", running.store.Sync != next.Store.Sync)
 	// The mirror seed and any netlink/table setup happen at startup, so the
 	// whole section is compared as one unit.
 	add("enforcement", !reflect.DeepEqual(running.enforcement, next.Enforcement))

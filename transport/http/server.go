@@ -169,6 +169,11 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	case core.ActionDeny:
 		s.logDecision(req, d)
 		w.WriteHeader(http.StatusForbidden)
+	default:
+		// An action the transport does not recognize fails open by contract,
+		// but explicitly and logged — never as an accidental implicit 200.
+		s.logDecision(req, d)
+		w.WriteHeader(http.StatusOK)
 	}
 }
 

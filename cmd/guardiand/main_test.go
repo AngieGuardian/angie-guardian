@@ -139,4 +139,12 @@ func TestStaticConfigChanges(t *testing.T) {
 	if got := staticConfigChanges(base, changed); !slices.Equal(got, want) {
 		t.Fatalf("static changes = %v, want %v", got, want)
 	}
+
+	// The store is opened with cfg.Store.Sync at startup; flipping it on reload
+	// must be rejected, or the operator would believe they changed durability.
+	runningPebble := daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: pebble, path: /tmp/g, sync: false }\n")
+	syncFlip := daemonTestConfig(t, "listen: 127.0.0.1:8071\nstore: { backend: pebble, path: /tmp/g, sync: true }\n")
+	if got, want := staticConfigChanges(staticConfigFrom(runningPebble), syncFlip), []string{"store.sync"}; !slices.Equal(got, want) {
+		t.Fatalf("sync-flip changes = %v, want %v", got, want)
+	}
 }
