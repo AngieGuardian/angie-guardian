@@ -341,6 +341,13 @@ allowlist warning below: the header is client-controlled, so a broad
 substring (`bot`, say) hard-blocks every legitimate client that happens to
 carry it, while an actual attacker just changes their UA.
 
+Entries are matched literally, and anywhere in the header. That makes them
+version-independent by construction: list only the stable leading part of the
+User-Agent, up to and including the separator that precedes the version, and
+every release matches. An entry of `curl/` covers `curl/8.5.0`, `curl/8.11.1`
+and whatever ships next. Keep that trailing separator so a short entry cannot
+also catch an unrelated product whose name merely starts the same way.
+
 `uas` is a plain substring match on a client-controlled, freely forgeable
 header. Reserve it for UAs you control (an internal uptime monitor, say).
 **Never** put search-crawler names here (`uas: [ Googlebot ]`): any scraper
