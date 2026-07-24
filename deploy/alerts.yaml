@@ -71,7 +71,7 @@ groups:
             ({{ $value | humanizePercentage }}). Individual stages abstain on a
             store error, so protection is degrading unevenly rather than
             cleanly failing open.
-          runbook_url: https://angieguardian.org/guide/production#store-backends
+          runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
 
       # Challenges are issued but almost nobody solves them. Either the
       # difficulty is set beyond what real clients can afford, the challenge
@@ -169,7 +169,7 @@ groups:
             enforcing blocks in-daemon instead of in the kernel. Traffic is
             still protected. Usually a missing capability (CAP_NET_ADMIN) or an
             nft table removed out of band; see /admin/offload for the error.
-          runbook_url: https://angieguardian.org/guide/production#enforcement-offload
+          runbook_url: https://angieguardian.org/guide/block-offload
 
       # Informational: attack mode is doing its job. Paging on this would page
       # on every attack Guardian successfully absorbed.
@@ -200,7 +200,7 @@ groups:
             Guardian has been shedding requests continuously for 10 minutes
             ({{ $value | humanize }}/s). The instance is saturated: add
             capacity, or move to a faster store backend.
-          runbook_url: https://angieguardian.org/guide/production#performance
+          runbook_url: https://angieguardian.org/guide/production#gc-tuning-for-peak-throughput
 
       # Single-spend fell back to per-replica: the challenge CAS is failing, so
       # a solved challenge is no longer guaranteed to be redeemable exactly
@@ -218,4 +218,4 @@ groups:
             single-spend has degraded to per-replica and a solved challenge can
             be replayed against another instance. Check GuardianStoreDown and
             GuardianStoreErrors first; this rarely fires on its own.
-          runbook_url: https://angieguardian.org/guide/production#store-backends
+          runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend

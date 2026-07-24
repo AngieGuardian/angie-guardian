@@ -559,9 +559,21 @@ way defeats the point:
   degradation into an outage.
 - **`/readyz`** (admin listener) is **readiness**: is the shared state Guardian's
   stateful protection depends on actually working? It returns `503` when the
-  background store probe is pending, failing or stale. Use it for load-balancer
-  readiness, Kubernetes `readinessProbe`, and the "should this replica take
-  traffic" question.
+  background store probe is pending, failing or stale. Use it to gate rollouts
+  and instance startup ordering: a freshly deployed replica should not receive
+  traffic before its store connection works.
+
+::: warning Do not gate fleet traffic on `/readyz` with a shared store
+With a shared Valkey/Redis store, one store outage makes **every** replica
+return `503` at the same moment, because they all probe the same backend. A
+load balancer or Kubernetes `readinessProbe` wired to `/readyz` would then pull
+the entire fleet from rotation at once, even though every instance is still
+serving and (fail-open) protecting traffic. That converts a survivable store
+degradation into the full outage fail-open exists to prevent. For a shared
+store, alert on `/readyz` (the shipped `GuardianStoreDown` rule already fires)
+instead of routing on it; reserve routing decisions for per-instance stores,
+where readiness failures are uncorrelated.
+:::
 
 `/readyz` only reads the last probe snapshot, so probing it aggressively costs
 nothing and cannot turn health checks into store traffic. A degraded nftables

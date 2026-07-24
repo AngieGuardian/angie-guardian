@@ -65,6 +65,12 @@ attack posture both still protect traffic, and dropping the instance out of a
 load balancer during exactly that incident would be the wrong reflex. Both
 blocks are omitted when unconfigured.
 
+With a **shared** store, do not wire `/readyz` into load-balancer membership or
+a Kubernetes `readinessProbe`: one store outage fails readiness on every replica
+simultaneously and would pull the whole (still fail-open serving) fleet at once.
+Use it for rollout gating and startup ordering, and alert on it during steady
+state; see [the production guide](/guide/production#probes-liveness-vs-readiness).
+
 The reason is deliberately coarse and the response carries no raw backend error
 (those can contain addresses, DSN credentials or filesystem paths). The detail
 goes to the log and to the token-guarded [`/admin/stats`](#get-admin-stats)

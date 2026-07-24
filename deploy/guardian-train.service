@@ -40,7 +40,13 @@ ProtectHostname=true
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=true
-CapabilityBoundingSet=
+# The helper needs exactly two root capabilities: CAP_CHOWN so the final
+# `install -o root -g guardian` promotion can set the model's group (root is
+# not a member of guardian), and CAP_DAC_READ_SEARCH so rotated access logs
+# created by the web server's own user (e.g. www-data:adm 0640) stay readable.
+# An empty set would EPERM the promotion on every run and silently leave the
+# live model aging forever.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
 InaccessiblePaths=-/var/lib/guardian
 ReadOnlyPaths=/var/log/angie
 ReadWritePaths=/etc/guardian
