@@ -8,6 +8,7 @@
 package httptransport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +101,13 @@ func (s *Server) proxiedOnly(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+
+// FlushCounters drains the issuance rate-limit counter cache's unpushed
+// deltas to the store, bounded by ctx. Call at shutdown, after the HTTP
+// server has drained and before the store closes.
+func (s *Server) FlushCounters(ctx context.Context) error {
+	return s.counters.Flush(ctx)
+}
 
 // requestContext builds the core request from the X-Guardian-* headers the
 // Angie snippets set on the subrequest, falling back to the subrequest's own

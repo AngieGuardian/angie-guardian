@@ -817,3 +817,91 @@ func (g *gateDelStore) IncrByDeadline(ctx context.Context, key string, delta, de
 	g.incrEntered.Add(1)
 	return g.Store.IncrByDeadline(ctx, key, delta, deadline)
 }
+
+// TestCounterCacheFlushPushesParkedDeltas: Flush must push deltas that never
+// made it into the dirty backlog (queue overflow parked them in the local
+// pending slot), so a shutdown does not lose the last windows' counts.
+func TestCounterCacheFlushPushesParkedDeltas(t *testing.T) {
+	mem := NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	c := NewCounterCache(mem)
+
+	// Saturate the backlog so the key's delta stays parked locally.
+	c.mu.Lock()
+	c.queue = make([]string, maxFlushQueue)
+	c.workers = maxFlushWorkers
+	c.mu.Unlock()
+	for range 5 {
+		c.Incr("parked", time.Minute)
+	}
+	c.mu.Lock()
+	if got := c.m["parked"].pending; got != 5 {
+		c.mu.Unlock()
+		t.Fatalf("parked pending delta = %d, want 5", got)
+	}
+	// Drop the synthetic backlog; nothing real was queued.
+	c.queue = c.queue[:0]
+	c.workers = 0
+	c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	v, ok, err := mem.Get(context.Background(), "parked")
+	if err != nil || !ok || string(v) != "5" {
+		t.Fatalf("store total after Flush = %q (ok=%v err=%v), want 5", v, ok, err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if got := c.m["parked"].pending; got != 0 {
+		t.Fatalf("pending after Flush = %d, want 0", got)
+	}
+}
+
+// TestCounterCacheFlushSkipsExpiredWindows: a parked delta whose window has
+// already ended must not be pushed at shutdown (the store would start a fresh
+// window for events that belong to a dead one).
+func TestCounterCacheFlushSkipsExpiredWindows(t *testing.T) {
+	mem := NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	c := NewCounterCache(mem)
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	c.mu.Lock()
+	c.queue = make([]string, maxFlushQueue)
+	c.workers = maxFlushWorkers
+	c.mu.Unlock()
+	c.Incr("expired", time.Minute)
+	c.mu.Lock()
+	c.queue = c.queue[:0]
+	c.workers = 0
+	c.mu.Unlock()
+
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if _, ok, _ := mem.Get(context.Background(), "expired"); ok {
+		t.Fatal("expired window must not be pushed by Flush")
+	}
+}
+
+// TestCounterCacheFlushHonorsContext: a hung store must not wedge shutdown;
+// Flush returns the context error once its deadline passes.
+func TestCounterCacheFlushHonorsContext(t *testing.T) {
+	bs := &blockingStore{Store: NewMemory(), release: make(chan struct{}), gate: true}
+	t.Cleanup(func() { close(bs.release); bs.Store.Close() })
+	c := NewCounterCache(bs)
+
+	c.Incr("k", time.Minute) // spawns a drainer that parks in the store
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Flush(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Flush on a hung store = %v, want DeadlineExceeded", err)
+	}
+}

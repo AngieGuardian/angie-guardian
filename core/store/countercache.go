@@ -189,6 +189,61 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 	return n
 }
 
+// Flush pushes every unpushed live delta to the store and waits for the
+// drainers to go idle, bounded by ctx. Call it at shutdown, after request
+// traffic has stopped and before the store closes, so durable and shared
+// backends do not lose the last windows' counts on every restart. It promotes
+// deltas parked in the local pending slots (queue overflow, an earlier failed
+// round) to dirty entries, deliberately ignoring the maxFlushQueue overload
+// valve: that cap bounds steady-state memory, not a one-shot drain of work
+// that already exists. Expired windows are dropped as always. The cache stays
+// usable afterwards; a late Incr simply dirties keys again.
+func (c *CounterCache) Flush(ctx context.Context) error {
+	c.mu.Lock()
+	now := c.now().UnixNano()
+	spawn := 0
+	for key, e := range c.m {
+		if e.pending == 0 || now >= e.expires {
+			continue
+		}
+		if _, owned := c.dirty[key]; owned {
+			// An owning drainer is mid-flight; a pending slot here means a
+			// failed round is being preserved concurrently. Its next bump
+			// retries; stealing it now would race the owner.
+			continue
+		}
+		c.dirty[key] = &dirtyEntry{delta: e.pending, deadline: e.expires}
+		e.pending = 0
+		c.m[key] = e
+		c.queue = append(c.queue, key)
+	}
+	for c.workers < maxFlushWorkers && c.workers < len(c.queue) {
+		c.workers++
+		spawn++
+	}
+	c.mu.Unlock()
+	for range spawn {
+		c.Go(c.drain)
+	}
+
+	// Wait for quiescence: empty queue and no live drainers.
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		c.mu.Lock()
+		idle := len(c.queue) == 0 && c.workers == 0
+		c.mu.Unlock()
+		if idle {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
+
 // incrOverflowLocked increments a count-min sketch. Returning the minimum of
 // independent rows ensures collisions never under-count a key. Under a hash
 // collision, the cell keeps the later deadline; this can conservatively hold

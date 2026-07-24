@@ -244,9 +244,10 @@ func run(configPath string) error {
 		return nil
 	}
 
+	guard := httptransport.New(engine, powMgr, st, m, log)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httptransport.New(engine, powMgr, st, m, log),
+		Handler:           guard,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -370,6 +371,15 @@ loop:
 	}
 	if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
+	}
+	// Traffic has drained; push the counter caches' unpushed deltas before the
+	// deferred store Close runs, so shared/durable backends keep the last
+	// windows' counts across the restart.
+	if err := guard.FlushCounters(ctx); err != nil {
+		log.Warn("counter flush incomplete at shutdown", "err", err)
+	}
+	if err := powMgr.FlushCounters(ctx); err != nil {
+		log.Warn("pow counter flush incomplete at shutdown", "err", err)
 	}
 	return nil
 }

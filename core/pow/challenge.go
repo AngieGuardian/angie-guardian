@@ -149,6 +149,17 @@ func deriveHMACSecrets(keys []managerKey) [][]byte {
 	return secrets
 }
 
+// FlushCounters drains the escalation counter cache's unpushed deltas to the
+// store, bounded by ctx. Call at shutdown, after traffic has stopped and
+// before the store closes, so shared/durable backends keep the last windows'
+// counts across a restart.
+func (m *Manager) FlushCounters(ctx context.Context) error {
+	if m == nil {
+		return nil // PoW not configured
+	}
+	return m.counters.Flush(ctx)
+}
+
 // SetKeys atomically replaces the key set (current at index 0). Called after
 // a rotation reloads keys from disk. The token cache is cleared so a token
 // signed by a now-removed key is re-verified rather than served from cache.
