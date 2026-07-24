@@ -1,0 +1,68 @@
+# Guardian config for the store-outage CHAOS e2e test (test/e2e/chaos_test.go).
+#
+# Same shape as guardian.e2e.yaml, but on the shared-store backend (redis
+# protocol, the valkey service in compose.chaos.yaml), because the test kills
+# and restarts the store mid-run to prove the fail-open contract end to end.
+# Differences the chaos assertions depend on:
+#   - store.backend redis: the store is a separate container the test can stop
+#   - issuance_rate_limit 30/h: low enough that ~35 requests trip the per-IP
+#     limiter, with an hour-sized bucket so the window rarely rolls mid-test
+#     (the test re-hammers after recovery, so even a roll cannot flake it)
+#   - attack_mode off: the hammer must prove the per-IP counter cache, not
+#     trip the global posture machinery (covered by the main suite)
+listen: 0.0.0.0:8071
+# Non-loopback bind is isolated to the compose network (not published to the
+# host except the auth port the test drives); trusted_proxy asserts that.
+trusted_proxy: true
+log_level: info
+
+admin:
+  listen: 0.0.0.0:8072
+  token: "harness-admin-token"   # harness only; use ADMIN_TOKEN in real deploys
+
+signing_key_file: /etc/guardian/keys/ed25519.key
+previous_key_dir: /etc/guardian/keys/keys.d
+
+store:
+  backend: redis
+  addr: valkey:6379
+
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      max_block_ttl: 4h
+      thresholds:
+        signature: 10/min
+        pow_fail: 10/min
+        tamper: 10/min
+        bot_spoof: 5/min
+    keywords:
+      enabled: true
+      rules_file: /etc/guardian/rules.d/common.yaml
+  pow:
+    enabled: true
+    mode: always
+    # One step below production like guardian.e2e.yaml: the test brute-forces
+    # challenges in Go.
+    base_difficulty: 4
+    max_difficulty: 6
+    token_ttl: 4h
+    challenge_ttl: 30m
+    issuance_rate_limit: 30/h
+    noscript_fallback: false
+  allowlist:
+    ips: []
+    uas: []
+    paths:
+      # The compose healthcheck and the no-5xx probe fetch robots.txt without
+      # solving a challenge, mirroring guardian.e2e.yaml.
+      - /robots.txt
+      - /favicon.ico
+  denylist:
+    ips: []
+
+domains:
+  localhost:
+    pow: { enabled: true }

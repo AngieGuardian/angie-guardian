@@ -1,0 +1,28 @@
+# Store-outage chaos overlay (issue #10): the same Path A topology as
+# compose.yaml, with the guardian state moved into a valkey container the test
+# can kill and restart mid-run. Boot it together with the base file:
+#
+#   docker compose -f compose.yaml -f compose.chaos.yaml up --build -d
+#
+# The automated chaos e2e test (test/e2e/chaos_test.go, part of `make e2e`)
+# boots this pair with GUARDIAN_CONFIG=./guardian.e2e-chaos.yaml.
+
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    # Append-only persistence makes the recovery assertions deterministic: a
+    # block placed before the outage must be there again after the restart,
+    # whatever the RDB snapshot timing happened to be.
+    command: ["valkey-server", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  guardiand:
+    depends_on:
+      valkey:
+        condition: service_healthy
