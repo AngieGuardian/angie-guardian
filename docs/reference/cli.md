@@ -19,10 +19,19 @@ guardiand -config /etc/guardian/guardian.yaml
 
 ```sh
 ./guardiand -config guardian.yaml -t
-# config guardian.yaml: ok
-# ...or, on a bad config:
-# config guardian.yaml: FAILED
-# config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
+```
+
+Output on a valid config:
+
+```
+config guardian.yaml: ok
+```
+
+...or, on a bad config:
+
+```
+config guardian.yaml: FAILED
+config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
 ```
 
 ### Signals
