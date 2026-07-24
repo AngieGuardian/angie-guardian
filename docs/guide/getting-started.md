@@ -39,11 +39,22 @@ canonical `guardian.example.yaml`, and the complete `deploy/` directory. The
 installation below uses the binary, systemd unit, Angie snippets, and starter
 rules directly from that directory.
 
+Install the daemon and create its dedicated service identity:
+
+```sh
+sudo install -Dm755 guardiand /usr/local/bin/guardiand
+getent group guardian >/dev/null || sudo groupadd --system guardian
+id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
+  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
+```
+
 ### Verify the download (optional)
 
 Every release publishes a `SHA256SUMS` file next to the archives, listing the
 SHA-256 digest of each one. Downloading it alongside the archive lets you
 confirm the file arrived intact and matches what the release pipeline built.
+If you want this check, run it right after downloading the archive, before the
+`install` step above.
 
 ::: warning Download SHA256SUMS into the same directory as the archive
 `sha256sum` looks for the archives in the current working directory, under the
@@ -84,15 +95,6 @@ origin. [Issue #7](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/7)
 tracks signing the checksums and the images. Do not substitute an unpinned
 `latest` download for the explicit version above.
 :::
-
-Install the daemon and create its dedicated service identity:
-
-```sh
-sudo install -Dm755 guardiand /usr/local/bin/guardiand
-getent group guardian >/dev/null || sudo groupadd --system guardian
-id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
-  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
-```
 
 ### Build from source (optional)
 
