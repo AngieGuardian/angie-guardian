@@ -485,6 +485,24 @@ Listener addresses, the store backend, signing key paths, admin token setup and
 a restart
 (the reload is rejected with `422`, leaving the active config unchanged).
 
+### `GET /admin/reload/preflight`
+
+Answers "would SIGHUP apply the on-disk `guardian.yaml`?" without applying
+anything, so reloads become predictable instead of trial and error. It
+re-reads the file and diffs the startup-fixed fields against the running
+process:
+
+```json
+{"reloadable":true,"restart_required":[]}
+```
+
+```json
+{"reloadable":false,"restart_required":["listen","store.backend"]}
+```
+
+A config that does not load at all is reported with `422` and the parse error
+in `error`, exactly what a reload would be rejected for.
+
 ## Dashboard
 
 ### `GET /admin/dashboard`

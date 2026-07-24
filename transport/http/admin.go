@@ -43,9 +43,14 @@ type AdminServer struct {
 	keyPath string
 	prevDir string
 	reload  func() error // nil = no reload endpoint (owned by main: re-reads guardian.yaml)
-	log     *slog.Logger
-	mux     *http.ServeMux
-	angie   *angieClient // nil = admin.angie_api not configured
+	// preflight reports which on-disk config fields SIGHUP would reject
+	// against the running process (nil = endpoint answers 503). Owned by main
+	// like reload: it re-reads guardian.yaml and diffs the restart-required
+	// fields, without applying anything.
+	preflight func() ([]string, error)
+	log       *slog.Logger
+	mux       *http.ServeMux
+	angie     *angieClient // nil = admin.angie_api not configured
 
 	// assetETags holds a strong ETag per vendored dashboard asset, keyed by
 	// embedded path and computed once at startup. It lets each asset revalidate
@@ -109,6 +114,7 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("GET /admin/anomaly", s.auth(s.handleAnomaly))
 	s.mux.HandleFunc("POST /admin/rotate-key", s.auth(s.handleRotateKey))
 	s.mux.HandleFunc("POST /admin/reload", s.auth(s.handleReload))
+	s.mux.HandleFunc("GET /admin/reload/preflight", s.auth(s.handleReloadPreflight))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
 	s.mux.HandleFunc("GET /admin/intel", s.auth(s.handleIntel))
 	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
@@ -1095,6 +1101,36 @@ func (s *AdminServer) handleReload(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.log.Info("admin reloaded config")
 	writeJSON(w, http.StatusOK, map[string]any{"reloaded": true})
+}
+
+// SetPreflight installs the reload preflight closure (owned by main, like
+// reload). Call before the server starts serving.
+func (s *AdminServer) SetPreflight(fn func() ([]string, error)) { s.preflight = fn }
+
+// handleReloadPreflight answers "would SIGHUP apply the on-disk config?"
+// without touching the running process: it re-reads guardian.yaml and lists
+// the restart-required fields that differ from the running configuration, so
+// an operator can tell a reloadable edit from one that needs a restart before
+// sending the signal instead of by trial and error.
+func (s *AdminServer) handleReloadPreflight(w http.ResponseWriter, _ *http.Request) {
+	if s.preflight == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "preflight not available"})
+		return
+	}
+	changed, err := s.preflight()
+	if err != nil {
+		// The on-disk config does not even load; SIGHUP would be rejected for
+		// this reason before any static-field comparison.
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"reloadable": false, "error": err.Error()})
+		return
+	}
+	if changed == nil {
+		changed = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reloadable":       len(changed) == 0,
+		"restart_required": changed,
+	})
 }
 
 // handleOffload reports the enforcement offload state: mirror mode, size and

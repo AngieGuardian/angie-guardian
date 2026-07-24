@@ -249,6 +249,71 @@ func TestAdminReload(t *testing.T) {
 	}
 }
 
+// GET /admin/reload/preflight tells a reloadable on-disk edit from one SIGHUP
+// would reject, without applying anything.
+func TestAdminReloadPreflight(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(adminYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+
+	var changed []string
+	var preflightErr error
+	admin := NewAdminServer(engine, cfg, nil, adminToken, "", "", nil, slog.Default())
+	admin.SetPreflight(func() ([]string, error) { return changed, preflightErr })
+	ts := httptest.NewServer(admin)
+	t.Cleanup(ts.Close)
+
+	if resp := adminReq(t, ts, "GET", "/admin/reload/preflight", "", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", resp.StatusCode)
+	}
+
+	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/reload/preflight", adminToken, ""))
+	if m["reloadable"] != true {
+		t.Errorf("clean preflight: %v, want reloadable=true", m)
+	}
+	if fields, ok := m["restart_required"].([]any); !ok || len(fields) != 0 {
+		t.Errorf("clean preflight restart_required = %v, want an empty list (not null)", m["restart_required"])
+	}
+
+	changed = []string{"listen", "store.backend"}
+	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/reload/preflight", adminToken, ""))
+	if m["reloadable"] != false {
+		t.Errorf("static-change preflight: %v, want reloadable=false", m)
+	}
+	if fields, _ := m["restart_required"].([]any); len(fields) != 2 {
+		t.Errorf("restart_required = %v, want both changed fields", m["restart_required"])
+	}
+
+	// An unloadable on-disk config is reported as the reason SIGHUP would fail.
+	changed, preflightErr = nil, fmt.Errorf("parse guardian.yaml: boom")
+	resp := adminReq(t, ts, "GET", "/admin/reload/preflight", adminToken, "")
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("broken config preflight: status = %d, want 422", resp.StatusCode)
+	}
+	if m := decodeJSON(t, resp); m["reloadable"] != false || m["error"] == "" {
+		t.Errorf("broken config preflight body: %v", m)
+	}
+
+	// Not wired → 503, like reload.
+	tsNil, _ := adminServer(t)
+	if resp := adminReq(t, tsNil, "GET", "/admin/reload/preflight", adminToken, ""); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil preflight: status = %d, want 503", resp.StatusCode)
+	}
+}
+
 func TestAdminBlockLifecycle(t *testing.T) {
 	ts, _ := adminServer(t)
 	ip := "203.0.113.9"

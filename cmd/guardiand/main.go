@@ -243,6 +243,16 @@ func run(configPath string) error {
 		}
 		return nil
 	}
+	// preflight answers "would SIGHUP apply the on-disk config?" for the admin
+	// endpoint: same load and same static-field diff as reload, applying
+	// nothing.
+	preflight := func() ([]string, error) {
+		next, err := core.LoadConfig(configPath)
+		if err != nil {
+			return nil, err
+		}
+		return staticConfigChanges(runningStatic, next), nil
+	}
 
 	guard := httptransport.New(engine, powMgr, st, m, log)
 	srv := &http.Server{
@@ -301,10 +311,12 @@ func run(configPath string) error {
 			}
 		}
 
+		adminHandler := httptransport.NewAdminServer(engine, cfg, m,
+			cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, reload, log)
+		adminHandler.SetPreflight(preflight)
 		admin = &http.Server{
-			Addr: cfg.Admin.Listen,
-			Handler: httptransport.NewAdminServer(engine, cfg, m,
-				cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, reload, log),
+			Addr:              cfg.Admin.Listen,
+			Handler:           adminHandler,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      30 * time.Second,
