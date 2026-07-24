@@ -47,7 +47,8 @@ pipeline. Everything is per-domain configurable.
 - Per-host-and-IP escalation against challenge farming: a client that keeps
   requesting challenges without solving them pays one extra bit (2x) per two
   abandoned challenges, capped at `max_difficulty`; a solve resets only that
-  domain's counter.
+  domain's counter. A farmer still pinned at the cap is temporarily blocked
+  past the generous `challenge_farm` threshold (default 80/h, `off` disables).
 - Ed25519-signed JWT cookie on success; cheap re-validation afterwards.
 - A **persistent shared signing key**, so restarts don't log everyone out,
   and replicas behind a load balancer can share one key.

@@ -46,12 +46,13 @@ const (
 )
 
 const (
-	EventSignature    = stateless.EventSignature
-	EventPoWFail      = stateless.EventPoWFail
-	EventTamper       = stateless.EventTamper
-	EventAnomaly      = stateless.EventAnomaly
-	EventInstantBlock = stateless.EventInstantBlock
-	EventBotSpoof     = stateless.EventBotSpoof
+	EventSignature     = stateless.EventSignature
+	EventPoWFail       = stateless.EventPoWFail
+	EventTamper        = stateless.EventTamper
+	EventAnomaly       = stateless.EventAnomaly
+	EventInstantBlock  = stateless.EventInstantBlock
+	EventBotSpoof      = stateless.EventBotSpoof
+	EventChallengeFarm = stateless.EventChallengeFarm
 )
 
 // Engine runs the ordered decision pipeline. This is THE seam: every
@@ -403,7 +404,9 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 			err = e.board.Block(ctx, ip, ev.Detail, ib.BlockTTL.Std(), ib.MaxBlockTTL.Std())
 			blocked = err == nil
 		default:
-			if rate, ok := ib.Thresholds[ev.Type]; ok {
+			// A zero rate is an explicit "off" for this event type; skip it
+			// before the attack factor's max(1, …) could resurrect it.
+			if rate, ok := ib.Thresholds[ev.Type]; ok && rate.Count > 0 {
 				limit := rate.Count
 				if factor > 0 && factor < 1 {
 					limit = max(1, int(float64(rate.Count)*factor))

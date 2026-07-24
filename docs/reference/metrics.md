@@ -31,7 +31,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_challenges_total` | counter | `outcome` | Challenge lifecycle events: `issued`, `solved`, `failed` (wrong nonce, expired, or replayed), `escalated` (issued above base difficulty to a [challenge farmer](/guide/configuration#base-difficulty-and-max-difficulty)), plus the stateless outcomes described below. |
+| `guardian_challenges_total` | counter | `outcome` | Challenge lifecycle events: `issued`, `solved`, `failed` (wrong nonce, expired, or replayed), `escalated` (issued above base difficulty to a [challenge farmer](/guide/configuration#base-difficulty-and-max-difficulty)), `farm_detected` (issued to a farmer whose escalation is pinned at the ceiling; also reported as a `challenge_farm` behaviour event, blocking past its [threshold](/reference/configuration#waf-ip-behaviour), default `80/h`), plus the stateless outcomes described below. |
 | `guardian_challenge_solve_seconds` | histogram | | Client-reported solve time, for tuning `base_difficulty`. |
 | `guardian_anomaly_score` | histogram | `domain` | Distribution of scores for requests that reach the anomaly stage, for tuning `challenge_at` / `deny_at`. Earlier terminal decisions and requests with valid PoW tokens are not observed. |
 | `guardian_anomaly_baseline_selections_total` | counter | `domain`, `level` | Selected baseline specificity: `exact`, `route`, `method`, domain-wide fallback, or `missing`. |
@@ -42,7 +42,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_blocks_placed_total` | counter | `reason` | Behavioural IP blocks placed, by reason category. |
+| `guardian_blocks_placed_total` | counter | `reason` | Behavioural IP blocks placed, by reason category (threshold blocks carry their event type, e.g. `pow_fail` or `challenge_farm`). |
 | `guardian_bot_verifications_total` | counter | `bot`, `result` | [Verified-bot](/reference/configuration#verified-bots) rDNS checks by bot name and result: `verified`, `spoof` (definitively failed, an impostor), or `error` (transient DNS failure, falls through unverified). |
 
 ## IP reputation feeds
@@ -62,8 +62,8 @@ Label values are bounded by construction:
 | `guardian_store_probe_total` | counter | `backend`, `status` | Completed store health probes by `status` (`ok`, `error`). A staleness event (a wedged probe loop) drives `guardian_store_up` to `0` without incrementing this, since no probe finished. |
 | `guardian_store_clock_skew_seconds` | gauge | `backend` | Store server clock minus local clock, probed on remote backends (redis/valkey) each health round. Skew beyond a counter window (60s) silently voids deadline-based counter flushes; the daemon logs a warning above 10s. Embedded backends share the process clock and never emit it. |
 
-Every `store_*` series carries `backend`, so a mixed fleet — or one part-way
-through a backend migration — can group by it directly rather than joining
+Every `store_*` series carries `backend`, so a mixed fleet (or one part-way
+through a backend migration) can group by it directly rather than joining
 against another metric. `store.backend` is startup-only, so the value is
 constant for the process: it adds one label value per target, not a multiplier
 on the series count.

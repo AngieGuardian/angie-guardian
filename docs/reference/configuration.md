@@ -14,7 +14,7 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 | Type | Format | Examples |
 |---|---|---|
 | Duration | Go duration string | `"30s"`, `"15m"`, `"4h"` |
-| Rate | `<count>/<unit>` with unit `s`/`sec`/`second`, `m`/`min`/`minute`, or `h`/`hour` | `"10/min"`, `"5/s"`, `"100/h"` |
+| Rate | `<count>/<unit>` with unit `s`/`sec`/`second`, `m`/`min`/`minute`, or `h`/`hour` | `"10/min"`, `"5/s"`, `"80/h"` |
 
 ## Top level
 
@@ -270,7 +270,7 @@ Behavioural IP blocking with exponential backoff.
 | `enabled` | bool | `false` | Enable event counting and automatic/persistent blocks from signatures, honeypots, failed PoW, tamper, and bot spoofing. Existing and manually placed blocks are still enforced when disabled. |
 | `block_ttl` | Duration | `15m` | First-offense block duration; doubles per repeat offense. Maximum one year (`8760h`). |
 | `max_block_ttl` | Duration | `4h` | Backoff cap. Must be >= `block_ttl`; maximum one year (`8760h`). |
-| `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min`, `bot_spoof: 5/min` | Bad events per window before the IP is blocked, keyed by event type. |
+| `thresholds` | map of Rate | `signature: 10/min`, `pow_fail: 10/min`, `tamper: 10/min`, `bot_spoof: 5/min`, `challenge_farm: 80/h` | Bad events per window before the IP is blocked, keyed by event type. Built-in defaults merge per key (your value wins); the literal `off` disables one event type individually. `challenge_farm` blocks clients that keep fetching challenges without ever solving one; its default is deliberately generous. Such a client is scored only from the point where its [unsolved-challenge escalation](/guide/configuration#base-difficulty-and-max-difficulty) is pinned at `max_difficulty` with zero successful solves, and one solve resets the counter, so ordinary visitors (even many behind one NAT) never accumulate events; tighten it (e.g. `30/h`) when farmers are a problem. Configurable in `defaults` and per domain; the event is host-scoped, so a `paths:` overlay cannot change it. |
 
 ### waf.keywords
 

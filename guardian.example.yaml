@@ -63,7 +63,7 @@ admin:
   dashboard: true
   # Per-instance live decision window used by recent stats, offenders and the
   # dashboard charts. Start-time only; changing it requires a restart. This is
-  # deliberately bounded and cleared on restart—use /metrics with
+  # deliberately bounded and cleared on restart; use /metrics with
   # Prometheus/Grafana for historical analysis. Default 4096, maximum 16384.
   # recent_size: 4096
   # Show real server traffic on the dashboard (per-domain requests and rates,
@@ -200,11 +200,21 @@ defaults:
       enabled: true
       block_ttl: 15m          # first offense; doubles per repeat; max 8760h
       max_block_ttl: 4h       # backoff cap; max 8760h
-      thresholds:             # bad events per window before the IP is blocked
-        signature: 10/min     # WAF signature hits
-        pow_fail: 10/min      # failed challenge solutions
-        tamper: 10/min        # forged/replayed challenge or signed IDs
-        bot_spoof: 5/min      # clients caught impersonating a verified bot
+      thresholds:             # bad events per window before the IP is blocked;
+                              # "off" disables one event type individually
+        signature: 10/min     # WAF keyword/regex rule hits (waf.keywords);
+                              # scanners trip these in rapid bursts
+        pow_fail: 10/min      # wrong PoW solutions submitted; an honest
+                              # client fails at most once or twice
+        tamper: 10/min        # forged or replayed challenge/signed IDs;
+                              # never produced by a real browser
+        bot_spoof: 5/min      # clients claiming a verified-bot UA whose
+                              # rDNS identity failed verification
+        challenge_farm: 80/h  # challenges fetched but never solved, counted
+                              # only once escalation is pinned at
+                              # max_difficulty; any solve resets, so real
+                              # visitors never get near it. Tighten (30/h)
+                              # when farmers are a problem.
     keywords:
       enabled: true           # requires the rules file to exist (fail-fast);
       rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml

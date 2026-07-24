@@ -90,6 +90,33 @@ func (r Rate) MarshalYAML() (any, error) {
 	return fmt.Sprintf("%d/%s", r.Count, unit), nil
 }
 
+// ThresholdRate is a Rate that additionally accepts the literal "off",
+// disabling that one scored event type: the built-in threshold defaults merge
+// per key, so without it an operator could tune a default but never switch a
+// single key off (only ip_behaviour.enabled kills all scoring). Only the
+// thresholds map uses this type; every other rate field keeps the strict
+// parser, where a zero rate has no meaning.
+type ThresholdRate struct{ Rate }
+
+func (t *ThresholdRate) UnmarshalYAML(node *yaml.Node) error {
+	var s string
+	if err := node.Decode(&s); err == nil && strings.EqualFold(strings.TrimSpace(s), "off") {
+		*t = ThresholdRate{}
+		return nil
+	}
+	return t.Rate.UnmarshalYAML(node)
+}
+
+// MarshalYAML must round-trip the zero value as "off": domain configs are
+// built by marshalling the defaults and decoding the domain YAML on top, and
+// "0/…" would be rejected on the way back in.
+func (t ThresholdRate) MarshalYAML() (any, error) {
+	if t.Count <= 0 {
+		return "off", nil
+	}
+	return t.Rate.MarshalYAML()
+}
+
 // Config is the top-level guardian.yaml.
 type Config struct {
 	Listen         string `yaml:"listen"`
@@ -835,12 +862,13 @@ type WAFConfig struct {
 
 // IPBehaviourConfig drives the behavioural scoreboard: how many bad events
 // of a given type (threshold key) an IP may produce per window before it is
-// temporarily blocked, with exponential backoff up to max_block_ttl.
+// temporarily blocked, with exponential backoff up to max_block_ttl. A value
+// of "off" disables that one event type individually.
 type IPBehaviourConfig struct {
-	Enabled     bool            `yaml:"enabled"`
-	BlockTTL    Duration        `yaml:"block_ttl"`
-	MaxBlockTTL Duration        `yaml:"max_block_ttl"`
-	Thresholds  map[string]Rate `yaml:"thresholds"`
+	Enabled     bool                     `yaml:"enabled"`
+	BlockTTL    Duration                 `yaml:"block_ttl"`
+	MaxBlockTTL Duration                 `yaml:"max_block_ttl"`
+	Thresholds  map[string]ThresholdRate `yaml:"thresholds"`
 }
 
 // HoneypotConfig configures trap paths: URLs no legitimate client ever
@@ -1130,13 +1158,20 @@ func (c *Config) finalize() error {
 	// default" contract — and behave differently from a domain-level overlay,
 	// where yaml decodes into the inherited map and entries always merge.
 	if c.Defaults.WAF.IPBehaviour.Thresholds == nil {
-		c.Defaults.WAF.IPBehaviour.Thresholds = make(map[string]Rate, 4)
+		c.Defaults.WAF.IPBehaviour.Thresholds = make(map[string]ThresholdRate, 4)
 	}
-	for event, rate := range map[string]Rate{
-		"signature": {Count: 10, Per: time.Minute},
-		"pow_fail":  {Count: 10, Per: time.Minute},
-		"tamper":    {Count: 10, Per: time.Minute},
-		"bot_spoof": {Count: 5, Per: time.Minute},
+	// challenge_farm is deliberately generous: an IP only starts scoring once
+	// its unsolved-challenge escalation is pinned at the difficulty ceiling
+	// (12+ abandoned challenges at default difficulties, zero solves), and
+	// still needs 80 further abandoned challenges within the hour. Real
+	// visitors never accumulate that; write "off" to disable blocking and
+	// keep the farm_detected metric only.
+	for event, rate := range map[string]ThresholdRate{
+		"signature":      {Rate{Count: 10, Per: time.Minute}},
+		"pow_fail":       {Rate{Count: 10, Per: time.Minute}},
+		"tamper":         {Rate{Count: 10, Per: time.Minute}},
+		"bot_spoof":      {Rate{Count: 5, Per: time.Minute}},
+		"challenge_farm": {Rate{Count: 80, Per: time.Hour}},
 	} {
 		if _, ok := c.Defaults.WAF.IPBehaviour.Thresholds[event]; !ok {
 			c.Defaults.WAF.IPBehaviour.Thresholds[event] = rate

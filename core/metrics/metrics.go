@@ -25,7 +25,7 @@ type Metrics struct {
 	backend string
 
 	decisions           *prometheus.CounterVec // by action, reason_category, domain
-	challenge           *prometheus.CounterVec // by outcome: issued|escalated|solved|failed
+	challenge           *prometheus.CounterVec // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|solved|failed|spent_cas_failed
 	solveTime           prometheus.Histogram   // client-reported solve time, seconds
 	anomalyScore        *prometheus.HistogramVec
 	anomalyBaselineMiss *prometheus.CounterVec

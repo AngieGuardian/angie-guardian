@@ -372,3 +372,47 @@ func TestReportEvent(t *testing.T) {
 		t.Fatalf("allowlisted IP got scored/blocked: %s/%s", d.Action, d.Reason)
 	}
 }
+
+// challenge_farm events block once the operator opts in with a threshold, and
+// an "off" threshold never blocks, not even under the attack-mode scoreboard
+// factor, whose max(1, ...) tightening must not resurrect a disabled key.
+func TestReportEventChallengeFarmAndOff(t *testing.T) {
+	ctx := context.Background()
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      thresholds: { challenge_farm: 2/min, pow_fail: off }
+`)
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	e, err := NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+
+	ip := "198.51.100.31"
+	for i := 0; i < 2; i++ {
+		e.ReportEvent(ctx, "farm.test", ip, EventChallengeFarm, "extra_bits=4")
+	}
+	d := e.Evaluate(ctx, req("farm.test", ip, "/", "curl"))
+	if d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:challenge_farm" {
+		t.Fatalf("after challenge_farm reports: got %s/%s, want deny on challenge_farm threshold", d.Action, d.Reason)
+	}
+
+	// pow_fail is off: unlimited reports never block, and a sub-1 attack
+	// factor applied to the zero rate must not turn it into limit 1.
+	offIP := "198.51.100.32"
+	for i := 0; i < 10; i++ {
+		e.ReportEvent(ctx, "farm.test", offIP, EventPoWFail, "bad nonce")
+	}
+	dcfg := e.Config().DomainFor("farm.test")
+	e.recordEvents(ctx, offIP, dcfg, []Event{{Type: EventPoWFail, Detail: "bad nonce"}}, 0.2)
+	if d := e.Evaluate(ctx, req("farm.test", offIP, "/", "curl")); d.Action == ActionDeny {
+		t.Fatalf("off threshold still blocked: %s/%s", d.Action, d.Reason)
+	}
+}

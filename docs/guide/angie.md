@@ -93,8 +93,8 @@ server {
 
 An existing file or directory is served only after Guardian allows the
 request; a missing path remains the site's normal `404`. If your vhost defines
-additional public `location` blocks—directly or through another included
-file—they are siblings of `location /`, not children of it. Because the
+additional public `location` blocks, directly or through another included
+file, they are siblings of `location /`, not children of it. Because the
 protection include is at server scope, those locations inherit Guardian
 automatically; there is no need to repeat the include in every asset location.
 An `allow all` in an exact `robots.txt` location affects Angie's address-access

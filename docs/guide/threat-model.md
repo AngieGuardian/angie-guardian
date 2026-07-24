@@ -10,6 +10,9 @@ sound protection and a false sense of one. This page is the honest map.
   the proof-of-work interstitial makes every unvouched client pay a small
   computation before its first request is served, then rides a signed,
   short-lived token. In `suspicion` mode only clients flagged by policy pay.
+  A client that keeps fetching challenges without ever solving one is
+  rate-limited, escalated to the difficulty ceiling, and past the
+  `challenge_farm` threshold temporarily blocked.
 - **Scanner and probe traffic.** WAF signature rules (keywords + RE2 regexes,
   on the path, query, User-Agent and named headers) deny known-bad requests:
   dotfile probes, admin-panel scans, injection payloads. Repeat offenders earn

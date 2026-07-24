@@ -74,6 +74,12 @@ const (
 	EventAnomaly      = "anomaly"
 	EventInstantBlock = "instant_block"
 	EventBotSpoof     = "bot_spoof"
+	// EventChallengeFarm marks a challenge issued to a client whose unsolved-
+	// challenge escalation alone is pinned at the domain difficulty ceiling:
+	// it keeps fetching interstitials and discarding them. Reported by the
+	// challenge handler; scored via the waf.ip_behaviour.thresholds
+	// challenge_farm key (generous 80/h default, "off" disables).
+	EventChallengeFarm = "challenge_farm"
 )
 
 // Decision is the outcome of evaluating one request.

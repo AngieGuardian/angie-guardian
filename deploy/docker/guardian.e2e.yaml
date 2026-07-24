@@ -122,6 +122,16 @@ domains:
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }
+  # challenge_farm blocking test host: base == max pins the unsolved-
+  # challenge escalation at the ceiling from its first extra bit (the 6th
+  # abandoned issuance), and the low threshold override blocks quickly
+  # (the built-in default is a generous 80/h). Escalation counters are per
+  # host+IP, so farming here never escalates the other hosts.
+  farm.localhost:
+    pow: { enabled: true, base_difficulty: 4, max_difficulty: 4 }
+    waf:
+      ip_behaviour:
+        thresholds: { challenge_farm: 3/min }
   # A WordPress-ish host: shares the common rules file but disables its
   # wp-probe rule by exact id (issue #27); every other rule still applies.
   wp.localhost:

@@ -25,7 +25,7 @@ features:
     details: Hot-reloadable keyword/regex threat signatures (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
-    details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per host and IP against challenge farming, Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.
+    details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per host and IP against challenge farming (persistent farmers are blocked), Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.
   - icon: 🌍
     title: Origin intelligence
     details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
@@ -34,7 +34,7 @@ features:
     details: guardian-train learns domain and route/method baselines from Angie JSON access logs offline; the sub-microsecond online scorer rates unvouched requests and drives challenge, deny, and difficulty escalation.
   - icon: 🚫
     title: Behavioural IP blocking
-    details: When enabled, signature hits, PoW failures, and tamper events feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
+    details: When enabled, signature hits, PoW failures, tamper events, bot spoofing, and challenge farming feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
   - icon: ⚡
     title: Built for the hot path
     details: Read paths clear 75k+ req/s on a single node. Verified tokens are cached in-process (about 144 ns), so returning clients never leave the fast path.

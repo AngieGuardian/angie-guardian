@@ -186,6 +186,19 @@ Which value fires:
   lives for `challenge_ttl`, and escalated issuances show up in Prometheus as
   `guardian_challenges_total{outcome="escalated"}`.
 
+  Once the escalation is pinned at `max` and the client still keeps farming,
+  each further issuance is additionally counted as
+  `guardian_challenges_total{outcome="farm_detected"}` and reported as a
+  `challenge_farm` behaviour event: past the `challenge_farm` threshold
+  (default `80/h`, tunable under `waf.ip_behaviour.thresholds` in `defaults`
+  or per domain, `off` disables) the farmer is temporarily blocked with the
+  usual exponential backoff. The default is deliberately generous: a block
+  takes 12+ abandoned challenges within `challenge_ttl` to pin the ceiling,
+  then 80 more within an hour, all with zero successful solves, and one
+  solve resets the counter. Ordinary visitors (even many behind one NAT, or
+  with JavaScript off) do not get near it; tighten to e.g. `30/h` when
+  farmers are a problem.
+
 #### Measured solve times and recommended values
 
 The interstitial solves in parallel web workers (up to 8) with a pure-JS
@@ -228,9 +241,10 @@ Recommendations:
   *your* visitors' devices.
 
 Note that PoW only taxes clients that solve the puzzle. A client that farms
-challenges without solving them is throttled (60 issuances per IP per minute)
-and escalated (see challenge farming above), but a raw flood that never even
-follows the challenge redirect is **not** PoW's problem: see
+challenges without solving them is throttled (60 issuances per IP per minute),
+escalated (see challenge farming above), and eventually blocked outright via
+the `challenge_farm` threshold, but a raw flood that never even follows the
+challenge redirect is **not** PoW's problem: see
 [Rate limiting](#rate-limiting-volumetric-ddos) below.
 
 ### Search crawlers: verified_bots, not allowlist.uas

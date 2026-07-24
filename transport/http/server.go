@@ -282,6 +282,19 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// allowance raises the work, capped at the ceiling; a successful
 	// redemption resets this host+IP counter (core/pow/escalation.go).
 	if extra := s.pow.BumpEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+		// Escalation alone pinned at the ceiling means this client has
+		// abandoned enough challenges that no amount of extra work can be
+		// demanded anymore: a challenge farmer. Report it as a scoreboard
+		// event, blocked past the waf.ip_behaviour.thresholds challenge_farm
+		// rate (ReportEvent resolves host-level config, like pow_fail, not
+		// paths: overlays). The predicate compares against base, not the
+		// possibly WAF/anomaly-elevated difficulty, so only abandonment
+		// itself triggers.
+		if base+extra >= maxBits {
+			s.metrics.Challenge("farm_detected")
+			s.engine.ReportEvent(r.Context(), host, ip, core.EventChallengeFarm,
+				fmt.Sprintf("extra_bits=%d", extra))
+		}
 		difficulty = min(difficulty+extra, maxBits)
 		s.metrics.Challenge("escalated")
 		s.log.Info("challenge difficulty escalated",

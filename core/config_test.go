@@ -255,6 +255,74 @@ defaults:
 			t.Errorf("built-in threshold %q wiped by a custom entry", event)
 		}
 	}
+	if got := th["challenge_farm"]; got.Count != 80 || got.Per != time.Hour {
+		t.Errorf("challenge_farm built-in default = %+v, want 80/h", got)
+	}
+}
+
+// A threshold value of "off" disables that one event type: it parses to a
+// zero rate, occupies the key so the built-in default is not merged back in,
+// and 0/min stays a load error (off is the only disable spelling).
+func TestThresholdOff(t *testing.T) {
+	cfg := loadTestConfig(t, `
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      thresholds: { pow_fail: OFF }
+`)
+	th := cfg.Defaults.WAF.IPBehaviour.Thresholds
+	if got := th["pow_fail"]; got.Count != 0 {
+		t.Errorf("pow_fail: off parsed to %+v, want zero rate", got)
+	}
+	if got := th["tamper"]; got.Count != 10 {
+		t.Errorf("unrelated built-in disturbed by an off entry: %+v", got)
+	}
+	// "0/min" staying invalid and "off" being rejected outside the thresholds
+	// map are covered in TestConfigValidation.
+}
+
+// challenge_farm is configurable at the defaults level and per domain: set
+// fleet-wide it is inherited, a domain override (tighter or off) wins, and
+// without any operator value the built-in 80/h default applies.
+func TestChallengeFarmThresholdScoping(t *testing.T) {
+	cfg := loadTestConfig(t, `
+defaults:
+  waf:
+    ip_behaviour:
+      enabled: true
+      thresholds: { challenge_farm: 30/h }
+domains:
+  inherit.test:
+  tighter.test:
+    waf: { ip_behaviour: { thresholds: { challenge_farm: 5/min } } }
+  optout.test:
+    waf: { ip_behaviour: { thresholds: { challenge_farm: off } } }
+`)
+	if got := cfg.DomainFor("inherit.test").WAF.IPBehaviour.Thresholds["challenge_farm"]; got.Count != 30 || got.Per != time.Hour {
+		t.Errorf("inherit.test challenge_farm = %+v, want inherited 30/h", got)
+	}
+	if got := cfg.DomainFor("tighter.test").WAF.IPBehaviour.Thresholds["challenge_farm"]; got.Count != 5 || got.Per != time.Minute {
+		t.Errorf("tighter.test challenge_farm = %+v, want override 5/min", got)
+	}
+	if got := cfg.DomainFor("optout.test").WAF.IPBehaviour.Thresholds["challenge_farm"]; got.Count != 0 {
+		t.Errorf("optout.test challenge_farm = %+v, want off (zero rate)", got)
+	}
+
+	// Without an operator value, the built-in 80/h default applies; one
+	// domain tightening it does not leak to a sibling.
+	cfg = loadTestConfig(t, `
+domains:
+  solo.test:
+    waf: { ip_behaviour: { enabled: true, thresholds: { challenge_farm: 10/min } } }
+  other.test:
+`)
+	if got := cfg.DomainFor("solo.test").WAF.IPBehaviour.Thresholds["challenge_farm"]; got.Count != 10 {
+		t.Errorf("solo.test challenge_farm = %+v, want 10/min", got)
+	}
+	if got := cfg.DomainFor("other.test").WAF.IPBehaviour.Thresholds["challenge_farm"]; got.Count != 80 || got.Per != time.Hour {
+		t.Errorf("other.test challenge_farm = %+v, want built-in 80/h", got)
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -274,6 +342,8 @@ func TestConfigValidation(t *testing.T) {
 		"max off the quarter grid":               "defaults: { pow: { base_difficulty: 4, max_difficulty: 6.1 } }",
 		"bad cidr":                               "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
 		"bad rate":                               "defaults: { waf: { ip_behaviour: { thresholds: { x: 20/fortnight } } } }",
+		"zero threshold rate":                    "defaults: { waf: { ip_behaviour: { thresholds: { pow_fail: 0/min } } } }",
+		"off outside thresholds":                 "defaults: { pow: { issuance_rate_limit: off } }",
 		"unknown field":                          "listne: 1.2.3.4:80",
 		"unknown field in domain overlay":        "domains: { a.test: { waf: { keywrods: { enabled: true } } } }",
 		"unknown nested field in domain overlay": "domains: { a.test: { pow: { enabeld: true } } }",
