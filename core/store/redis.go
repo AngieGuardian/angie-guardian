@@ -502,4 +502,12 @@ func (s *Redis) scanValues(ctx context.Context, keys []string, now time.Time) ([
 	return out, nil
 }
 
+// ServerTime returns the redis/valkey server's clock (the ServerClock
+// capability). The health checker compares it against the local clock: the
+// deadline Lua scripts enforce caller-computed deadlines against the server's
+// TIME, so skew silently shifts or voids counter windows.
+func (s *Redis) ServerTime(ctx context.Context) (time.Time, error) {
+	return s.rdb.Time(ctx).Result()
+}
+
 func (s *Redis) Close() error { return s.rdb.Close() }

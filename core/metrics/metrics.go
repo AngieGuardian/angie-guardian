@@ -54,6 +54,7 @@ type Metrics struct {
 	attackSignal      *prometheus.GaugeVec   // by signal; current window value
 	shed              *prometheus.CounterVec // load-shed decisions by outcome
 	unproxiedRejects  prometheus.Counter     // require_proxied gate rejections
+	storeClockSkew    *prometheus.GaugeVec   // store server clock minus local, by backend
 }
 
 // New builds the collector set for a process using the named store backend.
@@ -121,6 +122,10 @@ func New(backend string) *Metrics {
 		storeUp: f.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "guardian", Name: "store_up",
 			Help: "Whether the store answered its last health probe (1) or Guardian is failing open (0).",
+		}, []string{"backend"}),
+		storeClockSkew: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "store_clock_skew_seconds",
+			Help: "Store server clock minus local clock, probed on remote backends; skew beyond a counter window silently voids deadline-based counter flushes.",
 		}, []string{"backend"}),
 		storeProbe: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "store_probe_total",
@@ -290,6 +295,15 @@ func (m *Metrics) StoreProbeStale(backend string) {
 		return
 	}
 	m.storeUp.WithLabelValues(backend).Set(0)
+}
+
+// StoreClockSkew publishes the store server clock offset (server minus local)
+// measured by the health probe on remote backends.
+func (m *Metrics) StoreClockSkew(backend string, seconds float64) {
+	if m == nil {
+		return
+	}
+	m.storeClockSkew.WithLabelValues(backend).Set(seconds)
 }
 
 // FeedRefresh records one reputation feed refresh attempt and the resulting

@@ -109,13 +109,26 @@ type ActiveBlockScanner interface {
 	ScanActiveBlocks(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
 }
 
+// ServerClock is an optional capability of stores that run on a remote host
+// with its own clock (redis/valkey). IncrByDeadline compares caller-computed
+// absolute deadlines against the server's clock, so skew between the two
+// silently shifts every counter window: a server running ahead by more than a
+// window makes every flush return applied=false and deltas are discarded with
+// zero errors. The health checker probes this to expose skew as a gauge and a
+// warning. Embedded backends share the process clock and do not implement it.
+type ServerClock interface {
+	ServerTime(ctx context.Context) (time.Time, error)
+}
+
 // Every shipping backend must implement the full Store contract plus all the
 // optional capabilities, so the enforcement mirror (block index) and attack-mode
 // fleet posture work on any configured backend. These assertions fail the build
-// if a backend regresses one of them.
+// if a backend regresses one of them. ServerClock is deliberately not in this
+// list: it only makes sense for remote backends.
 var (
 	_ = []Store{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
 	_ = []LimitedScanner{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
 	_ = []ActiveBlockScanner{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
 	_ = []PostureVotes{(*ShardedMemory)(nil), (*BuntDB)(nil), (*Pebble)(nil), (*Redis)(nil)}
+	_ = []ServerClock{(*Redis)(nil)}
 )

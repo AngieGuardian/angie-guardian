@@ -37,6 +37,13 @@ const (
 	staleFactor   = 3
 )
 
+// clockSkewWarn is the store clock offset above which the probe warns. The
+// deadline-based counter scripts compare app-computed deadlines against the
+// server's clock, so a server running ahead by more than a counter window
+// (60s challenge rate buckets) silently discards every flush; 10s leaves
+// margin while staying far above what an NTP-synced fleet ever shows.
+const clockSkewWarn = 10 * time.Second
+
 // probeKeyPrefix namespaces the single key this package writes. The
 // per-process suffix keeps replicas sharing one Redis from reading each
 // other's nonce; reusing one key per process bounds storage, and its TTL
@@ -73,6 +80,9 @@ type Recorder interface {
 	// StoreProbeStale drives the gauge to 0 when no probe completed in time.
 	// No probe finished, so no probe counter moves.
 	StoreProbeStale(backend string)
+	// StoreClockSkew reports the store server clock minus the local clock,
+	// measured on a successful probe of a ServerClock-capable backend.
+	StoreClockSkew(backend string, seconds float64)
 }
 
 // Checker owns the probe loop and publishes its result as a lock-free
@@ -105,6 +115,11 @@ type Checker struct {
 	// result. See boundedProbe.
 	inflightMu sync.Mutex
 	inflight   *probeAttempt
+
+	// skewWarned tracks whether the last clock-skew observation was over the
+	// warn threshold, so transitions log once instead of every tick. Only the
+	// probe loop touches it.
+	skewWarned bool
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -246,6 +261,48 @@ func (c *Checker) probe(ctx context.Context) {
 		c.log.Info("store probe recovered", "backend", c.backend,
 			"latency_ms", s.LatencyMS)
 	}
+
+	if s.Up {
+		c.observeClockSkew(ctx)
+	}
+}
+
+// observeClockSkew compares a remote store's clock against the local one.
+// The deadline counter scripts enforce app-computed deadlines against the
+// server's TIME, so a server clock running ahead by more than a counter
+// window makes every CounterCache flush return applied=false and the deltas
+// are silently discarded: rate-limit convergence stops with zero errors.
+// Skew behind the app silently extends windows instead. Half the round-trip
+// is subtracted as the best available estimate of when the server read its
+// clock. Embedded backends share the process clock and skip this entirely.
+func (c *Checker) observeClockSkew(ctx context.Context) {
+	sc, ok := c.st.(store.ServerClock)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	t0 := time.Now()
+	remote, err := sc.ServerTime(ctx)
+	rtt := time.Since(t0)
+	if err != nil {
+		return // reachability is the probe's own department
+	}
+	skew := remote.Sub(t0.Add(rtt / 2))
+	if c.rec != nil {
+		c.rec.StoreClockSkew(c.backend, skew.Seconds())
+	}
+	over := skew.Abs() > clockSkewWarn
+	switch {
+	case over && !c.skewWarned:
+		c.log.Warn("store clock skew detected: deadline-based counter windows are shifted; a store clock more than one window ahead silently discards counter flushes",
+			"backend", c.backend, "skew", skew.Round(time.Millisecond).String(),
+			"rtt_ms", float64(rtt.Microseconds())/1000)
+	case !over && c.skewWarned:
+		c.log.Info("store clock skew back under threshold",
+			"backend", c.backend, "skew", skew.Round(time.Millisecond).String())
+	}
+	c.skewWarned = over
 }
 
 // probeAttempt is one run of probeOnce. Its result is only ever consumed by the

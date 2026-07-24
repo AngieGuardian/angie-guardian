@@ -636,3 +636,23 @@ func TestInstrumentedPreservesIndexedCapabilities(t *testing.T) {
 		t.Fatalf("instrumented posture max = %d, %v", got, err)
 	}
 }
+
+// TestRedisServerTime: the ServerClock capability surfaces the server's TIME
+// so the health probe can compare it against the local clock.
+func TestRedisServerTime(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+	st := NewRedisFromClient(rdb)
+
+	frozen := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	mr.SetTime(frozen)
+	var sc ServerClock = st
+	got, err := sc.ServerTime(context.Background())
+	if err != nil {
+		t.Fatalf("ServerTime: %v", err)
+	}
+	if !got.Equal(frozen) {
+		t.Fatalf("ServerTime = %v, want %v", got, frozen)
+	}
+}

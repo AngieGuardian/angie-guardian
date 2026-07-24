@@ -79,6 +79,22 @@ type recorder struct {
 	probes   []bool
 	backends []string
 	stale    int
+	skews    []float64
+}
+
+func (r *recorder) StoreClockSkew(_ string, seconds float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skews = append(r.skews, seconds)
+}
+
+func (r *recorder) lastSkew() (float64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.skews) == 0 {
+		return 0, false
+	}
+	return r.skews[len(r.skews)-1], true
 }
 
 func (r *recorder) StoreProbe(backend string, up bool) {
@@ -128,6 +144,72 @@ func newChecker(t *testing.T, st store.Store, rec Recorder, log *slog.Logger) *C
 	c := New(st, "memory", rec, log)
 	t.Cleanup(func() { c.Close() })
 	return c
+}
+
+// clockStore adds a controllable ServerClock capability on top of a Store.
+type clockStore struct {
+	store.Store
+	offset time.Duration
+	err    error
+}
+
+func (c *clockStore) ServerTime(context.Context) (time.Time, error) {
+	if c.err != nil {
+		return time.Time{}, c.err
+	}
+	return time.Now().Add(c.offset), nil
+}
+
+// TestProbeObservesClockSkew: a ServerClock-capable backend gets its clock
+// compared on every successful probe; crossing the warn threshold logs once,
+// and returning under it logs the recovery once.
+func TestProbeObservesClockSkew(t *testing.T) {
+	mem := store.NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	cs := &clockStore{Store: mem, offset: 90 * time.Second}
+	rec := &recorder{}
+	buf := &logBuffer{}
+	c := newChecker(t, cs, rec, slog.New(slog.NewTextHandler(buf, nil)))
+
+	c.probe(context.Background())
+	skew, ok := rec.lastSkew()
+	if !ok || skew < 85 || skew > 95 {
+		t.Fatalf("skew = %v (reported=%v), want ~90s", skew, ok)
+	}
+	if !strings.Contains(buf.String(), "store clock skew detected") {
+		t.Error("expected a skew warning above the threshold")
+	}
+
+	// Back under the threshold: gauge follows, transition logged once.
+	cs.offset = 0
+	c.probe(context.Background())
+	if skew, _ := rec.lastSkew(); skew > 1 || skew < -1 {
+		t.Errorf("skew after recovery = %v, want ~0", skew)
+	}
+	if !strings.Contains(buf.String(), "store clock skew back under threshold") {
+		t.Error("expected a skew recovery line")
+	}
+
+	// A failing TIME call must not clear or update the gauge, only skip.
+	before := len(rec.skews)
+	cs.err = errors.New("no TIME for you")
+	c.probe(context.Background())
+	if len(rec.skews) != before {
+		t.Errorf("skew reported despite ServerTime error")
+	}
+}
+
+// TestProbeSkipsSkewWithoutCapability: embedded backends share the process
+// clock; no ServerClock capability means no gauge and no warning.
+func TestProbeSkipsSkewWithoutCapability(t *testing.T) {
+	mem := store.NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	rec := &recorder{}
+	c := newChecker(t, mem, rec, nil)
+	c.probe(context.Background())
+	if _, ok := rec.lastSkew(); ok {
+		t.Error("skew reported for a backend without ServerClock")
+	}
 }
 
 // TestProbeHealthyStore: a working store round trips the nonce, so the first
