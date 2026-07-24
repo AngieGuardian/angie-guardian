@@ -341,8 +341,8 @@ Then point guardiand at it:
 ```yaml
 admin:
   angie_api:
-    url: http://127.0.0.1:81/status   # matches the api location above
-    timeout: 2s                        # per-fetch cap (default 2s)
+    url: http://127.0.0.1:81/status/   # matches the api location above
+    timeout: 2s                         # per-fetch cap (default 2s)
 ```
 
 ::: warning Keep the Angie API on loopback

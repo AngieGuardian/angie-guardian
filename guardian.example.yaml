@@ -72,8 +72,8 @@ admin:
   # server-side and relays it behind the admin token, so keep Angie's API on
   # loopback (see deploy/angie-status.conf for the Angie side). Off when unset.
   # angie_api:
-  #   url: http://127.0.0.1:81/status   # Angie's api location
-  #   timeout: 2s                        # per-fetch cap (default 2s)
+  #   url: http://127.0.0.1:81/status/   # Angie's api location
+  #   timeout: 2s                         # per-fetch cap (default 2s)
   # metrics_auth puts /metrics behind the same bearer token. Off by default so
   # scrapers need no secret, but worth enabling on a routable admin bind:
   # /metrics exposes every protected vhost name plus per-domain traffic and

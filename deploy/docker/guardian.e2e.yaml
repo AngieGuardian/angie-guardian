@@ -23,7 +23,7 @@ admin:
                                   # (0.0.0.0 admin bind without a token is refused)
   dashboard: true                 # the reporting page at /admin/dashboard
   angie_api:                      # dashboard reads Angie's own traffic counters
-    url: http://angie:81/status   # the api listener in angie.docker.conf
+    url: http://angie:81/status/  # the api listener in angie.docker.conf
     timeout: 3s
 
 signing_key_file: /etc/guardian/keys/ed25519.key
