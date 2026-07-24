@@ -293,10 +293,18 @@ func (s *nftSink) Reconcile(active []ActiveBlock) error {
 				adds = append(adds, nftables.SetElement{Key: []byte(k), Timeout: ttl})
 			}
 		}
+		// Deletes and adds flush separately: an element can expire by its kernel
+		// timeout between the read above and the delete flush, and the resulting
+		// ENOENT would abort a combined batch, discarding the adds and (via
+		// setErr) forcing a full re-setup on the next tick over a benign race.
 		if len(dels) > 0 {
 			if err := s.conn.SetDeleteElements(set, dels); err != nil {
 				s.setErr(err)
 				return err
+			}
+			if err := s.conn.Flush(); err != nil && !errors.Is(err, unix.ENOENT) {
+				s.setErr(err)
+				return fmt.Errorf("converge %s: %w", setName, err)
 			}
 		}
 		if len(adds) > 0 {
@@ -304,8 +312,6 @@ func (s *nftSink) Reconcile(active []ActiveBlock) error {
 				s.setErr(err)
 				return err
 			}
-		}
-		if len(dels)+len(adds) > 0 {
 			if err := s.conn.Flush(); err != nil {
 				s.setErr(err)
 				return fmt.Errorf("converge %s: %w", setName, err)

@@ -192,7 +192,11 @@ func (v *Verifier) resolveAndCache(ctx context.Context, ip string, opts Options)
 		return Result{Status: StatusError}
 	}
 
-	dnsCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	// Detached from the leader's request context: a client disconnect must not
+	// surface as a resolver error and poison the cache (errTTL) for every
+	// follower — and for the genuine crawler itself — when the DNS budget
+	// below already bounds the work.
+	dnsCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opts.Timeout)
 	defer cancel()
 	res := v.resolve(dnsCtx, ip)
 

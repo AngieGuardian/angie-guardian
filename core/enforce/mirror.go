@@ -31,10 +31,23 @@ type mirror struct {
 	shards      [shardCount]shard
 	maxPerShard int
 	dropped     atomic.Uint64
+
+	// tombs records recent removals (addr -> removedAt unix nanos) so a
+	// reconcile whose store scan predates a removal cannot resurrect the block
+	// from its stale snapshot. Sinks get the same protection from the
+	// generation + runner mutex; the mirror upsert path needs its own.
+	tombMu sync.Mutex
+	tombs  map[netip.Addr]int64
 }
 
+// maxTombstones bounds the removal log between reconciles (a reconcile prunes
+// everything older than its scan). Past the cap the oldest entries go first:
+// losing one only re-opens the pre-existing one-interval resurrection window
+// for that address.
+const maxTombstones = 4096
+
 func newMirror(maxEntries int) *mirror {
-	mr := &mirror{maxPerShard: max(maxEntries/shardCount, 1)}
+	mr := &mirror{maxPerShard: max(maxEntries/shardCount, 1), tombs: make(map[netip.Addr]int64)}
 	for i := range mr.shards {
 		mr.shards[i].m = make(map[netip.Addr]entry)
 	}
@@ -88,17 +101,58 @@ func (mr *mirror) set(a netip.Addr, e entry) bool {
 	return true
 }
 
-func (mr *mirror) remove(a netip.Addr) {
+func (mr *mirror) remove(a netip.Addr, now int64) {
 	s := &mr.shards[shardOf(a)]
 	s.mu.Lock()
 	delete(s.m, a)
 	s.mu.Unlock()
+
+	mr.tombMu.Lock()
+	if len(mr.tombs) >= maxTombstones {
+		oldestAddr, oldest := a, now
+		for k, t := range mr.tombs {
+			if t < oldest {
+				oldestAddr, oldest = k, t
+			}
+		}
+		delete(mr.tombs, oldestAddr)
+	}
+	mr.tombs[a] = now
+	mr.tombMu.Unlock()
+}
+
+// removedSince reports whether a was removed at or after scanStart, pruning
+// tombstones too old to matter for this or any later scan.
+func (mr *mirror) removedSince(a netip.Addr, scanStart int64) bool {
+	mr.tombMu.Lock()
+	defer mr.tombMu.Unlock()
+	t, ok := mr.tombs[a]
+	if ok && t < scanStart {
+		delete(mr.tombs, a)
+		return false
+	}
+	return ok
+}
+
+// pruneTombstones drops removals older than scanStart: every future scan
+// starts later, so they can never veto an upsert again.
+func (mr *mirror) pruneTombstones(scanStart int64) {
+	mr.tombMu.Lock()
+	for k, t := range mr.tombs {
+		if t < scanStart {
+			delete(mr.tombs, k)
+		}
+	}
+	mr.tombMu.Unlock()
 }
 
 // reconcile converges the mirror on the scanned authoritative set: every
 // scanned entry is upserted with its real expiry, and entries absent from the
 // scan are removed unless they were written through after the scan started
-// (those are newer truth than the scan).
+// (those are newer truth than the scan). Symmetrically, an entry removed at or
+// after the scan started is newer truth than the snapshot and is not
+// re-inserted; without that, an admin unblock landing mid-reconcile would be
+// silently undone until the next scan.
 func (mr *mirror) reconcile(active map[netip.Addr]entry, scanStart int64, scannedAll bool) bool {
 	if scannedAll {
 		for i := range mr.shards {
@@ -114,10 +168,14 @@ func (mr *mirror) reconcile(active map[netip.Addr]entry, scanStart int64, scanne
 	}
 	complete := scannedAll
 	for k, e := range active {
+		if mr.removedSince(k, scanStart) {
+			continue
+		}
 		if !mr.set(k, e) {
 			complete = false
 		}
 	}
+	mr.pruneTombstones(scanStart)
 	return complete
 }
 

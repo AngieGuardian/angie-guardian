@@ -50,9 +50,53 @@ func TestMirrorRemove(t *testing.T) {
 	now := time.Now().UnixNano()
 	a := addr(t, "203.0.113.9")
 	mr.set(a, entry{reason: "x", insertedAt: now})
-	mr.remove(a)
+	mr.remove(a, now)
 	if _, ok := mr.get(a, now); ok {
 		t.Fatal("removed entry still present")
+	}
+}
+
+// A removal landing after a reconcile's store scan started is newer truth
+// than the scan snapshot: the upsert pass must not resurrect the block.
+func TestMirrorReconcileDoesNotResurrectFreshRemoval(t *testing.T) {
+	mr := newMirror(1024)
+	now := time.Now().UnixNano()
+	blocked := addr(t, "203.0.113.9")
+	other := addr(t, "203.0.113.10")
+	mr.set(blocked, entry{reason: "x", expiresAt: now + int64(time.Hour), insertedAt: now - 10})
+	mr.set(other, entry{reason: "y", expiresAt: now + int64(time.Hour), insertedAt: now - 10})
+
+	scanStart := now
+	// Scan snapshot still contains both blocks; the unblock lands mid-scan.
+	active := map[netip.Addr]entry{
+		blocked: {reason: "x", expiresAt: now + int64(time.Hour), insertedAt: scanStart},
+		other:   {reason: "y", expiresAt: now + int64(time.Hour), insertedAt: scanStart},
+	}
+	mr.remove(blocked, now+1)
+
+	if !mr.reconcile(active, scanStart, true) {
+		t.Fatal("reconcile reported incomplete")
+	}
+	if _, ok := mr.get(blocked, now+2); ok {
+		t.Fatal("stale scan snapshot resurrected a freshly removed block")
+	}
+	if _, ok := mr.get(other, now+2); !ok {
+		t.Fatal("untouched block lost during reconcile")
+	}
+
+	// A later scan (started after the removal) reflects post-removal store
+	// state; if the block reappears there it was re-added and must be honoured.
+	if !mr.reconcile(active, now+5, true) {
+		t.Fatal("second reconcile reported incomplete")
+	}
+	if _, ok := mr.get(blocked, now+6); !ok {
+		t.Fatal("re-added block vetoed by a stale tombstone")
+	}
+	mr.tombMu.Lock()
+	tombs := len(mr.tombs)
+	mr.tombMu.Unlock()
+	if tombs != 0 {
+		t.Fatalf("tombstones not pruned after reconcile: %d left", tombs)
 	}
 }
 

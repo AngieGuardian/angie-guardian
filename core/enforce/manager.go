@@ -213,7 +213,7 @@ func (m *Manager) Notify(ev BlockEvent) {
 	ev.IP = ev.IP.Unmap()
 	now := m.now()
 	if ev.Remove {
-		m.mir.remove(ev.IP)
+		m.mir.remove(ev.IP, now.UnixNano())
 	} else {
 		var exp int64
 		if ev.TTL > 0 {
