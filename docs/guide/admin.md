@@ -128,6 +128,29 @@ headline count comes from the bounded in-process mirror and is shown as a lower
 bound when that mirror is capacity-incomplete, so leaving the dashboard open
 never triggers an unbounded store scan.
 
+### IP lookup
+
+The **IP lookup** panel above the Active blocks table answers "why was this
+client denied?" without leaving the page: paste an IP (IPv6 with or without
+brackets) and one card collects everything this instance knows about it:
+
+- block status from [`GET /admin/blocks/{ip}`](/reference/admin-api), with the
+  reason and an inline **Unblock** button when it is blocked;
+- country, locality, ASN and reputation-feed membership from
+  [`GET /admin/intel/{ip}`](/reference/admin-api). When IP intelligence is not
+  configured the card says so instead of erroring;
+- the IP's recent decisions, matched exactly against the full ring server-side
+  (`GET /admin/decisions?ip=`). The ring is this instance's bounded in-memory
+  window of non-allow decisions, so an empty list means "nothing retained
+  here", not "this IP sent nothing".
+
+Every IP shown anywhere on the dashboard (recent decisions, active blocks, top
+offenders) is a link that opens the lookup for it. The active lookup is
+mirrored into the URL as `?ip=`, so a lookup can be shared or bookmarked; an
+open card refreshes with the rest of the page on each tick. Input validation
+is left to the daemon: whatever `netip` rejects is reported verbatim next to
+the search box.
+
 ### System health
 
 A **Store** KPI tile sits alongside the headline counters, reading `up` or a red

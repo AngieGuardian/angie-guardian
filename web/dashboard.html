@@ -178,6 +178,19 @@
      Symmetric top/bottom margin so it doesn't butt against the card edge. */
   .toolbar.pager { justify-content: center; margin: 0.75rem 0; }
 
+  /* IP lookup: every IP shown in a table doubles as a link into the lookup
+     card, so the affordance must survive on attacker-chosen surroundings
+     without shouting. Inherited ink + dotted underline does that. */
+  a.ip-link { color: inherit; cursor: pointer;
+              text-decoration: underline dotted; text-underline-offset: 2px; }
+  a.ip-link:hover { text-decoration-style: solid; }
+  #lookup-card { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: 10px; padding: 0.8rem 1rem 0.9rem; }
+  #lookup-card .toolbar { margin: 0 0 0.35rem; }
+  #lu-ip { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  #lu-feeds { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+  #lu-feeds:not(:empty) { margin-top: 0.35rem; }
+
   /* Token gate */
   #gate { max-width: 26rem; margin: 15vh auto 0; background: var(--surface);
           border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; }
@@ -328,6 +341,39 @@
       </table>
     </div>
   </section>
+
+  <!-- IP lookup: one card answering "what does the daemon know about this
+       IP?" from endpoints the page is already authenticated for. Every IP
+       rendered elsewhere on the page links here (see ipCell). -->
+  <h2 id="lookup-h2">IP lookup</h2>
+  <form id="lookup-form" class="toolbar">
+    <input id="lookup-ip" placeholder="IP to look up" size="24" autocomplete="off">
+    <button type="submit">Look up</button>
+    <button type="button" id="lookup-clear" hidden>Clear</button>
+    <span class="err" id="lookup-err"></span>
+  </form>
+  <div id="lookup-card" hidden>
+    <div class="toolbar">
+      <strong id="lu-ip"></strong>
+      <span id="lu-block-chip"></span>
+      <span class="meta" id="lu-block-detail"></span>
+      <button type="button" id="lu-unblock" hidden>Unblock</button>
+      <span class="err" id="lu-err"></span>
+    </div>
+    <div class="meta" id="lu-intel"></div>
+    <div id="lu-feeds"></div>
+    <div class="tablewrap scrolly" style="margin-top:0.6rem;">
+      <table>
+        <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
+                   <th>Request</th><th>User-Agent</th></tr></thead>
+        <tbody id="lu-decisions"></tbody>
+      </table>
+      <div class="empty" id="lu-dec-empty" hidden>No recent decisions for this IP on this instance.</div>
+    </div>
+    <div class="meta" style="margin-top:0.5rem;">Recent decisions cover only this
+      instance's bounded ring of recent non-allow decisions; an empty list is
+      not proof this IP sent nothing.</div>
+  </div>
 
   <h2>Active blocks</h2>
   <form id="block-form" class="toolbar">
@@ -505,7 +551,16 @@
       headers: { Authorization: "Bearer " + sessionStorage.getItem(KEY), ...opts.headers },
     });
     if (r.status === 401) { logout("Token rejected. Paste it again."); throw new Error("unauthorized"); }
-    if (!r.ok) throw new Error(path + ": " + r.status);
+    if (!r.ok) {
+      // Admin errors carry a useful message ({"error": ...}); prefer it over
+      // a bare status code. The body is shown via textContent only.
+      let msg = path + ": " + r.status;
+      try {
+        const body = await r.json();
+        if (body && typeof body.error === "string" && body.error) msg = body.error;
+      } catch { /* non-JSON error body: keep the status-code message */ }
+      throw new Error(msg);
+    }
     return r.json();
   };
 
@@ -1060,6 +1115,22 @@
     return cell;
   };
 
+  // An IP cell that doubles as an entry point into the lookup card. A real
+  // <a href="?ip=..."> so copy-link and middle-click work; a plain click stays
+  // on the page and opens the lookup directly.
+  const ipCell = (ip) => {
+    const cell = td("num", "");
+    const link = el("a", "ip-link", ip);
+    link.href = "?ip=" + encodeURIComponent(ip);
+    link.addEventListener("click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return; // keep open-in-new-tab
+      e.preventDefault();
+      openLookup(ip);
+    });
+    cell.appendChild(link);
+    return cell;
+  };
+
   // Top offenders: four ranked-list tables from /admin/offenders. Text only
   // (attacker-controlled IPs/paths), so every cell lands via td()'s textContent.
   const renderOffenders = (data) => {
@@ -1071,7 +1142,7 @@
     const hasGeo = ips.some(hasGeoInfo);
     $("off-ip-geo").hidden = false;
     fill("off-ips", ips, (r) => {
-      return [td("num", r.ip), geoCell(r), td("hits", String(r.count))];
+      return [ipCell(r.ip), geoCell(r), td("hits", String(r.count))];
     });
     fill("off-reasons", data.reasons || [], (r) =>
       [td("wrap", r.key), td("hits", String(r.count))]);
@@ -1364,7 +1435,7 @@
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
       const cells = [td("time", clock(d.time)), action, td("wrap", d.reason),
-        td("wrap", d.host), td("num", d.ip)];
+        td("wrap", d.host), ipCell(d.ip)];
       if (hasGeo) cells.push(geoCell(d));
       cells.push(td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
       return row(...cells);
@@ -1399,7 +1470,7 @@
         render(true).catch(() => {});
       });
       const act = td(null, ""); act.appendChild(unblock);
-      return row(td("num", b.ip), td("wrap", b.reason),
+      return row(ipCell(b.ip), td("wrap", b.reason),
         td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
     }));
     // "No active blocks" would be a lie when the store simply could not be
@@ -1417,6 +1488,116 @@
       ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
         " of " + all.length + " (page " + (blkPage + 1) + " of " + pages + ")"
       : "";
+  };
+
+  // --- IP lookup -----------------------------------------------------------
+  // One card answering "what does the daemon know about this IP?". Fans out to
+  // GET /admin/blocks/{ip} and GET /admin/intel/{ip} (both behind the token
+  // this page already holds) and scans the decisions ring the page has already
+  // fetched. Client-side validation is deliberately minimal: the backend is
+  // the authority on what an IP is, and its 400 message is surfaced verbatim.
+  let lookupIP = null; // active lookup target, canonicalised once the backend answers
+  let lookupSeq = 0;   // drops out-of-order responses after a quick re-submit
+
+  // Keep the lookup shareable: ?ip= mirrors the active lookup, cleared with
+  // it. replaceState, not pushState: a lookup is a view, not a navigation.
+  const setLookupURL = (ip) => {
+    const params = new URLSearchParams(location.search);
+    if (ip) params.set("ip", ip); else params.delete("ip");
+    const qs = params.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  };
+
+  const renderLookupDecisions = (rows) => {
+    $("lu-decisions").replaceChildren(...rows.map((d) => {
+      const action = td(null, "");
+      action.appendChild(el("span", "chip " + d.action, d.action));
+      return row(td("time", clock(d.time)), action, td("wrap", d.reason),
+        td("wrap", d.host), td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+    }));
+    $("lu-dec-empty").hidden = rows.length > 0;
+  };
+
+  const doLookup = async (ip) => {
+    const seq = ++lookupSeq;
+    const fresh = ip !== lookupIP;
+    const [block, intel, ring] = await Promise.all([
+      api("/admin/blocks/" + encodeURIComponent(ip)).catch((e) => ({ error: e.message })),
+      api("/admin/intel/" + encodeURIComponent(ip)).catch((e) => ({ error: e.message })),
+      // Exact match over the whole ring, server-side. Best-effort: an older
+      // server without ?ip= falls back to scanning the page-held rows below.
+      api("/admin/decisions?limit=all&ip=" + encodeURIComponent(ip)).catch(() => null),
+    ]);
+    if (seq !== lookupSeq) return;
+    if (block.error === "unauthorized") return; // logout() already took the page down
+
+    // Both endpoints rejecting a fresh lookup means the input is not an IP:
+    // report it next to the box and leave whatever the card showed alone. An
+    // already-open lookup is known-valid, so a later failure (store outage)
+    // renders inline instead of closing the card mid-incident.
+    if (fresh && block.error && intel.error) {
+      $("lookup-err").textContent = block.error;
+      return;
+    }
+    // Prefer the backend's canonical form ("::ffff:1.2.3.4" becomes "1.2.3.4")
+    // so the ring scan and the shareable URL use the form decisions record.
+    lookupIP = !block.error && block.ip ? block.ip : ip;
+    setLookupURL(lookupIP);
+    $("lookup-err").textContent = "";
+    $("lu-ip").textContent = lookupIP;
+
+    // Block status, with an inline unblock for a blocked IP.
+    const chip = $("lu-block-chip");
+    if (block.error) {
+      chip.replaceChildren(el("span", "chip", "unknown"));
+      $("lu-block-detail").textContent = "block status unavailable: " + block.error;
+      $("lu-unblock").hidden = true;
+    } else if (block.blocked) {
+      chip.replaceChildren(el("span", "chip deny", "blocked"));
+      $("lu-block-detail").textContent = block.reason || "";
+      $("lu-unblock").hidden = false;
+    } else {
+      chip.replaceChildren(el("span", "chip on", "not blocked"));
+      $("lu-block-detail").textContent = "";
+      $("lu-unblock").hidden = true;
+    }
+
+    // GeoIP + reputation feeds. enabled:false is a normal state, not an error.
+    const intelLine = $("lu-intel");
+    intelLine.title = "";
+    const feeds = $("lu-feeds");
+    if (intel.error) {
+      intelLine.textContent = "intel lookup failed: " + intel.error;
+      feeds.replaceChildren();
+    } else if (!intel.enabled) {
+      intelLine.textContent = "IP intelligence not configured.";
+      feeds.replaceChildren();
+    } else {
+      const info = intel.info || {};
+      intelLine.textContent = geoText(info) || "No GeoIP data for this IP.";
+      if ((info.city || info.subdivision) && info.accuracy_radius_km >= COARSE_RADIUS_KM) {
+        intelLine.title = "approximate: " + info.accuracy_radius_km + " km radius";
+      }
+      const hits = intel.feeds || [];
+      feeds.replaceChildren(...(hits.length
+        ? hits.map((h) => el("span", "chip " + h.action, h.feed + " (" + h.action + ")"))
+        : [el("span", "meta", "No reputation-feed hits.")]));
+    }
+
+    renderLookupDecisions(ring ? ring.decisions || []
+      : lastDecisions.filter((d) => d.ip === lookupIP));
+    $("lookup-card").hidden = false;
+    $("lookup-clear").hidden = false;
+  };
+
+  // Entry point shared by the form, the ?ip= deep link and every IP link on
+  // the page. Brackets are stripped so a pasted "[2001:db8::1]" just works.
+  const openLookup = (ip) => {
+    ip = ip.trim().replace(/^\[|\]$/g, "");
+    if (!ip) return;
+    $("lookup-ip").value = ip;
+    doLookup(ip).catch(() => {});
+    $("lookup-h2").scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   // --- System health -------------------------------------------------------
@@ -1725,6 +1906,11 @@
     lastDecisionWindow = chartDecisions.window;
     renderDecisions();
 
+    // Keep an open lookup current: re-check block status and intel alongside
+    // the tick and re-scan the freshly fetched ring. Best-effort like the
+    // other optional fetches; a failure renders inline in the card.
+    if (lookupIP) doLookup(lookupIP).catch(() => {});
+
     // Reason rollup.
     $("reasons").replaceChildren(...reasons.map(([r, n]) =>
       row(td("wrap", r), td("num", String(n)))));
@@ -1807,6 +1993,10 @@
     $("gate").hidden = true; $("app").hidden = false;
     tick();
     armTimer();
+    // Deep link: /admin/dashboard?ip=... opens the lookup on load, so an
+    // operator can share a lookup URL with the on-call.
+    const linked = new URLSearchParams(location.search).get("ip");
+    if (linked) openLookup(linked);
   };
   const logout = (msg) => {
     sessionStorage.removeItem(KEY);
@@ -1863,6 +2053,35 @@
     } catch (err) {
       $("block-err").textContent = "block failed: " + err.message;
     }
+  });
+
+  // IP lookup: submit looks up, clear closes the card and drops ?ip=.
+  $("lookup-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    openLookup($("lookup-ip").value);
+  });
+  $("lookup-clear").addEventListener("click", () => {
+    lookupIP = null;
+    lookupSeq++; // invalidate any in-flight lookup
+    $("lookup-ip").value = "";
+    $("lookup-err").textContent = "";
+    $("lookup-card").hidden = true;
+    $("lookup-clear").hidden = true;
+    setLookupURL(null);
+  });
+  // Inline unblock on the lookup card, reusing the blocks table's DELETE path.
+  // The forced render refreshes both the blocks table and this card.
+  $("lu-unblock").addEventListener("click", async () => {
+    if (!lookupIP) return;
+    try {
+      await api("/admin/blocks/" + encodeURIComponent(lookupIP), { method: "DELETE" });
+    } catch (err) {
+      if (err.message !== "unauthorized") $("lu-err").textContent = "unblock failed: " + err.message;
+      return;
+    }
+    $("lu-err").textContent = "";
+    lastBlocksAt = 0;
+    render(true).catch(() => {});
   });
 
   // Decision filters re-render locally, no refetch. A filter change resets to

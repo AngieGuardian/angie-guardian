@@ -282,6 +282,11 @@ func TestDashboardServed(t *testing.T) {
 	if !strings.Contains(body, "Guardian dashboard") || !strings.Contains(body, "/admin/stats") {
 		t.Fatalf("dashboard page content unexpected:\n%s", tail(body, 500))
 	}
+	// The IP lookup panel (issue #30) rides on the per-IP endpoints; make sure
+	// the shell ships both the panel and its data calls.
+	if !strings.Contains(body, `id="lookup-form"`) || !strings.Contains(body, "/admin/intel/") {
+		t.Fatalf("dashboard shell is missing the IP lookup panel:\n%s", tail(body, 500))
+	}
 }
 
 // TestReadinessAndStoreHealth walks the operator surface issue #13 added,

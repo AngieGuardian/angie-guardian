@@ -13,8 +13,10 @@ coverage.out
 *.key
 *.rotate.lock
 
-# GeoLite databases
+# GeoLite databases (except committed test/demo fixtures)
 *.mmdb
+!core/intel/testdata/*.mmdb
+!test/seed/seed-*.mmdb
 
 # Editor / OS
 .idea/

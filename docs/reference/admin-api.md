@@ -152,6 +152,7 @@ Query parameters:
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
 | `action` | | Filter: `deny` or `challenge`. |
 | `reason` | | Filter by reason prefix, e.g. `waf`. |
+| `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
 | `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing. |
 
 Both views include retention metadata. `truncated` describes the response limit,

@@ -255,6 +255,22 @@ func TestAdminDecisionsAndStats(t *testing.T) {
 	if m["count"] != float64(3) {
 		t.Fatalf("reason=denylist count = %v, want 3", m["count"])
 	}
+	// ?ip= is an exact match after canonicalisation, so the dashboard's IP
+	// lookup covers the full ring rather than a substring of a page of it.
+	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?ip=203.0.113.2", adminToken, ""))
+	if m["count"] != float64(1) {
+		t.Fatalf("ip=203.0.113.2 count = %v, want 1", m["count"])
+	}
+	if got := m["decisions"].([]any)[0].(map[string]any)["ip"]; got != "203.0.113.2" {
+		t.Fatalf("ip filter returned %v, want 203.0.113.2", got)
+	}
+	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?ip=::ffff:203.0.113.2", adminToken, ""))
+	if m["count"] != float64(1) {
+		t.Fatalf("IPv4-mapped ip filter count = %v, want 1 (must canonicalise)", m["count"])
+	}
+	if resp := adminReq(t, ts, "GET", "/admin/decisions?ip=not-an-ip", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad ip: status = %d, want 400", resp.StatusCode)
+	}
 	if resp := adminReq(t, ts, "GET", "/admin/decisions?limit=bogus", adminToken, ""); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad limit: status = %d, want 400", resp.StatusCode)
 	}
