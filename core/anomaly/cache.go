@@ -54,6 +54,20 @@ func (c *ModelCache) SetMetrics(m *metrics.Metrics) {
 	}
 }
 
+// Paths lists the configured artifact paths. The files map is immutable after
+// construction, so this is safe without locking; reload uses it to diff the
+// old cache against the new one.
+func (c *ModelCache) Paths() []string {
+	if c == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(c.files))
+	for p := range c.files {
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 type modelFile struct {
 	path          string
 	requiredHosts []string

@@ -246,6 +246,17 @@ func (m *Metrics) AnomalyModelTrainedAt(model string, trainedAt int64) {
 	m.anomalyModelAge.WithLabelValues(model).Set(float64(trainedAt))
 }
 
+// AnomalyModelRemoved drops the trained-at series of a model artifact a
+// reload removed from the config. Left published, the gauge would freeze and
+// eventually fire the staleness alert for a model this process no longer
+// loads.
+func (m *Metrics) AnomalyModelRemoved(model string) {
+	if m == nil {
+		return
+	}
+	m.anomalyModelAge.DeleteLabelValues(model)
+}
+
 func (m *Metrics) BlockPlaced(reason string) {
 	if m == nil {
 		return

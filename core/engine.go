@@ -261,6 +261,18 @@ func (e *Engine) Reload(cfg *Config) error {
 	snap.models.SetMetrics(e.metrics)
 	old = e.snap.Swap(snap)
 	e.lastCfg.Store(snap.cfg)
+	// Drop the age gauge of any model artifact this reload removed, or the
+	// frozen series would eventually fire the staleness alert for a model the
+	// process no longer loads.
+	kept := make(map[string]bool)
+	for _, p := range snap.models.Paths() {
+		kept[p] = true
+	}
+	for _, p := range old.models.Paths() {
+		if !kept[p] {
+			e.metrics.AnomalyModelRemoved(p)
+		}
+	}
 	old.release() // resources close after the final in-flight evaluator releases
 	// attack_mode is hot-reloadable: push the new thresholds/effects into the
 	// live detector (nil-safe).

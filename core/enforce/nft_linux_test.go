@@ -146,6 +146,31 @@ func TestNFTApplyAddsElementWithKey(t *testing.T) {
 	}
 }
 
+// Apply must canonicalize IPv4-mapped IPv6 forms: netip classifies
+// ::ffff:10.1.2.3 as neither private nor Is4, so without Unmap a mapped
+// address would dodge the skip() safety net and land in the v6 kernel set.
+func TestNFTApplyUnmapsMappedIPv4(t *testing.T) {
+	s, captured := dialCapture(t, nftTestConfig())
+	// Mapped private space is withheld like its canonical form.
+	if err := s.Apply(BlockEvent{IP: netip.MustParseAddr("::ffff:10.1.2.3"), TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*captured) != 0 {
+		t.Fatal("mapped private address reached the kernel batch")
+	}
+	// A mapped public client lands in the v4 set under its 4-byte key.
+	mapped := netip.MustParseAddr("::ffff:203.0.113.9")
+	if err := s.Apply(BlockEvent{IP: mapped, TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if k := mapped.As16(); anyContains(*captured, k[:]) {
+		t.Error("mapped public address was keyed into the v6 set")
+	}
+	if !anyContains(*captured, []byte{203, 0, 113, 9}) {
+		t.Error("mapped public address is missing from the v4 batch")
+	}
+}
+
 func TestNFTApplySkipsProtectedAddresses(t *testing.T) {
 	cfg := nftTestConfig()
 	cfg.NeverBlock = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}

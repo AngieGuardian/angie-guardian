@@ -221,6 +221,11 @@ func elementFor(a netip.Addr) (setName string, key []byte) {
 }
 
 func (s *nftSink) Apply(ev BlockEvent) error {
+	// Unmap 4-in-6 up front: netip classifies ::ffff:a.b.c.d differently from
+	// a.b.c.d (Contains, IsPrivate, Is4 all diverge), so a mapped address
+	// would dodge the skip() safety net and land in the v6 kernel set. Callers
+	// canonicalize already; this keeps the sink safe on its own.
+	ev.IP = ev.IP.Unmap()
 	if !ev.Remove && s.skip(ev.IP, ev.TTL) {
 		return nil
 	}
@@ -277,7 +282,8 @@ func (s *nftSink) Reconcile(active []ActiveBlock) error {
 	now := time.Now()
 	desired := map[string]map[string]time.Duration{nftSet4Name: {}, nftSet6Name: {}}
 	for _, b := range active {
-		var ttl time.Duration // 0 = no kernel timeout (block without expiry)
+		b.Addr = b.Addr.Unmap() // same 4-in-6 canonicalization as Apply
+		var ttl time.Duration   // 0 = no kernel timeout (block without expiry)
 		if !b.ExpiresAt.IsZero() {
 			if ttl = b.ExpiresAt.Sub(now); ttl <= 0 {
 				continue
