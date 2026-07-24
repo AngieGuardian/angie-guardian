@@ -5,7 +5,7 @@ For an overview of what Guardian is and how it works, see the
 [README](README.md).
 
 For a first host installation, start with the release-first
-[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started):
+[Getting Started guide](https://angieguardian.org/guide/getting-started):
 it selects a prebuilt archive and installs the config, rules, Angie snippets,
 and systemd unit at the exact paths used below. This file is the deeper
 configuration and operations reference after that initial flow.
@@ -685,7 +685,7 @@ For production, use the shipped `deploy/guardian-train.service` and
 the strict log schema, verifies expected domains, compares the candidate with
 the active artifact, and promotes atomically while retaining the last-good
 artifact; see
-the [production guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#running-the-anomaly-trainer).
+the [production guide](https://angieguardian.org/guide/production#running-the-anomaly-trainer).
 The CLI reads plain and gzip-compressed logs directly. Responses with status
 400 or higher and requests Guardian challenged, denied, or shed are excluded.
 Malformed or schema-invalid records reject training by default. Training and

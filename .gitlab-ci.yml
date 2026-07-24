@@ -354,35 +354,43 @@ docker-release:
   after_script:
     - docker logout "$CI_REGISTRY"
 
-# --- Documentation site (GitLab Pages) --------------------------------------
-# Builds the VitePress site from docs/ and publishes it via Pages on pushes to
-# the default branch that touch the site. The site's base path is derived from
-# $CI_PAGES_URL so it works whether Pages serves from a subpath
-# (https://host/angie-guardian/) or a root domain.
-pages:
+# --- Documentation site (angieguardian.org) ---------------------------------
+# Builds the VitePress site from docs/ and publishes it as a `public/`
+# artifact. This is NOT GitLab Pages: the artifact is picked up by the external
+# artifact deployer, which watches for deployment jobs via webhook and pushes
+# the site to https://angieguardian.org. The `environment:` block below is what
+# makes this a deployment job (and therefore what triggers the webhook), so it
+# must stay even though nothing here talks to the server directly. The site is
+# served from the domain root, so the VitePress base stays at its default `/`
+# (no DOCS_BASE override, unlike the old Pages subpath build).
+docs-deploy:
   stage: deploy
   image: node:24@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
   cache:
     key: vitepress
     paths:
       - docs/node_modules/
-  # Only republish when the site (or this job's own definition) actually
-  # changes, so a Go-only commit does not rebuild and redeploy an identical
-  # site. `.gitlab-ci.yml` is watched too: the build steps and the base-path
-  # logic below live in this file, so without it a change to how the site is
-  # built or published would never reach Pages.
+  # Only redeploy when the site (or this job's own definition) actually
+  # changes, so a Go-only commit does not rebuild and re-publish an identical
+  # site. `.gitlab-ci.yml` is watched too: without it, a change to the build
+  # steps below would never reach production.
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
         - docs/**/*
         - .gitlab-ci.yml
   script:
     - cd docs
     - npm ci
-    - export DOCS_BASE="$(node -p 'new URL(process.env.CI_PAGES_URL).pathname.replace(/\/?$/, "/")')"
-    - echo "Building with base $DOCS_BASE"
     - npm run build
-    - mv .vitepress/dist ../public
+    # The deployer expects the site at the top level of the artifact, so lift
+    # it out of docs/.vitepress/ and into ./public at the repo root.
+    - mv .vitepress/dist "$CI_PROJECT_DIR/public"
+  environment:
+    name: website
+    url: https://angieguardian.org
   artifacts:
+    name: "Angie Guardian website $CI_COMMIT_SHORT_SHA"
+    expire_in: 1 month
     paths:
       - public

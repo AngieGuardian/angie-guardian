@@ -59,7 +59,7 @@ Guardian serves fail-open and a store outage must not restart-loop a container
 that is still protecting traffic. For readiness ("is the store actually
 working?") poll `GET /readyz` on the admin listener; it returns `503` while the
 store probe is pending, failing or stale. See
-[Alerting](https://angie-guardian-31c118.pages.melroy.org/guide/production#alerting)
+[Alerting](https://angieguardian.org/guide/production#alerting)
 for the shipped Prometheus rules.
 
 ## Manual use

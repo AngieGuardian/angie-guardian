@@ -48,7 +48,7 @@ groups:
             scoreboards are not updating and blocks may not be enforced.
             /healthz stays green on purpose; check /readyz and the "store" block
             of /admin/stats for the raw error.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting#readyz-says-degraded
+          runbook_url: https://angieguardian.org/guide/troubleshooting#readyz-says-degraded
 
       # Partial store failure: reachable but erroring. Gated on at least 20
       # operations in the window so an idle instance with one failed op does
@@ -71,7 +71,7 @@ groups:
             ({{ $value | humanizePercentage }}). Individual stages abstain on a
             store error, so protection is degrading unevenly rather than
             cleanly failing open.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends
+          runbook_url: https://angieguardian.org/guide/production#store-backends
 
       # Challenges are issued but almost nobody solves them. Either the
       # difficulty is set beyond what real clients can afford, the challenge
@@ -106,7 +106,7 @@ groups:
             ({{ $value | humanizePercentage }}). Check base_difficulty against
             the solve-time histogram before assuming an attack: a difficulty
             that real browsers cannot afford looks identical to a bot flood.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/troubleshooting
+          runbook_url: https://angieguardian.org/guide/troubleshooting
 
       # A sudden jump in behavioural blocks: an attack, or a rule change that
       # started blocking legitimate traffic. The absolute floor is what keeps
@@ -137,7 +137,7 @@ groups:
             and above 1 per minute. Check /admin/decisions and the top-offenders
             view to tell an attack from a rule change that started blocking real
             users.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/admin
+          runbook_url: https://angieguardian.org/guide/admin
 
       # No scrape at all. Deliberately last-resort: absent() covers the case
       # where the series vanished entirely, which up == 0 alone cannot see.
@@ -153,7 +153,7 @@ groups:
             in this group is blind until this is fixed. Check that guardiand is
             running, that admin.listen is reachable from Prometheus, and that
             the job name in your scrape config matches these rules.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#dashboards-and-metrics
+          runbook_url: https://angieguardian.org/guide/production#dashboards-and-metrics
 
       # Kernel offload fell back to in-daemon enforcement. Blocks are still
       # enforced, just at higher cost per request, so this is a warning.
@@ -169,7 +169,7 @@ groups:
             enforcing blocks in-daemon instead of in the kernel. Traffic is
             still protected. Usually a missing capability (CAP_NET_ADMIN) or an
             nft table removed out of band; see /admin/offload for the error.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#enforcement-offload
+          runbook_url: https://angieguardian.org/guide/production#enforcement-offload
 
       # Informational: attack mode is doing its job. Paging on this would page
       # on every attack Guardian successfully absorbed.
@@ -184,7 +184,7 @@ groups:
             Attack mode has been above normal for 10 minutes (1 = elevated,
             2 = attack). Proof-of-work difficulty is raised fleet-wide. See
             /admin/attack for the signal that triggered it.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode
+          runbook_url: https://angieguardian.org/guide/attack-mode
 
       # Saturation: Guardian is dropping work to protect its own latency.
       # Sustained shedding means the instance is undersized for the traffic.
@@ -200,7 +200,7 @@ groups:
             Guardian has been shedding requests continuously for 10 minutes
             ({{ $value | humanize }}/s). The instance is saturated: add
             capacity, or move to a faster store backend.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#performance
+          runbook_url: https://angieguardian.org/guide/production#performance
 
       # Single-spend fell back to per-replica: the challenge CAS is failing, so
       # a solved challenge is no longer guaranteed to be redeemable exactly
@@ -218,4 +218,4 @@ groups:
             single-spend has degraded to per-replica and a solved challenge can
             be replayed against another instance. Check GuardianStoreDown and
             GuardianStoreErrors first; this rarely fires on its own.
-          runbook_url: https://angie-guardian-31c118.pages.melroy.org/guide/production#store-backends
+          runbook_url: https://angieguardian.org/guide/production#store-backends

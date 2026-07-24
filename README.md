@@ -32,7 +32,7 @@ configurable per domain, so one instance can protect multiple vhosts.
 Install a pinned `linux-amd64` or `linux-arm64` package from the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
 then follow the release-first
-[Getting Started guide](https://angie-guardian-31c118.pages.melroy.org/guide/getting-started).
+[Getting Started guide](https://angieguardian.org/guide/getting-started).
 The archive contains the binaries, example configuration, starter WAF rules,
 Angie snippets, and systemd unit; operators do not need Go or a repository
 checkout.
@@ -43,12 +43,12 @@ sudo install -Dm755 guardiand /usr/local/bin/guardiand
 ```
 
 For containers and persistent state, see the
-[production Docker guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#docker).
+[production Docker guide](https://angieguardian.org/guide/production#docker).
 
 ## Documentation
 
 Guides, examples, and the complete configuration and API reference are
-published at **<https://angie-guardian-31c118.pages.melroy.org/>**.
+published at **<https://angieguardian.org/>**.
 
 ## How it works
 
@@ -194,7 +194,7 @@ results, measured in requests per second:
 The read path remained above 94,000 requests/s across every backend. Challenge
 issuance is write-heavy, which explains the difference between the in-memory
 and durable stores. See the
-[load-testing guide](https://angie-guardian-31c118.pages.melroy.org/guide/load-testing)
+[load-testing guide](https://angieguardian.org/guide/load-testing)
 for scenarios, latency percentiles, methodology, and reproduction commands.
 
 ## Integration paths
@@ -236,7 +236,7 @@ and key-rotation details.
 
 ## Security
 
-Guardian's [security model and limitations](https://angie-guardian-31c118.pages.melroy.org/guide/threat-model)
+Guardian's [security model and limitations](https://angieguardian.org/guide/threat-model)
 spell out what it defends against and what it deliberately does not. To report a
 vulnerability, see [SECURITY.md](SECURITY.md); please do not open a public issue.
 
@@ -311,7 +311,7 @@ write-heavy path):
 | `allow` | plain request, full pipeline, ends in "default allow" | none on the embedded backends once the block mirror is seeded; 1 read on `redis` (read-through, so another replica's blocks apply immediately) |
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | no store I/O |
-| `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
+| `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angieguardian.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
 same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis
@@ -356,14 +356,14 @@ single-writer store:
   shared store that lets replicas behind a load balancer see each other's blocks
   and single-spend markers. It trades some read throughput for that (one network
   read per request). The embedded backends above are single-node only. See the
-  [store guide](https://angie-guardian-31c118.pages.melroy.org/guide/production#choosing-a-store-backend).
+  [store guide](https://angieguardian.org/guide/production#choosing-a-store-backend).
 
 Two ways to lift the write path further when a burst of *new* clients could
 exceed the durable ceiling:
 
 - Set `pow.mode: suspicion` so there is no catch-all challenge (only explicit
   anomaly/WAF/GeoIP/reputation policies issue one), or rely on
-  [attack mode](https://angie-guardian-31c118.pages.melroy.org/guide/attack-mode)'s
+  [attack mode](https://angieguardian.org/guide/attack-mode)'s
   **stateless** issuance, which writes nothing at issue time. The only remaining
   write is then the single-spend marker at redemption, which an attacker cannot
   trigger without actually solving the proof of work.

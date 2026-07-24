@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitepress'
 
-// The site is served from / locally and from the Pages subpath in CI
-// (the pages job derives DOCS_BASE from $CI_PAGES_URL).
+// The production site is served from the domain root (angieguardian.org), so
+// base defaults to '/'. DOCS_BASE can still override it for a subpath deploy.
 const base = process.env.DOCS_BASE || '/'
 
 export default defineConfig({
