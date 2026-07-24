@@ -164,6 +164,29 @@ func TestComparatorAcceptsAddedAndQuietDomains(t *testing.T) {
 	}
 }
 
+// Below-floor volume is not evidence of a coverage hole: the trainer's own
+// request floor drops such domains, and an attacker-chosen Host header must
+// not be able to wedge the unattended rollout gate with a handful of requests.
+func TestComparatorToleratesLowVolumeUncoveredAndRemoved(t *testing.T) {
+	current := &Model{Domains: map[string]*DomainModel{"dropped.test": {Baseline: testBaseline(100)}}}
+	candidate := &Model{Domains: map[string]*DomainModel{}}
+	c := NewComparator(current, candidate)
+	for range 3 {
+		c.Add(&LogRecord{Host: "stray.test", Method: "GET", URI: "/", Status: 200, GuardianAction: "allow"})
+		c.Add(&LogRecord{Host: "dropped.test", Method: "GET", URI: "/", Status: 200, GuardianAction: "allow"})
+	}
+	report := c.Report(10, 1, 1, time.Now().UTC().Format(time.RFC3339Nano))
+	if !report.Passed {
+		t.Fatalf("below-floor coverage gaps must not fail the gate: %#v", report.Domains)
+	}
+	if got := report.Domains["stray.test"].Status; got != "uncovered" {
+		t.Fatalf("stray status = %q, want uncovered", got)
+	}
+	if got := report.Domains["dropped.test"].Status; got != "removed" {
+		t.Fatalf("dropped status = %q, want removed", got)
+	}
+}
+
 func TestComparatorRejectsRemovedDomainWithoutTraffic(t *testing.T) {
 	current := &Model{Domains: map[string]*DomainModel{"removed.test": {Baseline: testBaseline(100)}}}
 	candidate := &Model{Domains: map[string]*DomainModel{}}

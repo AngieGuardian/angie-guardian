@@ -160,6 +160,9 @@ func (c *Comparator) Report(minRequests int64, maxMeanDelta, maxP95Delta float64
 			CandidateLevels: a.levels, MissingCurrent: a.missingCurrent, MissingCandidate: a.missingCandidate}
 		d.MeanDelta = d.Candidate.Mean - d.Current.Mean
 		d.P95Delta = d.Candidate.P95 - d.Current.P95
+		// Every eligible record lands in exactly one of these two per model, so
+		// this is the host's total observed comparison volume.
+		observed := a.current.count + a.missingCurrent
 		switch {
 		case !inCurrent && inCandidate:
 			// Added coverage has no live distribution to regress against. Report it
@@ -167,10 +170,24 @@ func (c *Comparator) Report(minRequests int64, maxMeanDelta, maxP95Delta float64
 			d.Status = "added"
 		case inCurrent && !inCandidate:
 			d.Status = "removed"
-			d.Failures = append(d.Failures, "candidate removed domain baseline")
+			// The trainer drops domains below its request floor, so a low-traffic
+			// domain's absence from the candidate is expected and must not wedge
+			// unattended promotion week after week. Zero observed records is
+			// different: the domain has a live baseline but its logs vanished
+			// entirely, which points at a broken log pipeline, not low traffic.
+			if observed == 0 || observed >= minRequests {
+				d.Failures = append(d.Failures, "candidate removed domain baseline")
+			}
 		case !inCurrent && !inCandidate:
 			d.Status = "uncovered"
-			d.Failures = append(d.Failures, "candidate missing observed domain baseline")
+			// In neither model: only volume at or above the comparison floor is
+			// evidence of a coverage hole. Below it this is ordinary unmodeled
+			// traffic — or an arbitrary attacker-chosen Host header answered by a
+			// catch-all vhost — and failing would let a single stray request wedge
+			// the rollout gate.
+			if observed >= minRequests {
+				d.Failures = append(d.Failures, "candidate missing observed domain baseline")
+			}
 		case d.Current.Count == 0 && d.Candidate.Count == 0:
 			// A quiet domain supplies no drift evidence. Keeping it is not a
 			// regression, so it must not wedge updates for active domains.
