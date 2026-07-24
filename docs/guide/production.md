@@ -497,13 +497,28 @@ For most single-instance deployments this is all you need. See
 
 For long-horizon history, alerting, or fleet-wide aggregation across replicas,
 scrape the Prometheus metrics at `/metrics` on the admin listener (open to
-scrapers, no token needed): decisions by action/reason/domain, challenge
+scrapers by default, no token needed): decisions by action/reason/domain, challenge
 lifecycle, PoW solve-time and anomaly-score histograms, blocks placed, store op
 latency, and end-to-end `Evaluate()` latency. Import
 `deploy/grafana-dashboard.json` for a ready-made Grafana dashboard. This
 complements the built-in dashboard rather than replacing it: the built-in view
 is per-instance and live, while Prometheus retains history and sums across a
 fleet.
+
+If the admin listener is bound to a routable interface, consider
+`admin.metrics_auth: true`: `/metrics` then requires the admin bearer token
+(it exposes every protected vhost name plus per-domain traffic and attack
+posture), while `/healthz` and `/readyz` stay open for orchestrators. Pair it
+with a stable `admin.token` or `admin.token_file` and give Prometheus the
+token:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: angie-guardian
+    authorization:
+      credentials_file: /etc/prometheus/guardian-admin-token
+```
 
 ### Alerting
 

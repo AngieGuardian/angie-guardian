@@ -33,7 +33,9 @@ import (
 // on a listener separate from the auth hot path (bind it to loopback or a
 // management interface). Every /admin route requires a bearer token; /metrics,
 // /healthz and /readyz do not, so a scraper or orchestrator probe needs no
-// secret.
+// secret. admin.metrics_auth opts /metrics into the bearer token too (it
+// exposes every protected vhost name and per-domain posture); /healthz and
+// /readyz always stay open for orchestrators.
 type AdminServer struct {
 	engine  *core.Engine
 	metrics *metrics.Metrics // nil = no metrics endpoint, no challenge stats
@@ -79,7 +81,14 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 		s.angie = newAngieClient(cfg.Admin.AngieAPI, log)
 	}
 	if m != nil {
-		s.mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry(), promhttp.HandlerOpts{}))
+		metricsHandler := promhttp.HandlerFor(m.Registry(), promhttp.HandlerOpts{}).ServeHTTP
+		if cfg.Admin.MetricsAuth {
+			// Opt-in for routable admin binds: /metrics names every protected
+			// vhost, so put it behind the same bearer token as /admin/*
+			// (Prometheus scrapes with authorization.credentials_file).
+			metricsHandler = s.auth(metricsHandler)
+		}
+		s.mux.HandleFunc("GET /metrics", metricsHandler)
 	}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))

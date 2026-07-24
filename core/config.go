@@ -145,6 +145,16 @@ type AdminConfig struct {
 	// dashboard URL itself never contains configured or persistent secrets.
 	TokenFile string `yaml:"token_file"`
 
+	// MetricsAuth puts /metrics behind the admin bearer token. Off by default
+	// so scrapers need no secret, but worth enabling on a routable admin bind:
+	// /metrics exposes every protected vhost name plus per-domain traffic and
+	// attack posture. /healthz and /readyz always stay unauthenticated so
+	// orchestrator probes keep working. Prometheus supports the token via
+	// authorization.credentials / credentials_file. Pair it with a stable
+	// token (token or token_file): an ephemeral per-start token would break
+	// the scrape config on every restart.
+	MetricsAuth bool `yaml:"metrics_auth"`
+
 	// Dashboard serves the built-in reporting page at GET /admin/dashboard.
 	// The page itself is a static shell (all data flows through the
 	// token-guarded /admin/* endpoints), but it stays off by default so the

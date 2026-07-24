@@ -291,8 +291,13 @@ func run(configPath string) error {
 			// The /admin/* API is bearer-gated, but the scrape/probe endpoints
 			// deliberately are not; on a routable bind that trade-off must be a
 			// visible choice, not a surprise.
-			log.Warn("admin.listen is not loopback: /metrics, /healthz and /readyz are served without authentication on this interface; restrict reachability at the firewall or scrape via loopback",
-				"addr", cfg.Admin.Listen)
+			if cfg.Admin.MetricsAuth {
+				log.Warn("admin.listen is not loopback: /healthz and /readyz are served without authentication on this interface (/metrics requires the bearer token via admin.metrics_auth)",
+					"addr", cfg.Admin.Listen)
+			} else {
+				log.Warn("admin.listen is not loopback: /metrics, /healthz and /readyz are served without authentication on this interface; restrict reachability at the firewall, scrape via loopback, or set admin.metrics_auth",
+					"addr", cfg.Admin.Listen)
+			}
 		}
 
 		admin = &http.Server{

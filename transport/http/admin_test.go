@@ -395,6 +395,53 @@ func TestAdminMetricsExposed(t *testing.T) {
 	}
 }
 
+// admin.metrics_auth puts /metrics behind the bearer token while /healthz and
+// /readyz stay open for orchestrators that hold no secret.
+func TestAdminMetricsAuthOptIn(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	yaml := "admin: { metrics_auth: true }\n" + adminYAML
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st store.Store = store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	key, err := pow.LoadOrCreateKey(filepath.Join(dir, "ed25519.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := metrics.New("memory")
+	engine, err := core.NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, m, adminToken, "", "", nil, slog.Default()))
+	t.Cleanup(ts.Close)
+
+	if resp := adminReq(t, ts, "GET", "/metrics", "", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("metrics without token: status = %d, want 401", resp.StatusCode)
+	}
+	if resp := adminReq(t, ts, "GET", "/metrics", "wrong-token", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("metrics with wrong token: status = %d, want 401", resp.StatusCode)
+	}
+	if resp := adminReq(t, ts, "GET", "/metrics", adminToken, ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("metrics with token: status = %d, want 200", resp.StatusCode)
+	}
+	if resp := adminReq(t, ts, "GET", "/healthz", "", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz must stay unauthenticated: status = %d, want 200", resp.StatusCode)
+	}
+	// No health checker is attached here, so /readyz reports not-ready (503);
+	// what matters is that it never demands the bearer token.
+	if resp := adminReq(t, ts, "GET", "/readyz", "", ""); resp.StatusCode == http.StatusUnauthorized {
+		t.Errorf("/readyz must stay unauthenticated: status = %d", resp.StatusCode)
+	}
+}
+
 func TestAdminScoreNoModel(t *testing.T) {
 	ts, _ := adminServer(t)
 	m := decodeJSON(t, adminReq(t, ts, "GET", "/admin/score?host=x.test&uri=/&ua=curl", adminToken, ""))
