@@ -66,6 +66,13 @@ type NFTConfig struct {
 	// CIDRs and every configured allowlist prefix. Loopback and link-local
 	// are excluded unconditionally on top of this.
 	NeverBlock []netip.Prefix
+	// AllowPrivate lets private / special-purpose ranges (RFC1918, CGNAT, ULA,
+	// unspecified, multicast) reach the kernel drop. Off by default: a
+	// trusted-proxy/XFF misconfiguration that surfaces an internal address as
+	// the client IP would otherwise program a kernel drop for the LB or gateway
+	// itself, and in managed mode that block outlives a daemon restart. Set it
+	// only when Guardian genuinely serves routable private space.
+	AllowPrivate bool
 }
 
 // BlockEvent is one change to the active block set, fanned out to the mirror

@@ -77,6 +77,7 @@ full picture. Every field is restart-required.
 | `enforcement.nftables.max_entries` | int | `65536` | Kernel set size bound. |
 | `enforcement.nftables.min_ttl` | duration | `0s` | Skip offloading blocks shorter than this; `0` offloads all. |
 | `enforcement.nftables.never_block` | []string | `[]` | CIDRs/IPs never sent to the kernel. Put LB/CDN ranges here. Configured allowlists are excluded automatically on top. |
+| `enforcement.nftables.allow_private` | bool | `false` | Allow private/special-purpose ranges (RFC1918, CGNAT, ULA, unspecified, multicast) to be kernel-dropped. Off by default so a trusted-proxy misconfiguration can't blackhole internal infrastructure. Loopback and link-local stay excluded regardless. |
 
 ## attack_mode
 

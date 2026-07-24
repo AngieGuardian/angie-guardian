@@ -56,6 +56,39 @@ func nftTestConfig() NFTConfig {
 	}
 }
 
+func TestNFTSkipPrivateAndSpecialRanges(t *testing.T) {
+	addr := func(s string) netip.Addr { return netip.MustParseAddr(s) }
+	// Default (allow_private off): private, CGNAT, ULA, unspecified, multicast,
+	// loopback and link-local are all withheld from the kernel; real routable
+	// clients are offloaded.
+	def := &nftSink{cfg: nftTestConfig(), log: slog.New(slog.DiscardHandler)}
+	for _, ip := range []string{
+		"10.1.2.3", "192.168.0.9", "172.16.5.5", "100.100.0.1", // RFC1918 + CGNAT
+		"fd00::1", "::", "224.0.0.1", "127.0.0.1", "169.254.1.1", // ULA, unspecified, multicast, loopback, link-local
+	} {
+		if !def.skip(addr(ip), time.Hour) {
+			t.Errorf("skip(%s) = false, want true (must not kernel-drop internal/special space)", ip)
+		}
+	}
+	for _, ip := range []string{"8.8.8.8", "1.1.1.1", "2606:4700::1111"} {
+		if def.skip(addr(ip), time.Hour) {
+			t.Errorf("skip(%s) = true, want false (a routable client must be offloaded)", ip)
+		}
+	}
+
+	// allow_private opt-in: private space reaches the kernel, but loopback and
+	// link-local remain unconditionally excluded.
+	cfg := nftTestConfig()
+	cfg.AllowPrivate = true
+	priv := &nftSink{cfg: cfg, log: slog.New(slog.DiscardHandler)}
+	if priv.skip(addr("10.1.2.3"), time.Hour) {
+		t.Error("allow_private: RFC1918 address must be offloaded")
+	}
+	if !priv.skip(addr("127.0.0.1"), time.Hour) {
+		t.Error("allow_private must not override the unconditional loopback exclusion")
+	}
+}
+
 func TestNFTEnsureManagedCreatesTableSetsChain(t *testing.T) {
 	s, captured := dialCapture(t, nftTestConfig())
 	s.mu.Lock()

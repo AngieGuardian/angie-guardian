@@ -173,10 +173,14 @@ func (s *nftSink) ensure() error {
 }
 
 // skip filters what must never reach the kernel: loopback and link-local
-// unconditionally, the operator's never_block union (LB/CDN ranges plus every
-// configured allowlist prefix), and blocks shorter than min_ttl.
+// unconditionally, private / special-purpose ranges unless allow_private is
+// set, the operator's never_block union (LB/CDN ranges plus every configured
+// allowlist prefix), and blocks shorter than min_ttl.
 func (s *nftSink) skip(a netip.Addr, ttl time.Duration) bool {
-	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || !a.IsValid() {
+	if !a.IsValid() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+		return true
+	}
+	if !s.cfg.AllowPrivate && isPrivateOrSpecial(a) {
 		return true
 	}
 	if ttl > 0 && ttl < s.cfg.MinTTL {
@@ -189,6 +193,22 @@ func (s *nftSink) skip(a netip.Addr, ttl time.Duration) bool {
 	}
 	return false
 }
+
+// isPrivateOrSpecial reports addresses that are almost never a real remote
+// client and are dangerous to kernel-drop: RFC1918 / ULA private space
+// (IsPrivate), plus unspecified, multicast, and the IPv4 CGNAT range
+// 100.64.0.0/10 that netip does not classify as private. A block programmed for
+// one of these usually means a trusted-proxy misconfiguration leaked an
+// internal hop as the client IP, and dropping it blackholes real infrastructure.
+func isPrivateOrSpecial(a netip.Addr) bool {
+	if a.IsPrivate() || a.IsUnspecified() || a.IsMulticast() {
+		return true
+	}
+	return cgnat4.Contains(a)
+}
+
+// cgnat4 is the IPv4 carrier-grade NAT shared address space (RFC 6598).
+var cgnat4 = netip.MustParsePrefix("100.64.0.0/10")
 
 // elementFor maps an address to its set name and raw key bytes.
 func elementFor(a netip.Addr) (setName string, key []byte) {

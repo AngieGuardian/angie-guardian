@@ -226,6 +226,13 @@ type NFTablesConfig struct {
 	// CDN ranges here: dropping an LB address at L3 takes down everything
 	// behind it. Configured allowlists are excluded automatically on top.
 	NeverBlock []string `yaml:"never_block"`
+	// AllowPrivate permits private / special-purpose ranges (RFC1918, CGNAT,
+	// ULA, unspecified, multicast) to be kernel-dropped. Off by default: a
+	// misconfigured trusted proxy that surfaces an internal hop as the client
+	// IP would otherwise blackhole the load balancer or gateway, and a managed
+	// block survives a daemon restart. Enable only when Guardian serves
+	// routable private space directly.
+	AllowPrivate bool `yaml:"allow_private"`
 
 	neverBlock []netip.Prefix
 }
@@ -1600,15 +1607,16 @@ func (c *Config) EnforceConfig() enforce.Config {
 		MaxEntries:        c.Enforcement.Mirror.MaxEntries,
 		Mode:              mode,
 		NFTables: enforce.NFTConfig{
-			Enabled:    n.Enabled,
-			Mode:       n.Mode,
-			Table:      n.Table,
-			Hook:       n.Hook,
-			Ports:      ports,
-			NetNS:      n.NetNS,
-			MaxEntries: n.MaxEntries,
-			MinTTL:     n.MinTTL.Std(),
-			NeverBlock: never,
+			Enabled:      n.Enabled,
+			Mode:         n.Mode,
+			Table:        n.Table,
+			Hook:         n.Hook,
+			Ports:        ports,
+			NetNS:        n.NetNS,
+			MaxEntries:   n.MaxEntries,
+			MinTTL:       n.MinTTL.Std(),
+			NeverBlock:   never,
+			AllowPrivate: n.AllowPrivate,
 		},
 	}
 }

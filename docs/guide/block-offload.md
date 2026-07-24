@@ -106,10 +106,20 @@ its own; there is no stuck-forever rule.
 ### The never_block safety filter
 
 Before any address is sent to the kernel, the sink drops it from the batch if
-it is loopback, link-local, in a `never_block` CIDR, or in **any** configured
+it is loopback, link-local, private or special-purpose (RFC1918, the
+`100.64.0.0/10` CGNAT range, IPv6 ULA, unspecified, multicast), in a
+`never_block` CIDR, or in **any** configured
 [`allowlist`](/guide/configuration#allowlist-denylist) (across defaults,
 domains and path overlays; the kernel sees neither Host nor path, so allowlist
 entries must win globally at this layer).
+
+Private and special-purpose ranges are withheld by default because a
+misconfigured trusted proxy that surfaces an internal hop (a bridge gateway, an
+LB backend) as the client IP would otherwise kernel-drop your own
+infrastructure, and in `managed` mode that block outlives a daemon restart via
+its kernel timeout. If Guardian genuinely serves routable private space, set
+`enforcement.nftables.allow_private: true` to offload those ranges too;
+loopback and link-local stay excluded regardless.
 
 ::: danger Put your load balancer and CDN ranges in never_block
 The drop is at layer 3. If a request from behind a load balancer or CDN
