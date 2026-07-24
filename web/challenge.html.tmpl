@@ -41,7 +41,7 @@
   <p id="status" role="status">Starting…</p>
   <noscript>
     {{if .NoScript}}
-    <p>JavaScript is disabled — you will be let through automatically in
+    <p>JavaScript is disabled. You will be let through automatically in
        about {{.RefreshSeconds}} seconds.</p>
     {{else}}
     <p>JavaScript is required to access this site.</p>
@@ -173,7 +173,7 @@
       });
       if (resp.ok) { location.reload(); return; }
     } catch (_) { /* fall through */ }
-    status.textContent = "Verification failed — please reload this page.";
+    status.textContent = "Verification failed. Please reload this page.";
   };
 
   for (let i = 0; i < threads; i++) {
@@ -184,7 +184,7 @@
       setProgress(Math.min((1 - Math.exp(-total / expected)) * 100, 90));
       status.textContent = "Computing… " + total.toLocaleString() + " hashes";
     };
-    w.onerror = () => { status.textContent = "Solver error — please reload this page."; };
+    w.onerror = () => { status.textContent = "Solver error. Please reload this page."; };
     w.postMessage({ challenge: data.challenge, bits: data.difficulty_bits, start: i, stride: threads });
     workers.push(w);
   }
