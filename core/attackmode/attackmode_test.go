@@ -69,6 +69,24 @@ func TestDetectorNilReceiver(t *testing.T) {
 	d.Close()
 }
 
+// TestInitialStateHasSince guards the admin API's "normal since ..." field. A
+// detector that never leaves Normal never calls publish(), so an unstamped
+// initial state would report the zero time for the daemon's whole life, which
+// a local-time formatter renders as a plausible-looking year-1 clock reading.
+func TestInitialStateHasSince(t *testing.T) {
+	before := time.Now()
+	d := New(testConfig(), nil, slog.New(slog.DiscardHandler))
+	t.Cleanup(d.Close)
+
+	since := d.State().Since
+	if since.IsZero() {
+		t.Fatal("initial state Since is the zero time; the admin API would report 0001-01-01T00:00:00Z")
+	}
+	if since.Before(before) || since.After(time.Now()) {
+		t.Fatalf("initial state Since = %v, want a stamp taken during New()", since)
+	}
+}
+
 func TestEntersElevatedOnChallengeRate(t *testing.T) {
 	d, c := newTestDetector(t, testConfig())
 	// 6 buckets * 5s = 30s window. 300 issued/tick over 5s = 60/s per bucket

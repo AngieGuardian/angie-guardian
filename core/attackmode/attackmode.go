@@ -208,7 +208,10 @@ type Signals struct {
 func New(cfg Config, st store.Store, log *slog.Logger) *Detector {
 	d := &Detector{log: log, store: st, now: time.Now, instanceID: newInstanceID()}
 	d.applyConfig(cfg)
-	d.state.Store(&State{Level: Normal})
+	// Stamp Since at construction: publish() only runs on a transition, so a
+	// daemon that stays Normal from boot would otherwise report the zero time
+	// forever, which renders as a year-1 date in any local-time formatter.
+	d.state.Store(&State{Level: Normal, Since: d.now()})
 	return d
 }
 

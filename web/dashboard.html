@@ -574,6 +574,15 @@
     return fmt(Math.round(abs / 86400), "d");
   };
   const clock = (iso) => new Date(iso).toLocaleTimeString();
+  // A Go zero time ("0001-01-01T00:00:00Z") means "never set", not an instant.
+  // Local-time formatters render it as a fixed pre-standard-time offset (e.g.
+  // 12:17:30 AM in Europe/Brussels), which reads as a real but stuck clock.
+  // Treat it, and anything unparseable, as absent.
+  const hasTime = (iso) => {
+    if (!iso) return false;
+    const d = new Date(iso);
+    return !isNaN(d.getTime()) && d.getUTCFullYear() > 1;
+  };
 
   // Human-readable byte count for Angie bandwidth counters.
   const bytes = (n) => {
@@ -1753,7 +1762,7 @@
     if (stats.attack && stats.attack.level) {
       attackOk = stats.attack.level === "normal";
       attackDetail = stats.attack.level +
-        (stats.attack.since ? " since " + clock(stats.attack.since) : "");
+        (hasTime(stats.attack.since) ? " since " + clock(stats.attack.since) : "");
     }
 
     // Reputation feeds come from /admin/intel, which the dashboard already
@@ -1855,7 +1864,7 @@
     const banner = $("attack-banner");
     if (stats.attack && stats.attack.level && stats.attack.level !== "normal") {
       banner.textContent = "Attack mode: " + stats.attack.level.toUpperCase() +
-        (stats.attack.since ? " since " + new Date(stats.attack.since).toLocaleTimeString() : "");
+        (hasTime(stats.attack.since) ? " since " + clock(stats.attack.since) : "");
       banner.hidden = false;
     } else {
       banner.hidden = true;
