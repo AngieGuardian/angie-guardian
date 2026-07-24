@@ -182,6 +182,8 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	maxMeanDelta := fs.Float64("max-mean-delta", .10, "maximum absolute mean-score drift")
 	maxP95Delta := fs.Float64("max-p95-delta", .15, "maximum absolute p95-score drift")
 	maxInvalid := fs.Int64("max-invalid", 0, "maximum malformed or invalid records")
+	var required stringList
+	fs.Var(&required, "require-domain", "scope hard coverage failures to this normalized domain (repeatable); without any, every coverage hole fails")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -201,6 +203,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	comparator := anomaly.NewComparator(current, candidate)
+	comparator.SetRequired(required)
 	stats := inputStats{}
 	if err := scanInputs(fs.Args(), func(source string, lineNo int64, line []byte) error {
 		rec, err := parseRecord(source, lineNo, line, &stats, stderr)

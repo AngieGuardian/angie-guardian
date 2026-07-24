@@ -94,10 +94,35 @@ type comparisonAggregate struct {
 type Comparator struct {
 	Current, Candidate *Model
 	domains            map[string]*comparisonAggregate
+	required           map[string]bool // nil/empty = coverage failures unscoped
 }
 
 func NewComparator(current, candidate *Model) *Comparator {
 	return &Comparator{Current: current, Candidate: candidate, domains: make(map[string]*comparisonAggregate)}
+}
+
+// SetRequired scopes the hard coverage failures (a removed or uncovered
+// domain baseline) to the domains the operator declared required. A mid-band
+// vhost, with volume above the comparison floor but below the training
+// floor, can otherwise never gain a baseline and wedges unattended promotion
+// week after week. Drift checks on compared domains are unaffected: they
+// guard against regressions in what both models actually cover. An empty or
+// nil list keeps every coverage failure hard (the historical behavior).
+func (c *Comparator) SetRequired(hosts []string) {
+	if len(hosts) == 0 {
+		c.required = nil
+		return
+	}
+	c.required = make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		c.required[stateless.NormalizeHost(h)] = true
+	}
+}
+
+// coverageRequired reports whether a coverage hole on host must fail the
+// gate: always when no required list is set, otherwise only for listed hosts.
+func (c *Comparator) coverageRequired(host string) bool {
+	return c.required == nil || c.required[host]
 }
 
 func (c *Comparator) Add(rec *LogRecord) {
@@ -175,7 +200,10 @@ func (c *Comparator) Report(minRequests int64, maxMeanDelta, maxP95Delta float64
 			// unattended promotion week after week. Zero observed records is
 			// different: the domain has a live baseline but its logs vanished
 			// entirely, which points at a broken log pipeline, not low traffic.
-			if observed == 0 || observed >= minRequests {
+			// Either way the failure is scoped to declared-required domains: for
+			// anything else losing coverage is at most report-worthy, never a
+			// promotion wedge.
+			if (observed == 0 || observed >= minRequests) && c.coverageRequired(host) {
 				d.Failures = append(d.Failures, "candidate removed domain baseline")
 			}
 		case !inCurrent && !inCandidate:
@@ -184,8 +212,10 @@ func (c *Comparator) Report(minRequests int64, maxMeanDelta, maxP95Delta float64
 			// evidence of a coverage hole. Below it this is ordinary unmodeled
 			// traffic — or an arbitrary attacker-chosen Host header answered by a
 			// catch-all vhost — and failing would let a single stray request wedge
-			// the rollout gate.
-			if observed >= minRequests {
+			// the rollout gate. Above it, only a declared-required domain fails:
+			// a mid-band vhost (over this floor, under the training floor) can
+			// never gain a baseline, so an unscoped failure wedges every run.
+			if observed >= minRequests && c.coverageRequired(host) {
 				d.Failures = append(d.Failures, "candidate missing observed domain baseline")
 			}
 		case d.Current.Count == 0 && d.Candidate.Count == 0:

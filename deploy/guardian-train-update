@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # Angie Guardian anomaly-model training, comparison, and atomic promotion.
+#
+# Usage: guardian-train-update [--dry-run]
+#   --dry-run (or GUARDIAN_TRAIN_DRY_RUN=1) trains and compares as usual,
+#   writing only under the staging directory, and reports what would be
+#   promoted without touching /etc/guardian.
 
 set -Eeuo pipefail
 
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+dry_run=${GUARDIAN_TRAIN_DRY_RUN:-0}
+case ${1:-} in
+  --dry-run) dry_run=1 ;;
+  '') ;;
+  *) printf 'guardian-train update: unknown argument: %s (only --dry-run is supported)\n' "$1" >&2; exit 2 ;;
+esac
 
 log_dir=${GUARDIAN_TRAIN_LOG_DIR:-/var/log/angie}
 log_pattern=${GUARDIAN_TRAIN_LOG_PATTERN:-*.access.json*}
@@ -85,18 +97,32 @@ if [[ -f $live_model ]]; then
   )
   ((${#compare_inputs[@]} > 0)) || fail "no comparison logs match ${log_dir}/${compare_pattern}"
   printf 'comparing candidate against live model with %d log file(s)\n' "${#compare_inputs[@]}"
-  /usr/local/bin/guardian-train compare \
-    -current "$live_model" \
-    -candidate "$candidate" \
-    -report "$compare_report" \
-    -min-requests "$compare_min_requests" \
-    -max-mean-delta "$max_mean_delta" \
-    -max-p95-delta "$max_p95_delta" \
-    -max-invalid "$max_invalid" \
-    "${compare_inputs[@]}"
-  install -o root -g root -m600 -- "$live_model" "$previous"
+  compare_args=(
+    compare
+    -current "$live_model"
+    -candidate "$candidate"
+    -report "$compare_report"
+    -min-requests "$compare_min_requests"
+    -max-mean-delta "$max_mean_delta"
+    -max-p95-delta "$max_p95_delta"
+    -max-invalid "$max_invalid"
+  )
+  # Scope hard coverage failures to the declared expected domains: a mid-band
+  # vhost (above the compare floor, below the train floor) can never gain a
+  # baseline, and without this scoping it wedges promotion week after week.
+  for domain in $expected_domains; do
+    compare_args+=(-require-domain "$domain")
+  done
+  /usr/local/bin/guardian-train "${compare_args[@]}" "${compare_inputs[@]}"
+  ((dry_run)) || install -o root -g root -m600 -- "$live_model" "$previous"
 else
   printf 'no live model exists; skipping candidate comparison for initial promotion\n'
+fi
+
+if ((dry_run)); then
+  printf 'dry run: would promote %s to %s (guardiand picks it up within 10 seconds); nothing under /etc/guardian was touched\n' \
+    "$candidate" "$live_model"
+  exit 0
 fi
 
 trap 'rm -f -- "$next_model"' EXIT

@@ -142,7 +142,8 @@ func TestTrainCommandStrictFilteringAndArtifact(t *testing.T) {
 	stderr.Reset()
 	compareReport := filepath.Join(dir, "comparison.json")
 	code = run([]string{"compare", "-current", out, "-candidate", out,
-		"-report", compareReport, "-min-requests", "10", logPath}, &stdout, &stderr)
+		"-report", compareReport, "-min-requests", "10",
+		"-require-domain", "shop.test", logPath}, &stdout, &stderr)
 	if code != 0 || !bytes.Contains(stdout.Bytes(), []byte("candidate comparison passed")) {
 		t.Fatalf("compare exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}

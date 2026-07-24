@@ -197,6 +197,72 @@ func TestComparatorRejectsRemovedDomainWithoutTraffic(t *testing.T) {
 	}
 }
 
+// SetRequired scopes the hard coverage failures to the operator-declared
+// domains: a mid-band vhost (above the compare floor, below the train floor)
+// can never gain a baseline and must not wedge unattended promotion, while a
+// declared-required domain keeps failing hard. No list keeps the historical
+// unscoped behavior.
+func TestComparatorScopesCoverageFailuresToRequired(t *testing.T) {
+	build := func() *Comparator {
+		current := &Model{Domains: map[string]*DomainModel{
+			"required.test": {Baseline: testBaseline(100)},
+			"dropped.test":  {Baseline: testBaseline(100)},
+		}}
+		candidate := &Model{Domains: map[string]*DomainModel{
+			"required.test": {Baseline: testBaseline(100)},
+		}}
+		c := NewComparator(current, candidate)
+		for range 20 {
+			c.Add(&LogRecord{Host: "required.test", Method: "GET", URI: "/", Status: 200, GuardianAction: "allow"})
+			c.Add(&LogRecord{Host: "dropped.test", Method: "GET", URI: "/", Status: 200, GuardianAction: "allow"})
+			c.Add(&LogRecord{Host: "midband.test", Method: "GET", URI: "/", Status: 200, GuardianAction: "allow"})
+		}
+		return c
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Unscoped (no required list): both the over-floor uncovered vhost and the
+	// removed baseline fail the gate, as before.
+	report := build().Report(10, 1, 1, stamp)
+	if report.Passed || report.Domains["midband.test"].Passed || report.Domains["dropped.test"].Passed {
+		t.Fatalf("unscoped coverage holes must fail: %#v", report.Domains)
+	}
+
+	// Scoped to required.test: the same holes no longer wedge promotion.
+	c := build()
+	c.SetRequired([]string{"required.test"})
+	report = c.Report(10, 1, 1, stamp)
+	if !report.Passed {
+		t.Fatalf("scoped coverage holes must not fail: %#v", report.Domains)
+	}
+	if got := report.Domains["midband.test"].Status; got != "uncovered" {
+		t.Fatalf("midband status = %q, want uncovered (still reported)", got)
+	}
+	if got := report.Domains["dropped.test"].Status; got != "removed" {
+		t.Fatalf("dropped status = %q, want removed (still reported)", got)
+	}
+
+	// A required domain losing its baseline still fails hard.
+	c = build()
+	c.SetRequired([]string{"required.test", "dropped.test"})
+	report = c.Report(10, 1, 1, stamp)
+	if report.Passed || report.Domains["dropped.test"].Passed {
+		t.Fatalf("required removed baseline must fail: %#v", report.Domains["dropped.test"])
+	}
+	if !report.Domains["midband.test"].Passed {
+		t.Fatalf("unlisted midband vhost must still pass: %#v", report.Domains["midband.test"])
+	}
+
+	// Drift checks are not scoped: a required list never mutes a compared
+	// domain's insufficient-records failure.
+	c = build()
+	c.SetRequired([]string{"required.test"})
+	report = c.Report(1000, 1, 1, stamp)
+	if report.Domains["required.test"].Passed {
+		t.Fatalf("drift floor must stay hard on compared domains: %#v", report.Domains["required.test"])
+	}
+}
+
 func TestParseModelRejectsTrailingDocument(t *testing.T) {
 	m := &Model{Version: ModelVersion, FeatureSchema: FeatureSchema, TrainedAt: time.Now().UTC(),
 		Domains: map[string]*DomainModel{"x.test": {Baseline: testBaseline(1)}}}

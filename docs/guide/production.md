@@ -281,7 +281,14 @@ Before enabling the timer, define its input window and acceptance checks in
   runtime window accordingly.
 - Set `GUARDIAN_TRAIN_EXPECTED_DOMAINS` to every named domain that enables
   anomaly scoring. The job rejects the candidate if any required domain lacks
-  the configured minimum number of eligible requests.
+  the configured minimum number of eligible requests, and the compare gate's
+  hard coverage failures (a removed or uncovered baseline) apply only to this
+  list: a vhost above the compare floor but below the train floor can never
+  gain a baseline, and must not wedge the weekly promotion.
+- Dry-run a promotion with `guardian-train-update --dry-run` (or
+  `GUARDIAN_TRAIN_DRY_RUN=1`): it trains and compares as usual, writing only
+  under `/var/lib/guardian-training`, and reports what would be promoted
+  without touching `/etc/guardian`.
 - Do not promote a window dominated by an attack, load test, launch or outage.
   Successful allowed responses below status 400 are eligible, so a successful
   bot campaign can otherwise become part of “normal”.
