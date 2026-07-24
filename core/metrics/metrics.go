@@ -30,6 +30,7 @@ type Metrics struct {
 	anomalyScore        *prometheus.HistogramVec
 	anomalyBaselineMiss *prometheus.CounterVec
 	anomalySelection    *prometheus.CounterVec
+	anomalyModelAge     *prometheus.GaugeVec   // by model path (config-bounded)
 	blocksPlaced        *prometheus.CounterVec // by reason_category
 	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
 	storeOps            *prometheus.CounterVec // by backend, op, status
@@ -95,6 +96,10 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "anomaly_baseline_selections_total",
 			Help: "Selected anomaly baseline level (exact|route|method|domain|missing).",
 		}, []string{"domain", "level"}),
+		anomalyModelAge: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "anomaly_model_trained_timestamp_seconds",
+			Help: "Unix time the loaded anomaly model artifact was trained; a stalling value means retraining or promotion is silently failing.",
+		}, []string{"model"}),
 		blocksPlaced: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "blocks_placed_total",
 			Help: "Behavioural IP blocks placed, by reason category.",
@@ -219,6 +224,16 @@ func (m *Metrics) AnomalyBaseline(domain, level string) {
 	if level == "missing" {
 		m.anomalyBaselineMiss.WithLabelValues(domain).Inc()
 	}
+}
+
+// AnomalyModelTrainedAt publishes when a loaded model artifact was trained.
+// The model label is the operator-configured artifact path, so cardinality is
+// bounded by the config, never by traffic.
+func (m *Metrics) AnomalyModelTrainedAt(model string, trainedAt int64) {
+	if m == nil {
+		return
+	}
+	m.anomalyModelAge.WithLabelValues(model).Set(float64(trainedAt))
 }
 
 func (m *Metrics) BlockPlaced(reason string) {

@@ -111,7 +111,9 @@ func (s *engineSnapshot) release() {
 // SetMetrics attaches a metrics sink. Call once at startup before serving.
 func (e *Engine) SetMetrics(m *metrics.Metrics) {
 	e.metrics = m
-	e.snap.Load().intel.SetMetrics(m)
+	snap := e.snap.Load()
+	snap.intel.SetMetrics(m)
+	snap.models.SetMetrics(m)
 }
 
 // SetEnforcer attaches the enforcement offload manager. Call once at startup
@@ -256,6 +258,7 @@ func (e *Engine) Reload(cfg *Config) error {
 	snap.intel.SeedURLFeedsFrom(old.intel)
 	startSnapshot(snap)
 	snap.intel.SetMetrics(e.metrics)
+	snap.models.SetMetrics(e.metrics)
 	old = e.snap.Swap(snap)
 	e.lastCfg.Store(snap.cfg)
 	old.release() // resources close after the final in-flight evaluator releases

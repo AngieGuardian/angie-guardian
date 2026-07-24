@@ -387,3 +387,36 @@ tests:
       - eval_time: 30m
         alertname: GuardianStatelessSpendFallback
         exp_alerts: []
+
+  # --- GuardianAnomalyModelStale -------------------------------------------
+  - interval: 1m
+    name: a model trained more than 14 days ago fires the staleness alert
+    input_series:
+      # Trained at t=0 and never re-promoted; at 15d the age exceeds 14d.
+      - series: 'guardian_anomaly_model_trained_timestamp_seconds{job="angie-guardian",instance="guardian:9101",model="/etc/guardian/model.json"}'
+        values: '0x21600'
+    alert_rule_test:
+      - eval_time: 360h
+        alertname: GuardianAnomalyModelStale
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianAnomalyModelStale
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+              model: /etc/guardian/model.json
+            exp_annotations:
+              summary: 'Guardian anomaly model /etc/guardian/model.json is stale on guardian:9101'
+              description: 'The loaded anomaly model was trained more than 14 days ago, so the weekly retrain/promote cycle has missed at least two runs. Check `systemctl status guardian-train.timer` and `journalctl -u guardian-train` on the training host; a wedged compare gate or a failed promotion only shows up there.'
+              runbook_url: https://angieguardian.org/guide/production#running-the-anomaly-trainer
+
+  - interval: 1m
+    name: a freshly promoted model stays quiet
+    input_series:
+      # Re-promoted regularly: the trained timestamp tracks the clock.
+      - series: 'guardian_anomaly_model_trained_timestamp_seconds{job="angie-guardian",instance="guardian:9101",model="/etc/guardian/model.json"}'
+        values: '0+60x21600'
+    alert_rule_test:
+      - eval_time: 360h
+        alertname: GuardianAnomalyModelStale
+        exp_alerts: []

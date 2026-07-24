@@ -202,6 +202,26 @@ groups:
             capacity, or move to a faster store backend.
           runbook_url: https://angieguardian.org/guide/production#gc-tuning-for-peak-throughput
 
+      # The trainer only reports failures in its own journal, so a broken
+      # promotion (permissions, wedged compare gate, dead timer) silently
+      # leaves the live model aging forever. Fourteen days is two missed runs
+      # of the shipped weekly timer.
+      - alert: GuardianAnomalyModelStale
+        expr: >-
+          (time() - guardian_anomaly_model_trained_timestamp_seconds{job="angie-guardian"}) > 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian anomaly model {{ $labels.model }} is stale on {{ $labels.instance }}'
+          description: >-
+            The loaded anomaly model was trained more than 14 days ago, so the
+            weekly retrain/promote cycle has missed at least two runs. Check
+            `systemctl status guardian-train.timer` and
+            `journalctl -u guardian-train` on the training host; a wedged
+            compare gate or a failed promotion only shows up there.
+          runbook_url: https://angieguardian.org/guide/production#running-the-anomaly-trainer
+
       # Single-spend fell back to per-replica: the challenge CAS is failing, so
       # a solved challenge is no longer guaranteed to be redeemable exactly
       # once fleet-wide. Almost always a symptom of the store being unhappy.

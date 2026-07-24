@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/internal/safefile"
 )
 
@@ -31,9 +32,26 @@ type ModelStatus struct {
 // content-based (a hash of the file bytes), so it never depends on filesystem
 // mtime resolution. A model that fails to load keeps the previous one active.
 type ModelCache struct {
-	files map[string]*modelFile
-	log   *slog.Logger
-	stop  chan struct{}
+	files   map[string]*modelFile
+	log     *slog.Logger
+	stop    chan struct{}
+	metrics atomic.Pointer[metrics.Metrics] // nil until SetMetrics; nil-safe methods
+}
+
+// SetMetrics attaches the metrics sink and immediately publishes the trained
+// timestamp of every loaded artifact, so the model-age gauge exists from the
+// first scrape rather than the first hot swap. Atomic because the engine
+// attaches metrics after Start, when the poller may already be reloading.
+func (c *ModelCache) SetMetrics(m *metrics.Metrics) {
+	if c == nil {
+		return
+	}
+	c.metrics.Store(m)
+	for _, f := range c.files {
+		if model := f.model.Load(); model != nil {
+			m.AnomalyModelTrainedAt(f.path, model.TrainedAt.Unix())
+		}
+	}
 }
 
 type modelFile struct {
@@ -141,6 +159,7 @@ func (c *ModelCache) reloadChanged() {
 		}
 		f.model.Store(m)
 		f.hash.Store(hash)
+		c.metrics.Load().AnomalyModelTrainedAt(f.path, m.TrainedAt.Unix())
 		c.log.Info("anomaly model reloaded", "file", f.path,
 			"domains", len(m.Domains), "trained_at", m.TrainedAt)
 	}
