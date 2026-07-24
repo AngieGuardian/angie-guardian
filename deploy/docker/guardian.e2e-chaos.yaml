@@ -5,9 +5,10 @@
 # and restarts the store mid-run to prove the fail-open contract end to end.
 # Differences the chaos assertions depend on:
 #   - store.backend redis: the store is a separate container the test can stop
-#   - issuance_rate_limit 30/h: low enough that ~35 requests trip the per-IP
-#     limiter, with an hour-sized bucket so the window rarely rolls mid-test
-#     (the test re-hammers after recovery, so even a roll cannot flake it)
+#   - issuance_rate_limit 8/h: low, because each pre-limit hammer request
+#     during the outage pays the store timeouts, and an hour-sized bucket so
+#     the window rarely rolls mid-test (the test re-hammers after recovery,
+#     so even a roll cannot flake it)
 #   - attack_mode off: the hammer must prove the per-IP counter cache, not
 #     trip the global posture machinery (covered by the main suite)
 listen: 0.0.0.0:8071
@@ -50,7 +51,7 @@ defaults:
     max_difficulty: 6
     token_ttl: 4h
     challenge_ttl: 30m
-    issuance_rate_limit: 30/h
+    issuance_rate_limit: 8/h
     noscript_fallback: false
   allowlist:
     ips: []

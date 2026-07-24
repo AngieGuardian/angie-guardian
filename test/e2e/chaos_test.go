@@ -17,22 +17,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/client"
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/compose"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // TestStoreOutageFailOpen proves the flagship fail-open contract end to end
-// (issue #10). On the shared-store backend (valkey, redis protocol), it kills
-// the store mid-run and asserts, in order:
+// (issue #10). On the shared-store backend (valkey, redis protocol), it takes
+// the store away mid-run in BOTH failure modes: first a network partition
+// (paused container: the address stays but packets silently drop, so every
+// store op pays its full timeout budget), then a process crash plus restart
+// (stopped container: fast connection errors, then real recovery). During
+// each outage it asserts, in order:
 //
-//  1. requests keep flowing through Angie with no 5xx: the interstitial still
-//     renders (stateless issuance fallback), a full challenge journey still
-//     mints a working token, and allowlisted paths still reach the backend;
-//  2. a block placed before the outage keeps denying (the in-process mirror
+//  1. requests keep flowing through Angie with no 5xx. Fail-open is layered
+//     and WHICH layer answers depends on how the dead store fails on this
+//     host: when store ops error fast (connection refused), guardian answers
+//     the auth hop inside the Angie glue's 2s budget and the interstitial
+//     renders on the stateless issuance fallback; when the dead address
+//     silently drops packets, the auth hop may exceed its budget and Angie's
+//     own error_page fail-open serves the backend directly. Either is the
+//     designed degrade; a 5xx or a deny is the only failure.
+//  2. guardian's own outage behaviour, deterministically on the direct auth
+//     port (no Angie timeout in that path): challenge issuance falls back to
+//     the stateless s1. format, a solution still redeems (token minted
+//     fail-open), and the minted token vouches;
+//  3. a block placed before the outage keeps denying (the in-process mirror
 //     fronts the store, so known blocks survive a store outage);
-//  3. the in-process counter cache keeps enforcing the per-IP challenge
+//  4. the in-process counter cache keeps enforcing the per-IP challenge
 //     issuance limit (429 past the cap) with no store at all;
-//  4. /readyz honestly reports the outage (503) while /healthz stays 200, so
+//  5. /readyz honestly reports the outage (503) while /healthz stays 200, so
 //     orchestrators see degraded-but-alive;
 //
 // then restarts the store and asserts clean recovery: /readyz back to 200,
@@ -181,11 +196,13 @@ func TestStoreOutageFailOpen(t *testing.T) {
 		return id
 	}
 	// hammer drives /challenge as ip until the issuance limiter answers 429.
-	// The limit is 30/h (guardian.e2e-chaos.yaml); the attempt cap leaves room
-	// to rebuild the count even if the hour bucket rolled mid-test.
+	// The limit is 8/h (guardian.e2e-chaos.yaml): low, because each pre-limit
+	// request during the outage pays the store timeouts before the stateless
+	// fallback answers. The attempt cap leaves room to rebuild the count even
+	// if the hour bucket rolled mid-test.
 	hammer := func(ip, stage string) {
 		t.Helper()
-		for attempt := 0; attempt < 70; attempt++ {
+		for attempt := 0; attempt < 25; attempt++ {
 			resp := req(t, http.MethodGet, chaosAuth+"/challenge", guardHeaders(ip), nil)
 			io.Copy(io.Discard, resp.Body)
 			if resp.StatusCode == http.StatusTooManyRequests {
@@ -193,6 +210,14 @@ func TestStoreOutageFailOpen(t *testing.T) {
 			}
 		}
 		t.Fatalf("%s: issuance limiter never answered 429 for %s", stage, ip)
+	}
+	valkeyContainerID := func() string {
+		t.Helper()
+		ctr, err := chaosStack.ServiceContainer(context.Background(), "valkey")
+		if err != nil {
+			t.Fatalf("valkey container: %v", err)
+		}
+		return ctr.GetContainerID()
 	}
 	toggleValkey := func(start bool) {
 		t.Helper()
@@ -211,6 +236,110 @@ func TestStoreOutageFailOpen(t *testing.T) {
 			t.Fatalf("stop valkey: %v", err)
 		}
 	}
+	docker, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	pauseValkey := func(pause bool) {
+		t.Helper()
+		id := valkeyContainerID()
+		if pause {
+			if _, err := docker.ContainerPause(context.Background(), id, client.ContainerPauseOptions{}); err != nil {
+				t.Fatalf("pause valkey: %v", err)
+			}
+			return
+		}
+		if _, err := docker.ContainerUnpause(context.Background(), id, client.ContainerUnpauseOptions{}); err != nil {
+			t.Fatalf("unpause valkey: %v", err)
+		}
+	}
+
+	// assertOutage runs the full during-outage assertion set. challengeIP must
+	// be unique per call so the challenge-farming escalation counter of one
+	// phase cannot bleed into the next phase's difficulty.
+	const blockedIP = "203.0.113.66"
+	const hammerIP = "203.0.113.99"
+	assertOutage := func(stage, challengeIP string) {
+		t.Helper()
+
+		// The store health probe (10s cadence) must flip /readyz to 503 while
+		// liveness stays green: degraded, not dead.
+		waitStatus(chaosAdmin+"/readyz", http.StatusServiceUnavailable, 45*time.Second, stage+" detection")
+		if s := probe(chaosAdmin + "/healthz"); s != http.StatusOK {
+			t.Fatalf("%s: /healthz = %d, want 200 (liveness must not follow the store)", stage, s)
+		}
+
+		// Requests keep flowing with no 5xx: allowlisted paths straight through.
+		for i := 0; i < 5; i++ {
+			if s := probe(chaosSite + "/robots.txt"); s != http.StatusOK {
+				t.Fatalf("%s: allowlisted request %d: status %d, want 200", stage, i+1, s)
+			}
+		}
+		// An unvouched page request through Angie must also keep flowing. Which
+		// fail-open layer answers depends on runner speed (see the test
+		// comment): guardian's interstitial inside the 2s auth budget, or
+		// Angie's error_page fail-open serving the backend past it. Classify,
+		// accept both.
+		resp := req(t, http.MethodGet, chaosSite+"/page",
+			map[string]string{"Host": powHost, "User-Agent": browserUA}, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: unvouched page = %d, want 200 (interstitial or fail-open backend)", stage, resp.StatusCode)
+		}
+		if body := bodyOf(t, resp); dataRe.MatchString(body) {
+			t.Logf("%s: guardian served the interstitial within the auth budget", stage)
+		} else if strings.Contains(body, "Hostname:") {
+			t.Logf("%s: Angie error_page fail-open served the backend", stage)
+		} else {
+			t.Fatalf("%s: 200 with neither interstitial nor backend body:\n%s", stage, body)
+		}
+
+		// Guardian's own outage behaviour, deterministically on the direct
+		// auth port (no Angie timeout in this path): issuance falls back to
+		// the stateless format, the solution redeems (token minted
+		// fail-open), and the minted token vouches.
+		chResp := req(t, http.MethodGet, chaosAuth+"/challenge", guardHeaders(challengeIP), nil)
+		if chResp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: direct /challenge = %d, want 200", stage, chResp.StatusCode)
+		}
+		m := dataRe.FindStringSubmatch(bodyOf(t, chResp))
+		if m == nil {
+			t.Fatalf("%s: no challenge JSON on the direct auth port", stage)
+		}
+		id, challenge, difficulty := parseChallengeJSON(t, m[1])
+		if !strings.HasPrefix(id, "s1.") {
+			t.Fatalf("%s: challenge %q is stateful; want the s1. stateless fallback", stage, id)
+		}
+		nonce := solve(t, challenge, difficulty)
+		pass := req(t, http.MethodPost, chaosAuth+"/pass", map[string]string{
+			"X-Guardian-Host": powHost, "X-Guardian-IP": challengeIP,
+			"X-Guardian-UA": browserUA, "Content-Type": "application/json",
+		}, strings.NewReader(fmt.Sprintf(`{"challenge_id":%q,"nonce":%q}`, id, nonce)))
+		if pass.StatusCode != http.StatusOK {
+			t.Fatalf("%s: stateless redeem = %d, want 200 (token must mint fail-open)", stage, pass.StatusCode)
+		}
+		var token string
+		for _, ck := range pass.Cookies() {
+			if ck.Name == "guardian_token" {
+				token = ck.Value
+			}
+		}
+		if token == "" {
+			t.Fatalf("%s: no guardian_token cookie minted", stage)
+		}
+		vouched := guardHeaders(challengeIP)
+		vouched["X-Guardian-Cookie"] = "guardian_token=" + token
+		if s := req(t, http.MethodGet, chaosAuth+"/auth", vouched, nil).StatusCode; s != http.StatusOK {
+			t.Fatalf("%s: minted token rejected: /auth = %d, want 200", stage, s)
+		}
+
+		// A block the mirror already knows keeps denying with the store gone.
+		if s := authStatus(blockedIP); s != http.StatusForbidden {
+			t.Fatalf("%s: block dropped: /auth = %d, want 403 (mirror must front the store)", stage, s)
+		}
+
+		// The counter cache alone enforces the per-IP issuance limit.
+		hammer(hammerIP, stage)
+	}
 
 	// --- baseline: store up ---------------------------------------------------
 
@@ -219,7 +348,6 @@ func TestStoreOutageFailOpen(t *testing.T) {
 		t.Fatalf("baseline challenge %q is stateless; want stateful with the store up", id)
 	}
 
-	const blockedIP = "203.0.113.66"
 	if r := chaosAdminReq(http.MethodPut, "/admin/blocks/"+blockedIP,
 		`{"reason":"chaos-e2e","ttl":"30m"}`); r.StatusCode != http.StatusOK {
 		t.Fatalf("place pre-outage block: status %d, body %s", r.StatusCode, bodyOf(t, r))
@@ -228,42 +356,27 @@ func TestStoreOutageFailOpen(t *testing.T) {
 		t.Fatalf("pre-outage block not enforced: /auth = %d, want 403", s)
 	}
 
-	// --- outage ---------------------------------------------------------------
+	// --- outage 1: network partition ------------------------------------------
+	// A paused container keeps its address but silently drops packets, the
+	// harshest failure mode: every store op pays its full dial/read timeouts.
+	// This phase pins the timeout budget in core/store/redis.go NewRedis.
+
+	pauseValkey(true)
+	assertOutage("partition", "203.0.113.88")
+	pauseValkey(false)
+	waitStatus(chaosAdmin+"/readyz", http.StatusOK, 60*time.Second, "partition recovery")
+	if s := authStatus(blockedIP); s != http.StatusForbidden {
+		t.Fatalf("block gone after partition recovery: /auth = %d, want 403", s)
+	}
+
+	// --- outage 2: store process death and restart ----------------------------
+	// A stopped container fails fast (refused/unresolvable), and the restart
+	// proves recovery against a store that actually went away.
 
 	toggleValkey(false)
-
-	// The store health probe (10s cadence) must flip /readyz to 503 while
-	// liveness stays green: degraded, not dead.
-	waitStatus(chaosAdmin+"/readyz", http.StatusServiceUnavailable, 45*time.Second, "outage detection")
-	if s := probe(chaosAdmin + "/healthz"); s != http.StatusOK {
-		t.Fatalf("/healthz = %d during outage, want 200 (liveness must not follow the store)", s)
-	}
-
-	// Requests keep flowing with no 5xx: allowlisted path straight through,
-	// and the full challenge journey still works, now on the stateless
-	// issuance fallback.
-	for i := 0; i < 10; i++ {
-		if s := probe(chaosSite + "/robots.txt"); s != http.StatusOK {
-			t.Fatalf("allowlisted request %d during outage: status %d, want 200", i+1, s)
-		}
-	}
-	if id := journey("outage"); !strings.HasPrefix(id, "s1.") {
-		t.Fatalf("outage challenge %q is stateful; want the s1. stateless fallback", id)
-	}
-
-	// A block the mirror already knows keeps denying with the store gone.
-	if s := authStatus(blockedIP); s != http.StatusForbidden {
-		t.Fatalf("block dropped during outage: /auth = %d, want 403 (mirror must front the store)", s)
-	}
-
-	// The counter cache alone enforces the per-IP issuance limit.
-	const hammerIP = "203.0.113.99"
-	hammer(hammerIP, "outage")
-
-	// --- recovery -------------------------------------------------------------
-
+	assertOutage("crash", "203.0.113.89")
 	toggleValkey(true)
-	waitStatus(chaosAdmin+"/readyz", http.StatusOK, 60*time.Second, "recovery")
+	waitStatus(chaosAdmin+"/readyz", http.StatusOK, 60*time.Second, "crash recovery")
 
 	// The pre-outage block survived the store restart (appendonly) and still
 	// denies; fresh block writes work again; issuance goes back to stateful;

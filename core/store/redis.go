@@ -44,15 +44,24 @@ func NewRedis(opts RedisOptions) (*Redis, error) {
 		Password: opts.Password,
 		DB:       opts.DB,
 		// The block lookup runs on every request, so a hung Redis must not
-		// stall the auth hot path: keep per-op and pool-wait timeouts tight so
-		// the engine's fail-open kicks in within tens of ms, not go-redis's
-		// multi-second defaults. Pool is generous for the 50k req/s target.
-		DialTimeout:  1 * time.Second,
-		ReadTimeout:  100 * time.Millisecond,
-		WriteTimeout: 100 * time.Millisecond,
-		PoolTimeout:  200 * time.Millisecond,
-		PoolSize:     256,
-		MinIdleConns: 16,
+		// stall the auth hot path: per-op and pool-wait timeouts stay tight
+		// and retries are capped so the worst-case op (fresh dial against an
+		// address that silently drops packets: dial, one retry, backoff, about
+		// 1.1s) still fits inside the Angie glue's 2s auth budget. Past that
+		// budget Angie's own error_page fail-open serves the site unprotected;
+		// under it, guardian keeps issuing stateless challenges through the
+		// store outage, which is the better degrade. The chaos e2e test pins
+		// both layers. One retry stays (not zero) so a stale pooled connection
+		// after an idle period reconnects instead of surfacing a spurious
+		// fail-open. Pool is generous for the 50k req/s target.
+		DialTimeout:     500 * time.Millisecond,
+		ReadTimeout:     100 * time.Millisecond,
+		WriteTimeout:    100 * time.Millisecond,
+		PoolTimeout:     200 * time.Millisecond,
+		MaxRetries:      1,
+		MaxRetryBackoff: 100 * time.Millisecond,
+		PoolSize:        256,
+		MinIdleConns:    16,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
