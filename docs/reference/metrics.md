@@ -1,7 +1,8 @@
 # Metrics
 
 Everything guardiand exports on `GET /metrics` (the [admin
-listener](/reference/admin-api), no token needed), in the Prometheus text
+listener](/reference/admin-api); no token needed unless
+[`admin.metrics_auth`](/reference/configuration#admin) is set), in the Prometheus text
 format under the `guardian_` namespace. The standard Go runtime and process
 collectors are registered too, so GC, goroutine and RSS panels come for free.
 
@@ -35,6 +36,7 @@ Label values are bounded by construction:
 | `guardian_anomaly_score` | histogram | `domain` | Distribution of scores for requests that reach the anomaly stage, for tuning `challenge_at` / `deny_at`. Earlier terminal decisions and requests with valid PoW tokens are not observed. |
 | `guardian_anomaly_baseline_selections_total` | counter | `domain`, `level` | Selected baseline specificity: `exact`, `route`, `method`, domain-wide fallback, or `missing`. |
 | `guardian_anomaly_baseline_misses_total` | counter | `domain` | Alert-friendly mirror of the `missing` selection level: requests that reached an enabled anomaly stage but had no domain baseline, so that stage made no decision. |
+| `guardian_anomaly_model_trained_timestamp_seconds` | gauge | `model` | Unix time the loaded model artifact was trained, set on load and every hot swap. A stalling value means retraining or promotion is silently failing; `deploy/alerts.yaml` ships `GuardianAnomalyModelStale` (warns after 14 days, two missed weekly runs). |
 
 ## Blocking and bots
 
@@ -58,6 +60,7 @@ Label values are bounded by construction:
 | `guardian_store_op_seconds` | histogram | `backend`, `op` | Store operation latency. On a durable embedded backend with `store.sync: true`, watch `set` and `cas`: they pay an fsync. |
 | `guardian_store_up` | gauge | `backend` | `1` = the store answered the last write/read-back probe, `0` = Guardian is failing open. **The single most important series to alert on**: at `0` the process is still serving every request while single-spend, scoreboards and blocks have quietly stopped working, and `/healthz` stays green. `deploy/alerts.yaml` ships the rule. |
 | `guardian_store_probe_total` | counter | `backend`, `status` | Completed store health probes by `status` (`ok`, `error`). A staleness event (a wedged probe loop) drives `guardian_store_up` to `0` without incrementing this, since no probe finished. |
+| `guardian_store_clock_skew_seconds` | gauge | `backend` | Store server clock minus local clock, probed on remote backends (redis/valkey) each health round. Skew beyond a counter window (60s) silently voids deadline-based counter flushes; the daemon logs a warning above 10s. Embedded backends share the process clock and never emit it. |
 
 Every `store_*` series carries `backend`, so a mixed fleet — or one part-way
 through a backend migration — can group by it directly rather than joining
@@ -92,6 +95,7 @@ See the [Attack Mode](/guide/attack-mode) guide.
 | `guardian_attack_mode_transitions_total` | counter | `to`, `reason` | Posture transitions by target level and reason. |
 | `guardian_attack_mode_signal` | gauge | `signal` | Current window value per signal (`challenge_rate`, `request_rate`, `solve_ratio`, `store_error_ratio`, `store_slow_ratio`). |
 | `guardian_shed_total` | counter | `outcome` | Load-shed decisions under saturation: `pass_token` (a clean token holder admitted after all local terminal checks and an authoritative mirror miss) or `shed` (503'd). |
+| `guardian_unproxied_rejects_total` | counter | | Guard requests rejected by [`require_proxied`](/reference/configuration) for missing `X-Guardian-*` headers. Nonzero means something reaches the guard port without going through Angie. |
 
 Stateless behavior adds three outcomes on `guardian_challenges_total`:
 

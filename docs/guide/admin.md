@@ -93,7 +93,7 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel/203.0.113.9
 #  "info":{"country":"RU","asn":64500,"as_org":"Example Carrier"},
 #  "feeds":[{"feed":"firehol-level1","action":"deny"}]}
 
-# Prometheus scrape (no token needed).
+# Prometheus scrape (no token needed unless admin.metrics_auth is set).
 curl -s $A/metrics | grep guardian_
 ```
 

@@ -13,7 +13,7 @@ guardiand -config /etc/guardian/guardian.yaml
 | Flag | Description |
 |---|---|
 | `-config <path>` | Path to `guardian.yaml` (required). |
-| `-healthcheck` | **Liveness** check: load the config and require every configured listener to answer `/healthz`, then exit. Used by the distroless Compose image. It deliberately does not consult the store; see [`/readyz`](/reference/admin-api#get-readyz) for readiness. |
+| `-healthcheck` | **Liveness** check: require every configured listener to answer `/healthz`, then exit. Only the listen addresses are read from the config, leniently: a half-edited or invalid `guardian.yaml` cannot fail the probe of a healthy running daemon. Used by the distroless Compose image. It deliberately does not consult the store; see [`/readyz`](/reference/admin-api#get-readyz) for readiness. |
 | `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
 | `-version` | Print version and exit. |
 
@@ -110,10 +110,14 @@ drift failure. It exits `3` when an acceptance gate rejects the candidate.
 | `-max-mean-delta <score>` | `0.10` | Maximum absolute mean-score change per domain. |
 | `-max-p95-delta <score>` | `0.15` | Maximum absolute p95-score change per domain. |
 | `-max-invalid <n>` | `0` | Maximum malformed or schema-invalid validation records. |
+| `-require-domain <host>` | | Scope hard coverage failures (a removed or uncovered baseline) to this normalized domain; repeat for multiple domains. Without any, every over-floor coverage hole fails. The systemd job passes `GUARDIAN_TRAIN_EXPECTED_DOMAINS` here. |
 
 `guardian-train -version` (or `--version`) prints the binary version. For unattended candidate
 training, comparison, and atomic promotion, use the
-[preferred systemd timer](/guide/production#running-the-anomaly-trainer).
+[preferred systemd timer](/guide/production#running-the-anomaly-trainer);
+`guardian-train-update --dry-run` (or `GUARDIAN_TRAIN_DRY_RUN=1`) runs the
+same train and compare steps against the staging directory and reports what
+would be promoted without touching `/etc/guardian`.
 
 ## guardian-loadtest
 

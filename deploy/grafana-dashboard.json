@@ -229,6 +229,80 @@
         "defaults": { "unit": "short", "min": 0 },
         "overrides": []
       }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Anomaly model age (days)",
+      "description": "Days since the loaded anomaly model artifact was trained. The shipped weekly timer keeps this under 7; GuardianAnomalyModelStale in deploy/alerts.yaml warns at 14 days (two missed runs), because a broken promotion or a wedged compare gate only shows up in the training host's journal.",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "(time() - guardian_anomaly_model_trained_timestamp_seconds) / 86400",
+          "legendFormat": "{{model}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 8 },
+              { "color": "red", "value": 14 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Store clock skew (absolute)",
+      "description": "abs(guardian_store_clock_skew_seconds): store server clock vs local clock, probed on remote backends (redis/valkey). Skew beyond a counter window (60s) silently voids deadline-based counter flushes with zero errors; guardiand logs a warning above 10s. Embedded backends share the process clock and emit no series here.",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "max(abs(guardian_store_clock_skew_seconds)) by (backend)",
+          "legendFormat": "{{backend}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      }
     }
   ]
 }
