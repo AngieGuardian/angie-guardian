@@ -110,22 +110,44 @@ exist beyond the returned page.
 
 ### `GET /admin/blocks/{ip}`
 
-Is this IP currently blocked, and why?
+Is this IP currently blocked, why, until when, and how often has it been
+blocked before?
 
 ```json
-{"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
+{"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature",
+ "expires_at":"2026-08-24T22:14:39+02:00","offenses":4}
 ```
+
+| Field | Meaning |
+|---|---|
+| `blocked` | Whether a block is active right now. Always present. |
+| `reason` | Why it was placed. Omitted when not blocked. |
+| `expires_at` | When the block lapses. Omitted when not blocked, when the block has no expiry, or when the store could not report one. |
+| `offenses` | Blocks placed on this IP in the last 24h, the counter behind the doubling backoff. Omitted when the IP has never tripped a threshold. |
+
+`offenses` counts *automatic* blocks from `waf.ip_behaviour` thresholds, not
+manual ones placed through this API, and it outlives the block itself, so an
+IP that is clear right now can still report `"offenses":4`. That is the point:
+it tells you a quiet-looking IP has been blocked four times today before you
+decide whether to unblock or to block it for longer.
+
+Both enrichments are best-effort. If the store cannot supply them the field is
+simply absent, and `blocked`/`reason` still answer.
 
 ### `PUT /admin/blocks/{ip}`
 
 Place a manual block. Body fields `reason` and `ttl` are optional; the
 default TTL is `15m`. An explicit TTL must be greater than zero and at most one
-year (`8760h`). Malformed or unknown JSON fields return `400` without changing
-block state.
+year (`8760h`, i.e. `1y`). Malformed or unknown JSON fields return `400`
+without changing block state.
+
+`ttl` takes the same units as [`guardian.yaml`
+durations](/reference/configuration#duration-units): `30d`, `2w`, `1y` and
+`720h` are all valid.
 
 ```sh
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
-     -d '{"reason":"manual abuse report","ttl":"2h"}' \
+     -d '{"reason":"manual abuse report","ttl":"30d"}' \
      http://127.0.0.1:8072/admin/blocks/203.0.113.9
 ```
 

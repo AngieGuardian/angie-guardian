@@ -27,11 +27,15 @@ import (
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
 	"github.com/melroy89/angie-guardian/core/waf"
+	"github.com/melroy89/angie-guardian/internal/duration"
 	"github.com/melroy89/angie-guardian/internal/safefile"
 	"gopkg.in/yaml.v3"
 )
 
-// Duration parses YAML scalars like "15m" or "4h" into a time.Duration.
+// Duration parses YAML scalars like "15m", "4h" or "30d" into a
+// time.Duration. Go's own units plus d/w/mon/y, via internal/duration, which
+// is the same parser the admin API's TTL fields use so the two never disagree
+// about what is a valid duration.
 type Duration time.Duration
 
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
@@ -39,14 +43,17 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 	if err := node.Decode(&s); err != nil {
 		return fmt.Errorf("duration must be a string like \"15m\": %w", err)
 	}
-	v, err := time.ParseDuration(s)
+	v, err := duration.Parse(s)
 	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
+		return err
 	}
 	*d = Duration(v)
 	return nil
 }
 
+// MarshalYAML normalises through time.Duration.String(), so a config written
+// as "30d" reads back as "720h0m0s". Deliberate: one canonical output form
+// beats a round-trip that has to guess which unit the operator typed.
 func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
 
 func (d Duration) Std() time.Duration { return time.Duration(d) }
@@ -70,6 +77,10 @@ func (r *Rate) UnmarshalYAML(node *yaml.Node) error {
 	if err != nil || n <= 0 {
 		return fmt.Errorf("invalid rate %q: count must be a positive integer", s)
 	}
+	// Rate windows carry the same units as Duration, so "500/d" works. Spelled
+	// out rather than routed through duration.Parse because a rate window is a
+	// bare unit with no number in front of it, and because the long spellings
+	// ("min", "hour") predate this and stay supported.
 	var per time.Duration
 	switch strings.TrimSpace(unit) {
 	case "s", "sec", "second":
@@ -78,15 +89,26 @@ func (r *Rate) UnmarshalYAML(node *yaml.Node) error {
 		per = time.Minute
 	case "h", "hour":
 		per = time.Hour
+	case "d", "day":
+		per = duration.Day
+	case "w", "week":
+		per = duration.Week
+	case "mon", "month":
+		per = duration.Month
+	case "y", "year":
+		per = duration.Year
 	default:
-		return fmt.Errorf("invalid rate %q: unit must be s, min or h", s)
+		return fmt.Errorf("invalid rate %q: unit must be s, min, h, d, w, mon or y", s)
 	}
 	*r = Rate{Count: n, Per: per}
 	return nil
 }
 
 func (r Rate) MarshalYAML() (any, error) {
-	unit := map[time.Duration]string{time.Second: "s", time.Minute: "min", time.Hour: "h"}[r.Per]
+	unit := map[time.Duration]string{
+		time.Second: "s", time.Minute: "min", time.Hour: "h",
+		duration.Day: "d", duration.Week: "w", duration.Month: "mon", duration.Year: "y",
+	}[r.Per]
 	return fmt.Sprintf("%d/%s", r.Count, unit), nil
 }
 

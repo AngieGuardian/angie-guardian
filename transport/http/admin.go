@@ -24,6 +24,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
+	"github.com/melroy89/angie-guardian/internal/duration"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
@@ -172,12 +173,12 @@ func (s *AdminServer) handleBlockStatus(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	reason, blocked, err := s.engine.BlockStatus(r.Context(), ip)
+	detail, err := s.engine.BlockDetailFor(r.Context(), ip)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "blocked": blocked, "reason": reason})
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +208,9 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := 15 * time.Minute
 	if body.TTL != "" {
-		d, err := time.ParseDuration(body.TTL)
+		// duration.Parse, not time.ParseDuration: the same units guardian.yaml
+		// accepts, so "30d" works here too rather than forcing "720h".
+		d, err := duration.Parse(body.TTL)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ttl: " + err.Error()})
 			return
@@ -1237,7 +1240,7 @@ func (s *AdminServer) handleAttackSet(w http.ResponseWriter, r *http.Request) {
 	var ttl time.Duration
 	if body.TTL != "" {
 		var err error
-		if ttl, err = time.ParseDuration(body.TTL); err != nil {
+		if ttl, err = duration.Parse(body.TTL); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid ttl: " + err.Error()})
 			return
 		}

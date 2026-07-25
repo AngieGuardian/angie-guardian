@@ -65,6 +65,7 @@ export default defineConfig({
           items: [
             { text: 'Configuration Options', link: '/reference/configuration' },
             { text: 'Admin API', link: '/reference/admin-api' },
+            { text: 'Store Keys', link: '/reference/store-keys' },
             { text: 'Metrics', link: '/reference/metrics' },
             { text: 'CLI Tools', link: '/reference/cli' },
             { text: 'Compatibility & Versioning', link: '/reference/compatibility' },

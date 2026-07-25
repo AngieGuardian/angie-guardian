@@ -13,8 +13,36 @@ See the [Configuration guide](/guide/configuration) for the concepts and the
 
 | Type | Format | Examples |
 |---|---|---|
-| Duration | Go duration string | `"30s"`, `"15m"`, `"4h"` |
-| Rate | `<count>/<unit>` with unit `s`/`sec`/`second`, `m`/`min`/`minute`, or `h`/`hour` | `"10/min"`, `"5/s"`, `"80/h"` |
+| Duration | `<number><unit>`, one or more terms | `"30s"`, `"15m"`, `"4h"`, `"30d"`, `"1y"` |
+| Rate | `<count>/<unit>` with unit `s`/`sec`/`second`, `m`/`min`/`minute`, `h`/`hour`, `d`/`day`, `w`/`week`, `mon`/`month` or `y`/`year` | `"10/min"`, `"5/s"`, `"80/h"`, `"500/d"` |
+
+### Duration units
+
+A duration is a number followed by a unit.
+
+| Unit | Length |
+|---|---|
+| `ns` | nanosecond |
+| `us` | microsecond |
+| `ms` | millisecond |
+| `s` | second |
+| `m` | minute |
+| `h` | hour |
+| `d` | 24 hours |
+| `w` | 7 days |
+| `mon` | 30 days |
+| `y` | 365 days |
+
+- `m` is minutes; months are `mon`.
+- `d`, `w`, `mon` and `y` are fixed lengths, not calendar offsets: they do not
+  follow daylight-saving changes or leap years.
+- Terms combine and are summed: `1h30m`, `1w2d12h`, `2h45m10s`.
+- `h` and smaller accept fractions (`1.5h`, `0.5s`). `d` and larger take whole
+  numbers, so write `36h`, not `1.5d`.
+- Maximum `100y`. Block TTLs are capped at one year.
+- The admin API's `ttl` fields take the same units.
+- Output is normalised: a config written `30d` reads back from
+  [`GET /admin/config`](/reference/admin-api#get-admin-config) as `720h0m0s`.
 
 ## Top level
 
