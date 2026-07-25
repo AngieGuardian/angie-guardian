@@ -21,7 +21,7 @@ import (
 // CookieName is the host-scoped cookie carrying the PoW token.
 const CookieName = "guardian_token"
 
-// TokenClaims are the JWT claims of a PoW token (plan §5.3). The token is
+// TokenClaims are the JWT claims of a PoW token. The token is
 // bound to {host, client fingerprint} so it cannot be replayed cross-domain
 // or from a different client.
 type TokenClaims struct {
@@ -109,7 +109,7 @@ const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 // pay the Ed25519 verification on every request. During key rotation the
 // signature is checked against the current key first, then any previous
 // verification keys, so tokens minted before a rotation stay valid until they
-// age out via exp (plan §7).
+// age out via exp.
 func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, maxAge time.Duration) error {
 	// Refresh before consulting the cache as well as before signature
 	// verification. A cached or signature-valid token from a key this replica

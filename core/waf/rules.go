@@ -45,8 +45,8 @@ const (
 )
 
 // Rule is one compiled signature. Keywords are case-insensitive literals;
-// regexes are Go RE2, which is guaranteed linear-time — a rules file cannot
-// introduce catastrophic backtracking (the ReDoS class from plan §11).
+// regexes are Go RE2, which is guaranteed linear-time, so a rules file cannot
+// introduce catastrophic backtracking (the ReDoS class).
 type Rule struct {
 	ID          string
 	Description string

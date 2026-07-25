@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Signer mints and verifies opaque tamper-proof identifiers (plan §4.5):
+// Signer mints and verifies opaque tamper-proof identifiers:
 // instead of a raw UUID, an ID carries an expiry and an HMAC bound to
 // {purpose, host}, so any modification, forgery, cross-domain replay or
 // cross-purpose reuse fails verification instantly and can be scored as a

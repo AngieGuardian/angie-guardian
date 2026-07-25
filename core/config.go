@@ -851,7 +851,7 @@ type WAFConfig struct {
 	Keywords    KeywordsConfig    `yaml:"keywords"`
 	Anomaly     AnomalyConfig     `yaml:"anomaly"` // enforced from P3
 	Honeypot    HoneypotConfig    `yaml:"honeypot"`
-	// SignedID reserves the signed-ID feature (plan section 4.5): opaque
+	// SignedID reserves the signed-ID feature: opaque
 	// HMAC-bound identifiers whose forgery, replay or cross-domain reuse is
 	// detectable. The primitive exists in core/waf.Signer; no flow mints signed
 	// IDs yet, so this toggle is dormant. It does NOT gate PoW tamper scoring:

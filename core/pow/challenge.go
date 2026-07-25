@@ -144,7 +144,7 @@ func NewManagerFromFiles(keyPath, prevDir string, st store.Store) (*Manager, err
 }
 
 // NewManagerWithKeys builds a Manager that signs with current and also
-// verifies tokens signed by any key in previous (rotation support, plan §7).
+// verifies tokens signed by any key in previous (rotation support).
 func NewManagerWithKeys(current ed25519.PrivateKey, previous []ed25519.PrivateKey, st store.Store) *Manager {
 	retired := make([]RetiredKey, len(previous))
 	now := time.Now()
@@ -387,7 +387,7 @@ type Challenge struct {
 	Difficulty int    `json:"difficulty_bits"`
 }
 
-// record is the stored issuance record (plan §5.1). State moves from
+// record is the stored issuance record. State moves from
 // "issued" to "spent" exactly once via compare-and-swap. Difficulty is in
 // leading zero bits.
 type record struct {
@@ -418,7 +418,7 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	id := string(idHex[:])
 
 	// challenge = HMAC(secret, host || ip || time_bucket || id): opaque to the
-	// client, deterministic for us, rotates with the hourly bucket (plan §5.1).
+	// client, deterministic for us, rotates with the hourly bucket.
 	// Stateful challenges store this string in the record, so cross-rotation
 	// redemption reads it back rather than recomputing; the issuing secret is
 	// sufficient here.
@@ -485,7 +485,7 @@ type RedeemRequest struct {
 	TokenTTL    time.Duration
 
 	// ChallengeTTL bounds how long the spent marker must outlive redemption
-	// so a solved challenge can never be replayed (plan §11).
+	// so a solved challenge can never be replayed.
 	ChallengeTTL time.Duration
 
 	// TTLs optionally resolves the token and spent-marker TTLs from the URI

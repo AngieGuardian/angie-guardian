@@ -26,8 +26,12 @@ import (
 )
 
 // LoadOrCreateKey returns the Ed25519 signing key stored at path, generating
-// and persisting one (0600) only if the file does not exist yet. It is never
-// regenerated on restart — that is the whole point (plan §7).
+// and persisting one (0600) only if the file does not exist yet. Never
+// regenerate it on restart: every live PoW token is signed by it, so a fresh
+// key invalidates all of them at once and re-challenges every vouched client
+// the moment the daemon comes back. Rotation is the deliberate path for
+// replacing it (see Rotate), because that retires the old key into prevDir
+// where it still verifies until the tokens it signed expire.
 func LoadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	key, err := loadKey(path)
 	switch {

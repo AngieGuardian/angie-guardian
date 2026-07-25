@@ -269,7 +269,7 @@ func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env 
 	return nil, nil
 }
 
-// honeypotStage — trap paths (plan §4.4). No legitimate client ever requests
+// honeypotStage covers trap paths. No legitimate client ever requests
 // these (hidden links, robots.txt-disallowed URLs), so one hit is definitive:
 // deny and block the IP immediately.
 type honeypotStage struct{}
@@ -280,10 +280,9 @@ func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	return stateless.CheckHoneypot(req, &env.domain.WAF.Honeypot), nil
 }
 
-// wafSignatureStage — pipeline stage 4 (plan §4.2). Runs BEFORE the token
-// stage on purpose: a vouched client keeps passing these cheap precompiled
-// checks, so a stolen or borrowed token can't ride past the WAF ("WAF-lite",
-// plan §3 note on stage 3).
+// wafSignatureStage is pipeline stage 4. It runs BEFORE the token stage on
+// purpose: a vouched client keeps passing these cheap precompiled checks, so a
+// stolen or borrowed token cannot ride past the WAF.
 type wafSignatureStage struct{}
 
 func (wafSignatureStage) Name() string { return "waf_signatures" }
@@ -382,10 +381,10 @@ func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
 	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent, env.domain.PoW.BaseBits(), env.domain.PoW.TokenTTL.Std()) == nil
 }
 
-// anomalyStage — pipeline stage 5 (plan §4.3). Scores the request against
-// the trained per-domain baseline: past deny_at it is rejected outright,
-// past challenge_at it gets a PoW challenge whose difficulty scales with the
-// score (a more suspicious client pays more, plan §5.5).
+// anomalyStage is pipeline stage 5. It scores the request against the trained
+// per-domain baseline: past deny_at it is rejected outright, past challenge_at
+// it gets a PoW challenge whose difficulty scales with the score, so a more
+// suspicious client pays more.
 type anomalyStage struct{}
 
 func (anomalyStage) Name() string { return "anomaly" }

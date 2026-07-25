@@ -216,9 +216,10 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		recent: newRecentRing(cfg.Admin.RecentSize),
 		log:    log,
 		stages: []Stage{
-			// Pipeline order per plan §3; first terminal decision wins.
-			// Signatures run before the token stage so vouched clients keep
-			// passing the cheap WAF checks (stage "4-lite" from the plan).
+			// Evaluated in this order; the first stage to return a terminal
+			// decision wins and the rest are skipped. Signatures run before the
+			// token stage so vouched clients keep paying the cheap WAF checks,
+			// which is what stops a stolen token riding past the signatures.
 			allowlistStage{},      // 0. static allowlist
 			denylistStage{},       // 1. static denylist
 			verifiedBotStage{},    //    rDNS-verified crawler allow / impostor deny
