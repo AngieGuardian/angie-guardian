@@ -465,10 +465,15 @@ remote OOM). The client-keyed structures and their caps:
 - **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
   full, entries repopulate cheaply on the next verify.
 - **Counter cache** (issuance rate limit + farming escalation): at most 2^17
-  entries. At capacity it reclaims only clean cached totals; entries carrying
-  unapplied store work are retained. If every entry is protected, unseen keys
-  remain uncached until a drainer makes room, rather than erasing pending
-  reconciliation state.
+  entries. At capacity a reclaim sweep runs at most once per second and evicts
+  clean cached totals plus any entry whose window has expired (its pending
+  delta is unpushable anyway); entries still carrying live unapplied store work
+  are retained rather than erasing pending reconciliation state. Keys arriving
+  between sweeps are counted in a bounded count-min sketch, so a rotating-IP
+  flood still trips the limiter (over-counting at worst) instead of resetting
+  to one each time. The once-per-second pacing is deliberate: sweeping on
+  demand made a full-map scan run under the hot-path mutex hundreds of times a
+  second and collapsed challenge issuance.
 - **Recent-decisions ring** (admin/dashboard feed): bounded by
   `admin.recent_size` (default 4096, maximum 16384), overwrite-oldest. It holds
   raw host/URI/UA strings, so exact bytes vary with traffic, but entry count
