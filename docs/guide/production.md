@@ -398,7 +398,7 @@ So the write path is the deciding factor: `pebble` ~39k challenge writes/s
 [attack mode](/guide/attack-mode), issuance switches to a stateless path with no
 write at issue time, so these numbers bound your *sustained, normal-mode*
 new-client rate, not the flood case. Verified tokens are cached in-process
-(~144 ns vs ~43 µs for a full Ed25519 verification), so a returning client's
+(~35 ns, allocation-free, vs ~40 µs for a full Ed25519 verification), so a returning client's
 request stays on the fast read path regardless of backend.
 
 ### Multi-instance (Redis/Valkey)

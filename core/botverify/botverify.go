@@ -172,12 +172,19 @@ func (v *Verifier) Verify(ctx context.Context, ip string, opts Options) Result {
 	v.inflight[ip] = c
 	v.mu.Unlock()
 
+	// Release the entry from a defer, not inline: this runs on the auth hot
+	// path under net/http, which recovers a panicking handler per connection.
+	// An inline release would leave the map entry and an unclosed channel
+	// behind, and every later request for that IP would then block on c.done
+	// until its own context expired — one recovered panic wedging verification
+	// for that address for the life of the process.
+	defer func() {
+		v.mu.Lock()
+		delete(v.inflight, ip)
+		v.mu.Unlock()
+		close(c.done)
+	}()
 	c.res = v.resolveAndCache(ctx, ip, opts)
-
-	v.mu.Lock()
-	delete(v.inflight, ip)
-	v.mu.Unlock()
-	close(c.done)
 	return c.res
 }
 

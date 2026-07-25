@@ -45,7 +45,7 @@ Under systemd (the shipped unit is `Type=notify`), guardiand speaks sd_notify:
 it signals `READY=1` once both listeners answer `/healthz` (liveness: the
 sequencing intentionally does not wait on the store, since Guardian serves
 fail-open) and keeps a watchdog alive. See
-[Readiness and watchdog](/guide/production#readiness-and-watchdog).
+[Readiness and watchdog](/guide/production#probes-liveness-vs-readiness).
 
 ### Hot-path endpoints (on `listen`)
 

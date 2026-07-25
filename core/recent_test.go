@@ -7,6 +7,7 @@ package core
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,5 +109,41 @@ func BenchmarkRecentRingSnapshot(b *testing.B) {
 				_ = r.snapshot(0)
 			}
 		})
+	}
+}
+
+// Every attacker-supplied field in a ring entry is capped, so a flood of
+// oversized headers cannot pin capacity * header-budget bytes in a diagnostics
+// buffer. Host and Method are as client-controlled as URI and UA: Angie passes
+// through $host and $request_method verbatim, bounded only by its header buffer.
+func TestRecentRingCapsEveryClientField(t *testing.T) {
+	r := newRecentRing(4)
+	r.add(RecentDecision{
+		Host:   strings.Repeat("h", 4096),
+		Method: strings.Repeat("M", 4096),
+		URI:    strings.Repeat("u", 16384),
+		UA:     strings.Repeat("a", 16384),
+	})
+	got := r.list(1)
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(got))
+	}
+	for _, f := range []struct {
+		name  string
+		value string
+		cap   int
+	}{
+		{"Host", got[0].Host, maxRecentHostLen},
+		{"Method", got[0].Method, maxRecentMethodLen},
+		{"URI", got[0].URI, maxRecentURILen},
+		{"UA", got[0].UA, maxRecentUALen},
+	} {
+		// The cap plus the multi-byte ellipsis that marks the cut.
+		if want := f.cap + len("…"); len(f.value) != want {
+			t.Errorf("%s length = %d, want %d", f.name, len(f.value), want)
+		}
+		if !strings.HasSuffix(f.value, "…") {
+			t.Errorf("%s is not marked as truncated: %q", f.name, f.value)
+		}
 	}
 }

@@ -789,12 +789,12 @@ func (s *GeoSelector) compile() error {
 	return nil
 }
 
-// match returns the first bot whose UA needle appears in ua, or nil.
-func (vb *VerifiedBotsConfig) match(ua string) *BotConfig {
-	if len(vb.Bots) == 0 || ua == "" {
+// match returns the first bot whose UA needle appears in the already-lowercased
+// User-Agent (RequestContext.LowerUA), or nil.
+func (vb *VerifiedBotsConfig) match(lower string) *BotConfig {
+	if len(vb.Bots) == 0 || lower == "" {
 		return nil
 	}
-	lower := strings.ToLower(ua)
 	for i := range vb.Bots {
 		for _, needle := range vb.Bots[i].uasLower {
 			if strings.Contains(lower, needle) {
@@ -1287,7 +1287,15 @@ func splitPathsNode(node *yaml.Node) *yaml.Node {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == "paths" {
 			paths := node.Content[i+1]
-			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			// Build a fresh slice rather than shifting in place: node is a copy of
+			// the value stored in Config.Domains, but its Content slice shares the
+			// caller's backing array, so an in-place append would corrupt the map
+			// entry (leaving a duplicated trailing key/value pair behind the
+			// unchanged length) for anything that re-reads it later.
+			rest := make([]*yaml.Node, 0, len(node.Content)-2)
+			rest = append(rest, node.Content[:i]...)
+			rest = append(rest, node.Content[i+2:]...)
+			node.Content = rest
 			return paths
 		}
 	}
@@ -1950,6 +1958,33 @@ func (c *Config) ConfigFor(host, uri string) *DomainConfig {
 	return c.DomainFor(host).ForPath(stateless.NormalizePath(stateless.RequestPath(uri)))
 }
 
+// hostScope is one Host header resolved once: the effective domain config and
+// the bounded metric label for it. Deriving them separately (DomainFor plus
+// DomainLabel) normalized the same host twice per request, and normalization is
+// not free.
+type hostScope struct {
+	domain *DomainConfig
+	label  string
+}
+
+// scopeForRequest resolves both the host and the path for one request, reusing
+// the request's memoized normalized path so the pipeline stages that match on
+// it do not each recompute it.
+func (c *Config) scopeForRequest(req *RequestContext) (*DomainConfig, string) {
+	scope := c.hostScope(req.Host)
+	return scope.domain.ForPath(req.NormalizedPath()), scope.label
+}
+
+func (c *Config) hostScope(host string) hostScope {
+	key := normalizeHost(host)
+	if dc, ok := c.resolved[key]; ok {
+		return hostScope{domain: dc, label: key}
+	}
+	// The raw Host header is client-controlled and unbounded, so an unconfigured
+	// host must never become a metric label value (see DomainLabel).
+	return hostScope{domain: &c.Defaults, label: "default"}
+}
+
 // PoWAnywhere reports whether PoW is enabled at the domain level or in any of
 // its path overlays. The redeem endpoint gates on it: a solve may belong to
 // any path's policy, and the challenge record decides which.
@@ -1989,13 +2024,7 @@ func (dc *DomainConfig) PathOverrideViews() []PathOverrideView {
 // header is client-controlled and unbounded, so it must never be a label value
 // directly — a flood of distinct Host headers would otherwise explode the
 // Prometheus series count and OOM both this process and the scrape target.
-func (c *Config) DomainLabel(host string) string {
-	key := normalizeHost(host)
-	if _, ok := c.resolved[key]; ok {
-		return key
-	}
-	return "default"
-}
+func (c *Config) DomainLabel(host string) string { return c.hostScope(host).label }
 
 func normalizeHost(host string) string { return stateless.NormalizeHost(host) }
 

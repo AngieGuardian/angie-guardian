@@ -43,23 +43,23 @@ domains:
     pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, noscript_fallback: true }
 `
 
-func testServer(t *testing.T) *httptest.Server {
+func testServer(t testing.TB) *httptest.Server {
 	t.Helper()
 	return testServerWithYAML(t, testYAML)
 }
 
-func testServerWithYAML(t *testing.T, yaml string) *httptest.Server {
+func testServerWithYAML(t testing.TB, yaml string) *httptest.Server {
 	t.Helper()
 	ts, _ := testServerAndHandler(t, yaml)
 	return ts
 }
 
-func testServerAndHandler(t *testing.T, yaml string) (*httptest.Server, *Server) {
+func testServerAndHandler(t testing.TB, yaml string) (*httptest.Server, *Server) {
 	t.Helper()
 	return testServerAndHandlerWithStore(t, yaml, store.NewMemory())
 }
 
-func testServerAndHandlerWithStore(t *testing.T, yaml string, st store.Store) (*httptest.Server, *Server) {
+func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store) (*httptest.Server, *Server) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {

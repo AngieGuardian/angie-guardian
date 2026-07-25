@@ -33,7 +33,22 @@ func canonIP(ip string) string {
 
 // BlockKey is the store key holding an active behavioural block for an IP.
 // Written by the scoreboard, read by the behaviour-block pipeline stage.
-func BlockKey(ip string) string { return blockKeyPrefix + canonIP(ip) }
+//
+// It is on the hot path for a read-through mirror (one lookup per request on a
+// shared store), so the canonical address is appended straight into a
+// stack-sized scratch array rather than formatted into its own string and then
+// concatenated: 45 bytes covers the longest textual IPv6 address, so only the
+// returned string is ever allocated.
+func BlockKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return blockKeyPrefix + ip // fail-open, matching canonIP
+	}
+	var buf [len(blockKeyPrefix) + 48]byte
+	b := append(buf[:0], blockKeyPrefix...)
+	b = addr.Unmap().AppendTo(b)
+	return string(b)
+}
 
 func blockCountKey(ip string) string { return "blkct:" + ip }
 

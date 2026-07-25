@@ -121,14 +121,29 @@ store:
 # raises PoW difficulty fleet-wide and issues store-free challenges so a flood
 # of new clients stops saturating the store. Existing tokens stay valid. See
 # the "Attack Mode" guide before tuning; thresholds are per instance.
+#
+# CAUTION on the signals block: it is defaulted as a whole. Write ANY signal and
+# every one you omitted stays OFF (that is what lets you disable one); omit the
+# block entirely and all the defaults below apply. The effects block defaults
+# per field instead, so an explicit 0 there means "this effect does nothing".
 # attack_mode:
 #   enabled: true
-#   window: 30s
+#   window: 30s                       # sliding measurement window (10s..10m)
+#   min_dwell: 60s                    # hold a level this long before it decays a step; >= window
+#   share_posture: true               # publish/adopt the level via the shared store (redis fleets)
 #   signals:
 #     challenge_rate: 200/s           # issuance/s entering elevated
 #     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
 #     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
+#     request_rate: 5000/s            # global Evaluate/s entering elevated; omit to disable
+#     store_error_ratio: 0.05         # store op error fraction entering elevated
+#     store_slow_ratio: 0.25          # store ops slower than 25ms, as a fraction
 #   effects:
+#     elevated_difficulty_raise: 0.5  # +0.5 = +2 bits = 4x the work at elevated
+#     attack_difficulty_raise: 1.0    # +1.0 = +4 bits = 16x the work at attack
+#     force_always: true              # attack: pow.mode suspicion behaves as always
+#     stateless_issuance: true        # attack: issue store-free challenges
+#     scoreboard_factor: 1.0          # attack: multiply ip_behaviour thresholds (0<f<=1 tightens)
 #     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
 #     difficulty_cap: 7               # ceiling of the SHIFTED window: during an attack this,
 #                                     # not the per-domain max_difficulty, bounds issued work
@@ -147,7 +162,15 @@ store:
 #   nftables:
 #     enabled: false
 #     mode: managed             # managed (own the drop rule) | sets_only
+#     hook: input               # managed only: input | prerouting
+#     table: guardian           # kernel table name the sink owns
 #     ports: [80, 443]          # drop rule matches only these; keeps SSH/admin safe
+#     max_entries: 65536        # kernel set size bound
+#     min_ttl: 0s               # skip offloading blocks shorter than this
+#     netns: ""                 # namespace file to program (containers); empty = our own
+#     allow_private: false      # let RFC1918/CGNAT/ULA be kernel-dropped; read the
+#                               # guide before enabling: a trusted-proxy mistake
+#                               # would blackhole your load balancer at L3
 #     never_block:              # ALWAYS list your load balancer / CDN ranges
 #       - 203.0.113.0/24
 

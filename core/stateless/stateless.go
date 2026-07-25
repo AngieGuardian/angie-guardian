@@ -40,6 +40,41 @@ type RequestContext struct {
 	// headers they actually name; nil means headers are unavailable and header
 	// targets simply never match. Read it via HeaderValues.
 	Header func(name string) []string
+
+	// Memoized derivations of the fields above, filled on first use by
+	// NormalizedPath and LowerUA. A full evaluation asks several independent
+	// checks the same two questions — "what path does policy match against?" and
+	// "what does the User-Agent look like lowercased?" — and both answers cost an
+	// allocation to produce. Computing them per check made the URI and the UA the
+	// two largest allocation sources on the auth hot path.
+	//
+	// A RequestContext belongs to one request on one goroutine, so no
+	// synchronization is needed. Callers must not mutate URI or UserAgent after
+	// reading a derivation; nothing does, and transports build the value once.
+	normPath string
+	lowerUA  string
+}
+
+// NormalizedPath returns the request path in the form every path-scoped policy
+// matches against: percent-decoded and dot-segment-normalized (see
+// NormalizePath). Computed once per request.
+func (r *RequestContext) NormalizedPath() string {
+	// NormalizePath never returns "", so the zero value is an unambiguous
+	// "not computed yet".
+	if r.normPath == "" {
+		r.normPath = NormalizePath(RequestPath(r.URI))
+	}
+	return r.normPath
+}
+
+// LowerUA returns the lowercased User-Agent used by every substring match
+// (allowlist, denylist, verified-bot needles, WAF ua targets). Computed once
+// per request.
+func (r *RequestContext) LowerUA() string {
+	if r.lowerUA == "" && r.UserAgent != "" {
+		r.lowerUA = strings.ToLower(r.UserAgent)
+	}
+	return r.lowerUA
 }
 
 // HeaderValues returns every value of a request header via the transport's
@@ -149,11 +184,15 @@ func (l *ListConfig) MatchIP(addr netip.Addr) bool {
 // callers must not mutate the returned slice.
 func (l *ListConfig) Prefixes() []netip.Prefix { return l.prefixes }
 
-func (l *ListConfig) MatchUA(ua string) bool {
-	if ua == "" {
+func (l *ListConfig) MatchUA(ua string) bool { return l.MatchUALower(strings.ToLower(ua)) }
+
+// MatchUALower is MatchUA for a User-Agent the caller has already lowercased
+// (RequestContext.LowerUA), so a request that consults several lists pays the
+// lowercasing once rather than once per list.
+func (l *ListConfig) MatchUALower(lower string) bool {
+	if lower == "" {
 		return false
 	}
-	lower := strings.ToLower(ua)
 	for _, needle := range l.uasLower {
 		if strings.Contains(lower, needle) {
 			return true
@@ -218,74 +257,100 @@ func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 	return Decision{Action: ActionAllow, Reason: "default"}
 }
 
+// The static-list verdicts carry nothing per-request, so they are immutable
+// package values returned by pointer. That is not micro-optimization for its
+// own sake: the allowlist and denylist run on every single request, and a
+// function returning a Decision whose address the caller takes makes Go
+// heap-allocate that Decision on EVERY call, match or not. Callers must treat
+// these as read-only.
+var (
+	allowlistPath = &Decision{Action: ActionAllow, Reason: "allowlist:path"}
+	allowlistIP   = &Decision{Action: ActionAllow, Reason: "allowlist:ip"}
+	allowlistUA   = &Decision{Action: ActionAllow, Reason: "allowlist:ua"}
+
+	staticDenyEvents = []Event{{Type: "deny", Detail: "static denylist hit"}}
+	denylistIP       = &Decision{Action: ActionDeny, Reason: "denylist:ip", Events: staticDenyEvents}
+	denylistUA       = &Decision{Action: ActionDeny, Reason: "denylist:ua", Events: staticDenyEvents}
+	denylistPath     = &Decision{Action: ActionDeny, Reason: "denylist:path", Events: staticDenyEvents}
+
+	honeypotHit = &Decision{
+		Action: ActionDeny,
+		Reason: "honeypot:path",
+		Events: []Event{{Type: EventInstantBlock, Detail: "honeypot:path"}},
+	}
+)
+
 func evalAllowlist(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	return CheckAllowlist(req, &dr.Allowlist)
+	d := CheckAllowlist(req, &dr.Allowlist)
+	if d == nil {
+		return Decision{}, false
+	}
+	return *d, true
 }
 
 // CheckAllowlist runs the static allowlist (path, IP, UA). It returns a
-// terminal allow Decision and true on a match, or (zero, false) otherwise.
-// Exported so the sidecar's allowlist stage shares this exact logic with the
-// WASM guest and the two can never drift.
-func CheckAllowlist(req *RequestContext, l *ListConfig) (Decision, bool) {
-	if l.MatchPath(NormalizePath(RequestPath(req.URI))) {
-		return Decision{Action: ActionAllow, Reason: "allowlist:path"}, true
+// terminal allow Decision on a match, or nil otherwise. Exported so the
+// sidecar's allowlist stage shares this exact logic with the WASM guest and the
+// two can never drift. The returned Decision is shared and must not be mutated.
+func CheckAllowlist(req *RequestContext, l *ListConfig) *Decision {
+	if l.MatchPath(req.NormalizedPath()) {
+		return allowlistPath
 	}
 	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
-		return Decision{Action: ActionAllow, Reason: "allowlist:ip"}, true
+		return allowlistIP
 	}
-	if l.MatchUA(req.UserAgent) {
-		return Decision{Action: ActionAllow, Reason: "allowlist:ua"}, true
+	if l.MatchUALower(req.LowerUA()) {
+		return allowlistUA
 	}
-	return Decision{}, false
+	return nil
 }
 
 func evalDenylist(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	return CheckDenylist(req, &dr.Denylist)
+	d := CheckDenylist(req, &dr.Denylist)
+	if d == nil {
+		return Decision{}, false
+	}
+	return *d, true
 }
 
 // CheckDenylist runs the static denylist (IP, UA, path), the mirror image of
 // CheckAllowlist: every list dimension an operator can configure is enforced,
 // not just IPs. Exported so the sidecar's denylist stage shares this exact
-// logic with the WASM guest and the two can never drift.
-func CheckDenylist(req *RequestContext, l *ListConfig) (Decision, bool) {
-	deny := func(reason string) (Decision, bool) {
-		return Decision{
-			Action: ActionDeny,
-			Reason: reason,
-			Events: []Event{{Type: "deny", Detail: "static denylist hit"}},
-		}, true
-	}
+// logic with the WASM guest and the two can never drift. The returned Decision
+// is shared and must not be mutated.
+func CheckDenylist(req *RequestContext, l *ListConfig) *Decision {
 	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
-		return deny("denylist:ip")
+		return denylistIP
 	}
-	if l.MatchUA(req.UserAgent) {
-		return deny("denylist:ua")
+	if l.MatchUALower(req.LowerUA()) {
+		return denylistUA
 	}
-	if l.MatchPath(NormalizePath(RequestPath(req.URI))) {
-		return deny("denylist:path")
+	if l.MatchPath(req.NormalizedPath()) {
+		return denylistPath
 	}
-	return Decision{}, false
+	return nil
 }
 
 func evalHoneypot(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	return CheckHoneypot(req, &dr.Honeypot)
+	d := CheckHoneypot(req, &dr.Honeypot)
+	if d == nil {
+		return Decision{}, false
+	}
+	return *d, true
 }
 
 // CheckHoneypot runs the honeypot trap-path check. It returns a terminal deny
-// Decision (with an instant-block event) and true on a hit. Exported so the
-// sidecar's honeypot stage shares this exact logic with the WASM guest.
-func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) (Decision, bool) {
+// Decision (with an instant-block event) on a hit, or nil otherwise. Exported
+// so the sidecar's honeypot stage shares this exact logic with the WASM guest.
+// The returned Decision is shared and must not be mutated.
+func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) *Decision {
 	if !hp.Enabled || len(hp.Paths) == 0 {
-		return Decision{}, false
+		return nil
 	}
-	if MatchPathList(hp.Paths, NormalizePath(RequestPath(req.URI))) {
-		return Decision{
-			Action: ActionDeny,
-			Reason: "honeypot:path",
-			Events: []Event{{Type: EventInstantBlock, Detail: "honeypot:path"}},
-		}, true
+	if MatchPathList(hp.Paths, req.NormalizedPath()) {
+		return honeypotHit
 	}
-	return Decision{}, false
+	return nil
 }
 
 // BuildMatchInput assembles the normalized signature-matcher input for a rule
@@ -298,18 +363,25 @@ func BuildMatchInput(req *RequestContext, rs *waf.RuleSet) waf.MatchInput {
 	in := waf.MatchInput{
 		Path:  strings.ToLower(DecodePath(RequestPath(req.URI))),
 		Query: strings.ToLower(DecodeQuery(RequestQuery(req.URI))),
-		UA:    strings.ToLower(req.UserAgent),
+		UA:    req.LowerUA(),
 	}
 	if rs.NeedsMethod() {
 		in.Method = strings.ToUpper(req.Method)
 	}
 	if names := rs.HeaderTargets(); len(names) > 0 && req.Header != nil {
-		in.Headers = make(map[string][]string, len(names))
+		// Built lazily: one rule anywhere in the file targeting a header makes
+		// every request take this branch, and most requests carry none of the
+		// targeted headers. Allocating the map up front spent an allocation per
+		// request to hold nothing.
 		for _, name := range names {
 			for _, v := range req.HeaderValues(name) {
-				if v != "" {
-					in.Headers[name] = append(in.Headers[name], strings.ToLower(DecodePath(v)))
+				if v == "" {
+					continue
 				}
+				if in.Headers == nil {
+					in.Headers = make(map[string][]string, len(names))
+				}
+				in.Headers[name] = append(in.Headers[name], strings.ToLower(DecodePath(v)))
 			}
 		}
 	}
@@ -405,8 +477,15 @@ func DecodeQuery(q string) string {
 // drops a trailing dot, so config lookups are case- and port-insensitive.
 func NormalizeHost(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	// net.SplitHostPort allocates an *AddrError for every input without a port,
+	// and a Host header carrying no port is the overwhelmingly common case, so
+	// it was the single largest allocation source on the auth hot path. A port
+	// separator (and an IPv6 literal) always contains a colon; nothing else
+	// SplitHostPort would strip does.
+	if strings.IndexByte(host, ':') >= 0 {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
 	}
 	host = strings.Trim(host, "[]")
 	return strings.TrimSuffix(host, ".")

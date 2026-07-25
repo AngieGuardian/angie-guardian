@@ -93,9 +93,14 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 			// (Prometheus scrapes with authorization.credentials_file).
 			metricsHandler = s.auth(metricsHandler)
 		}
-		s.mux.HandleFunc("GET /metrics", metricsHandler)
+		s.mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+			securityHeaders(w, "", "")
+			metricsHandler(w, r)
+		})
 	}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		securityHeaders(w, "", "")
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
@@ -1295,6 +1300,10 @@ func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	// Angie never fronts the admin listener, so nothing else can supply these:
+	// the page's own fitted CSP (no CDN, no eval), plus clickjacking and
+	// content-sniffing protection for a page that holds an operator's token.
+	securityHeaders(w, cspDashboard, frameDeny)
 	_, _ = w.Write(page)
 }
 
@@ -1321,6 +1330,9 @@ func (s *AdminServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", a.contentType)
+	// The dashboard's CSP pins these to script-src 'self'; nosniff keeps the
+	// declared type binding even if a proxy strips or rewrites it.
+	securityHeaders(w, "", "")
 	if etag := s.assetETags[a.path]; etag != "" {
 		w.Header().Set("ETag", etag)
 		// Must revalidate every time; a stale cached copy is never served blind.

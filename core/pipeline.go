@@ -79,10 +79,7 @@ type allowlistStage struct{}
 func (allowlistStage) Name() string { return "allowlist" }
 
 func (allowlistStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if d, ok := stateless.CheckAllowlist(req, &env.domain.Allowlist); ok {
-		return &d, nil
-	}
-	return nil, nil
+	return stateless.CheckAllowlist(req, &env.domain.Allowlist), nil
 }
 
 // denylistStage — pipeline stage 1. Permanent admin-set IP/CIDR blocks.
@@ -94,10 +91,7 @@ func (denylistStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	if _, err := netip.ParseAddr(req.RemoteAddr); err != nil {
 		return nil, fmt.Errorf("unparseable client IP %q: %w", req.RemoteAddr, err)
 	}
-	if d, ok := stateless.CheckDenylist(req, &env.domain.Denylist); ok {
-		return &d, nil
-	}
-	return nil, nil
+	return stateless.CheckDenylist(req, &env.domain.Denylist), nil
 }
 
 // verifiedBotStage — verified crawler allowlist. A UA allowlist entry like
@@ -119,7 +113,7 @@ func (verifiedBotStage) Name() string { return "verified_bot" }
 
 func (verifiedBotStage) Evaluate(ctx context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
 	vb := &env.domain.VerifiedBots
-	bot := vb.match(req.UserAgent)
+	bot := vb.match(req.LowerUA())
 	if bot == nil || env.bots == nil {
 		return nil, nil
 	}
@@ -283,10 +277,7 @@ type honeypotStage struct{}
 func (honeypotStage) Name() string { return "honeypot" }
 
 func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if d, ok := stateless.CheckHoneypot(req, &env.domain.WAF.Honeypot); ok {
-		return &d, nil
-	}
-	return nil, nil
+	return stateless.CheckHoneypot(req, &env.domain.WAF.Honeypot), nil
 }
 
 // wafSignatureStage — pipeline stage 4 (plan §4.2). Runs BEFORE the token
@@ -321,7 +312,7 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 			// bound token is that proof. Deny/block rules still terminate above
 			// the ordinary token stage and can never be bypassed by a token.
 			if hasValidPoWToken(req, env) {
-				return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
+				return decisionPoWToken, nil
 			}
 			base, maxDiff := env.effBits()
 			return &Decision{
@@ -358,11 +349,18 @@ type powTokenStage struct{}
 
 func (powTokenStage) Name() string { return "pow_token" }
 
+// decisionPoWToken is the vouched-client verdict. It carries no per-request
+// data, and Evaluate copies a stage's decision by value before returning it, so
+// one immutable shared value serves every request instead of an allocation on
+// the single hottest path in the product. Never mutate it, and never take a
+// mutable reference to it.
+var decisionPoWToken = &Decision{Action: ActionAllow, Reason: "pow:token"}
+
 func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
 	if !hasValidPoWToken(req, env) {
 		return nil, nil
 	}
-	return &Decision{Action: ActionAllow, Reason: "pow:token"}, nil
+	return decisionPoWToken, nil
 }
 
 func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {

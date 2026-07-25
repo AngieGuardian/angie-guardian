@@ -238,6 +238,15 @@ limited to 64 MiB; an oversized update keeps the last-good list. Matching is a
 binary search over merged ranges, so
 six-figure feeds are fine on the hot path.
 
+An update that parses to **no entries at all** is refused rather than applied:
+an origin serving an empty file during maintenance, a truncated `cache_dir`
+copy, or a half-written local edit would otherwise swap a live deny list for one
+that matches nothing, silently and with no error anywhere. The last good list
+keeps enforcing and the failure shows up in
+`guardian_feed_refresh_total{status="error"}` and `GET /admin/intel`. The one
+exception is a local `file:` feed on its very first load: an empty file you
+maintain yourself is a legitimate "nothing listed yet".
+
 An `action: deny` feed rejects matching IPs outright; `action: challenge`
 makes them prove work first, one full difficulty step (+4 bits = 16x) above
 base, like a WAF signature hit. Challenge feeds are inert on PoW-disabled

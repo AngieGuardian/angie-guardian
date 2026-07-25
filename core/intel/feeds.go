@@ -97,10 +97,26 @@ func (f *feed) status() FeedStatus {
 // install parses raw and swaps it in as the feed's current state. A body with
 // lines but not a single valid entry is rejected: that is an error page or a
 // format we don't speak, and keeping the previous state beats matching nothing.
+//
+// An entry-less body (empty, or only comments) is rejected too. An origin
+// serving an empty file during maintenance, a truncated cache copy, or a
+// half-written local edit would otherwise swap a live deny list for a set that
+// matches nothing, silently and with no error anywhere. The one case where
+// nothing is suspicious is an operator's own local file on its very first load:
+// an empty file: feed is a legitimate "nothing listed yet".
 func (f *feed) install(raw []byte, source string, now time.Time) (int, error) {
 	prefixes, invalid := ParseList(raw)
 	if len(prefixes) == 0 && invalid > 0 {
 		return 0, fmt.Errorf("no valid entries (%d invalid lines): not an IP list?", invalid)
+	}
+	if len(prefixes) == 0 {
+		prev := f.state.Load()
+		switch {
+		case prev != nil && prev.entries > 0:
+			return 0, fmt.Errorf("no entries at all, but %d are currently loaded: refusing to replace a live list with an empty one", prev.entries)
+		case source != "file":
+			return 0, fmt.Errorf("no entries at all: an empty %s body is a fetch or cache fault, not a list", source)
+		}
 	}
 	f.state.Store(&feedState{
 		set:       newRangeSet(prefixes),
@@ -229,6 +245,11 @@ func (f *feed) loadFile(force bool, log *slog.Logger) error {
 	return nil
 }
 
+// writeFileAtomic publishes data at path via a temp file and a rename. The
+// fsync before the rename is what makes the cache trustworthy after a crash:
+// without it the rename can be durable while the contents are not, leaving a
+// zero-length cache file that the next start would load as a feed matching
+// nothing (install rejects that now, but the cache should not produce it).
 func writeFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".feed-*")
 	if err != nil {
@@ -236,6 +257,10 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}

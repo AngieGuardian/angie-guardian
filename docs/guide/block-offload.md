@@ -13,7 +13,7 @@ Guardian enforces blocks on two layers:
    in the kernel before Angie runs the auth subrequest at all.
 
 Both are configured under the top-level `enforcement:` key. Neither changes
-which IPs get blocked (the [behavioural scoreboard](/guide/configuration#waf-ip-behaviour),
+which IPs get blocked (the [behavioural scoreboard](/reference/configuration#waf-ip-behaviour),
 WAF `block` rules and the admin API still decide that); they change how
 cheaply an existing block is enforced.
 
@@ -109,7 +109,7 @@ Before any address is sent to the kernel, the sink drops it from the batch if
 it is loopback, link-local, private or special-purpose (RFC1918, the
 `100.64.0.0/10` CGNAT range, IPv6 ULA, unspecified, multicast), in a
 `never_block` CIDR, or in **any** configured
-[`allowlist`](/guide/configuration#allowlist-denylist) (across defaults,
+[`allowlist`](/reference/configuration#allowlist-denylist) (across defaults,
 domains and path overlays; the kernel sees neither Host nor path, so allowlist
 entries must win globally at this layer).
 

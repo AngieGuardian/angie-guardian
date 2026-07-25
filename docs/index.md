@@ -37,7 +37,7 @@ features:
     details: When enabled, signature hits, PoW failures, tamper events, bot spoofing, and challenge farming feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
   - icon: ⚡
     title: Built for the hot path
-    details: Read paths clear 75k+ req/s on a single node. Verified tokens are cached in-process (about 144 ns), so returning clients never leave the fast path.
+    details: Read paths clear 75k+ req/s on a single node. Verified tokens are cached in-process (about 35 ns, allocation-free), so returning clients never leave the fast path.
   - icon: 🔭
     title: Observable by default
     details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard with activity graphs and a world map of attack origins, and a ready-made Grafana dashboard.

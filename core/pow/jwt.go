@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -117,7 +118,7 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 		return fmt.Errorf("refresh token verification keys: %w", err)
 	}
 	now := m.now()
-	cacheKey := sha256.Sum256([]byte(token + "\x00" + strings.ToLower(host) + "\x00" + ip + "\x00" + userAgent + "\x00" + strconv.Itoa(minBits) + "\x00" + strconv.FormatInt(int64(maxAge), 10)))
+	cacheKey := tokenCacheKey(token, host, ip, userAgent, minBits, maxAge)
 	if m.cache.get(cacheKey, now) {
 		return nil
 	}
@@ -152,6 +153,49 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 	// shorter maxAge is not masked by an earlier long-lived cache entry.
 	m.cache.put(cacheKey, expiry, now)
 	return nil
+}
+
+// tokenKeyScratch holds reusable buffers for building the verification cache
+// key. The key is a SHA-256 over the token plus its full binding, recomputed on
+// every request from a vouched client — the hottest path in the product — and
+// joining those parts into one string previously allocated the joined string,
+// its []byte copy and the formatted max-age each time. The read path is
+// GC-bound at the rates Guardian targets, so that allocation traffic cost more
+// than the hashing did.
+var tokenKeyScratch = sync.Pool{New: func() any { b := make([]byte, 0, 512); return &b }}
+
+// maxTokenKeyScratch bounds what goes back into the pool. A cookie value is
+// attacker-supplied and can run to the proxy's whole header budget; a buffer
+// grown to hold one must not be retained for the life of the process.
+const maxTokenKeyScratch = 4096
+
+// tokenCacheKey digests the token and every input the verification result
+// depends on, so a cache hit implies the exact same token, client, host,
+// difficulty floor and lifetime bound already verified. The digest must stay
+// cryptographic: the token is client-supplied, so a weaker hash would let a
+// crafted token collide onto a genuine token's cached "valid" entry.
+func tokenCacheKey(token, host, ip, userAgent string, minBits int, maxAge time.Duration) [32]byte {
+	p := tokenKeyScratch.Get().(*[]byte)
+	b := (*p)[:0]
+	b = append(b, token...)
+	b = append(b, 0)
+	// ToLower returns the input unchanged (no allocation) for an already-lower
+	// host, which is what Angie's $host always gives us.
+	b = append(b, strings.ToLower(host)...)
+	b = append(b, 0)
+	b = append(b, ip...)
+	b = append(b, 0)
+	b = append(b, userAgent...)
+	b = append(b, 0)
+	b = strconv.AppendInt(b, int64(minBits), 10)
+	b = append(b, 0)
+	b = strconv.AppendInt(b, int64(maxAge), 10)
+	sum := sha256.Sum256(b)
+	if cap(b) <= maxTokenKeyScratch {
+		*p = b
+		tokenKeyScratch.Put(p)
+	}
+	return sum
 }
 
 func (m *Manager) verifyTokenOnce(token, host, ip, userAgent string) (*TokenClaims, error) {
