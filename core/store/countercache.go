@@ -19,7 +19,9 @@ import (
 // counter visibly cuts challenge issuance throughput. Instead the count is bumped in
 // an in-process map and returned immediately, and the shared store counter is
 // synced in the background: a flush pushes the accumulated local increments to
-// the store with IncrBy and merges the store's total back, so replicas
+// the store with IncrByDeadline (not IncrBy: the absolute window deadline is
+// what stops a delayed flush from creating or extending the next window, see
+// the window rule below) and merges the store's total back, so replicas
 // converge on the shared count and a restarted instance catches back up on its
 // first flush.
 //
@@ -78,7 +80,13 @@ type CounterCache struct {
 type counterEntry struct {
 	n       int64
 	expires int64 // unix nanoseconds
-	pending int64 // increments retained locally while no dirty slot is available
+	// pending is the parking slot for increments that exist locally but are not
+	// (yet) queued for the shared store, from either direction: no dirty slot
+	// was available when they arrived (queue saturated), or a drainer claimed
+	// them and its store round failed, so preserveFailedIncr put them back. A
+	// later bump re-enqueues the whole accumulated amount. Always belongs to
+	// the window in expires; it is discarded when that window ends.
+	pending int64
 }
 
 type overflowCounterCell struct {
@@ -112,9 +120,9 @@ type dirtyEntry struct {
 // (makeCounterRoomLocked) reclaims clean cached totals and expired entries;
 // entries with live unpushed work are never evicted. A previously unseen key
 // arriving between sweeps is counted in the overflow sketch rather than going
-// uncounted. There is deliberately no latch that holds new keys out until a
-// drainer frees a slot: that shape existed until 16091b3 and its replacement
-// caused the 3x issuance collapse described on makeCounterRoomLocked.
+// uncounted. There is deliberately no longer a latch holding new keys out until
+// a drainer frees a slot: that existed up to and including 16091b3, and pacing
+// replaced it in the 0.10.0 fix described on makeCounterRoomLocked.
 const maxCounterEntries = 1 << 17
 
 const (
@@ -352,6 +360,15 @@ func (c *CounterCache) makeCounterRoomLocked() bool {
 }
 
 // Forget clears the counter locally and, in the background, in the store.
+//
+// It does not clear the overflow sketch, which is not addressable per key (a
+// cell is shared by every key that hashes to it, so zeroing one would zero
+// other live keys' counts). A key shed to the sketch while the cache was at
+// capacity therefore keeps counting until its window lapses, even after a
+// Forget. That is the intended direction for this cache under overload: the
+// sketch over-counts rather than under-counts, so enforcement stays tight.
+// Worth knowing at the call sites that use Forget as a reset, e.g. a solved
+// challenge clearing its host+IP escalation counter (core/pow/challenge.go).
 func (c *CounterCache) Forget(key string) {
 	c.mu.Lock()
 	delete(c.m, key)
