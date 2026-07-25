@@ -181,17 +181,20 @@ partition #F5F3FF "Angie Guardian - Policy, State, Training, and Operations" {
 
 Guardian is built for Angie's authorization hot path. A local loopback test on
 an AMD Ryzen Threadripper 7960X with 64 connections produced these throughput
-results, measured in requests per second:
+results (median of 3 fixed-work runs each, fresh daemon and store per run;
+challenge issuance is measured in its **loaded steady state**, with both
+in-process counter caches pre-filled past capacity, not against an empty
+store):
 
 | Store backend | Allow requests/s | Returning-client requests/s | Challenges issued/s |
 |---|---:|---:|---:|
-| In-memory store (ephemeral) | 169,000 | 159,000 | 156,000 |
-| Pebble (async, default) | 177,000 | 154,000 | 39,000 |
-| Pebble (sync, fully durable) | 172,000 | 155,000 | 25,000 |
-| BuntDB (async) | 175,000 | 153,000 | 36,000 |
-| Redis/Valkey | 96,000 | 94,000 | 34,000 |
+| In-memory store (ephemeral) | 179,000 | 169,000 | 159,000 |
+| Pebble (async, default) | 183,000 | 169,000 | 60,000 |
+| Pebble (sync, fully durable) | 182,000 | 168,000 | 34,000 |
+| BuntDB (async) | 183,000 | 168,000 | 54,000 |
+| Redis/Valkey | 94,000 | 93,000 | 49,000 |
 
-The read path remained above 94,000 requests/s across every backend. Challenge
+The read path remained above 93,000 requests/s across every backend. Challenge
 issuance is write-heavy, which explains the difference between the in-memory
 and durable stores. See the
 [load-testing guide](https://angieguardian.org/guide/load-testing)
@@ -314,17 +317,21 @@ write-heavy path):
 | `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angieguardian.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
-same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Go 1.25; Valkey 9 for the redis
-backend; fresh daemon per run). Each cell is **throughput / p50 / p99** (req/s
-and per-request latency):
+same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17; Go 1.26.5;
+Valkey 9 for the redis backend; fresh daemon and wiped store per run; median of
+3 runs per cell). Reads use `-warmup 50000 -n 500000`; challenge uses
+`-warmup 150000 -n 150000`, so its warmup pushes both 131k-entry counter caches
+past capacity and the measured window is the loaded steady state, not the fast
+cold start an empty store serves. Each cell is **throughput / p50 / p99**
+(req/s and per-request latency):
 
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
-| `memory` (ephemeral)              | 169k / 0.15ms / 1.8ms | 159k / 0.21ms / 1.7ms | 150k / 0.14ms / 2.4ms | **156k / 0.29ms / 1.7ms** |
-| `pebble` (async, default durable) | 177k / 0.14ms / 1.7ms | 154k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **39k / 0.73ms / 20ms** |
-| `pebble` (sync, fully durable)    | 172k / 0.14ms / 1.8ms | 155k / 0.21ms / 1.8ms | 152k / 0.14ms / 2.4ms | **25k / 2.6ms / 7.5ms** |
-| `buntdb` (async, single-file)     | 175k / 0.14ms / 1.7ms | 153k / 0.23ms / 1.8ms | 150k / 0.14ms / 2.4ms | **36k / 1.3ms / 17ms** |
-| `redis`·`valkey` (fleet)          | 96k / 0.62ms / 1.4ms  | 94k / 0.63ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **34k / 1.2ms / 21ms** |
+| `memory` (ephemeral)              | 179k / 0.13ms / 1.8ms | 170k / 0.16ms / 1.8ms | 157k / 0.13ms / 2.3ms | **159k / 0.29ms / 1.6ms** |
+| `pebble` (async, default durable) | 183k / 0.13ms / 1.7ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.7ms** |
+| `pebble` (sync, fully durable)    | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 160k / 0.14ms / 2.3ms | **34k / 1.5ms / 5.3ms** |
+| `buntdb` (async, single-file)     | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 156k / 0.14ms / 2.4ms | **54k / 1.2ms / 5.0ms** |
+| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 161k / 0.14ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
 (`buntdb` + `sync: true` measured only ~0.6k challenge writes/s, because a
 single-writer store fsync'ing every commit is that slow, so the combination is
@@ -333,25 +340,26 @@ single-writer store fsync'ing every commit is that slow, so the combination is
 Every backend clears the ≥50k req/s budget on the read paths with a wide margin.
 On the **embedded** backends the in-process block mirror makes the store
 authoritative, so `allow`/`token` do no store I/O at all after the seed scan,
-which is why they cluster at ~150–177k. `redis`/`valkey` is the exception: it
+which is why they cluster at ~154–183k. `redis`/`valkey` is the exception: it
 stays read-through (one network read per request for cross-replica correctness),
-so its `allow`/`token` land lower (~94–96k) while `deny` (no store read) stays fast.
+so its `allow`/`token` land lower (~93–94k) while `deny` (no store read) stays fast.
 
 The **write** path is where the backend matters. Issuing a challenge writes one
 CAS record, and the durable backends absorb that far better than a synchronous
 single-writer store:
 
-- **`pebble`** (default durable) sustains ~39k challenge writes/s in async mode,
-  and even in fully-durable `sync: true` mode still does ~25k/s. Both are far above
+- **`pebble`** (default durable) sustains ~61k challenge writes/s in async mode,
+  and even in fully-durable `sync: true` mode still does ~34k/s. Both are far above
   a synchronously-fsync'd single-writer store. It is an LSM engine, so writes hit
   the WAL and memtable and are flushed in the background.
-- **`buntdb`** matches Pebble in async mode (~36k/s) and stores everything in one
-  file, which is simpler to back up. It is single-writer, so `sync: true` would
-  fsync every commit and collapse to ~600/s, so guardiand **refuses to start** in
-  that configuration and points you to Pebble for synchronous durability.
-- **`memory`** has no write ceiling at all (~156k/s) but loses all state on
+- **`buntdb`** lands close to Pebble in async mode (~54k/s) and stores everything
+  in one file, which is simpler to back up. It is single-writer, so `sync: true`
+  would fsync every commit and collapse to ~600/s, so guardiand **refuses to
+  start** in that configuration and points you to Pebble for synchronous
+  durability.
+- **`memory`** has no write ceiling at all (~159k/s) but loses all state on
   restart.
-- **`redis`/`valkey`** sustains ~34k challenge writes/s (comparable to the
+- **`redis`/`valkey`** sustains ~49k challenge writes/s (comparable to the
   embedded durable backends) and is the **multi-instance** option: it is the
   shared store that lets replicas behind a load balancer see each other's blocks
   and single-spend markers. It trades some read throughput for that (one network
@@ -393,16 +401,25 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
 #    for the token/challenge scenarios.
 ./guardiand -config guardian.local.yaml &
 
-# 2. Run each scenario (8s, 64 connections). Use a distinct -ip per read run so
-#    a behavioural block from one run doesn't bleed into the next; the
-#    challenge scenario rotates the client IP itself to dodge the issuance limit.
-#    allow uses the PoW-off host: the scenario expects 200s, and a PoW-on host
+# 2. Run each scenario with FIXED WORK (-warmup/-n), 64 connections, and a
+#    fresh daemon + wiped store per run so results are comparable. Use a
+#    distinct -ip per read run so a behavioural block from one run doesn't
+#    bleed into the next; the challenge scenario rotates the client IP itself
+#    to dodge the issuance limit, and its warmup pushes the counter caches
+#    past capacity so the measured window is the loaded steady state. allow
+#    uses the PoW-off host: the scenario expects 200s, and a PoW-on host
 #    answers 401 (challenge) for unvouched clients.
-./guardian-loadtest -scenario allow     -host api.example.com -ip 198.51.100.10 -c 64 -d 8s
-./guardian-loadtest -scenario token     -host example.com     -ip 198.51.100.11 -c 64 -d 8s
-./guardian-loadtest -scenario deny      -host example.com     -ip 203.0.113.9   -c 64 -d 8s   # IP must be denylisted
-./guardian-loadtest -scenario challenge -host example.com                        -c 64 -d 8s
+./guardian-loadtest -scenario allow     -host api.example.com -ip 198.51.100.10 -c 64 -warmup 50000  -n 500000
+./guardian-loadtest -scenario token     -host example.com     -ip 198.51.100.11 -c 64 -warmup 50000  -n 500000
+./guardian-loadtest -scenario deny      -host example.com     -ip 203.0.113.9   -c 64 -warmup 50000  -n 500000   # IP must be denylisted
+./guardian-loadtest -scenario challenge -host example.com                        -c 64 -warmup 150000 -n 150000
 ```
+
+The output's `per-second:` line shows whether the run reached a steady state; a
+falling line means the aggregate is blending regimes and only fixed-work runs
+with identical flags are comparable. `make bench-regress` is the companion CI
+gate: hot-path allocs/op against the committed baselines in
+`allocs-baseline.txt`, deterministic and machine-independent.
 
 Micro-benchmarks live alongside the code and cover every layer of the hot path:
 the `/auth` handler and the request value it builds, `Evaluate` per verdict,

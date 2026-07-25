@@ -55,18 +55,24 @@ type CounterCache struct {
 	dirty   map[string]*dirtyEntry // keys with unpushed work
 	queue   []string               // FIFO of dirty keys awaiting a drainer
 	workers int                    // live drain goroutines, capped at maxFlushWorkers
-	// capacityProtected means the last attempt to make room found that every
-	// entry carried unpushed work. New, previously unseen keys are then left
-	// uncached until a drainer releases an entry or the paced re-sweep
-	// (nextRoomSweep) finds expired entries to reclaim; existing hot keys keep
-	// their exact local count and reconciliation state.
-	capacityProtected bool
-	nextRoomSweep     int64 // unix nanos: earliest next O(n) room sweep while protected
-	// overflow is a bounded count-min sketch used only while every primary
-	// cache entry is protected by unpushed work. It keeps repeat requests from
-	// an unseen key counting upward instead of returning 1 forever. Hash
-	// collisions can only over-count, which is the safer overload failure mode
-	// for rate limiting.
+	// nextRoomSweep paces the O(n) at-capacity room sweep: at most one full
+	// scan per second, whatever the previous sweep achieved. A new key arriving
+	// at capacity between sweeps is counted in the overflow sketch instead of
+	// triggering a scan; existing hot keys keep their exact local count and
+	// reconciliation state.
+	//
+	// The unconditional pacing is load-bearing. An earlier version re-swept
+	// without pacing whenever the previous sweep had freed anything, and under
+	// a rotating-key flood the drains free a handful of slots at a time, so the
+	// sweep ran hundreds of times per second — a full-map scan under this
+	// mutex, on the challenge hot path — and issuance throughput collapsed by
+	// 3x (see BenchmarkChallengeIssue and the loadtest -warmup/-n mode).
+	nextRoomSweep int64 // unix nanos: earliest next O(n) room sweep at capacity
+	// overflow is a bounded count-min sketch used only while the primary cache
+	// is at capacity with nothing reclaimable (or reclamation still paced out).
+	// It keeps repeat requests from an unseen key counting upward instead of
+	// returning 1 forever. Hash collisions can only over-count, which is the
+	// safer overload failure mode for rate limiting.
 	overflow      [overflowCounterDepth][]overflowCounterCell
 	overflowSeeds [overflowCounterDepth]maphash.Seed
 
@@ -162,7 +168,6 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 			// Reuse the expired key's slot. Its pending delta belongs to the old
 			// window and is deliberately discarded here.
 			delete(c.m, key)
-			c.capacityProtected = false
 		} else if !c.makeCounterRoomLocked() {
 			// Every cached entry owns unpushed work. Evicting any of them would
 			// lose reconciliation state. Count this previously unseen key in the
@@ -294,37 +299,38 @@ func (c *CounterCache) incrOverflowLocked(key string, now int64, ttl time.Durati
 // unpushable anyway (flushKey drops expired windows). Without the expired-entry
 // rule, a rotating-IP flood during a store outage would fill the cache with
 // never-rebumped protected entries and permanently degrade all new keys to the
-// overflow sketch. Bulk eviction makes the O(n) scan rare instead of paying it
-// for every new key at capacity; while every slot is protected the scan re-runs
-// at most once per second (nextRoomSweep), so expired entries are reclaimed as
-// their windows lapse without an O(n) cost per shed key. c.mu must be held.
+// overflow sketch.
+//
+// The scan runs at most once per second, unconditionally: a sweep that frees
+// only the few slots the drains released since the last one must not license an
+// immediate re-sweep, or a sustained new-key flood turns into a full-map scan
+// under c.mu every few insertions (measured at 62% of all daemon CPU, a 3x
+// issuance collapse). Keys shed between sweeps are counted by the overflow
+// sketch, which is the designed degradation. The eviction test orders its cheap
+// field checks before the c.dirty map lookup on purpose: in the saturated
+// regime nearly every entry short-circuits on pending, and hashing 131k keys
+// per sweep was most of the sweep's cost. c.mu must be held.
 func (c *CounterCache) makeCounterRoomLocked() bool {
 	if len(c.m) < maxCounterEntries {
 		return true
 	}
 	now := c.now().UnixNano()
-	if c.capacityProtected && now < c.nextRoomSweep {
+	if now < c.nextRoomSweep {
 		return false
 	}
+	c.nextRoomSweep = now + time.Second.Nanoseconds()
 	for key, e := range c.m {
-		if c.dirty[key] == nil && (e.pending == 0 || now >= e.expires) {
+		if (e.pending == 0 || now >= e.expires) && c.dirty[key] == nil {
 			delete(c.m, key)
 		}
 	}
-	if len(c.m) < maxCounterEntries {
-		c.capacityProtected = false
-		return true
-	}
-	c.capacityProtected = true
-	c.nextRoomSweep = now + time.Second.Nanoseconds()
-	return false
+	return len(c.m) < maxCounterEntries
 }
 
 // Forget clears the counter locally and, in the background, in the store.
 func (c *CounterCache) Forget(key string) {
 	c.mu.Lock()
 	delete(c.m, key)
-	c.capacityProtected = false
 	spawn := c.markDirtyLocked(key, 0, true)
 	c.mu.Unlock()
 
@@ -533,7 +539,6 @@ func (c *CounterCache) releaseLocked(key string) (spawn bool) {
 	}
 	if d.delta == 0 && !d.del {
 		delete(c.dirty, key)
-		c.capacityProtected = false
 		return false
 	}
 	// Work landed after we gave up (e.g. a store error path): re-queue the key.

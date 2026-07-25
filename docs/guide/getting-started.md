@@ -83,7 +83,7 @@ like a verification failure but is not one.
 
 A file that does not match reports `FAILED` instead of `OK` (and the command
 exits non-zero); do not install it. The same `SHA256SUMS` is attached to the
-[GitHub release](https://github.com/Angie-Guardian/angie-guardian/releases) and
+[GitHub release](https://github.com/AngieGuardian/angie-guardian/releases) and
 verifies identically.
 
 ::: warning Checksums detect corruption, not tampering

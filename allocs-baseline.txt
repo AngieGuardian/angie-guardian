@@ -1,0 +1,17 @@
+# Hot-path allocation baselines for `make bench-regress` (also a CI job).
+#
+# Each line: <benchmark name> <maximum allocs/op>. The gate runs the named
+# benchmarks at a FIXED iteration count (-benchtime 10000x), where allocs/op is
+# deterministic and machine-independent, and fails if any benchmark exceeds its
+# baseline. ns/op is deliberately not gated: CI machines are too noisy for it.
+#
+# When a change legitimately adds an allocation to a hot path, raise the
+# baseline in the same commit and say why in its message. When a change removes
+# allocations, lower the baseline so the win is locked in.
+BenchmarkEvaluateAllowDefault 3
+BenchmarkEvaluateDeny 2
+BenchmarkEvaluatePoWTokenCached 4
+BenchmarkEvaluateChallengeDecision 5
+BenchmarkVerifyTokenCached 0
+BenchmarkAuthAllow 7
+BenchmarkChallengeIssue 84
