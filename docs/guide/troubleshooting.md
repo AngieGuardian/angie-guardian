@@ -164,7 +164,7 @@ admin token/token-file/dashboard setup), and a
 reload that changes one is rejected. If you changed one of those, restart the
 daemon. The running config stays active after any rejected reload and the error
 is logged (or returned `422` from the admin endpoint). Validate the config and
-its startup-required local artifacts before reloading with `guardiand -config … -t`,
+its startup-required local artifacts before reloading with `guardiand -t`,
 and ask the running daemon whether the edit is reloadable at all with
 [`GET /admin/reload/preflight`](/reference/admin-api#get-admin-reload-preflight):
 it lists exactly which changed fields would require a restart.

@@ -159,11 +159,12 @@ Validate the YAML and every referenced local artifact, including the rules
 file, before installing the service:
 
 ```sh
-sudo -u guardian /usr/local/bin/guardiand \
-  -config /etc/guardian/guardian.yaml -t
+sudo -u guardian /usr/local/bin/guardiand -t
 ```
 
-A valid config prints `config /etc/guardian/guardian.yaml: ok` and exits `0`.
+`-t` reads `/etc/guardian/guardian.yaml` unless you pass `-config`, which is
+the file you just edited. A valid config prints
+`config /etc/guardian/guardian.yaml: ok` and exits `0`.
 
 Continue with the [configuration guide](/guide/configuration), the
 [configuration reference](/reference/configuration), and the

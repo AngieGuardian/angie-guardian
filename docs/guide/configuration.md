@@ -329,7 +329,8 @@ signal the daemon or call the admin API:
 
 ```bash
 # Validate config and all startup-required local artifacts first, then reload.
-guardiand -config /etc/guardian/guardian.yaml -t
+# -t reads /etc/guardian/guardian.yaml; pass -config for a file elsewhere.
+guardiand -t
 kill -HUP $(pidof guardiand)          # or: systemctl reload guardiand
 
 # Equivalent over the admin API:
