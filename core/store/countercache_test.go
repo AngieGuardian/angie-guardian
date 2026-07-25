@@ -562,7 +562,6 @@ func TestCounterCacheProtectedCapacityCountsUnseenKey(t *testing.T) {
 		key := fmt.Sprintf("protected-%d", i)
 		c.m[key] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
 	}
-	c.capacityProtected = true
 	c.mu.Unlock()
 
 	if n := c.Incr("new-attacker", time.Minute); n != 1 {
@@ -591,7 +590,6 @@ func TestCounterCacheReclaimsExpiredProtectedEntries(t *testing.T) {
 		key := fmt.Sprintf("flood-%d", i)
 		c.m[key] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
 	}
-	c.capacityProtected = true
 	c.nextRoomSweep = base.Add(time.Second).UnixNano()
 	c.mu.Unlock()
 
@@ -915,5 +913,67 @@ func TestCounterCacheFlushHonorsContext(t *testing.T) {
 	defer cancel()
 	if err := c.Flush(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Flush on a hung store = %v, want DeadlineExceeded", err)
+	}
+}
+
+// A sweep that succeeds by freeing a handful of slots must not license an
+// immediate re-sweep: under a sustained new-key flood the drains free a few
+// entries at a time, and re-sweeping on every success turned into a full-map
+// scan under c.mu every few insertions (a measured 3x challenge-issuance
+// collapse). Between paced sweeps, at-capacity keys go to the overflow sketch.
+func TestCounterCacheRoomSweepIsPaced(t *testing.T) {
+	c := NewCounterCache(failingStore{})
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	c.mu.Lock()
+	for i := 0; i < maxCounterEntries; i++ {
+		key := fmt.Sprintf("flood-%d", i)
+		e := counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
+		if i == 0 {
+			e.pending = 0 // exactly one evictable slot for the first sweep
+		}
+		c.m[key] = e
+	}
+	c.mu.Unlock()
+
+	// First at-capacity insert: the sweep runs (never paced before), frees the
+	// one clean slot, and caches the key.
+	if n := c.Incr("first", time.Minute); n != 1 {
+		t.Fatalf("first count = %d, want 1", n)
+	}
+	c.mu.Lock()
+	_, cached := c.m["first"]
+	// Hand the next sweep another evictable slot, so only pacing can stop it.
+	e := c.m["flood-1"]
+	e.pending = 0
+	c.m["flood-1"] = e
+	c.mu.Unlock()
+	if !cached {
+		t.Fatal("first key was not cached from the freed slot")
+	}
+
+	// Same second, map full again, an evictable entry available: the re-sweep
+	// must be paced out and the key shed to the sketch.
+	if n := c.Incr("second", time.Minute); n != 1 {
+		t.Fatalf("second count = %d, want 1", n)
+	}
+	c.mu.Lock()
+	_, cached = c.m["second"]
+	c.mu.Unlock()
+	if cached {
+		t.Fatal("a successful sweep licensed an immediate re-sweep; pacing is gone")
+	}
+
+	// Once the pacing window passes, the sweep runs again and reclaims.
+	c.now = func() time.Time { return base.Add(2 * time.Second) }
+	if n := c.Incr("third", time.Minute); n != 1 {
+		t.Fatalf("third count = %d, want 1", n)
+	}
+	c.mu.Lock()
+	_, cached = c.m["third"]
+	c.mu.Unlock()
+	if !cached {
+		t.Fatal("paced sweep did not run after its window elapsed")
 	}
 }

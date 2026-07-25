@@ -144,5 +144,12 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 | `-host <host>` | `plain.test` | `X-Guardian-Host` to send. |
 | `-ip <addr>` | `198.51.100.7` | `X-Guardian-IP` to send. The `challenge` scenario rotates the IP itself to spread issuance. |
 | `-c <n>` | `64` | Concurrent connections. |
-| `-d <duration>` | `5s` | Test duration. |
+| `-d <duration>` | `5s` | Test duration. Ignored when `-n` is set. |
+| `-n <requests>` | `0` (off) | Complete exactly this many measured requests instead of running for a duration. Every run then does identical work, which is what makes results comparable across machines and commits; use it for the `challenge` scenario, whose per-run store growth makes duration averages incomparable. |
+| `-warmup <requests>` | `0` | Complete and discard this many requests first, so the measured window starts from a known store and counter-cache size instead of from empty. Composes with both `-n` and `-d` (the clock starts when warmup ends). |
 | `-version` | | Print version and exit. |
+
+The output ends with a `per-second:` line, one measured-completion count per
+elapsed second. A flat line means the run reached a steady state; a falling
+line means the aggregate above is blending a fast cold phase with a slower
+loaded one, and only a fixed-work (`-n`) comparison is meaningful.

@@ -16,6 +16,16 @@
 //	challenge — hammers /challenge, issuing a fresh PoW challenge per request.
 //	            Each issuance is a store write (CAS), so this is the write-heavy
 //	            path that separates the store backends (embedded vs redis).
+//
+// Two run modes. -d runs for a fixed wall-clock duration; -n completes a fixed
+// number of measured requests. For the write-heavy challenge scenario only -n
+// yields numbers comparable across machines and commits: the store grows for
+// the whole run and throughput decays with it, so a fixed-duration average
+// blends a fast cold phase with a slow loaded phase in a ratio set by machine
+// speed and duration. Fixed work measures a fixed store-size window instead.
+// -warmup completes (and discards) requests first so that window starts from a
+// known store size rather than from an empty store, and the per-second line in
+// the output makes any remaining decay visible instead of averaging it away.
 package main
 
 import (
@@ -29,7 +39,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -44,13 +54,19 @@ func main() {
 	host := flag.String("host", "plain.test", "X-Guardian-Host to send")
 	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send")
 	concurrency := flag.Int("c", 64, "concurrent connections")
-	duration := flag.Duration("d", 5*time.Second, "test duration")
+	duration := flag.Duration("d", 5*time.Second, "test duration (ignored when -n is set)")
+	requests := flag.Int("n", 0, "run exactly this many measured requests instead of a duration (comparable across machines and commits)")
+	warmup := flag.Int("warmup", 0, "complete and discard this many requests first, so measurement starts from a known store size")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("guardian-loadtest", version)
 		return
+	}
+	if *requests < 0 || *warmup < 0 {
+		fmt.Fprintln(os.Stderr, "-n and -warmup must be >= 0")
+		os.Exit(2)
 	}
 
 	ua := "Mozilla/5.0 (loadtest)"
@@ -98,17 +114,40 @@ func main() {
 		os.Exit(2)
 	}
 
-	fmt.Printf("scenario=%s url=%s%s c=%d d=%s expect=%d\n",
-		*scenario, *baseURL, path, *concurrency, *duration, wantStatus)
+	if *requests > 0 {
+		fmt.Printf("scenario=%s url=%s%s c=%d n=%d warmup=%d expect=%d\n",
+			*scenario, *baseURL, path, *concurrency, *requests, *warmup, wantStatus)
+	} else {
+		fmt.Printf("scenario=%s url=%s%s c=%d d=%s warmup=%d expect=%d\n",
+			*scenario, *baseURL, path, *concurrency, *duration, *warmup, wantStatus)
+	}
 
 	var (
 		wg        sync.WaitGroup
-		total     atomic.Int64
+		total     atomic.Int64 // measured completions
 		errored   atomic.Int64
 		badStatus atomic.Int64
+		// claimed hands out one globally unique sequence number per request
+		// before it runs: numbers below warmup are the discarded warmup phase,
+		// the rest are measured. Claiming also drives the challenge scenario's
+		// IP rotation, so no two requests, warmup included, share an IP.
+		claimed atomic.Int64
+		// measureStart/EndNano bound the measured window: set once by the first
+		// measured request, advanced to the latest measured completion. The
+		// throughput denominator is this window, not the configured duration,
+		// so a fixed-work run reports honestly however long it takes.
+		measureStartNano atomic.Int64
+		measureEndNano   atomic.Int64
 	)
+	// Per-second measured completions, so decay over the run is visible in the
+	// output instead of being averaged away. An hour of buckets is far beyond
+	// any sane run; later completions land in the last bucket rather than
+	// indexing out of range.
+	buckets := make([]atomic.Int64, 3600)
+
 	latencies := make([][]time.Duration, *concurrency)
-	deadline := time.Now().Add(*duration)
+	warmupN := int64(*warmup)
+	measuredN := int64(*requests)
 
 	for w := 0; w < *concurrency; w++ {
 		wg.Add(1)
@@ -116,19 +155,32 @@ func main() {
 			defer wg.Done()
 			lats := make([]time.Duration, 0, 1<<16)
 			rotateIP := *scenario == "challenge" // spread issuance across IPs to dodge the per-IP limiter
-			var i int
-			for time.Now().Before(deadline) {
+			for {
+				seq := claimed.Add(1) - 1
+				measured := seq >= warmupN
+				if measured {
+					if measureStartNano.Load() == 0 {
+						measureStartNano.CompareAndSwap(0, time.Now().UnixNano())
+					}
+					if measuredN > 0 {
+						if seq >= warmupN+measuredN {
+							break // fixed work done
+						}
+					} else if time.Now().UnixNano()-measureStartNano.Load() >= duration.Nanoseconds() {
+						break // fixed duration elapsed (measured from warmup end)
+					}
+				}
 				req, _ := http.NewRequest(http.MethodGet, *baseURL+path, nil)
 				for k, v := range headers {
 					req.Header.Set(k, v)
 				}
 				if rotateIP {
-					// A distinct IP per request across the 10.0.0.0/8 space:
-					// worker in the low bits of octet 2, iteration across the
-					// rest, so no request repeats an IP and hits the 60/min cap.
+					// A distinct IP per request across the 10.64/10 space, derived
+					// from the global sequence number so warmup and measured
+					// requests never repeat one and hit the 60/min cap. Wraps
+					// after ~4.1M requests, far beyond any sane run.
 					req.Header.Set("X-Guardian-IP", fmt.Sprintf("10.%d.%d.%d",
-						(w+(i>>16))&0x3f|0x40, (i>>8)&0xff, i&0xff))
-					i++
+						(seq>>16)&0x3f|0x40, (seq>>8)&0xff, seq&0xff))
 				}
 				start := time.Now()
 				resp, err := client.Do(req)
@@ -138,10 +190,23 @@ func main() {
 				}
 				io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
-				lats = append(lats, time.Since(start))
-				total.Add(1)
 				if resp.StatusCode != wantStatus {
 					badStatus.Add(1)
+				}
+				if !measured {
+					continue
+				}
+				end := time.Now()
+				lats = append(lats, end.Sub(start))
+				total.Add(1)
+				if s := measureStartNano.Load(); s != 0 {
+					buckets[min(int((end.UnixNano()-s)/1e9), len(buckets)-1)].Add(1)
+				}
+				for {
+					cur := measureEndNano.Load()
+					if end.UnixNano() <= cur || measureEndNano.CompareAndSwap(cur, end.UnixNano()) {
+						break
+					}
 				}
 			}
 			latencies[w] = lats
@@ -153,7 +218,7 @@ func main() {
 	for _, l := range latencies {
 		all = append(all, l...)
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	slices.Sort(all)
 	pct := func(p float64) time.Duration {
 		if len(all) == 0 {
 			return 0
@@ -162,10 +227,30 @@ func main() {
 	}
 
 	n := total.Load()
-	fmt.Printf("requests:   %d (errors=%d, unexpected-status=%d)\n", n, errored.Load(), badStatus.Load())
-	fmt.Printf("throughput: %.0f req/s\n", float64(n)/duration.Seconds())
+	elapsed := time.Duration(measureEndNano.Load() - measureStartNano.Load())
+	if elapsed <= 0 {
+		elapsed = *duration // no measured completions; avoid dividing by zero
+	}
+	if warmupN > 0 {
+		fmt.Printf("warmup:     %d requests discarded\n", warmupN)
+	}
+	fmt.Printf("requests:   %d in %.2fs (errors=%d, unexpected-status=%d)\n",
+		n, elapsed.Seconds(), errored.Load(), badStatus.Load())
+	fmt.Printf("throughput: %.0f req/s\n", float64(n)/elapsed.Seconds())
 	fmt.Printf("latency:    p50=%v  p90=%v  p99=%v  max=%v\n",
 		pct(0.50), pct(0.90), pct(0.99), pct(0.9999))
+
+	// One count per elapsed second of the measured window. A flat line means a
+	// steady state; a falling line means the run is measuring store growth, and
+	// its aggregate above is not comparable across machines or commits.
+	seconds := min(int(elapsed.Seconds())+1, len(buckets))
+	if seconds > 1 {
+		fmt.Printf("per-second:")
+		for i := 0; i < seconds; i++ {
+			fmt.Printf(" %d", buckets[i].Load())
+		}
+		fmt.Println()
+	}
 }
 
 var dataRe = regexp.MustCompile(`<script id="guardian-data" type="application/json">(.*?)</script>`)

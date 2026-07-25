@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store seed
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress seed
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -57,6 +57,36 @@ e2e-nft:
 bench-store:
 	go test -run '^$$' -bench '^Benchmark(SpentFlood|TTLCounter|MixedReadWrite|ExpiryReclaim)$$' \
 		-benchmem -benchtime 2s -count 6 ./core/store/
+
+# Hot-path allocation regression gate (also a CI job). allocs/op at a FIXED
+# iteration count is deterministic and machine-independent, so it can gate a
+# pipeline; ns/op is deliberately not gated (CI machines are far too noisy for
+# it, and a real throughput question belongs to guardian-loadtest). A commit
+# that adds an allocation to the auth or challenge hot path fails here in
+# seconds instead of surfacing as a throughput drop months later. Baselines
+# live in allocs-baseline.txt; raise one only deliberately, in the same commit
+# as the change that needs it.
+BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkChallengeIssue$$
+
+bench-regress:
+	@go test -run '^$$' -bench '$(BENCH_GATE)' -benchmem -benchtime 10000x \
+		./core/ ./core/pow/ ./transport/http/ \
+	| awk 'BEGIN { \
+			while ((getline line < "allocs-baseline.txt") > 0) { \
+				if (line !~ /^#/ && line != "") { split(line, f, /[ \t]+/); max[f[1]] = f[2] } \
+			} \
+		} \
+		/^Benchmark/ { \
+			name = $$1; sub(/-[0-9]+$$/, "", name); allocs = $$(NF-1); \
+			if (!(name in max)) { printf "FAIL %s: %d allocs/op has no baseline; add it to allocs-baseline.txt\n", name, allocs; bad = 1; next } \
+			seen[name] = 1; \
+			if (allocs + 0 > max[name] + 0) { printf "FAIL %s: %d allocs/op, baseline %d\n", name, allocs, max[name]; bad = 1 } \
+			else { printf "ok   %-40s %3d allocs/op (baseline %d)\n", name, allocs, max[name] } \
+		} \
+		END { \
+			for (n in max) if (!(n in seen)) { printf "FAIL baseline %s never ran (renamed or deleted?)\n", n; bad = 1 } \
+			exit bad \
+		}'
 
 # Run every fuzz target for FUZZTIME each. `go test -fuzz` fuzzes exactly one
 # target per package invocation, so discover them with `-list` and loop. Any

@@ -59,6 +59,17 @@ test:
   script:
     - go test -race -count=1 ./...
 
+# Hot-path allocation regression gate. allocs/op at a fixed iteration count is
+# deterministic and machine-independent, so it can gate a pipeline where ns/op
+# cannot (CI machines are far too noisy). A commit that adds an allocation to
+# the auth or challenge hot path fails here in seconds instead of surfacing as
+# a throughput drop months later. Baselines live in allocs-baseline.txt and are
+# raised only deliberately, in the same commit as the change that needs it.
+bench-allocs:
+  stage: test
+  script:
+    - make bench-regress
+
 # Fail the pipeline on any known-vulnerable dependency that our code actually
 # reaches (govulncheck is call-graph aware, so it does not flag unused vulnerable
 # symbols). Fast — seconds — so it runs on every push. The tool version is
