@@ -258,6 +258,15 @@ type challengeData struct {
 	NoJSURL        string
 }
 
+// challengePayload is the JSON embedded in the interstitial for the solver.
+// Field names are the page's contract (web/challenge.html.tmpl reads them).
+type challengePayload struct {
+	ChallengeID string `json:"challenge_id"`
+	Challenge   string `json:"challenge"`
+	Difficulty  int    `json:"difficulty_bits"`
+	PassURL     string `json:"pass_url"`
+}
+
 // handleChallenge issues a PoW challenge and serves the interstitial. Angie
 // diverts 401s here via error_page, preserving the client's original URL.
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
@@ -268,8 +277,9 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// difficulty, TTLs) to a URI prefix within the host.
 	dcfg := s.engine.Config().ConfigFor(host, uri)
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	h := w.Header()
+	h["Content-Type"] = hdrValHTML
+	h["Cache-Control"] = hdrValNoStore
 	securityHeaders(w, cspChallenge, frameSameOrigin)
 
 	if s.pow == nil || !dcfg.PoW.Enabled {
@@ -287,8 +297,16 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// a second; the floor keeps the bucket divisor safe for any Config built in
 	// code (tests, embedders) rather than parsed from YAML.
 	window := max(limit.Per, time.Second)
-	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/int64(window.Seconds()))
-	if int(s.counters.Incr(rlKey, 2*window)) > limit.Count {
+	// Built by append rather than Sprintf: this key is created on every
+	// interstitial fetch, and fmt costs several allocations (boxing plus the
+	// intermediate) where append into a stack scratch costs one for the final
+	// string. 64 bytes covers "chrl:" + the longest IPv6 form + the bucket.
+	var rlBuf [64]byte
+	rlb := append(rlBuf[:0], "chrl:"...)
+	rlb = append(rlb, ip...)
+	rlb = append(rlb, ':')
+	rlb = strconv.AppendInt(rlb, time.Now().Unix()/int64(window.Seconds()), 10)
+	if int(s.counters.Incr(string(rlb), 2*window)) > limit.Count {
 		s.log.Warn("challenge issuance rate limit", "ip", ip, "host", host)
 		http.Error(w, "too many challenge requests, slow down", http.StatusTooManyRequests)
 		return
@@ -377,11 +395,14 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Challenge("issued_stateless")
 	}
 
-	payload, err := json.Marshal(map[string]any{
-		"challenge_id":    ch.ID,
-		"challenge":       ch.Challenge,
-		"difficulty_bits": ch.Difficulty,
-		"pass_url":        PassPath,
+	// A struct, not map[string]any: the map encoder sorts keys and boxes every
+	// value through interfaces on each of the many issuances per second this
+	// path serves under load; the struct encoder does none of that.
+	payload, err := json.Marshal(&challengePayload{
+		ChallengeID: ch.ID,
+		Challenge:   ch.Challenge,
+		Difficulty:  ch.Difficulty,
+		PassURL:     PassPath,
 	})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

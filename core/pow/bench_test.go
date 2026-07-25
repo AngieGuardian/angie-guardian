@@ -7,6 +7,7 @@ package pow
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -62,4 +63,38 @@ func BenchmarkVerifyTokenCached(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkIssue mints one stateful challenge: the random id, the HMAC over
+// the {host, ip, bucket, id} binding, the JSON issuance record and the
+// create-only store CAS. It is the deterministic core of the challenge write
+// path, and unlike the transport-level BenchmarkChallengeIssue it touches no
+// CounterCache, so it spawns no background flush goroutines and its allocs/op
+// is stable enough to gate (see allocs-baseline.txt).
+func BenchmarkIssue(b *testing.B) {
+	key, err := LoadOrCreateKey(filepath.Join(b.TempDir(), "ed25519.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	m := NewManager(key, st)
+	ctx := context.Background()
+
+	// A distinct client per iteration, like a flood of new visitors: the id is
+	// random per call, so no two iterations collide on the challenge key.
+	var ipBuf [16]byte
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		ip := append(ipBuf[:0], "10."...)
+		ip = strconv.AppendInt(ip, int64((i>>16)&0x3f|0x40), 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, int64((i>>8)&0xff), 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, int64(i&0xff), 10)
+		if _, err := m.Issue(ctx, "bench.test", string(ip), "/page?x=1", 8, time.Minute, false); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core"
@@ -43,12 +44,33 @@ func BenchmarkChallengeIssue(b *testing.B) {
 	}
 	seq++
 
+	// One request for the whole run, with only the client-IP header value
+	// swapped per iteration (writing the backing slice element directly, which
+	// allocates nothing). Building a fresh httptest request per iteration would
+	// charge ~20 allocs of request-parsing harness to a gate that exists to
+	// watch the HANDLER's allocations.
+	r := issueBenchRequest(0)
+	ipSlice := []string{""}
+	r.Header["X-Guardian-Ip"] = ipSlice
+	var ipBuf [16]byte
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	w := &issueBenchWriter{h: make(http.Header, 8)}
 	for range b.N {
 		clear(w.h)
-		srv.ServeHTTP(w, issueBenchRequest(seq))
+		// The IP string itself is one deliberate allocation: handler-side
+		// counter keys embed copies of it, so a reused buffer would be unsafe.
+		// Built by append rather than Sprintf so the harness charges exactly
+		// that one allocation, not fmt boxing on top.
+		ip := append(ipBuf[:0], "10."...)
+		ip = strconv.AppendInt(ip, (seq>>16)&0x3f|0x40, 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, (seq>>8)&0xff, 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, seq&0xff, 10)
+		ipSlice[0] = string(ip)
+		srv.ServeHTTP(w, r)
 		if w.code != http.StatusOK {
 			b.Fatalf("status = %d at seq %d", w.code, seq)
 		}

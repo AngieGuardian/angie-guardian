@@ -13,8 +13,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"hash"
 	"math/bits"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,8 +67,44 @@ type Manager struct {
 	// (no-JS) redemption is accepted. Overridable for tests.
 	NoJSMinDelay time.Duration
 
+	// macs recycles the issuing-secret HMAC state across challenge issuances
+	// (the zero value is ready to use; see macCache).
+	macs macCache
+
 	now func() time.Time
 }
+
+// macCache pools HMAC-SHA256 states keyed by their secret. Building the state
+// costs two SHA-256 inits and several allocations, paid once per issued
+// challenge — the hottest write path under a flood — while the issuing secret
+// changes only on key rotation. A pooled state is reused only when its secret
+// matches the caller's exactly; after a rotation the stale states simply fail
+// that comparison once and are dropped for the collector.
+type macCache struct {
+	pool sync.Pool // holds *keyedMAC
+}
+
+// keyedMAC is one pooled HMAC state together with the secret it was keyed
+// with. Reset restores the post-key initial state, so reuse leaks nothing
+// between requests beyond the key the state inherently holds.
+type keyedMAC struct {
+	secret []byte
+	mac    hash.Hash
+}
+
+func (c *macCache) get(secret []byte) *keyedMAC {
+	if v := c.pool.Get(); v != nil {
+		km := v.(*keyedMAC)
+		if hmac.Equal(km.secret, secret) {
+			km.mac.Reset()
+			return km
+		}
+		// Keyed with a retired secret (rotation happened): discard.
+	}
+	return &keyedMAC{secret: secret, mac: hmac.New(sha256.New, secret)}
+}
+
+func (c *macCache) put(km *keyedMAC) { c.pool.Put(km) }
 
 type managerKey struct {
 	private   ed25519.PrivateKey
@@ -370,21 +407,42 @@ func challengeKey(id string) string { return "challenge:" + id }
 // issuance record with the given TTL. allowNoJS enables the meta-refresh
 // redemption path for this specific challenge.
 func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty int, ttl time.Duration, allowNoJS bool) (*Challenge, error) {
-	idRaw := make([]byte, 16)
-	if _, err := rand.Read(idRaw); err != nil {
+	var idRaw [16]byte
+	if _, err := rand.Read(idRaw[:]); err != nil {
 		return nil, err
 	}
-	id := hex.EncodeToString(idRaw)
+	// hex.Encode into a stack scratch, then one string conversion:
+	// EncodeToString would allocate the intermediate byte slice as well.
+	var idHex [32]byte
+	hex.Encode(idHex[:], idRaw[:])
+	id := string(idHex[:])
 
 	// challenge = HMAC(secret, host || ip || time_bucket || id): opaque to the
 	// client, deterministic for us, rotates with the hourly bucket (plan §5.1).
 	// Stateful challenges store this string in the record, so cross-rotation
 	// redemption reads it back rather than recomputing; the issuing secret is
 	// sufficient here.
+	//
+	// The message is appended into a stack scratch and written once (fmt would
+	// box every argument), and the HMAC state comes from the per-secret pool:
+	// this runs once per issued challenge, which under a flood is the hottest
+	// write path in the product.
 	bucket := m.now().Unix() / 3600
-	mac := hmac.New(sha256.New, m.issuingSecret())
-	fmt.Fprintf(mac, "%s\x00%s\x00%d\x00%s", strings.ToLower(host), ip, bucket, id)
-	challenge := hex.EncodeToString(mac.Sum(nil))
+	var msgBuf [384]byte
+	msg := append(msgBuf[:0], strings.ToLower(host)...)
+	msg = append(msg, 0)
+	msg = append(msg, ip...)
+	msg = append(msg, 0)
+	msg = strconv.AppendInt(msg, bucket, 10)
+	msg = append(msg, 0)
+	msg = append(msg, id...)
+	km := m.macs.get(m.issuingSecret())
+	km.mac.Write(msg)
+	var sumBuf [sha256.Size]byte
+	var chalHex [2 * sha256.Size]byte
+	hex.Encode(chalHex[:], km.mac.Sum(sumBuf[:0]))
+	challenge := string(chalHex[:])
+	m.macs.put(km)
 
 	rec, err := json.Marshal(&record{
 		State:      "issued",

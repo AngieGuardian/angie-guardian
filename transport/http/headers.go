@@ -53,20 +53,54 @@ const (
 	frameDeny       = "DENY"
 )
 
+// Shared single-value header slices, assigned into response header maps
+// directly. Header.Set allocates a fresh []string per call, on headers whose
+// values come from a tiny fixed set and are stamped onto every response the
+// daemon serves; assigning a shared slice costs nothing per response. Safe
+// because nothing mutates a response header's value slice after assignment:
+// net/http only reads them when writing the response, and no handler here
+// appends to one. The variables are effectively constants — never modify them.
+var (
+	hdrValNosniff    = []string{"nosniff"}
+	hdrValNoReferrer = []string{"no-referrer"}
+	hdrValCSP        = map[string][]string{
+		cspChallenge: {cspChallenge},
+		cspStatic:    {cspStatic},
+		cspDashboard: {cspDashboard},
+	}
+	hdrValFrame = map[string][]string{
+		frameSameOrigin: {frameSameOrigin},
+		frameDeny:       {frameDeny},
+	}
+	hdrValHTML    = []string{"text/html; charset=utf-8"}
+	hdrValNoStore = []string{"no-store"}
+)
+
 // securityHeaders applies the headers every Guardian-served response carries.
 // nosniff matters even for JSON: without it a browser may content-sniff an
 // admin response body into HTML. Referrer-Policy keeps the challenged URL
 // (which can carry query parameters) out of any off-origin request the page
 // makes. Pass csp == "" for non-document responses (JSON, metrics, assets):
 // they get nosniff and Referrer-Policy but no page policy.
+//
+// The map keys are written in canonical MIME form, which is what makes direct
+// assignment equivalent to Header.Set minus its per-call allocation.
 func securityHeaders(w http.ResponseWriter, csp, frameOpts string) {
 	h := w.Header()
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Referrer-Policy", "no-referrer")
+	h["X-Content-Type-Options"] = hdrValNosniff
+	h["Referrer-Policy"] = hdrValNoReferrer
 	if csp != "" {
-		h.Set("Content-Security-Policy", csp)
+		if v, ok := hdrValCSP[csp]; ok {
+			h["Content-Security-Policy"] = v
+		} else {
+			h.Set("Content-Security-Policy", csp)
+		}
 	}
 	if frameOpts != "" {
-		h.Set("X-Frame-Options", frameOpts)
+		if v, ok := hdrValFrame[frameOpts]; ok {
+			h["X-Frame-Options"] = v
+		} else {
+			h.Set("X-Frame-Options", frameOpts)
+		}
 	}
 }

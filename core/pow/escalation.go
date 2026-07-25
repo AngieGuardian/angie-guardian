@@ -34,8 +34,14 @@ const (
 
 func escalationKey(host, ip string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	// SplitHostPort allocates an *AddrError for input without a port, and a
+	// Host header carrying no port is the overwhelmingly common case; a port
+	// separator always contains a colon, so guard the call (same reasoning as
+	// stateless.NormalizeHost).
+	if strings.IndexByte(host, ':') >= 0 {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
 	}
 	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
 	return "chesc:" + host + ":" + ip
