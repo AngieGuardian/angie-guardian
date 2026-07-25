@@ -380,6 +380,10 @@
       <span id="lu-block-chip"></span>
       <span class="meta" id="lu-block-detail"></span>
       <button type="button" id="lu-unblock" hidden>Unblock</button>
+      <input id="lu-block-ttl" placeholder="TTL (15m)" size="8"
+             title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 15m." hidden>
+      <input id="lu-block-reason" placeholder="reason" size="14" maxlength="200" hidden>
+      <button type="button" id="lu-block" hidden>Block</button>
       <span class="err" id="lu-err"></span>
     </div>
     <div class="meta" id="lu-intel"></div>
@@ -401,7 +405,8 @@
   <h2>Active blocks</h2>
   <form id="block-form" class="toolbar">
     <input id="block-ip" placeholder="IP to block" required>
-    <input id="block-ttl" placeholder="TTL (15m)" size="8">
+    <input id="block-ttl" placeholder="TTL (15m)" size="8"
+           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 15m.">
     <input id="block-reason" placeholder="reason" size="16" maxlength="200">
     <button type="submit">Block IP</button>
     <span class="err" id="block-err"></span>
@@ -2061,6 +2066,22 @@
   // this page already holds) and scans the decisions ring the page has already
   // fetched. Client-side validation is deliberately minimal: the backend is
   // the authority on what an IP is, and its 400 message is surfaced verbatim.
+  // blockDetailText renders the enriched /admin/blocks/{ip} fields. Expiry is
+  // only meaningful while blocked; the offense count is shown either way,
+  // because "blocked 4 times today, currently clear" is worth knowing before
+  // deciding how long to block for.
+  function blockDetailText(block) {
+    const parts = [];
+    if (block.blocked && block.reason) parts.push(block.reason);
+    if (block.blocked) parts.push(block.expires_at ? "expires " + relTime(block.expires_at) : "no expiry");
+    if (block.offenses > 0) {
+      parts.push(block.offenses === 1
+        ? "1 block in the last 24h"
+        : block.offenses + " blocks in the last 24h");
+    }
+    return parts.join(" · ");
+  }
+
   let lookupIP = null; // active lookup target, canonicalised once the backend answers
   let lookupSeq = 0;   // drops out-of-order responses after a quick re-submit
 
@@ -2134,20 +2155,32 @@
     $("lookup-err").textContent = "";
     $("lu-ip").textContent = lookupIP;
 
-    // Block status, with an inline unblock for a blocked IP.
+    // Block status, with the matching action inline: Unblock when it is
+    // blocked, Block when it is not. Acting on the IP you just looked up
+    // should not mean retyping it into the form further down the page.
     const chip = $("lu-block-chip");
+    const showBlockForm = (on) => {
+      for (const id of ["lu-block", "lu-block-ttl", "lu-block-reason"]) $(id).hidden = !on;
+    };
     if (block.error) {
       chip.replaceChildren(el("span", "chip", "unknown"));
       $("lu-block-detail").textContent = "block status unavailable: " + block.error;
       $("lu-unblock").hidden = true;
+      // Status unknown, so offer neither action: the store is unreachable and
+      // both would fail anyway.
+      showBlockForm(false);
     } else if (block.blocked) {
       chip.replaceChildren(el("span", "chip deny", "blocked"));
-      $("lu-block-detail").textContent = block.reason || "";
+      $("lu-block-detail").textContent = blockDetailText(block);
       $("lu-unblock").hidden = false;
+      showBlockForm(false);
     } else {
       chip.replaceChildren(el("span", "chip on", "not blocked"));
-      $("lu-block-detail").textContent = "";
+      // Not blocked now, but the backoff counter survives 24h, so a repeat
+      // offender that has just expired still says so.
+      $("lu-block-detail").textContent = blockDetailText(block);
       $("lu-unblock").hidden = true;
+      showBlockForm(true);
     }
 
     // GeoIP + reputation feeds. enabled:false is a normal state, not an error.
@@ -2667,6 +2700,33 @@
       return;
     }
     $("lu-err").textContent = "";
+    lastBlocksAt = 0;
+    render(true).catch(() => {});
+  });
+
+  // Inline block, the mirror image of the unblock above. Same PUT the Active
+  // blocks form uses; that form stays for blocking an IP you have not looked
+  // up. Blank TTL and reason let the server apply its defaults.
+  $("lu-block").addEventListener("click", async () => {
+    if (!lookupIP) return;
+    const body = {};
+    const ttl = $("lu-block-ttl").value.trim();
+    const reason = $("lu-block-reason").value.trim();
+    if (ttl) body.ttl = ttl;
+    if (reason) body.reason = reason;
+    try {
+      await api("/admin/blocks/" + encodeURIComponent(lookupIP), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      if (err.message !== "unauthorized") $("lu-err").textContent = "block failed: " + err.message;
+      return;
+    }
+    $("lu-err").textContent = "";
+    $("lu-block-ttl").value = "";
+    $("lu-block-reason").value = "";
     lastBlocksAt = 0;
     render(true).catch(() => {});
   });

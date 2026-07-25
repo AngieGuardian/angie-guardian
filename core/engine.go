@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -471,6 +472,75 @@ func (e *Engine) BlockStatus(ctx context.Context, ip string) (reason string, blo
 	return string(v), ok, err
 }
 
+// BlockDetail is the single-IP block view: BlockStatus plus the two things an
+// operator needs before deciding whether to lift a block, namely when it
+// expires and how many times this IP has been blocked before.
+type BlockDetail struct {
+	IP      string `json:"ip"`
+	Blocked bool   `json:"blocked"`
+	Reason  string `json:"reason,omitempty"`
+	// ExpiresAt is nil when the IP is not blocked, when the block has no
+	// expiry, or when the store could not report one.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Offenses is the running block count behind the exponential backoff
+	// (blkct:, 24h window), nil when unknown or never blocked. It is reported
+	// even for an IP that is not currently blocked, because "blocked 4 times
+	// today, currently clear" is exactly the state worth seeing.
+	Offenses *int64 `json:"offenses,omitempty"`
+}
+
+// BlockDetailFor answers the enriched single-IP lookup.
+//
+// The block status itself is authoritative; the two enrichments are
+// best-effort and are simply omitted on error, because a degraded extra field
+// must never turn a working block-status query into a failure.
+func (e *Engine) BlockDetailFor(ctx context.Context, ip string) (BlockDetail, error) {
+	reason, blocked, err := e.BlockStatus(ctx, ip)
+	if err != nil {
+		return BlockDetail{}, err
+	}
+	out := BlockDetail{IP: canonIP(ip), Blocked: blocked, Reason: reason}
+	if blocked {
+		if exp, ok := e.blockExpiry(ctx, ip); ok {
+			out.ExpiresAt = &exp
+		}
+	}
+	// canonIP, because RecordEvent canonicalises before writing blkct:.
+	if raw, ok, err := e.store.Get(ctx, blockCountKey(canonIP(ip))); err == nil && ok {
+		if n, err := strconv.ParseInt(string(raw), 10, 64); err == nil {
+			out.Offenses = &n
+		}
+	}
+	return out, nil
+}
+
+// blockExpiry finds the expiry of one active block. Store.Get returns only the
+// value, while store.KV carries ExpiresAt, so this goes through the same
+// scanner chain the list endpoint uses, narrowed to a single key's prefix.
+//
+// The exact-key comparison is load-bearing, not defensive: a prefix scan for
+// "block:10.0.0.1" also matches "block:10.0.0.10" and "block:10.0.0.100",
+// so taking the first row would report a different IP's expiry.
+func (e *Engine) blockExpiry(ctx context.Context, ip string) (time.Time, bool) {
+	key := BlockKey(ip)
+	kvs, _, err := e.scanBlocks(ctx, key, blockExpiryScanLimit)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, kv := range kvs {
+		if kv.Key == key && !kv.ExpiresAt.IsZero() {
+			return kv.ExpiresAt, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// blockExpiryScanLimit bounds the single-key expiry lookup. The matches are
+// the target key plus any IP that has it as a string prefix, so a handful is
+// generous; if the exact key somehow falls outside it, the expiry is reported
+// as unknown rather than wrong.
+const blockExpiryScanLimit = 64
+
 // BlockEntry is one active behavioural block, as listed by the admin API.
 type BlockEntry struct {
 	IP        string     `json:"ip"`
@@ -488,29 +558,7 @@ func (e *Engine) ListBlocks(ctx context.Context) ([]BlockEntry, error) {
 // ListBlocksLimit returns at most limit active blocks and reports whether the
 // result contains the whole set. A non-positive limit requests the full set.
 func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, bool, error) {
-	var (
-		kvs      []store.KV
-		complete = true
-		err      error
-	)
-	indexed, indexedOK := e.store.(store.ActiveBlockScanner)
-	if indexedOK {
-		kvs, complete, err = indexed.ScanActiveBlocks(ctx, blockKeyPrefix, limit)
-	}
-	if indexedOK && errors.Is(err, store.ErrCapabilityUnsupported) {
-		indexedOK = false
-		err = nil
-	}
-	if !indexedOK {
-		if limited, ok := e.store.(store.LimitedScanner); ok {
-			kvs, complete, err = limited.ScanLimit(ctx, blockKeyPrefix, limit)
-		} else {
-			kvs, err = e.store.Scan(ctx, blockKeyPrefix)
-			if err == nil && limit > 0 && len(kvs) > limit {
-				kvs, complete = kvs[:limit], false
-			}
-		}
-	}
+	kvs, complete, err := e.scanBlocks(ctx, blockKeyPrefix, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -524,6 +572,37 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 		out = append(out, b)
 	}
 	return out, complete, nil
+}
+
+// scanBlocks enumerates block keys under prefix, preferring the backend's
+// dedicated active-block index and falling back to a bounded generic scan,
+// then to a plain scan. Shared by the list endpoint and the single-key expiry
+// lookup so both get the same capability handling.
+func (e *Engine) scanBlocks(ctx context.Context, prefix string, limit int) ([]store.KV, bool, error) {
+	var (
+		kvs      []store.KV
+		complete = true
+		err      error
+	)
+	indexed, indexedOK := e.store.(store.ActiveBlockScanner)
+	if indexedOK {
+		kvs, complete, err = indexed.ScanActiveBlocks(ctx, prefix, limit)
+	}
+	if indexedOK && errors.Is(err, store.ErrCapabilityUnsupported) {
+		indexedOK = false
+		err = nil
+	}
+	if !indexedOK {
+		if limited, ok := e.store.(store.LimitedScanner); ok {
+			kvs, complete, err = limited.ScanLimit(ctx, prefix, limit)
+		} else {
+			kvs, err = e.store.Scan(ctx, prefix)
+			if err == nil && limit > 0 && len(kvs) > limit {
+				kvs, complete = kvs[:limit], false
+			}
+		}
+	}
+	return kvs, complete, err
 }
 
 // ScoreRequest runs the anomaly scorer for a hypothetical request against the
