@@ -74,11 +74,11 @@ per-request latency):
 
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
-| `memory` (ephemeral)              | 179k / 0.13ms / 1.8ms | 170k / 0.16ms / 1.8ms | 157k / 0.13ms / 2.3ms | **159k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 183k / 0.13ms / 1.7ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.7ms** |
-| `pebble` (sync, fully durable)    | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 160k / 0.14ms / 2.3ms | **34k / 1.5ms / 5.3ms** |
-| `buntdb` (async, single-file)     | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 156k / 0.14ms / 2.4ms | **54k / 1.2ms / 5.0ms** |
-| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 161k / 0.14ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
+| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
+| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.6ms** |
+| `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
+| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
+| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
 An earlier version of this table was measured with fixed-duration runs. For
 the write path that method has no steady state (the store grows for the whole
@@ -87,7 +87,7 @@ counter-cache sweep storm that collapsed loaded-regime issuance about 3x; the
 [fixed-work mode](#run-it) exists because finding that regression required a
 measurement that could see it. With the sweep paced, the loaded steady state
 now **beats** the old cold-heavy averages on every durable backend, with p99
-between 4x and 8x lower.
+between 3x and 8x lower.
 
 Read paths comfortably clear a 50k req/s budget on every backend: the
 [block mirror](/guide/block-offload) makes the embedded stores authoritative, so
@@ -96,7 +96,7 @@ cross-replica correctness, so its reads land lower). The takeaway is the
 **write** path: each issued
 challenge writes one CAS record. The durable LSM/append-only backends absorb
 this far better than a synchronously-fsync'd single writer (`pebble` ~61k/s
-async, ~34k/s fully durable; `buntdb` ~54k/s async), and
+async, ~34k/s fully durable; `buntdb` ~56k/s async), and
 [attack mode](/guide/attack-mode)'s stateless issuance lifts it further by
 deferring the only write to redemption. (`buntdb` + `sync: true` is rejected at
 startup: its single writer makes fsync-per-commit ~100x slower, so use `pebble`
@@ -129,7 +129,7 @@ go test -bench=. -benchmem ./core/... ./transport/http/
 | --- | --- |
 | `core` | `Evaluate` per verdict (default allow, static allow/deny, valid token, challenge), with and without the block mirror; a clean request scanned against a realistic rule set; `ShedDecision` |
 | `transport/http` | the `/auth` handler end to end per verdict, `requestContext` on its own (the header reads and the request value built before any policy runs), and `/challenge` issuance with a never-repeating client IP |
-| `core/pow` | token verification, cached and uncached |
+| `core/pow` | token verification (cached and uncached) and challenge issuance |
 | `core/store` | the store engines on Guardian's real write workload (see `make bench-store`) |
 | `core/anomaly` | the online scorer |
 
@@ -157,11 +157,18 @@ deployment they go to Angie and your backend instead.
 Three tiers, cheapest and most reliable first:
 
 1. **`make bench-regress`** — the hot-path benchmarks at a fixed iteration
-   count, where allocs/op is deterministic and machine-independent, compared
-   against the committed baselines in `allocs-baseline.txt`. This runs as a CI
-   job, so a commit that adds an allocation to the auth or challenge hot path
-   fails its pipeline in seconds. When a change legitimately needs an
-   allocation, raise the baseline in the same commit and say why.
+   count, compared against the committed baselines in `allocs-baseline.txt`.
+   This runs as a CI job, so a commit that adds an allocation to the auth or
+   challenge hot path fails its pipeline in seconds. When a change legitimately
+   needs an allocation, raise the baseline in the same commit and say why.
+
+   Only benchmarks free of **background goroutines** can be gated: one that
+   spawns them is charged their allocations too, at a rate the scheduler
+   decides, so its count moves with core count. `BenchmarkChallengeIssue`
+   drives `CounterCache` and swings between 28 and 36 allocs/op on GOMAXPROCS
+   alone, so it stays a profiling benchmark while `BenchmarkIssue` gates the
+   deterministic core of the same path. Check a candidate holds steady across
+   `GOMAXPROCS=1,2,4,8` before adding it.
 2. **CPU per request** — run one `guardian-loadtest` scenario against each
    build and divide the daemon's `utime+stime` by the completed requests. A few
    percent of noise on a pinned machine; measures the whole daemon, not just

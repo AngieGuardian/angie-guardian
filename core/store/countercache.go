@@ -135,8 +135,10 @@ const maxFlushWorkers = 8
 // accumulating regardless, so no counted event is lost for a key already queued.
 const maxFlushQueue = 1 << 14
 
-// flushTimeout bounds a single store round so a hung store cannot wedge a
-// drain goroutine. The request that dirtied the key has long been answered.
+// flushTimeout bounds a store round so a hung store cannot wedge a drain
+// goroutine. The request that dirtied the key has long been answered. Rounds
+// share a drainCtx, so the effective per-round deadline is between half and
+// all of this.
 const flushTimeout = 5 * time.Second
 
 func NewCounterCache(st Store) *CounterCache {
@@ -406,6 +408,13 @@ func (c *CounterCache) foldOpLocked(d *dirtyEntry, deadline int64, del bool) {
 // drainer touches it. Ops arriving mid-flush fold into the same entry and are
 // handled by a follow-up round before the key is released.
 func (c *CounterCache) drain() {
+	// One reusable store-round context for the whole drain loop, refreshed when
+	// under half its budget remains (see drainCtx). A fresh WithTimeout per
+	// round costs a context, a timer and a cancel closure per flushed key,
+	// which under a new-key flood made the background flusher one of the
+	// daemon's largest allocation sources.
+	dc := &drainCtx{now: c.now}
+	defer dc.close()
 	for {
 		c.mu.Lock()
 		if len(c.queue) == 0 {
@@ -417,7 +426,36 @@ func (c *CounterCache) drain() {
 		c.queue = c.queue[1:]
 		c.mu.Unlock()
 
-		c.flushKey(key)
+		c.flushKey(dc, key)
+	}
+}
+
+// drainCtx hands a drain goroutine its store-round contexts, reusing one until
+// less than half of flushTimeout remains and then replacing it. Every round
+// therefore still runs under a deadline between flushTimeout/2 and
+// flushTimeout, so a hung store cannot wedge the goroutine, while the
+// context/timer/cancel allocation is amortized over many flushed keys instead
+// of paid per round. Owned by exactly one goroutine; not safe to share.
+type drainCtx struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	now    func() time.Time
+}
+
+func (d *drainCtx) get() context.Context {
+	if d.ctx != nil {
+		if deadline, ok := d.ctx.Deadline(); ok && deadline.Sub(d.now()) >= flushTimeout/2 {
+			return d.ctx
+		}
+		d.cancel()
+	}
+	d.ctx, d.cancel = context.WithTimeout(context.Background(), flushTimeout)
+	return d.ctx
+}
+
+func (d *drainCtx) close() {
+	if d.cancel != nil {
+		d.cancel()
 	}
 }
 
@@ -429,7 +467,7 @@ func (c *CounterCache) drain() {
 // then any follow-up increment for a fresh window is pushed. On a store error
 // it moves the failed work back to the local pending delta and stops; a later
 // bump retries the whole batch.
-func (c *CounterCache) flushKey(key string) {
+func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 	for {
 		c.mu.Lock()
 		d := c.dirty[key]
@@ -442,7 +480,7 @@ func (c *CounterCache) flushKey(key string) {
 		if d.del {
 			d.del = false // consumed; a follow-up Incr may have set delta already
 			c.mu.Unlock()
-			if !c.flushDelete(key) {
+			if !c.flushDelete(dc, key) {
 				c.release(key)
 				return
 			}
@@ -475,7 +513,7 @@ func (c *CounterCache) flushKey(key string) {
 		d.delta = 0
 		c.mu.Unlock()
 
-		if !c.flushIncr(key, delta, deadline) {
+		if !c.flushIncr(dc, key, delta, deadline) {
 			c.preserveFailedIncr(key, delta, deadline)
 			return
 		}
@@ -557,10 +595,8 @@ func (c *CounterCache) releaseLocked(key string) (spawn bool) {
 // call cannot even create the next window's record), and the local merge is
 // gated on the same window's identity (e.expires must still equal the deadline
 // flushed). Reports whether the store round succeeded.
-func (c *CounterCache) flushIncr(key string, delta, deadline int64) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
-	defer cancel()
-	shared, applied, err := c.store.IncrByDeadline(ctx, key, delta, deadline)
+func (c *CounterCache) flushIncr(dc *drainCtx, key string, delta, deadline int64) bool {
+	shared, applied, err := c.store.IncrByDeadline(dc.get(), key, delta, deadline)
 	if err != nil {
 		return false
 	}
@@ -580,8 +616,6 @@ func (c *CounterCache) flushIncr(key string, delta, deadline int64) bool {
 }
 
 // flushDelete removes the shared counter. Reports whether it succeeded.
-func (c *CounterCache) flushDelete(key string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
-	defer cancel()
-	return c.store.Delete(ctx, key) == nil
+func (c *CounterCache) flushDelete(dc *drainCtx, key string) bool {
+	return c.store.Delete(dc.get(), key) == nil
 }

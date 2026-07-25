@@ -349,12 +349,12 @@ verdicts) in a pluggable store. Signing keys remain in
 - **pebble**: single instance, persistent, and the **recommended durable
   backend**. Pebble is an LSM engine (CockroachDB's), so a write hits the WAL and
   an in-memory memtable and is flushed to disk in the background rather than
-  fsync'ing every commit. It sustains ~39k challenge writes/s with `sync: false`
-  (the default), and ~25k/s with `sync: true` (fsync every write, fully durable).
+  fsync'ing every commit. It sustains ~61k challenge writes/s with `sync: false`
+  (the default), and ~34k/s with `sync: true` (fsync every write, fully durable).
   Its state lives in a directory (set `store.path` to a directory).
 - **buntdb**: single instance, persistent, stored in a **single file** (simpler
   to back up or copy). In its async default (`sync: false`) it matches Pebble
-  (~36k challenge writes/s). It is a single-writer store, so `sync: true`
+  (~56k challenge writes/s). It is a single-writer store, so `sync: true`
   (fsync-per-commit) would collapse it to a few hundred writes/s, so guardiand
   **refuses to start** with `backend: buntdb` + `sync: true` and points
   you to Pebble for synchronous durability. Set `store.path` to a file.
@@ -393,8 +393,8 @@ reads. redis is the exception: it stays read-through, keeping one network read
 per request so a block placed by another replica applies immediately, the price
 of multi-instance correctness.
 
-So the write path is the deciding factor: `pebble` ~39k challenge writes/s
-(async) or ~25k/s (sync), `buntdb` ~36k/s (async only). Under
+So the write path is the deciding factor: `pebble` ~61k challenge writes/s
+(async) or ~34k/s (sync), `buntdb` ~56k/s (async only). Under
 [attack mode](/guide/attack-mode), issuance switches to a stateless path with no
 write at issue time, so these numbers bound your *sustained, normal-mode*
 new-client rate, not the flood case. Verified tokens are cached in-process

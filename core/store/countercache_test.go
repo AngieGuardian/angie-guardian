@@ -641,10 +641,12 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 	c.Incr("k", time.Minute) // e.n = 2 locally
 	dl := c.windowDeadline("k")
 
+	dc := &drainCtx{now: c.now}
+	defer dc.close()
 	seq.next.Store(2)
-	c.flushIncr("k", 2, dl) // shared=2 -> e.n stays 2
+	c.flushIncr(dc, "k", 2, dl) // shared=2 -> e.n stays 2
 	seq.next.Store(1)
-	c.flushIncr("k", 1, dl) // stale shared=1 -> must NOT lower e.n
+	c.flushIncr(dc, "k", 1, dl) // stale shared=1 -> must NOT lower e.n
 
 	if n := c.Incr("k", time.Minute); n != 3 {
 		t.Fatalf("bump after stale flush = %d, want 3 (monotonic merge)", n)
@@ -923,6 +925,9 @@ func TestCounterCacheFlushHonorsContext(t *testing.T) {
 // collapse). Between paced sweeps, at-capacity keys go to the overflow sketch.
 func TestCounterCacheRoomSweepIsPaced(t *testing.T) {
 	c := NewCounterCache(failingStore{})
+	// Inline drains: the test reassigns c.now mid-flight, and a background
+	// drain goroutine reading the clock would race that write.
+	c.Go = func(f func()) { f() }
 	base := time.Now()
 	c.now = func() time.Time { return base }
 

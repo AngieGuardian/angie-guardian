@@ -59,14 +59,15 @@ bench-store:
 		-benchmem -benchtime 2s -count 6 ./core/store/
 
 # Hot-path allocation regression gate (also a CI job). allocs/op at a FIXED
-# iteration count is deterministic and machine-independent, so it can gate a
+# iteration count is deterministic for these benchmarks, so it can gate a
 # pipeline; ns/op is deliberately not gated (CI machines are far too noisy for
 # it, and a real throughput question belongs to guardian-loadtest). A commit
 # that adds an allocation to the auth or challenge hot path fails here in
 # seconds instead of surfacing as a throughput drop months later. Baselines
-# live in allocs-baseline.txt; raise one only deliberately, in the same commit
-# as the change that needs it.
-BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkChallengeIssue$$
+# live in allocs-baseline.txt, which also documents what may be gated: only
+# benchmarks free of background goroutines, whose allocations would otherwise
+# be charged here at a scheduler-dependent rate.
+BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkIssue$$
 
 bench-regress:
 	@go test -run '^$$' -bench '$(BENCH_GATE)' -benchmem -benchtime 10000x \

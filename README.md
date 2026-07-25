@@ -188,10 +188,10 @@ store):
 
 | Store backend | Allow requests/s | Returning-client requests/s | Challenges issued/s |
 |---|---:|---:|---:|
-| In-memory store (ephemeral) | 179,000 | 169,000 | 159,000 |
-| Pebble (async, default) | 183,000 | 169,000 | 60,000 |
-| Pebble (sync, fully durable) | 182,000 | 168,000 | 34,000 |
-| BuntDB (async) | 183,000 | 168,000 | 54,000 |
+| In-memory store (ephemeral) | 180,000 | 173,000 | 160,000 |
+| Pebble (async, default) | 182,000 | 171,000 | 61,000 |
+| Pebble (sync, fully durable) | 179,000 | 170,000 | 34,000 |
+| BuntDB (async) | 182,000 | 170,000 | 56,000 |
 | Redis/Valkey | 94,000 | 93,000 | 49,000 |
 
 The read path remained above 93,000 requests/s across every backend. Challenge
@@ -327,11 +327,11 @@ cold start an empty store serves. Each cell is **throughput / p50 / p99**
 
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
-| `memory` (ephemeral)              | 179k / 0.13ms / 1.8ms | 170k / 0.16ms / 1.8ms | 157k / 0.13ms / 2.3ms | **159k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 183k / 0.13ms / 1.7ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.7ms** |
-| `pebble` (sync, fully durable)    | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 160k / 0.14ms / 2.3ms | **34k / 1.5ms / 5.3ms** |
-| `buntdb` (async, single-file)     | 183k / 0.13ms / 1.8ms | 169k / 0.14ms / 1.8ms | 156k / 0.14ms / 2.4ms | **54k / 1.2ms / 5.0ms** |
-| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 161k / 0.14ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
+| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
+| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.6ms** |
+| `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
+| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
+| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
 (`buntdb` + `sync: true` measured only ~0.6k challenge writes/s, because a
 single-writer store fsync'ing every commit is that slow, so the combination is
@@ -340,7 +340,7 @@ single-writer store fsync'ing every commit is that slow, so the combination is
 Every backend clears the ≥50k req/s budget on the read paths with a wide margin.
 On the **embedded** backends the in-process block mirror makes the store
 authoritative, so `allow`/`token` do no store I/O at all after the seed scan,
-which is why they cluster at ~154–183k. `redis`/`valkey` is the exception: it
+which is why they cluster at ~154–182k. `redis`/`valkey` is the exception: it
 stays read-through (one network read per request for cross-replica correctness),
 so its `allow`/`token` land lower (~93–94k) while `deny` (no store read) stays fast.
 
@@ -352,12 +352,12 @@ single-writer store:
   and even in fully-durable `sync: true` mode still does ~34k/s. Both are far above
   a synchronously-fsync'd single-writer store. It is an LSM engine, so writes hit
   the WAL and memtable and are flushed in the background.
-- **`buntdb`** lands close to Pebble in async mode (~54k/s) and stores everything
+- **`buntdb`** lands close to Pebble in async mode (~56k/s) and stores everything
   in one file, which is simpler to back up. It is single-writer, so `sync: true`
   would fsync every commit and collapse to ~600/s, so guardiand **refuses to
   start** in that configuration and points you to Pebble for synchronous
   durability.
-- **`memory`** has no write ceiling at all (~159k/s) but loses all state on
+- **`memory`** has no write ceiling at all (~160k/s) but loses all state on
   restart.
 - **`redis`/`valkey`** sustains ~49k challenge writes/s (comparable to the
   embedded durable backends) and is the **multi-instance** option: it is the

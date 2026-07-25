@@ -53,8 +53,8 @@ deliberate: paying that read is what makes a block placed on one replica apply
 on the others within microseconds instead of up to one `reconcile_interval`.
 If you would rather have the speed and can accept that cross-replica lag, set
 `enforcement.mirror.mode: authoritative` explicitly on redis; blocks placed by
-other replicas then apply only after the next indexed reconcile (measured ~168k
-vs ~77k req/s on the allow path). A shorter `reconcile_interval` narrows that
+other replicas then apply only after the next indexed reconcile (measured ~183k
+vs ~94k req/s on the allow path). A shorter `reconcile_interval` narrows that
 lag at the cost of more frequent bounded active-block reads.
 
 If the mirror fills past `max_entries` (default ~1M), its status becomes
