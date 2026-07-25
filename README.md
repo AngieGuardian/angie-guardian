@@ -265,6 +265,7 @@ The default suite is self-contained; Docker is only needed for end-to-end tests.
 | End-to-end | `make e2e` | Real Angie → guardiand → backend stack |
 | Fuzz | `make fuzz` | Untrusted and hot-reloaded parsers |
 | Benchmarks | `go test -bench=. -benchmem ./core/... ./transport/http/` | Request hot paths |
+| Allocation gate | `make bench-regress` | Hot-path `allocs/op` against `allocs-baseline.txt`; also a CI job |
 
 The [end-to-end suite](test/e2e/) covers proof-of-work, WAF outcomes,
 behavioural blocking, fail-open, metrics, and the Admin API. CI runs it on

@@ -724,12 +724,24 @@ guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
 # Write path (requires PoW enabled): one synchronous challenge CAS per request,
 # plus coalesced background counter increments. This separates the store
 # backends; the scenario rotates client IPs to avoid the issuance limit.
-guardian-loadtest -scenario challenge -host example.com -c 64 -d 10s
+#
+# Use FIXED WORK here, not a duration: every request grows the store, so
+# throughput falls as the run proceeds and a duration average depends on
+# machine speed and run length. -warmup starts the measured window past the
+# in-process counter caches' capacity, i.e. in the loaded steady state a real
+# flood produces.
+guardian-loadtest -scenario challenge -host example.com -c 64 -warmup 150000 -n 150000
 ```
 
+Every run ends with a `per-second:` line, one measured-completion count per
+second. Read it before trusting the aggregate: flat means a steady state, and
+falling means only fixed-work (`-n`) runs with identical flags are comparable.
+
 The `allow` and `token` scenarios do one block lookup; a static `deny` match
-does no store I/O. `challenge` is write-heavy and is
-where a single-box durable backend trails redis/valkey. See
+does no store I/O. `challenge` is the write-heavy path and the only one whose
+throughput really separates the backends: measured per instance, `pebble`
+async leads (~61k/s), then `buntdb` async (~56k/s), then redis/valkey
+(~49k/s), then `pebble` with `sync: true` (~34k/s). See
 [Choosing a store backend](#choosing-a-store-backend).
 
 In normal operation challenge issuance uses that stateful write. If it fails,
@@ -752,13 +764,21 @@ the `issued_stateless_fallback` challenge metric outcome.
   sustained rate of *new* clients (each of which triggers a challenge write in
   `pow.mode: always`), a single-box durable backend eventually becomes the
   ceiling. Load-test with `guardian-loadtest` at your expected new-client rate
-  before relying on it near 50k req/s; if it saturates, switch to the `redis`
-  backend or set `pow.mode: suspicion` (no catch-all challenge, so only
-  explicit policies cause challenge writes).
-- **redis**: multi-instance and the highest write throughput. Works with both
-  Redis and [Valkey](https://valkey.io/) (the open-source Redis fork), which is
-  a drop-in replacement (same wire protocol, same `backend: redis` value). See
-  below.
+  before relying on it near 50k req/s. If one box saturates, set
+  `pow.mode: suspicion` (no catch-all challenge, so only explicit policies
+  cause challenge writes), lean on attack mode's stateless issuance (no write
+  at issue at all), or scale out to replicas on `redis`. Note that moving to
+  redis does not make a single instance write faster — it measures somewhat
+  slower per instance than `pebble` async — what it buys is running several
+  instances against one shared store.
+- **redis**: the multi-instance option. Works with both Redis and
+  [Valkey](https://valkey.io/) (the open-source Redis fork), which is a drop-in
+  replacement (same wire protocol, same `backend: redis` value). Choose it to
+  share blocks, counters and spent challenges across replicas, not for raw
+  speed: one network round trip per request puts its read paths below the
+  embedded backends, and its challenge write path measures ~49k/s against
+  `pebble` async's ~61k/s. Aggregate capacity comes from running more
+  instances. See below.
 
 ## Multi-instance (Redis/Valkey)
 
