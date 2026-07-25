@@ -256,9 +256,18 @@ func (s *nftSink) Apply(ev BlockEvent) error {
 	err := s.conn.Flush()
 	if errors.Is(err, unix.EEXIST) {
 		// Re-block of a live element (backoff raised the TTL): replace it so
-		// the new timeout takes effect.
-		s.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}})
-		s.conn.SetAddElements(set, []nftables.SetElement{el})
+		// the new timeout takes effect. A queueing failure here is reported
+		// rather than swallowed, otherwise the Flush below would report the
+		// success of an empty batch and the element would silently keep its
+		// old, shorter timeout.
+		if derr := s.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); derr != nil {
+			s.setErr(derr)
+			return derr
+		}
+		if aerr := s.conn.SetAddElements(set, []nftables.SetElement{el}); aerr != nil {
+			s.setErr(aerr)
+			return aerr
+		}
 		err = s.conn.Flush()
 	}
 	if err != nil {

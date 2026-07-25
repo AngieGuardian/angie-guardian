@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -163,12 +164,14 @@ func run(configPath string) error {
 		if err != nil {
 			return fmt.Errorf("signing keys: %w", err)
 		}
+		warnSecretPerms(log, "signing_key_file", cfg.SigningKeyFile)
 		previous, err := pow.LoadPreviousKeys(cfg.PreviousKeyDir)
 		if err != nil {
 			return fmt.Errorf("previous keys %s: %w", cfg.PreviousKeyDir, err)
 		}
 		if len(previous) > 0 {
 			log.Info("loaded retired signing keys for verification", "count", len(previous))
+			warnSecretDirPerms(log, "previous_key_dir", cfg.PreviousKeyDir)
 		}
 	} else {
 		log.Warn("no signing_key_file configured: proof-of-work challenges are disabled")
@@ -287,6 +290,7 @@ func run(configPath string) error {
 			}
 			cfg.Admin.Token = token
 			log.Info("admin token loaded", "file", cfg.Admin.TokenFile)
+			warnSecretPerms(log, "admin.token_file", cfg.Admin.TokenFile)
 		case isLoopback(cfg.Admin.Listen):
 			token, err := core.GenerateAdminToken()
 			if err != nil {
@@ -448,6 +452,53 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 	add("enforcement", !reflect.DeepEqual(running.enforcement, next.Enforcement))
 	slices.Sort(changed)
 	return changed
+}
+
+// warnSecretPerms flags a secret file readable beyond its owner. Guardian
+// creates both the PoW signing key and the admin token 0600, but the file may
+// predate that, have been restored from a backup, or been placed by an operator
+// or a config-management tool. The consequences are severe and silent — anyone
+// who can read the signing key can mint tokens that pass every check, and the
+// admin token grants the whole management API — so it is worth one line at
+// startup. It is a warning, not a fatal error: refusing to start would take a
+// site down over a permission bit on a file Guardian can still read.
+func warnSecretPerms(log *slog.Logger, field, path string) {
+	if path == "" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return // the caller already loaded it; a stat race is not worth reporting
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		log.Warn("secret file is readable beyond its owner; restrict it with chmod 600",
+			"field", field, "path", path, "mode", fmt.Sprintf("%#o", mode))
+	}
+}
+
+// warnSecretDirPerms is warnSecretPerms for the retired-key archive: every file
+// in it is a private key that still verifies live tokens, so the directory and
+// its contents deserve the same scrutiny as the current key.
+func warnSecretDirPerms(log *slog.Logger, field, dir string) {
+	if dir == "" {
+		return
+	}
+	if info, err := os.Stat(dir); err == nil {
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			log.Warn("retired-key directory is accessible beyond its owner; restrict it with chmod 700",
+				"field", field, "path", dir, "mode", fmt.Sprintf("%#o", mode))
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".key") {
+			continue
+		}
+		warnSecretPerms(log, field, filepath.Join(dir, e.Name()))
+	}
 }
 
 // displayAddr turns a listen address into one a browser on this box can open:

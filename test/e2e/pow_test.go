@@ -39,12 +39,22 @@ func TestBrowserGetIsChallenged(t *testing.T) {
 	if !strings.Contains(body, "guardian-data") || !strings.Contains(body, "challenge") {
 		t.Fatalf("response is not the PoW interstitial; body:\n%s", body)
 	}
-	// The snippet's location-scoped CSP must reach the client: it permits the
-	// blob: solver worker and, by defining an add_header in the location,
-	// stops a vhost-level site CSP from applying to (and breaking) this page.
-	csp := resp.Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "worker-src blob:") {
-		t.Fatalf("interstitial Content-Security-Policy = %q, want worker-src blob:", csp)
+	// Two layers set a policy here: guardiand sends its own on the response, and
+	// the snippet's location-scoped add_header both re-states it and stops a
+	// vhost-level site CSP from applying to (and breaking) this page. A browser
+	// enforces EVERY policy it receives, so the invariant is that each one
+	// permits the blob: solver worker, not just the first.
+	policies := resp.Header.Values("Content-Security-Policy")
+	if len(policies) == 0 {
+		t.Fatal("interstitial carries no Content-Security-Policy")
+	}
+	for _, csp := range policies {
+		if !strings.Contains(csp, "worker-src blob:") {
+			t.Fatalf("interstitial Content-Security-Policy = %q, want worker-src blob:", csp)
+		}
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("interstitial X-Content-Type-Options = %q, want nosniff", got)
 	}
 }
 

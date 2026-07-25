@@ -58,7 +58,7 @@ tools that own these problems.
   not a bypass-proof gate. A determined attacker with native SHA-256 hardware
   solves challenges faster than a browser's JavaScript does; difficulty tuning
   raises their cost, it does not stop them. PoW buys economics, not certainty.
-  See [difficulty tuning](/guide/configuration#base_difficulty-and-max_difficulty).
+  See [difficulty tuning](/guide/configuration#base-difficulty-and-max-difficulty).
 - **Vulnerabilities in the protected application.** Guardian filters who gets
   through; it does not fix the app behind it. A logic flaw reachable by a
   vouched, well-behaved client is still reachable.
@@ -90,6 +90,31 @@ wrong and the protections above weaken or invert:
   Guardian refuses a non-loopback admin bind without a token. The listener is
   plain HTTP; use a TLS/mTLS proxy or service mesh for any cross-network hop so
   the bearer credential cannot be observed and replayed.
+
+### Response security headers
+
+Every page Guardian serves carries its own `Content-Security-Policy`, fitted to
+exactly what that page uses, plus `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` and a matching `X-Frame-Options`:
+
+| Page | Policy |
+| --- | --- |
+| PoW interstitial | inline script and style, a `blob:` worker for the solver, same-origin `fetch`; framing limited to same-origin |
+| Denied page | inline style only, no script, no subresources; framing limited to same-origin |
+| Admin dashboard | inline script and style, same-origin vendored chart libraries, `data:` favicon, same-origin `fetch`; framing refused outright |
+
+The Angie glue (`deploy/angie-guardian.conf`) also adds the interstitial and
+denied policies with `add_header`, for a reason unrelated to duplication: in
+Angie a location that sets any `add_header` stops inheriting the server-level
+ones, which is what keeps a vhost's own site CSP (typically lacking
+`worker-src blob:`) from breaking the solver. Keep both. A browser enforces
+every policy it receives, and the two are written to intersect to exactly the
+policy in the table, so nothing is loosened or tightened by having both.
+
+Guardian sending them itself is what makes the pages self-protecting when Angie
+is not in the path at all: a direct probe, a development setup, a hand-written
+vhost whose `add_header` lines were never copied, and the admin listener, which
+Angie never fronts.
 
 ## Fail-open by design
 

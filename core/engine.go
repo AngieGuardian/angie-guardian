@@ -313,10 +313,12 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	}
 	defer snap.release()
 	e.attack.Evaluated() // one atomic add; nil-safe
-	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
-	// The metric label stays host-scoped: paths are client-controlled and
+	// One host normalization and one path normalization for the whole request:
+	// the config lookup and the metric label share the former, and every
+	// path-matching stage shares the latter through the request's memo. The
+	// metric label stays host-scoped because paths are client-controlled and
 	// unbounded, so they must never become a label value.
-	label := snap.cfg.DomainLabel(req.Host)
+	dcfg, label := snap.cfg.scopeForRequest(req)
 	// One posture load per request, shared by every stage so a mid-request
 	// transition can't split the decision.
 	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
@@ -568,14 +570,14 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 		return ShedReject
 	}
 	defer snap.release()
-	dcfg := snap.cfg.ConfigFor(req.Host, req.URI)
+	dcfg, _ := snap.cfg.scopeForRequest(req)
 	env := &stageEnv{
 		domain: dcfg, pow: e.pow, enforcer: e.enforcer,
 		rules: snap.rules, intel: snap.intel, attack: e.attack.State(),
 	}
 
 	// Stage 0: static allowlist wins over everything (same as the pipeline).
-	if _, ok := stateless.CheckAllowlist(req, &dcfg.Allowlist); ok {
+	if stateless.CheckAllowlist(req, &dcfg.Allowlist) != nil {
 		return ShedPass
 	}
 	// Stage 1: static denylist. An unparseable IP fails open in the pipeline
@@ -607,7 +609,7 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	// Shed it instead. This is preferable to letting a token minted before a
 	// config/DNS-state change bypass the bot-spoof policy under saturation.
 	vb := &dcfg.VerifiedBots
-	if vb.SpoofAction != "continue" && vb.match(req.UserAgent) != nil {
+	if vb.SpoofAction != "continue" && vb.match(req.LowerUA()) != nil {
 		return ShedReject
 	}
 

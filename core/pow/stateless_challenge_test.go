@@ -140,8 +140,13 @@ func TestStatelessExpiryAndSkew(t *testing.T) {
 func TestStatelessBadSolution(t *testing.T) {
 	m := testManager(t)
 	ch, _ := m.IssueStateless("a.test", "203.0.113.7", "/", 12, false)
+	// The nonce must be one that provably fails the difficulty, not one that
+	// merely looks wrong: a stateless challenge string is randomized per
+	// issuance, so a hardcoded nonce solves it by luck about once every 2^12
+	// runs and the test fails in CI for no reason. unsolve searches for a
+	// nonce whose hash is definitively short of the required leading zeros.
 	_, err := m.Redeem(context.Background(), &RedeemRequest{
-		ChallengeID: ch.ID, Nonce: "definitely-not-a-solution",
+		ChallengeID: ch.ID, Nonce: unsolve(t, ch.Challenge, 12),
 		Host: "a.test", IP: "203.0.113.7", UserAgent: "x",
 		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
 	})

@@ -33,6 +33,24 @@ import (
 // Angie glue; the challenge page posts here.
 const PassPath = "/__guardian/pass"
 
+// The X-Guardian-* header names the glue sets, spelled in canonical MIME form
+// ("Uri", not "URI"). That casing is not cosmetic. Header.Get canonicalizes its
+// argument, and it can only do so allocation-free when the string is ALREADY
+// canonical. "X-Guardian-URI", "X-Guardian-IP" and "X-Guardian-UA" are not, so
+// every read of them allocated a rewritten key. Header names are
+// case-insensitive and net/http canonicalizes both what Angie sends and what we
+// look up, so this changes nothing on the wire.
+const (
+	hdrHost       = "X-Guardian-Host"
+	hdrMethod     = "X-Guardian-Method"
+	hdrURI        = "X-Guardian-Uri"
+	hdrIP         = "X-Guardian-Ip"
+	hdrUA         = "X-Guardian-Ua"
+	hdrCookie     = "X-Guardian-Cookie"
+	hdrProto      = "X-Guardian-Proto"
+	hdrDifficulty = "X-Guardian-Difficulty"
+)
+
 type Server struct {
 	engine   *core.Engine
 	pow      *pow.Manager // nil = PoW unavailable (no signing key configured)
@@ -92,7 +110,7 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 // toggle it.
 func (s *Server) proxiedOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.engine.Config().RequireProxied && r.Header.Get("X-Guardian-IP") == "" {
+		if s.engine.Config().RequireProxied && r.Header.Get(hdrIP) == "" {
 			s.metrics.UnproxiedReject()
 			http.Error(w, "direct access rejected: proxied requests required", http.StatusForbidden)
 			return
@@ -114,14 +132,27 @@ func (s *Server) FlushCounters(ctx context.Context) error {
 // Angie snippets set on the subrequest, falling back to the subrequest's own
 // fields so Guardian also behaves sanely when probed directly.
 func (s *Server) requestContext(r *http.Request) *core.RequestContext {
-	host := headerOr(r, "X-Guardian-Host", r.Host)
+	host := headerOr(r, hdrHost, r.Host)
+	// The fallbacks exist for a direct probe with no glue in front. Behind Angie
+	// every header is present, so the two that cost something must not be
+	// computed eagerly: Go evaluates a function argument whether or not the
+	// branch uses it, and RequestURI formats a fresh string on every call while
+	// stripPort allocates an error for an address without a port.
+	uri := r.Header.Get(hdrURI)
+	if uri == "" {
+		uri = r.URL.RequestURI()
+	}
+	ip := r.Header.Get(hdrIP)
+	if ip == "" {
+		ip = stripPort(r.RemoteAddr)
+	}
 	return &core.RequestContext{
 		Host:       host,
-		Method:     headerOr(r, "X-Guardian-Method", r.Method),
-		URI:        headerOr(r, "X-Guardian-URI", r.URL.RequestURI()),
-		RemoteAddr: headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr)),
-		UserAgent:  headerOr(r, "X-Guardian-UA", r.UserAgent()),
-		Cookie:     headerOr(r, "X-Guardian-Cookie", r.Header.Get("Cookie")),
+		Method:     headerOr(r, hdrMethod, r.Method),
+		URI:        uri,
+		RemoteAddr: ip,
+		UserAgent:  headerOr(r, hdrUA, r.UserAgent()),
+		Cookie:     headerOr(r, hdrCookie, r.Header.Get("Cookie")),
 		// The auth subrequest inherits the client's request headers. Host is
 		// special in net/http: it lives in Request.Host, not Header, so expose
 		// the effective Guardian host explicitly to header:host WAF targets.
@@ -194,7 +225,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	case core.ActionAllow:
 		w.WriteHeader(http.StatusOK)
 	case core.ActionChallenge:
-		w.Header().Set("X-Guardian-Difficulty", strconv.Itoa(d.Difficulty))
+		w.Header().Set(hdrDifficulty, strconv.Itoa(d.Difficulty))
 		s.logDecision(req, d)
 		w.WriteHeader(http.StatusUnauthorized)
 	case core.ActionDeny:
@@ -230,15 +261,16 @@ type challengeData struct {
 // handleChallenge issues a PoW challenge and serves the interstitial. Angie
 // diverts 401s here via error_page, preserving the client's original URL.
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
-	host := headerOr(r, "X-Guardian-Host", r.Host)
-	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
-	uri := headerOr(r, "X-Guardian-URI", "/")
+	host := headerOr(r, hdrHost, r.Host)
+	ip := clientIP(r)
+	uri := headerOr(r, hdrURI, "/")
 	// Path-resolved config: a paths: overlay may scope PoW (enabled,
 	// difficulty, TTLs) to a URI prefix within the host.
 	dcfg := s.engine.Config().ConfigFor(host, uri)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	securityHeaders(w, cspChallenge, frameSameOrigin)
 
 	if s.pow == nil || !dcfg.PoW.Enabled {
 		http.Error(w, "challenge unavailable", http.StatusServiceUnavailable)
@@ -251,8 +283,12 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// is down), the shared counter syncs in the background. The limit is
 	// config-driven (pow.issuance_rate_limit) so operators can tighten it.
 	limit := dcfg.PoW.IssuanceRateLimit
-	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/int64(limit.Per.Seconds()))
-	if int(s.counters.Incr(rlKey, 2*limit.Per)) > limit.Count {
+	// The config parser only accepts s/min/h windows, so Per is always at least
+	// a second; the floor keeps the bucket divisor safe for any Config built in
+	// code (tests, embedders) rather than parsed from YAML.
+	window := max(limit.Per, time.Second)
+	rlKey := fmt.Sprintf("chrl:%s:%d", ip, time.Now().Unix()/int64(window.Seconds()))
+	if int(s.counters.Incr(rlKey, 2*window)) > limit.Count {
 		s.log.Warn("challenge issuance rate limit", "ip", ip, "host", host)
 		http.Error(w, "too many challenge requests, slow down", http.StatusTooManyRequests)
 		return
@@ -270,7 +306,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// (possibly attack-shifted) [base, max] so a client forging the header can
 	// only raise its own difficulty within policy, never lower it.
 	difficulty := base
-	if v := r.Header.Get("X-Guardian-Difficulty"); v != "" {
+	if v := r.Header.Get(hdrDifficulty); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			difficulty = min(max(n, difficulty), maxBits)
 		}
@@ -388,8 +424,8 @@ func (s *Server) handlePassNoJS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemRequest, elapsedMS int64) {
-	host := headerOr(r, "X-Guardian-Host", r.Host)
-	ip := headerOr(r, "X-Guardian-IP", stripPort(r.RemoteAddr))
+	host := headerOr(r, hdrHost, r.Host)
+	ip := clientIP(r)
 	cfg := s.engine.Config()
 	dcfg := cfg.DomainFor(host)
 
@@ -404,7 +440,7 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 
 	req.Host = host
 	req.IP = ip
-	req.UserAgent = headerOr(r, "X-Guardian-UA", r.UserAgent())
+	req.UserAgent = headerOr(r, hdrUA, r.UserAgent())
 	req.TokenTTL = dcfg.PoW.TokenTTL.Std()
 	req.ChallengeTTL = dcfg.PoW.ChallengeTTL.Std()
 	req.TTLs = func(uri string) (time.Duration, time.Duration) {
@@ -468,7 +504,7 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		Path:     "/",
 		MaxAge:   int(res.TokenTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   r.Header.Get("X-Guardian-Proto") != "http",
+		Secure:   r.Header.Get(hdrProto) != "http",
 		SameSite: http.SameSiteLaxMode,
 	})
 	if req.NoJS {
@@ -481,17 +517,23 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 func (s *Server) handleDenied(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	securityHeaders(w, cspStatic, frameSameOrigin)
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write(s.deniedHTML)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	securityHeaders(w, "", "")
 	_, _ = w.Write([]byte("ok\n"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	// No CSP: a JSON body is never a document. nosniff is what stops a browser
+	// from rendering one as HTML anyway.
+	securityHeaders(w, "", "")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
@@ -516,4 +558,14 @@ func stripPort(remoteAddr string) string {
 		return host
 	}
 	return remoteAddr
+}
+
+// clientIP is headerOr for the client address with a lazily evaluated fallback:
+// stripPort allocates an error for an address carrying no port, and behind the
+// glue the header is always set, so the fallback must not run per request.
+func clientIP(r *http.Request) string {
+	if v := r.Header.Get(hdrIP); v != "" {
+		return v
+	}
+	return stripPort(r.RemoteAddr)
 }

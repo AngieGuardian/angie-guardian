@@ -325,8 +325,8 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 		scannedAll = true
 		err        error
 	)
-	_, indexed := m.st.(store.ActiveBlockScanner)
-	if scanner, ok := m.st.(store.ActiveBlockScanner); ok {
+	scanner, indexed := m.st.(store.ActiveBlockScanner)
+	if indexed {
 		kvs, scannedAll, err = scanner.ScanActiveBlocks(sctx, m.cfg.KeyPrefix, m.cfg.MaxEntries)
 		if errors.Is(err, store.ErrCapabilityUnsupported) {
 			indexed = false

@@ -450,9 +450,35 @@ func TestFeedRejectsGarbageBody(t *testing.T) {
 	if _, err := f.install([]byte("<!doctype html><html>oops</html>"), "url", time.Now()); err == nil {
 		t.Fatal("an HTML body must be rejected")
 	}
-	// An empty body (feed legitimately empty) is fine.
-	if _, err := f.install(nil, "url", time.Now()); err != nil {
-		t.Fatalf("empty body: %v", err)
+	// A remote or cached body with no entries at all is a fetch/cache fault (an
+	// origin serving an empty file during maintenance, a truncated cache copy),
+	// not a list that legitimately matches nothing.
+	for _, source := range []string{"url", "cache"} {
+		if _, err := f.install(nil, source, time.Now()); err == nil {
+			t.Fatalf("an empty %s body must be rejected", source)
+		}
+	}
+	// An operator's own local file may legitimately start out empty.
+	if _, err := f.install([]byte("# nothing listed yet\n"), "file", time.Now()); err != nil {
+		t.Fatalf("empty local file: %v", err)
+	}
+}
+
+// TestFeedRefusesToEmptyALiveList pins the silent-wipe guard: once a feed has
+// entries, a body that parses to none must keep the loaded list rather than
+// swap in a set that matches nothing.
+func TestFeedRefusesToEmptyALiveList(t *testing.T) {
+	f := &feed{cfg: FeedConfig{Name: "x", Action: FeedActionDeny}}
+	if _, err := f.install([]byte("192.0.2.0/24\n"), "url", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"url", "cache", "file"} {
+		if _, err := f.install([]byte("# emptied\n"), source, time.Now()); err == nil {
+			t.Fatalf("an entry-less %s body must not replace a live list", source)
+		}
+	}
+	if !f.contains(netip.MustParseAddr("192.0.2.7")) {
+		t.Fatal("the previously loaded list must still be enforcing")
 	}
 }
 

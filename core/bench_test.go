@@ -98,34 +98,52 @@ func benchToken(b *testing.B, mgr *pow.Manager, host, ip, ua string) string {
 	return res.Token
 }
 
-func benchmarkEvaluate(b *testing.B, st store.Store, req *RequestContext, wantReason string) {
+// Every benchmark evaluates a FRESH RequestContext per iteration, because that
+// is what the transport does: it builds one per subrequest. Reusing a single
+// value across iterations would let per-request derivations (the normalized
+// path, the lowercased User-Agent) be computed once for the whole run and
+// silently understate the cost of the thing being measured. It is also the
+// documented contract — a RequestContext belongs to one request on one
+// goroutine — so a shared one would be a data race waiting for a future edit
+// to expose it.
+func benchmarkEvaluate(b *testing.B, st store.Store, tmpl *RequestContext, wantReason string) {
 	b.Helper()
 	e, mgr := benchEngine(b, st)
-	if req.Cookie == "cookie" { // sentinel: mint a real token for this client
-		req.Cookie = pow.CookieName + "=" + benchToken(b, mgr, req.Host, req.RemoteAddr, req.UserAgent)
+	if tmpl.Cookie == "cookie" { // sentinel: mint a real token for this client
+		tmpl.Cookie = pow.CookieName + "=" + benchToken(b, mgr, tmpl.Host, tmpl.RemoteAddr, tmpl.UserAgent)
 	}
 	ctx := context.Background()
-	if d := e.Evaluate(ctx, req); d.Reason != wantReason {
+	if d := e.Evaluate(ctx, cloneRequest(tmpl)); d.Reason != wantReason {
 		b.Fatalf("sanity: reason = %q, want %q", d.Reason, wantReason)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			e.Evaluate(ctx, req)
+			e.Evaluate(ctx, cloneRequest(tmpl))
 		}
 	})
+}
+
+// cloneRequest returns a fresh RequestContext carrying the same request fields,
+// with no derivation memoized yet.
+func cloneRequest(tmpl *RequestContext) *RequestContext {
+	return &RequestContext{
+		Host: tmpl.Host, Method: tmpl.Method, URI: tmpl.URI,
+		RemoteAddr: tmpl.RemoteAddr, UserAgent: tmpl.UserAgent,
+		Cookie: tmpl.Cookie, Header: tmpl.Header,
+	}
 }
 
 // benchmarkEvaluateMirror wires the enforcement offload the way guardiand does
 // (authoritative seeded mirror), so the block stage is served from memory. A
 // "behaviour_block:" wantReason places a block for the request's IP first.
-func benchmarkEvaluateMirror(b *testing.B, st store.Store, req *RequestContext, wantReason string) {
+func benchmarkEvaluateMirror(b *testing.B, st store.Store, tmpl *RequestContext, wantReason string) {
 	b.Helper()
 	e, _ := benchEngine(b, st)
 	ctx := context.Background()
 	if reason, ok := strings.CutPrefix(wantReason, "behaviour_block:"); ok {
-		if err := e.BlockIP(ctx, req.RemoteAddr, reason, time.Hour); err != nil {
+		if err := e.BlockIP(ctx, tmpl.RemoteAddr, reason, time.Hour); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -138,14 +156,14 @@ func benchmarkEvaluateMirror(b *testing.B, st store.Store, req *RequestContext, 
 	for !enf.Status().Mirror.Seeded { // wait for the seed scan
 		time.Sleep(time.Millisecond)
 	}
-	if d := e.Evaluate(ctx, req); d.Reason != wantReason {
+	if d := e.Evaluate(ctx, cloneRequest(tmpl)); d.Reason != wantReason {
 		b.Fatalf("sanity: reason = %q, want %q", d.Reason, wantReason)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			e.Evaluate(ctx, req)
+			e.Evaluate(ctx, cloneRequest(tmpl))
 		}
 	})
 }
@@ -232,4 +250,112 @@ func BenchmarkEvaluatePebbleMirrorBlocked(b *testing.B) {
 	defer st.Close()
 	req := &RequestContext{Host: "plain.test", Method: "GET", URI: "/p", RemoteAddr: "198.51.100.9", UserAgent: "curl/8.0"}
 	benchmarkEvaluateMirror(b, st, req, "behaviour_block:flood")
+}
+
+// benchRulesYAML is a realistic starter signature set: every request that
+// reaches the WAF stage scans it, so its cost is paid on the common path, not
+// only when something matches.
+const benchRulesYAML = `
+rules:
+  - id: dotfile
+    targets: [path]
+    keywords: [ "/.env", "/.git/", "/.aws/", "/.ssh/" ]
+  - id: admin-probe
+    targets: [path]
+    keywords: [ "/wp-admin", "/phpmyadmin", "/administrator/" ]
+  - id: traversal
+    targets: [path, query]
+    regexes: [ "\\.\\./", "%2e%2e" ]
+  - id: sqli
+    targets: [query]
+    regexes: [ "union\\s+select", "or\\s+1=1", "sleep\\(" ]
+  - id: scanner-ua
+    targets: [ua]
+    keywords: [ "sqlmap", "nikto", "masscan", "nuclei" ]
+  - id: shellshock
+    targets: [ "header:user-agent", "header:referer" ]
+    keywords: [ "() {" ]
+  - id: trace
+    methods: [ TRACE, TRACK ]
+`
+
+// BenchmarkEvaluateWAFClean is the case the WAF actually spends its life in:
+// a legitimate request scanned against the whole rule set and matching none of
+// it. A benchmark that only measures a matching request measures the rare path.
+func BenchmarkEvaluateWAFClean(b *testing.B) {
+	dir := b.TempDir()
+	rules := filepath.Join(dir, "rules.yaml")
+	if err := os.WriteFile(rules, []byte(benchRulesYAML), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	cfgYAML := "store: { backend: memory }\ndefaults:\n  waf:\n    keywords: { enabled: true, rules_file: " +
+		strconv.Quote(rules) + " }\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	e, err := NewEngine(cfg, st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(e.Close)
+
+	tmpl := &RequestContext{
+		Host: "shop.test", Method: "GET",
+		URI:        "/products/1234/reviews?page=2&sort=recent",
+		RemoteAddr: "198.51.100.7",
+		UserAgent:  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
+		Header:     func(string) []string { return nil },
+	}
+	ctx := context.Background()
+	if d := e.Evaluate(ctx, cloneRequest(tmpl)); d.Reason != "default" {
+		b.Fatalf("sanity: reason = %q, want default", d.Reason)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			e.Evaluate(ctx, cloneRequest(tmpl))
+		}
+	})
+}
+
+// BenchmarkShedDecision measures the load-shedding gate, which replaces the
+// full pipeline once attack_mode.effects.max_inflight is reached. It has to be
+// dramatically cheaper than Evaluate or it cannot relieve the saturation it
+// exists for.
+func BenchmarkShedDecision(b *testing.B) {
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	e, mgr := benchEngine(b, st)
+	enf := enforce.New(e.Config().EnforceConfig(), st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.Cleanup(func() { enf.Close() })
+	e.SetEnforcer(enf)
+	ctx, cancel := context.WithCancel(context.Background())
+	b.Cleanup(cancel)
+	enf.Start(ctx)
+	for !enf.Status().Mirror.Seeded {
+		time.Sleep(time.Millisecond)
+	}
+	tmpl := &RequestContext{
+		Host: "html.test", Method: "GET", URI: "/dashboard",
+		RemoteAddr: "198.51.100.7", UserAgent: "Mozilla/5.0 Firefox/140.0",
+		Cookie: pow.CookieName + "=" + benchToken(b, mgr, "html.test", "198.51.100.7", "Mozilla/5.0 Firefox/140.0"),
+	}
+	if v := e.ShedDecision(cloneRequest(tmpl)); v != ShedPass {
+		b.Fatalf("sanity: verdict = %v, want ShedPass", v)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			e.ShedDecision(cloneRequest(tmpl))
+		}
+	})
 }

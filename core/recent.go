@@ -37,14 +37,19 @@ const (
 	maxRecentSize     = 16384
 )
 
-// Per-entry field caps. URI and UA are attacker-supplied and can each run to
-// the proxy's full header budget (~8 KiB); uncapped, a hostile flood could pin
-// capacity*16KiB (hundreds of MiB at maxRecentSize) in a diagnostics buffer.
-// Truncation keeps the ring's worst case attacker-independent while leaving
-// entries plenty descriptive for a live operator view.
+// Per-entry field caps. URI, UA, Host and Method are all attacker-supplied and
+// can each run to the proxy's full header budget (~8 KiB); uncapped, a hostile
+// flood could pin capacity*several-KiB (hundreds of MiB at maxRecentSize) in a
+// diagnostics buffer. Truncation keeps the ring's worst case
+// attacker-independent while leaving entries plenty descriptive for a live
+// operator view. Host and Method are capped far tighter because a legitimate
+// value is short: a Host is bounded by DNS name length and a method by the
+// registered verbs.
 const (
-	maxRecentURILen = 2048
-	maxRecentUALen  = 512
+	maxRecentURILen    = 2048
+	maxRecentUALen     = 512
+	maxRecentHostLen   = 253
+	maxRecentMethodLen = 32
 )
 
 // truncateRecent caps s at n bytes, marking the cut so an operator can tell a
@@ -90,6 +95,8 @@ func newRecentRing(size int) *recentRing {
 func (r *recentRing) add(d RecentDecision) {
 	d.URI = truncateRecent(d.URI, maxRecentURILen)
 	d.UA = truncateRecent(d.UA, maxRecentUALen)
+	d.Host = truncateRecent(d.Host, maxRecentHostLen)
+	d.Method = truncateRecent(d.Method, maxRecentMethodLen)
 	r.mu.Lock()
 	if len(r.buf) == 0 {
 		r.buf = make([]RecentDecision, defaultRecentSize)

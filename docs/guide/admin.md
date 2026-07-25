@@ -24,6 +24,14 @@ management network. If it must cross a host or network boundary, place it
 behind a TLS/mTLS reverse proxy or service mesh; a bearer token sent over
 plaintext can be captured and replayed.
 
+Angie never fronts this listener, so guardiand sets the dashboard's response
+security headers itself: a page-fitted `Content-Security-Policy` (no CDN, no
+`eval`, only same-origin fetches and the vendored chart libraries),
+`frame-ancestors 'none'` plus `X-Frame-Options: DENY` so a console holding an
+operator's token cannot be framed, `X-Content-Type-Options: nosniff` on every
+response including the JSON ones, and `Referrer-Policy: no-referrer`. If you do
+put a reverse proxy in front, do not strip or replace them.
+
 ## Everyday operations
 
 ```sh

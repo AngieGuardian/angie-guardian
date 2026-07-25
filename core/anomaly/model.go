@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -371,6 +372,11 @@ func (b *Baseline) validate(label string) error {
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
+// Save writes the artifact atomically: a unique temp file in the destination
+// directory, fsynced, then renamed into place. guardiand polls this path and
+// hot-swaps on a content change, so a partially written file must never be
+// visible under the real name — and two trainers running at once (a timer unit
+// racing a manual run) must not write the same temp file.
 func (m *Model) Save(path string) error {
 	if err := m.validate(); err != nil {
 		return err
@@ -379,8 +385,27 @@ func (m *Model) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	// CreateTemp makes the file 0600; the artifact is world-readable config, and
+	// guardiand may run as a different user than the trainer.
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

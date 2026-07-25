@@ -195,7 +195,7 @@ defaults:
 		t.Errorf("spoof_action = %q, want default deny", vb.SpoofAction)
 	}
 
-	g := vb.match("Mozilla/5.0 (compatible; googlebot/2.1; +http://www.google.com/bot.html)")
+	g := vb.match("mozilla/5.0 (compatible; googlebot/2.1; +http://www.google.com/bot.html)")
 	if g == nil || g.Name != "googlebot" {
 		t.Fatalf("preset UA needle should match, got %v", g)
 	}
@@ -205,7 +205,7 @@ defaults:
 		t.Errorf("preset domains = %v, want [googlebot.com]", g.domainsLower)
 	}
 
-	s := vb.match("AdsBot-Google-Mobile (+http://www.google.com/mobile/adsbot.html)")
+	s := vb.match("adsbot-google-mobile (+http://www.google.com/mobile/adsbot.html)")
 	if s == nil || s.Name != "google-special" {
 		t.Fatalf("AdsBot UA should match the google-special preset, got %v", s)
 	}
@@ -221,7 +221,7 @@ defaults:
 		t.Errorf("custom domains should be lowercased and dot-trimmed: %v", m.domainsLower)
 	}
 
-	if vb.match("Mozilla/5.0 Firefox/140.0") != nil {
+	if vb.match("mozilla/5.0 firefox/140.0") != nil {
 		t.Error("plain browser UA must not match any bot")
 	}
 

@@ -92,12 +92,38 @@ That is what keeps a flood from known-bad clients cheap; run
 
 ## Micro-benchmarks
 
-Performance-sensitive hot paths (`Evaluate`, PoW verification, anomaly
-scoring) carry Go benchmarks alongside the code:
+Every performance-sensitive layer carries Go benchmarks alongside the code:
 
 ```sh
-go test -bench=. -benchmem ./core/... ./core/pow/...
+go test -bench=. -benchmem ./core/... ./transport/http/
 ```
+
+| Package | Covers |
+| --- | --- |
+| `core` | `Evaluate` per verdict (default allow, static allow/deny, valid token, challenge), with and without the block mirror; a clean request scanned against a realistic rule set; `ShedDecision` |
+| `transport/http` | the `/auth` handler end to end per verdict, and `requestContext` on its own: the header reads and the request value built before any policy runs |
+| `core/pow` | token verification, cached and uncached |
+| `core/store` | the store engines on Guardian's real write workload (see `make bench-store`) |
+| `core/anomaly` | the online scorer |
+
+Each `Evaluate` benchmark builds a **fresh** request per iteration, matching
+what the transport does. That matters: a request memoizes its normalized path
+and lowercased User-Agent on first use, so reusing one value across iterations
+would measure a request that had already paid for them.
+
+### Reading the two together
+
+The micro-benchmarks and `guardian-loadtest` answer different questions, and
+the gap between them is the useful part. On loopback at ~180k req/s the daemon
+spends roughly **70–80 µs of CPU per request**, while the decision itself is
+well under a microsecond: almost all of that is the kernel and `net/http`, not
+Guardian. So a change that makes the decision path several times cheaper moves
+the end-to-end request rate by only a few percent.
+
+Measure it as CPU per request rather than req/s when you want to see the
+difference — on a loopback test the load generator shares the CPU with the
+daemon, so freed cycles show up partly as generator headroom. In a real
+deployment they go to Angie and your backend instead.
 
 All `guardian-loadtest` flags are listed in the
 [CLI reference](/reference/cli#guardian-loadtest).

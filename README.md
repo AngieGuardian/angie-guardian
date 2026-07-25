@@ -261,7 +261,7 @@ The default suite is self-contained; Docker is only needed for end-to-end tests.
 | Race detector | `go test -race ./...` | Concurrency regressions |
 | End-to-end | `make e2e` | Real Angie → guardiand → backend stack |
 | Fuzz | `make fuzz` | Untrusted and hot-reloaded parsers |
-| Benchmarks | `go test -bench=. -benchmem ./core/... ./core/pow/...` | Request hot paths |
+| Benchmarks | `go test -bench=. -benchmem ./core/... ./transport/http/` | Request hot paths |
 
 The [end-to-end suite](test/e2e/) covers proof-of-work, WAF outcomes,
 behavioural blocking, fail-open, metrics, and the Admin API. CI runs it on
@@ -367,7 +367,7 @@ exceed the durable ceiling:
   **stateless** issuance, which writes nothing at issue time. The only remaining
   write is then the single-spend marker at redemption, which an attacker cannot
   trigger without actually solving the proof of work.
-- Verified tokens are cached in-process (~144 ns vs ~43 µs for a full Ed25519
+- Verified tokens are cached in-process (~35 ns, allocation-free, vs ~40 µs for a full Ed25519
   verification), so a returning client's request stays on the fast read path
   regardless of backend.
 - At these rates the read paths are bound by Go's garbage collector, not the
@@ -404,8 +404,21 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
 ./guardian-loadtest -scenario challenge -host example.com                        -c 64 -d 8s
 ```
 
-Micro-benchmarks for the hot functions (`Evaluate`, PoW verification, anomaly
-scoring) live alongside the code: `go test -bench=. -benchmem ./core/... ./core/pow/...`
+Micro-benchmarks live alongside the code and cover every layer of the hot path:
+the `/auth` handler and the request value it builds, `Evaluate` per verdict,
+`ShedDecision`, PoW verification and anomaly scoring.
+
+```sh
+go test -bench=. -benchmem ./core/... ./transport/http/
+```
+
+Read them next to the load test rather than instead of it. On loopback at
+~180k req/s the daemon spends roughly 70–80 µs of CPU per request, and the
+decision itself is well under a microsecond: nearly all of that is the kernel
+and `net/http`. A change that makes the decision path several times cheaper
+therefore moves the end-to-end request rate by only a few percent, and is best
+measured as CPU per request. See the
+[load-testing guide](https://angieguardian.org/guide/load-testing#micro-benchmarks).
 
 ### Architecture
 
@@ -421,17 +434,24 @@ imports directly, so the in-process module reuses the exact same logic without
 dragging in the store, PoW or anomaly dependencies.
 
 ```
-core/            decision engine, pipeline, config
-core/stateless/  store-free WAF checks + value types (shared by sidecar & WASM)
-core/pow/        challenges, Ed25519 JWTs, token cache, key persistence + rotation
-core/waf/        signature rules, signed IDs
-core/anomaly/    statistical baseline model, online scorer, hot-swap cache
-core/store/      TTL'd shared state: memory | buntdb | pebble | redis
-core/metrics/    Prometheus instrumentation (private registry)
-transport/http/  auth_request sidecar + admin/metrics
-transport/wasm/  optional http-wasm guest (stateless WAF, runs inside Angie)
-cmd/             guardiand (sidecar), guardian-train (offline anomaly training),
-                 guardian-loadtest (stress tool)
-deploy/          Angie snippets, systemd unit, rules, Grafana dashboard, alert rules
-web/             challenge/denied pages (self-contained HTML + JS solver)
+core/             decision engine, pipeline, config, scoreboard, recent-decision ring
+core/stateless/   store-free WAF checks + value types (shared by sidecar & WASM)
+core/pow/         challenges, Ed25519 JWTs, token cache, key persistence + rotation
+core/waf/         signature rules, signed IDs
+core/anomaly/     statistical baseline model, online scorer, hot-swap cache
+core/store/       TTL'd shared state: memory | buntdb | pebble | redis
+core/intel/       GeoIP/ASN databases and IP reputation feeds
+core/botverify/   rDNS + forward-confirm crawler verification
+core/attackmode/  fleet attack posture: signal aggregation and state machine
+core/enforce/     block mirror and the optional nftables kernel sink
+core/health/      background store probe behind /readyz
+core/metrics/     Prometheus instrumentation (private registry)
+transport/http/   auth_request sidecar + admin/metrics/dashboard
+transport/wasm/   optional http-wasm guest (stateless WAF, runs inside Angie)
+internal/         small shared helpers (bounded file reads, background-work jitter)
+cmd/              guardiand (sidecar), guardian-train (offline anomaly training),
+                  guardian-loadtest (stress tool)
+deploy/           Angie snippets, systemd unit, rules, Grafana dashboard, alert rules
+web/              challenge/denied pages and the admin dashboard, with its
+                  vendored chart libraries (no CDN, works air-gapped)
 ```

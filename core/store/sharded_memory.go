@@ -384,7 +384,11 @@ func (s *ShardedMemory) ScanActiveBlocks(_ context.Context, prefix string, limit
 	s.central.mu.Lock()
 	defer s.central.mu.Unlock()
 	now := time.Now()
-	out := make([]KV, 0, min(len(s.central.activeBlocks), max(limit, 0)))
+	size := len(s.central.activeBlocks)
+	if limit > 0 {
+		size = min(size, limit)
+	}
+	out := make([]KV, 0, size)
 	complete := true
 	for key := range s.central.activeBlocks {
 		e, ok := s.central.m[key]
