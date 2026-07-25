@@ -428,6 +428,12 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	// this runs once per issued challenge, which under a flood is the hottest
 	// write path in the product.
 	bucket := m.now().Unix() / 3600
+	// 384 covers the realistic maximum without a heap allocation: a 253-byte
+	// DNS name, a 45-byte IPv6 text form, a 19-digit bucket, the 32-byte id and
+	// three separators. A longer (attacker-supplied) Host is not a correctness
+	// problem: append simply spills to the heap for that one issuance. Do not
+	// "fix" that with a length check, and do not shrink the array below the sum
+	// above, or the common case starts allocating.
 	var msgBuf [384]byte
 	msg := append(msgBuf[:0], strings.ToLower(host)...)
 	msg = append(msg, 0)

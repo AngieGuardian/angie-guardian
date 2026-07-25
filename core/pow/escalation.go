@@ -19,6 +19,13 @@ import (
 // against the host+IP pair, a successful redemption clears that pair, and
 // past a small allowance each further unsolved issuance raises the demanded
 // work.
+//
+// Escalation is only the first half of the farming defence. Raising the work
+// has a ceiling (the domain max_difficulty), and a client happy to keep
+// fetching and discarding will sit at that ceiling indefinitely. Once the
+// escalation alone pins it there, the caller reports a challenge_farm
+// scoreboard event and the waf.ip_behaviour threshold blocks outright; see
+// the BumpEscalation call site in transport/http/server.go.
 const (
 	// escalationFreeIssues is how many unsolved challenges a client may
 	// accumulate before escalation starts. Covers honest bursts: several

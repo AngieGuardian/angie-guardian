@@ -59,14 +59,10 @@ type CounterCache struct {
 	// scan per second, whatever the previous sweep achieved. A new key arriving
 	// at capacity between sweeps is counted in the overflow sketch instead of
 	// triggering a scan; existing hot keys keep their exact local count and
-	// reconciliation state.
-	//
-	// The unconditional pacing is load-bearing. An earlier version re-swept
-	// without pacing whenever the previous sweep had freed anything, and under
-	// a rotating-key flood the drains free a handful of slots at a time, so the
-	// sweep ran hundreds of times per second — a full-map scan under this
-	// mutex, on the challenge hot path — and issuance throughput collapsed by
-	// 3x (see BenchmarkChallengeIssue and the loadtest -warmup/-n mode).
+	// reconciliation state. The unconditional pacing is load-bearing and has
+	// been got wrong once; makeCounterRoomLocked documents how and why, and
+	// BenchmarkChallengeIssue plus the loadtest -warmup/-n mode are how the
+	// cost was measured.
 	nextRoomSweep int64 // unix nanos: earliest next O(n) room sweep at capacity
 	// overflow is a bounded count-min sketch used only while the primary cache
 	// is at capacity with nothing reclaimable (or reclamation still paced out).
@@ -112,10 +108,13 @@ type dirtyEntry struct {
 	del      bool
 }
 
-// maxCounterEntries bounds the local counter map. At capacity, clean cached
-// totals are reclaimed in bulk; entries with unapplied work are never evicted.
-// If every slot is protected, previously unseen keys are left uncached until
-// a drainer makes room.
+// maxCounterEntries bounds the local counter map. At capacity a paced sweep
+// (makeCounterRoomLocked) reclaims clean cached totals and expired entries;
+// entries with live unpushed work are never evicted. A previously unseen key
+// arriving between sweeps is counted in the overflow sketch rather than going
+// uncounted. There is deliberately no latch that holds new keys out until a
+// drainer frees a slot: that shape existed until 16091b3 and its replacement
+// caused the 3x issuance collapse described on makeCounterRoomLocked.
 const maxCounterEntries = 1 << 17
 
 const (
@@ -171,9 +170,13 @@ func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
 			// window and is deliberately discarded here.
 			delete(c.m, key)
 		} else if !c.makeCounterRoomLocked() {
-			// Every cached entry owns unpushed work. Evicting any of them would
-			// lose reconciliation state. Count this previously unseen key in the
-			// bounded overload sketch so repeated requests still trip the limiter.
+			// No slot for this previously unseen key, for either of two reasons:
+			// every entry owns live unpushed work (evicting one would lose
+			// reconciliation state), or the reclaim sweep is paced out and simply
+			// has not run yet. Under a new-key flood the second is the common
+			// case, and deliberately so: scanning is what costs, not shedding.
+			// Count the key in the bounded overload sketch so repeated requests
+			// still trip the limiter.
 			n := c.incrOverflowLocked(key, now, ttl)
 			c.mu.Unlock()
 			return n
@@ -297,31 +300,50 @@ func (c *CounterCache) incrOverflowLocked(key string, now int64, ttl time.Durati
 
 // makeCounterRoomLocked preserves every entry that still owns live unpushed
 // work and bulk-evicts the rest: clean cached totals, and expired entries even
-// when they retained a pending delta — the window is over, so that delta is
-// unpushable anyway (flushKey drops expired windows). Without the expired-entry
+// when they retained a pending delta (the window is over, so that delta is
+// unpushable anyway; flushKey drops expired windows). Without the expired-entry
 // rule, a rotating-IP flood during a store outage would fill the cache with
 // never-rebumped protected entries and permanently degrade all new keys to the
-// overflow sketch.
+// overflow sketch. c.mu must be held.
 //
-// The scan runs at most once per second, unconditionally: a sweep that frees
-// only the few slots the drains released since the last one must not license an
-// immediate re-sweep, or a sustained new-key flood turns into a full-map scan
-// under c.mu every few insertions (measured at 62% of all daemon CPU, a 3x
-// issuance collapse). Keys shed between sweeps are counted by the overflow
-// sketch, which is the designed degradation. The eviction test orders its cheap
-// field checks before the c.dirty map lookup on purpose: in the saturated
-// regime nearly every entry short-circuits on pending, and hashing 131k keys
-// per sweep was most of the sweep's cost. c.mu must be held.
+// This function is a performance footgun and has gone wrong once already. It
+// runs a full scan of a 131k-entry map while holding c.mu, which is the same
+// mutex every request on the challenge hot path needs in order to count. Its
+// cost is therefore paid in stalled requests, and both rules below exist to
+// keep that cost bounded. Read the inline comments before changing either.
 func (c *CounterCache) makeCounterRoomLocked() bool {
 	if len(c.m) < maxCounterEntries {
 		return true
 	}
 	now := c.now().UnixNano()
+	// Rule 1: pace unconditionally. Do NOT reintroduce a "sweep again straight
+	// away if the last sweep freed something" condition. That is exactly what
+	// 16091b3 shipped, and it is self-defeating: under a new-key flood the
+	// background drains are always releasing a handful of slots, so the sweep
+	// always "succeeded", so the pacing never applied, so a full-map scan ran
+	// every few insertions. Measured at 62% of all daemon CPU and a 3x drop in
+	// challenge issuance (10.2k -> 3.2k req/s, p99 25ms -> 84ms).
+	//
+	// Shedding a key here is cheap and safe: incrOverflowLocked counts it in
+	// the sketch, which over-counts at worst and so still enforces. Scanning is
+	// the expensive path, not skipping the scan.
+	//
+	// TestCounterCacheRoomSweepIsPaced fails if this is weakened.
 	if now < c.nextRoomSweep {
 		return false
 	}
+	// Stamped from the sweep's start, before the scan, so a slow sweep cannot
+	// shorten the gap before the next one.
 	c.nextRoomSweep = now + time.Second.Nanoseconds()
 	for key, e := range c.m {
+		// Rule 2: cheap checks first. Do NOT "tidy" this into
+		// c.dirty[key] == nil && (...). Both orders are the same boolean, so
+		// nothing will fail and no test will catch you: the difference is only
+		// in work done. && short-circuits, and in the saturated regime nearly
+		// every entry stops at the pending field read, which is free. Probing
+		// c.dirty first hashes all 131k keys on every sweep instead, which put
+		// aeshashbody alone at 22% of daemon CPU. This ordering is load-bearing
+		// and is the second half of the 16091b3 regression.
 		if (e.pending == 0 || now >= e.expires) && c.dirty[key] == nil {
 			delete(c.m, key)
 		}
@@ -404,9 +426,10 @@ func (c *CounterCache) foldOpLocked(d *dirtyEntry, deadline int64, del bool) {
 
 // drain flushes dirty keys until the queue is empty, then exits. Multiple
 // drainers run concurrently up to maxFlushWorkers; each claims one key at a time
-// and owns it (flushing set) across every store round for that key, so no other
-// drainer touches it. Ops arriving mid-flush fold into the same entry and are
-// handled by a follow-up round before the key is released.
+// and owns it across every store round for that key, so no other drainer
+// touches it. Ownership is the key's presence in c.dirty (there is no separate
+// flushing set), per the invariant on dirtyEntry. Ops arriving mid-flush fold
+// into the same entry and are handled by a follow-up round before release.
 func (c *CounterCache) drain() {
 	// One reusable store-round context for the whole drain loop, refreshed when
 	// under half its budget remains (see drainCtx). A fresh WithTimeout per
@@ -460,7 +483,7 @@ func (d *drainCtx) close() {
 }
 
 // flushKey drains all pending work for a key it owns, looping until nothing is
-// left, then releases the key. It holds the key (flushing set) across every
+// left, then releases the key. It holds the key across every
 // store round via its dirty entry, so no other drainer touches it and any op
 // arriving meanwhile folds into the entry and is handled here. A pending delete
 // runs first (a Forget reset the local counter, so the shared one must go),

@@ -923,6 +923,12 @@ func TestCounterCacheFlushHonorsContext(t *testing.T) {
 // entries at a time, and re-sweeping on every success turned into a full-map
 // scan under c.mu every few insertions (a measured 3x challenge-issuance
 // collapse). Between paced sweeps, at-capacity keys go to the overflow sketch.
+// TestCounterCacheRoomSweepIsPaced pins rule 1 of makeCounterRoomLocked: a
+// sweep that freed slots must not license an immediate re-sweep. Regressing
+// that is what collapsed challenge issuance 3x in 16091b3, and it is invisible
+// to every other test here, because the cache still behaves correctly while
+// doing it, just far too slowly. Deterministic, not timing-based: the clock is
+// faked and the map is filled to exactly capacity.
 func TestCounterCacheRoomSweepIsPaced(t *testing.T) {
 	c := NewCounterCache(failingStore{})
 	// Inline drains: the test reassigns c.now mid-flight, and a background
