@@ -218,3 +218,38 @@ func TestStaticConfigChangesCoversEveryAdminField(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveConfigPath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configPath string
+		testConfig bool
+		want       string
+		wantOK     bool
+	}{
+		{"serving without -config is a usage error", "", false, "", false},
+		{"serving with -config uses it", "/tmp/x.yaml", false, "/tmp/x.yaml", true},
+		{"-t without -config defaults", "", true, defaultConfigPath, true},
+		{"-t with -config still wins", "/tmp/x.yaml", true, "/tmp/x.yaml", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := resolveConfigPath(tc.configPath, tc.testConfig)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("resolveConfigPath(%q, %v) = (%q, %v), want (%q, %v)",
+					tc.configPath, tc.testConfig, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// The default is only useful if it is where the packaging actually puts the
+// file, so pin it against the unit file rather than trusting the constant.
+func TestDefaultConfigPathMatchesTheUnitFile(t *testing.T) {
+	unit, err := os.ReadFile("../../deploy/guardiand.service")
+	if err != nil {
+		t.Fatalf("read unit: %v", err)
+	}
+	if !strings.Contains(string(unit), "-config "+defaultConfigPath) {
+		t.Fatalf("deploy/guardiand.service does not run with -config %s; the -t default now points somewhere the packaging does not use", defaultConfigPath)
+	}
+}

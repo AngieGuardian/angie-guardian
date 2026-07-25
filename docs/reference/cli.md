@@ -12,13 +12,20 @@ guardiand -config /etc/guardian/guardian.yaml
 
 | Flag | Description |
 |---|---|
-| `-config <path>` | Path to `guardian.yaml` (required). |
+| `-config <path>` | Path to `guardian.yaml`. Required to serve, and for `-healthcheck`. Optional with `-t`, which falls back to `/etc/guardian/guardian.yaml` (the path the packaging and the shipped unit use). |
 | `-healthcheck` | **Liveness** check: require every configured listener to answer `/healthz`, then exit. Only the listen addresses are read from the config, leniently: a half-edited or invalid `guardian.yaml` cannot fail the probe of a healthy running daemon. Used by the distroless Compose image. It deliberately does not consult the store; see [`/readyz`](/reference/admin-api#get-readyz) for readiness. |
-| `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). |
+| `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). Without `-config` it tests `/etc/guardian/guardian.yaml`, so a packaged install can just run `guardiand -t`. |
 | `-version` | Print version and exit. |
 
 ```sh
 ./guardiand -config guardian.yaml -t
+```
+
+On a packaged install, where the config is already at
+`/etc/guardian/guardian.yaml`, the path can be left off:
+
+```sh
+guardiand -t
 ```
 
 Output on a valid config:
@@ -26,6 +33,9 @@ Output on a valid config:
 ```
 config guardian.yaml: ok
 ```
+
+The path is always named in the output, so a defaulted run still tells you
+exactly which file was read.
 
 ...or, on a bad config:
 

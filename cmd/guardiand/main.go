@@ -36,8 +36,34 @@ import (
 
 var version = "dev" // set via -ldflags "-X main.version=..."
 
+// defaultConfigPath is where the packaging installs guardian.yaml: the systemd
+// unit, the container image and every worked example in the docs use it.
+const defaultConfigPath = "/etc/guardian/guardian.yaml"
+
+// resolveConfigPath fills in defaultConfigPath for the modes allowed to run
+// without an explicit -config, and reports whether a path is available at all.
+//
+// Only -t gets the default, matching `angie -t`: it is what an operator types
+// by hand before a restart, and typing the packaged path every time adds
+// nothing. Serving is deliberately excluded. A unit file or container whose
+// -config went missing must fail loudly rather than quietly serve whatever
+// happens to sit at the default path, which is a far worse outcome than an
+// exit 2 the operator sees immediately. -healthcheck is excluded for the same
+// reason: it reads listen addresses, and probing the wrong daemon's ports
+// would report a healthy status for something nobody asked about.
+func resolveConfigPath(configPath string, testConfig bool) (string, bool) {
+	if configPath != "" {
+		return configPath, true
+	}
+	if testConfig {
+		return defaultConfigPath, true
+	}
+	return "", false
+}
+
 func main() {
-	configPath := flag.String("config", "", "path to guardian.yaml (required)")
+	configPath := flag.String("config", "",
+		"path to guardian.yaml (required, except with -t which defaults to "+defaultConfigPath+")")
 	testConfig := flag.Bool("t", false, "test the config: load and validate it, then exit (0 = ok, 1 = error)")
 	healthcheck := flag.Bool("healthcheck", false, "probe every configured Guardian listener, then exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -47,33 +73,37 @@ func main() {
 		fmt.Println("guardiand", version)
 		return
 	}
-	if *configPath == "" {
+	cfgPath, ok := resolveConfigPath(*configPath, *testConfig)
+	if !ok {
 		fmt.Fprintln(os.Stderr, "usage: guardiand -config /etc/guardian/guardian.yaml")
+		fmt.Fprintln(os.Stderr, "       guardiand -t   (tests "+defaultConfigPath+" unless -config is given)")
 		os.Exit(2)
 	}
 	if *healthcheck {
-		if err := checkHealth(*configPath, 1500*time.Millisecond); err != nil {
+		if err := checkHealth(cfgPath, 1500*time.Millisecond); err != nil {
 			fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 	if *testConfig {
-		cfg, err := core.LoadConfig(*configPath)
+		cfg, err := core.LoadConfig(cfgPath)
 		if err == nil {
 			err = core.ValidateConfigArtifacts(cfg, slog.Default())
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "config %s: FAILED\n%v\n", *configPath, err)
+			// cfgPath, not *configPath: with a defaulted -t the operator never
+			// typed a path, so the message has to name the one that was tried.
+			fmt.Fprintf(os.Stderr, "config %s: FAILED\n%v\n", cfgPath, err)
 			os.Exit(1)
 		}
 		for _, wmsg := range cfg.Warnings() {
-			fmt.Fprintf(os.Stderr, "config %s: warning: %s\n", *configPath, wmsg)
+			fmt.Fprintf(os.Stderr, "config %s: warning: %s\n", cfgPath, wmsg)
 		}
-		fmt.Printf("config %s: ok\n", *configPath)
+		fmt.Printf("config %s: ok\n", cfgPath)
 		return
 	}
-	if err := run(*configPath); err != nil {
+	if err := run(cfgPath); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
