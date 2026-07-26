@@ -23,6 +23,7 @@ BenchmarkEvaluateAllowDefault 3
 BenchmarkEvaluateDeny 2
 BenchmarkEvaluatePoWTokenCached 4
 BenchmarkEvaluateChallengeDecision 5
+BenchmarkRecordEvent 6
 BenchmarkVerifyTokenCached 0
 BenchmarkAuthAllow 7
 BenchmarkIssue 10

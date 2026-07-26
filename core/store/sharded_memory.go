@@ -133,6 +133,29 @@ func (s *ShardedMemory) shardFor(key string) *shard {
 	return &s.shards[fnv1a32(key)&s.mask]
 }
 
+// lockShardKeys locks the unique non-central shards for keys in a stable order.
+// Multi-key block/unblock commits take central.mu first and these locks second;
+// every other operation holds at most one of them, so this ordering cannot
+// deadlock while still making the cross-key mutation atomic.
+func (s *ShardedMemory) lockShardKeys(keys ...string) func() {
+	idxs := make([]int, 0, len(keys))
+	for _, key := range keys {
+		if !isCentral(key) {
+			idxs = append(idxs, int(fnv1a32(key)&s.mask))
+		}
+	}
+	slices.Sort(idxs)
+	idxs = slices.Compact(idxs)
+	for _, idx := range idxs {
+		s.shards[idx].mu.Lock()
+	}
+	return func() {
+		for i := len(idxs) - 1; i >= 0; i-- {
+			s.shards[idxs[i]].mu.Unlock()
+		}
+	}
+}
+
 func (s *ShardedMemory) janitor() {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
@@ -318,9 +341,12 @@ func (s *ShardedMemory) CompareAndSwap(_ context.Context, key string, old, new [
 		} else if !ok || !bytes.Equal(e.value, old) {
 			return false, nil
 		}
-		// A CAS/Incr on a block: key must not create an active-block index entry;
-		// only Set/Delete manage the index (store.go ActiveBlockScanner contract).
 		s.central.m[key] = entry{value: bytes.Clone(new), expiresAt: expiry(ttl)}
+		// A fenced block write is still a block write, so it indexes like Set
+		// (store.go ActiveBlockScanner contract). Incr still must not.
+		if strings.HasPrefix(key, "block:") {
+			s.central.activeBlocks[key] = struct{}{}
+		}
 		return true, nil
 	}
 	sh := s.shardFor(key)
@@ -336,6 +362,141 @@ func (s *ShardedMemory) CompareAndSwap(_ context.Context, key string, old, new [
 	}
 	sh.m[key] = entry{value: bytes.Clone(new), expiresAt: expiry(ttl)}
 	return true, nil
+}
+
+func (s *ShardedMemory) CompareAndDelete(_ context.Context, key string, old []byte) (bool, error) {
+	if old == nil {
+		return false, nil // nothing to take back
+	}
+	if isCentral(key) {
+		s.central.mu.Lock()
+		defer s.central.mu.Unlock()
+		e, ok := s.getCentral(key)
+		if !ok || !bytes.Equal(e.value, old) {
+			return false, nil
+		}
+		delete(s.central.m, key)
+		delete(s.central.activeBlocks, key)
+		return true, nil
+	}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := getShard(sh.m, key)
+	if !ok || !bytes.Equal(e.value, old) {
+		return false, nil
+	}
+	delete(sh.m, key)
+	return true, nil
+}
+
+func (s *ShardedMemory) CommitBlock(_ context.Context, c BlockCommit) (BlockCommitResult, error) {
+	if !isCentral(c.BlockKey) {
+		return BlockCommitResult{}, fmt.Errorf("CommitBlock requires a block key, got %q", c.BlockKey)
+	}
+	s.central.mu.Lock()
+	defer s.central.mu.Unlock()
+	unlock := s.lockShardKeys(c.GuardKey, c.HoldKey, c.CounterKey)
+	defer unlock()
+
+	if _, held := getShard(s.shardFor(c.HoldKey).m, c.HoldKey); held {
+		return BlockCommitResult{Refusal: BlockRefusalHold}, nil
+	}
+	guardShard := s.shardFor(c.GuardKey)
+	guard, guardOK := getShard(guardShard.m, c.GuardKey)
+	if c.GuardValue == nil {
+		if guardOK {
+			return BlockCommitResult{Refusal: BlockRefusalGeneration}, nil
+		}
+	} else if !guardOK || !bytes.Equal(guard.value, c.GuardValue) {
+		return BlockCommitResult{Refusal: BlockRefusalGeneration}, nil
+	}
+
+	curBlock, blockOK := s.getCentral(c.BlockKey)
+	if c.ExpectedBlock == nil {
+		if blockOK {
+			return BlockCommitResult{Refusal: BlockRefusalBlock}, nil
+		}
+	} else if !blockOK || !bytes.Equal(curBlock.value, c.ExpectedBlock) {
+		return BlockCommitResult{Refusal: BlockRefusalBlock}, nil
+	}
+
+	counterShard := s.shardFor(c.CounterKey)
+	curCounter, counterOK := getShard(counterShard.m, c.CounterKey)
+	offenses := int64(1)
+	var counterExpiry time.Time
+	if counterOK {
+		offenses = counterValue(curCounter.value) + 1
+		counterExpiry = curCounter.expiresAt
+	} else {
+		counterExpiry = expiry(c.CounterTTL)
+	}
+	ttl := blockBackoffTTL(c.BaseTTL, c.MaxTTL, offenses)
+	counterShard.m[c.CounterKey] = entry{
+		value:     []byte(strconv.FormatInt(offenses, 10)),
+		expiresAt: counterExpiry,
+	}
+	s.central.m[c.BlockKey] = entry{value: bytes.Clone(c.NewBlock), expiresAt: expiry(ttl)}
+	s.central.activeBlocks[c.BlockKey] = struct{}{}
+	return BlockCommitResult{Committed: true, Offenses: offenses, TTL: ttl}, nil
+}
+
+func (s *ShardedMemory) CommitEvent(_ context.Context, c EventCommit) (EventCommitResult, error) {
+	holdShard := s.shardFor(c.HoldKey)
+	counterShard := s.shardFor(c.CounterKey)
+	if holdShard == counterShard {
+		holdShard.mu.Lock()
+		defer holdShard.mu.Unlock()
+	} else {
+		// Use the array order as the global shard-lock order. This hot path
+		// avoids the allocating general-purpose lockShardKeys helper.
+		holdIndex := int(fnv1a32(c.HoldKey) & s.mask)
+		counterIndex := int(fnv1a32(c.CounterKey) & s.mask)
+		if holdIndex > counterIndex {
+			holdShard, counterShard = counterShard, holdShard
+		}
+		holdShard.mu.Lock()
+		counterShard.mu.Lock()
+		defer holdShard.mu.Unlock()
+		defer counterShard.mu.Unlock()
+		// Restore semantic names after ordering the locks.
+		holdShard = s.shardFor(c.HoldKey)
+		counterShard = s.shardFor(c.CounterKey)
+	}
+	if _, held := getShard(holdShard.m, c.HoldKey); held {
+		return EventCommitResult{}, nil
+	}
+	deadline := int64(0)
+	if c.CounterTTL > 0 {
+		deadline = time.Now().Add(c.CounterTTL).UnixNano()
+	}
+	get := func(k string) (entry, bool) { return getShard(counterShard.m, k) }
+	value, applied, err := incrByDeadline(counterShard.m, get, c.CounterKey, 1, deadline)
+	return EventCommitResult{Committed: applied, Value: value}, err
+}
+
+func (s *ShardedMemory) CommitUnblock(_ context.Context, c UnblockCommit) error {
+	if !isCentral(c.BlockKey) {
+		return fmt.Errorf("CommitUnblock requires a block key, got %q", c.BlockKey)
+	}
+	s.central.mu.Lock()
+	defer s.central.mu.Unlock()
+	unlock := s.lockShardKeys(c.HoldKey, c.GenerationKey, c.CounterKey)
+	defer unlock()
+
+	holdShard := s.shardFor(c.HoldKey)
+	holdShard.m[c.HoldKey] = entry{value: bytes.Clone(c.HoldValue), expiresAt: expiry(c.HoldTTL)}
+	genShard := s.shardFor(c.GenerationKey)
+	genShard.m[c.GenerationKey] = entry{
+		value:     bytes.Clone(c.Generation),
+		expiresAt: expiry(c.GenerationTTL),
+	}
+	delete(s.central.m, c.BlockKey)
+	delete(s.central.activeBlocks, c.BlockKey)
+	if c.ResetBackoff {
+		delete(s.shardFor(c.CounterKey).m, c.CounterKey)
+	}
+	return nil
 }
 
 func (s *ShardedMemory) Scan(ctx context.Context, prefix string) ([]KV, error) {

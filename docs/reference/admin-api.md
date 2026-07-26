@@ -153,7 +153,92 @@ curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
 
 ### `DELETE /admin/blocks/{ip}`
 
-Lift a block.
+Lift a block **and clear the state that produced it**.
+
+Lifting the block on its own would be worse than doing nothing. The
+[`ev:` counter](/reference/store-keys) that crossed a `waf.ip_behaviour`
+threshold stays at or above the limit for the rest of its window, so the next
+scored event re-blocks the IP within seconds; the `chesc:`/`chfesc:` challenge
+escalation stays pinned at the difficulty ceiling, so every further issuance
+reports a `challenge_farm` event; and `blkct:` makes each re-block twice as long as the
+last one, laddering toward the 30-day ceiling. So the event counters and the
+escalation are always cleared.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `reset_backoff` | `true` | Also clear `blkct:`, the 24h repeat-offender counter behind the block-TTL doubling. Anything other than a boolean returns `400`. |
+
+Leave `reset_backoff` at its default when the block was a mistake: the offense
+it recorded is a mistake too, and the next block of that IP should start at the
+base `block_ttl`. Pass `reset_backoff=false` when you are giving a borderline
+client another chance and the offense history is real and worth keeping.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE \
+     'http://127.0.0.1:8072/admin/blocks/203.0.113.9?reset_backoff=false'
+```
+
+```json
+{"ip":"203.0.113.9","blocked":false,
+ "reset":{"event_keys":15,"escalation_keys":4,"backoff_reset":false}}
+```
+
+| Field | Meaning |
+|---|---|
+| `event_keys` | Old-generation `ev:` counter keys addressed, three per configured (event type, window). The final generation rotation is the authoritative clear; deleting the old exact keys reclaims them promptly. |
+| `escalation_keys` | Host+IP escalation counters cleared, two per host (`chesc:` and `chfesc:`). |
+| `backoff_reset` | Whether `blkct:` was cleared. |
+| `incomplete` | Present and `true` when state that can re-block the IP may have survived: a challenge escalation that could not be cleared, or an IP seen on more hosts than one unblock clears. Behaviour counters do not set it, because the final commit rotates the generation their keys are named after and a counter left behind is one nothing will read again. Steps that only tidy up log their failure instead, so this stays a signal worth acting on. Omitted otherwise. |
+
+Neither `ev:` nor the `chesc:`/`chfesc:` pair is enumerable by prefix, so the keys are rebuilt
+from the running config: every `(event type, window)` pair across the defaults,
+every domain and every `paths:` overlay, and, for the escalation, the hosts
+this IP was acted on (from the decision ring) plus the configured vhosts, up to
+128. One gap survives that: an IP challenged on a host that is *not* configured
+and has since aged out of the bounded ring keeps its escalation counter until
+the challenge TTL lapses.
+
+Counters are bucketed by absolute time, so each `(event type, window)` pair
+clears three buckets: the live one, the previous one (a replica whose clock
+trails this instance is still writing it) and the next one (a replica whose
+clock leads it has already been writing that, possibly to the threshold).
+
+The reset uses two generation boundaries against live traffic:
+
+1. It first writes a short `unblk:<ip>` marker and a fresh
+   `unblkgen:<ip>`, then deletes the old generation's reconstructed producer
+   keys. While the marker exists, instances normally skip behaviour counting
+   and automatic blocks for the IP.
+2. After the potentially slow reset work, one atomic store commit publishes
+   another fresh marker/generation while removing `block:` and, when requested,
+   `blkct:`.
+
+The second boundary is why correctness does not depend on continuously renewing
+a finite lease through an unbounded number of store round trips. Each `ev:` key
+contains the generation that admitted it. An event increment that passed the
+first marker check and finishes late writes only an obsolete key; traffic after
+the response uses the final generation.
+
+Automatic block placement is atomic with the same fence. The backend
+transaction or Redis/Valkey script verifies the generation and previous block,
+advances `blkct:`, derives the backoff TTL and writes the new block together. A
+writer racing the final unblock therefore commits wholly before it and is
+removed, or fails wholly after it without restoring the offense count. The
+block value still carries an owner token; enforcement notifications validate
+that token and are locally ordered with removals, so a delayed writer cannot
+re-add an unblocked IP or replace a newer mirror entry.
+
+`unblkgen:` is retained for one day and uses a fresh opaque value rather than a
+timestamp or incrementing counter. No instance clocks are compared, and a new
+unblock cannot inherit an earlier generation's almost-expired lifetime.
+
+**Admin blocks are not affected by the marker.** `PUT /admin/blocks/{ip}`
+straight after a `DELETE` does exactly what you asked; only automatic
+threshold and instant blocks are held off.
+
+The visible consequence is that an IP an operator unblocked by mistake cannot
+be automatically re-blocked for a couple of seconds; blocking it by hand still
+works immediately.
 
 ## Decisions
 

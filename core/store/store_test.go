@@ -252,6 +252,166 @@ func assertStoreConformance(t *testing.T, s Store, advance func(time.Duration), 
 				t.Fatalf("cas value = %q, want spent", v)
 			}
 
+			// CompareAndDelete: the counterpart a writer needs to take back its
+			// own write and nobody else's. A stale old must not delete, or a
+			// delayed writer would remove whatever replaced its value.
+			ok, err = s.CompareAndDelete(ctx, "cas", []byte("a"))
+			if err != nil || ok {
+				t.Fatalf("CompareAndDelete with stale old = %v %v, want false nil", ok, err)
+			}
+			if _, found, _ := s.Get(ctx, "cas"); !found {
+				t.Fatal("CompareAndDelete with stale old removed the key anyway")
+			}
+			ok, err = s.CompareAndDelete(ctx, "cas", []byte("spent"))
+			if err != nil || !ok {
+				t.Fatalf("CompareAndDelete with matching old = %v %v, want true nil", ok, err)
+			}
+			if _, found, _ := s.Get(ctx, "cas"); found {
+				t.Fatal("CompareAndDelete with matching old left the key behind")
+			}
+			ok, err = s.CompareAndDelete(ctx, "cas", []byte("spent"))
+			if err != nil || ok {
+				t.Fatalf("CompareAndDelete on an absent key = %v %v, want false nil", ok, err)
+			}
+			// nil old is not create-only here: there is nothing to take back.
+			if err := s.Set(ctx, "cas", []byte("v"), 0); err != nil {
+				t.Fatal(err)
+			}
+			if ok, _ := s.CompareAndDelete(ctx, "cas", nil); ok {
+				t.Fatal("CompareAndDelete with a nil old must never delete")
+			}
+			if _, found, _ := s.Get(ctx, "cas"); !found {
+				t.Fatal("CompareAndDelete with a nil old removed the key")
+			}
+
+			// CommitBlock couples the generation guard, block predecessor,
+			// offense count and exponential TTL in one mutation.
+			if err := s.Set(ctx, "unblkgen:commit", []byte("g1"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			first, err := s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:commit", NewBlock: []byte("one"),
+				BaseTTL: time.Minute, MaxTTL: 4 * time.Hour,
+				CounterKey: "blkct:commit", CounterTTL: time.Hour,
+				HoldKey:  "unblk:commit",
+				GuardKey: "unblkgen:commit", GuardValue: []byte("g1"),
+			})
+			if err != nil || !first.Committed || first.Offenses != 1 || first.TTL != time.Minute {
+				t.Fatalf("first CommitBlock = %+v %v", first, err)
+			}
+			second, err := s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:commit", ExpectedBlock: []byte("one"), NewBlock: []byte("two"),
+				BaseTTL: time.Minute, MaxTTL: 4 * time.Hour,
+				CounterKey: "blkct:commit", CounterTTL: time.Hour,
+				HoldKey:  "unblk:commit",
+				GuardKey: "unblkgen:commit", GuardValue: []byte("g1"),
+			})
+			if err != nil || !second.Committed || second.Offenses != 2 || second.TTL != 2*time.Minute {
+				t.Fatalf("second CommitBlock = %+v %v", second, err)
+			}
+
+			// Degenerate bounds are normalized identically everywhere. A zero
+			// TTL means "no expiry" to Set, so a backend that obeyed it would
+			// place a permanent block for a broken config while its peers
+			// placed a one-minute one.
+			degenerate, err := s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:degenerate", NewBlock: []byte("d"),
+				BaseTTL: 0, MaxTTL: 0,
+				CounterKey: "blkct:degenerate", CounterTTL: time.Hour,
+				HoldKey: "unblk:degenerate", GuardKey: "unblkgen:degenerate",
+			})
+			if err != nil || !degenerate.Committed || degenerate.TTL != time.Minute {
+				t.Fatalf("CommitBlock with zero bounds = %+v %v, want a defaulted 1m TTL", degenerate, err)
+			}
+			if _, err := s.CompareAndDelete(ctx, "block:degenerate", []byte("d")); err != nil {
+				t.Fatal(err)
+			}
+			stale, err := s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:commit", ExpectedBlock: []byte("one"), NewBlock: []byte("stale"),
+				BaseTTL: time.Minute, MaxTTL: 4 * time.Hour,
+				CounterKey: "blkct:commit", CounterTTL: time.Hour,
+				HoldKey:  "unblk:commit",
+				GuardKey: "unblkgen:commit", GuardValue: []byte("g1"),
+			})
+			if err != nil || stale.Committed {
+				t.Fatalf("stale-block CommitBlock = %+v %v, want uncommitted", stale, err)
+			}
+			if raw, _, _ := s.Get(ctx, "blkct:commit"); string(raw) != "2" {
+				t.Fatalf("stale block comparison moved counter to %q, want 2", raw)
+			}
+			if err := s.Set(ctx, "unblkgen:commit", []byte("g2"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			stale, err = s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:commit", ExpectedBlock: []byte("two"), NewBlock: []byte("stale"),
+				BaseTTL: time.Minute, MaxTTL: 4 * time.Hour,
+				CounterKey: "blkct:commit", CounterTTL: time.Hour,
+				HoldKey:  "unblk:commit",
+				GuardKey: "unblkgen:commit", GuardValue: []byte("g1"),
+			})
+			if err != nil || stale.Committed {
+				t.Fatalf("stale-generation CommitBlock = %+v %v, want uncommitted", stale, err)
+			}
+
+			// CommitUnblock rotates coordination state while removing the block
+			// and offense in the same transaction.
+			if err := s.CommitUnblock(ctx, UnblockCommit{
+				HoldKey: "unblk:commit", HoldValue: []byte("1"), HoldTTL: time.Hour,
+				GenerationKey: "unblkgen:commit", Generation: []byte("g3"), GenerationTTL: time.Hour,
+				BlockKey: "block:commit", CounterKey: "blkct:commit", ResetBackoff: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, _ := s.Get(ctx, "block:commit"); ok {
+				t.Fatal("CommitUnblock left the block")
+			}
+			if _, ok, _ := s.Get(ctx, "blkct:commit"); ok {
+				t.Fatal("CommitUnblock left the offense counter")
+			}
+			if raw, ok, _ := s.Get(ctx, "unblkgen:commit"); !ok || string(raw) != "g3" {
+				t.Fatalf("CommitUnblock generation = %q %v, want g3 true", raw, ok)
+			}
+			if _, ok, _ := s.Get(ctx, "unblk:commit"); !ok {
+				t.Fatal("CommitUnblock did not publish the hold")
+			}
+			heldBlock, err := s.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:commit", NewBlock: []byte("held"),
+				BaseTTL: time.Minute, MaxTTL: 4 * time.Hour,
+				CounterKey: "blkct:commit", CounterTTL: time.Hour,
+				HoldKey:  "unblk:commit",
+				GuardKey: "unblkgen:commit", GuardValue: []byte("g3"),
+			})
+			if err != nil || heldBlock.Committed {
+				t.Fatalf("held CommitBlock = %+v %v, want uncommitted", heldBlock, err)
+			}
+
+			// CommitEvent atomically couples the hold check and increment while
+			// preserving an existing counter's expiry.
+			heldEvent, err := s.CommitEvent(ctx, EventCommit{
+				CounterKey: "ev:commit", CounterTTL: time.Hour,
+				HoldKey: "unblk:commit",
+			})
+			if err != nil || heldEvent.Committed {
+				t.Fatalf("held CommitEvent = %+v %v, want uncommitted", heldEvent, err)
+			}
+			if err := s.Delete(ctx, "unblk:commit"); err != nil {
+				t.Fatal(err)
+			}
+			event, err := s.CommitEvent(ctx, EventCommit{
+				CounterKey: "ev:commit", CounterTTL: time.Hour,
+				HoldKey: "unblk:commit",
+			})
+			if err != nil || !event.Committed || event.Value != 1 {
+				t.Fatalf("first CommitEvent = %+v %v, want committed value 1", event, err)
+			}
+			nextEvent, err := s.CommitEvent(ctx, EventCommit{
+				CounterKey: "ev:commit", CounterTTL: time.Hour,
+				HoldKey: "unblk:commit",
+			})
+			if err != nil || !nextEvent.Committed || nextEvent.Value != 2 {
+				t.Fatalf("second CommitEvent = %+v %v, want committed value 2", nextEvent, err)
+			}
+
 			// Scan: live keys with the prefix only, key-sorted, values intact,
 			// expired entries filtered even before any sweeper runs.
 			for k, val := range map[string]string{"scan:a": "1", "scan:b": "2", "other": "x"} {
@@ -496,6 +656,55 @@ func TestAllBackendsActiveBlockIndexIgnoresUnrelatedKeys(t *testing.T) {
 			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
 			if err != nil || len(kvs) != 1 || kvs[0].Key != "block:192.0.2.2" {
 				t.Fatalf("active scan after delete = %+v err=%v", kvs, err)
+			}
+
+			// The conditional pair mutates blocks too (a block writer fences
+			// its write against a newer block it does not own), so it has to
+			// index exactly like Set/Delete. A backend that skipped this would
+			// hide the block from the admin list and from every enforcement
+			// sink the reconciler feeds, while the pipeline still denied on it.
+			if ok, err := be.store.CompareAndSwap(ctx, "block:192.0.2.3", nil, []byte("three"), time.Hour); err != nil || !ok {
+				t.Fatalf("fenced block create = %v %v, want true nil", ok, err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 2 {
+				t.Fatalf("active scan after a fenced create = %+v err=%v; want two blocks", kvs, err)
+			}
+			if ok, err := be.store.CompareAndDelete(ctx, "block:192.0.2.3", []byte("three")); err != nil || !ok {
+				t.Fatalf("fenced block withdrawal = %v %v, want true nil", ok, err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 1 || kvs[0].Key != "block:192.0.2.2" {
+				t.Fatalf("active scan after a fenced withdrawal = %+v err=%v", kvs, err)
+			}
+
+			// The compound commits are the production block path, so they carry
+			// the same obligation. A backend that skipped the index here would
+			// still deny the IP in the pipeline while hiding it from the admin
+			// list and from every enforcement sink the reconciler feeds.
+			res, err := be.store.CommitBlock(ctx, BlockCommit{
+				BlockKey: "block:192.0.2.4", NewBlock: []byte("four"),
+				BaseTTL: time.Minute, MaxTTL: time.Hour,
+				CounterKey: "blkct:192.0.2.4", CounterTTL: time.Hour,
+				HoldKey: "unblk:192.0.2.4", GuardKey: "unblkgen:192.0.2.4",
+			})
+			if err != nil || !res.Committed {
+				t.Fatalf("CommitBlock = %+v %v, want committed", res, err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 2 {
+				t.Fatalf("active scan after CommitBlock = %+v err=%v; want two blocks", kvs, err)
+			}
+			if err := be.store.CommitUnblock(ctx, UnblockCommit{
+				HoldKey: "unblk:192.0.2.4", HoldValue: []byte("1"), HoldTTL: time.Minute,
+				GenerationKey: "unblkgen:192.0.2.4", Generation: []byte("g"), GenerationTTL: time.Hour,
+				BlockKey: "block:192.0.2.4", CounterKey: "blkct:192.0.2.4", ResetBackoff: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			kvs, _, err = indexed.ScanActiveBlocks(ctx, "block:", 10)
+			if err != nil || len(kvs) != 1 || kvs[0].Key != "block:192.0.2.2" {
+				t.Fatalf("active scan after CommitUnblock = %+v err=%v", kvs, err)
 			}
 		})
 	}

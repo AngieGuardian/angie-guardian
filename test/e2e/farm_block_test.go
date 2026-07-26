@@ -76,8 +76,66 @@ func TestChallengeFarmingBlocks(t *testing.T) {
 	if resp := req(t, http.MethodGet, auth+"/auth", hdrs, nil); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("blocked farmer at /auth: status %d, want 403", resp.StatusCode)
 	}
-	adminReq(t, http.MethodDelete, "/admin/blocks/"+ip, nil)
+	unblock(t, ip, true)
 	if resp := req(t, http.MethodGet, auth+"/auth", hdrs, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unblocked farmer at /auth: status %d, want 401 (challenge again)", resp.StatusCode)
+	}
+
+	// And it stays unblocked once the reset window has lapsed, which is the
+	// part the guard cannot be doing for us: the unblock has to have cleared
+	// the counters that placed the block. The pinned escalation and the
+	// challenge_farm event bucket both survived it once, so a single further
+	// issuance re-blocked the IP within seconds, at twice the TTL.
+	time.Sleep(unblockResetWindow)
+	for range 3 {
+		farmChallenge(t, ip)
+	}
+	if blocked, reason := blockStatus(t, ip); blocked {
+		t.Fatalf("re-blocked (%s) after an unblock: the counters behind the block were not cleared", reason)
+	}
+}
+
+// TestUnblockResetsOffenses: the unblock's default also clears the 24h
+// repeat-offender count, so a later block starts at the base TTL rather than a
+// doubled one, and the opt-out keeps that history.
+func TestUnblockResetsOffenses(t *testing.T) {
+	const ip = "203.0.113.231"
+	t.Cleanup(func() { adminReq(t, http.MethodDelete, "/admin/blocks/"+ip, nil) })
+
+	blockIP(t, ip, "manual")
+	unblock(t, ip, false)
+	if got := offenses(t, ip); got != 0 {
+		// Manual blocks do not touch blkct:, so this is the baseline: only
+		// automatic threshold blocks build the ladder.
+		t.Fatalf("offenses = %d after a manual block, want 0", got)
+	}
+
+	// Drive an automatic block so the ladder actually has something on it.
+	// Paced, and started only once the unblock's reset window has lapsed: an
+	// unpaced loop spinning through that window issues challenges fast enough
+	// to trip the GLOBAL attack posture, which then adds its extra bits to
+	// every later test's challenge. The detector aggregates issuance rate
+	// fleet-wide, so a test that farms has to stay under the threshold.
+	time.Sleep(unblockResetWindow)
+	blocked := false
+	deadline := time.Now().Add(90 * time.Second)
+	for !blocked && time.Now().Before(deadline) {
+		farmChallenge(t, ip)
+		blocked, _ = blockStatus(t, ip)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatal("farming never blocked the IP")
+	}
+	if got := offenses(t, ip); got == 0 {
+		t.Fatal("an automatic block left no offense count")
+	}
+	unblock(t, ip, false)
+	if got := offenses(t, ip); got == 0 {
+		t.Fatal("reset_backoff=false cleared the offense history anyway")
+	}
+	unblock(t, ip, true)
+	if got := offenses(t, ip); got != 0 {
+		t.Fatalf("offenses = %d after the default unblock, want 0", got)
 	}
 }

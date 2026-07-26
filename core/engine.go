@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -454,22 +455,207 @@ func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail strin
 // BlockIP places a temporary behavioural block with an explicit TTL (no
 // backoff): an operator/admin-API primitive.
 func (e *Engine) BlockIP(ctx context.Context, ip, reason string, ttl time.Duration) error {
-	if err := e.store.Set(ctx, BlockKey(ip), []byte(reason), ttl); err != nil {
+	if err := e.store.Set(ctx, BlockKey(ip), store.BlockValue(reason), ttl); err != nil {
 		return err
 	}
 	e.board.notifyEnforcer(ip, reason, ttl, false)
 	return nil
 }
 
-// UnblockIP clears a behavioural block.
-func (e *Engine) UnblockIP(ctx context.Context, ip string) error {
-	return e.board.Unblock(ctx, ip)
+// UnblockReset reports what an unblock cleared besides the block itself.
+//
+// The key counts are keys addressed, not keys that held a value: the store's
+// Delete does not distinguish the two.
+//
+// Incomplete means specifically that state which can re-block the IP may have
+// survived, not that every step reported success. The behaviour counters no
+// longer qualify: the final commit rotates the generation their keys are named
+// after, so failing to delete one leaves a key nothing will ever read again.
+// What does qualify is the challenge escalation, which is not generation-
+// scoped: a counter left pinned at the difficulty ceiling keeps producing
+// challenge_farm events. Steps that merely tidy up log their failure instead,
+// so incomplete stays a signal an operator should act on.
+type UnblockReset struct {
+	EventKeys      int  `json:"event_keys"`
+	EscalationKeys int  `json:"escalation_keys"`
+	BackoffReset   bool `json:"backoff_reset"`
+	Incomplete     bool `json:"incomplete,omitempty"`
+}
+
+// UnblockIP lifts a behavioural block and clears the state that produced it.
+//
+// Lifting the block alone is worse than doing nothing. The ev: counter that
+// crossed the threshold stays at or above it for the rest of its window, so
+// the next scored event re-blocks the IP within seconds; the chesc: escalation
+// stays pinned at the difficulty ceiling, so every further issuance reports a
+// challenge_farm event; and blkct: makes each re-block twice as long as the
+// last, laddering toward the 30-day ceiling. Clearing the event counters and
+// the escalation is therefore unconditional: they are what makes an unblock
+// mean anything.
+//
+// resetBackoff decides only the repeat-offender ladder (blkct:, 24h window).
+// True treats the block as a mistake, so the offense it recorded goes with it;
+// false keeps the history for an IP being given another chance rather than
+// exonerated.
+//
+// The reset takes several store round trips against live traffic. It therefore
+// has a preparatory phase and one atomic commit boundary:
+//
+//  1. Scoreboard.HoldUnblock holds the IP, which stops any instance sharing
+//     the store from counting a behaviour event for it or placing an automatic
+//     block on it during the normal case. The behaviour counters belonging to
+//     the generation that was current before this hold are then deleted, along
+//     with the separately keyed challenge-escalation counters.
+//  2. CommitUnblock atomically publishes another fresh generation and hold,
+//     removes the active block, and optionally resets its offense counter.
+//
+// Correctness does not depend on the first finite hold outliving the reset.
+// Behaviour counters are generation-scoped, so a write admitted before the
+// final boundary can finish late only in an obsolete key. Automatic blocks
+// validate that same generation while atomically writing the block and offense,
+// so they commit wholly before the final boundary (and are removed by it) or
+// fail wholly after it. This is also why no verification loop is needed.
+//
+// The block itself is authoritative and its failure is returned. The resets
+// are best-effort: a store that cannot clear a counter must not turn a
+// successful unblock into an error, so it is reported through Incomplete and
+// the log instead.
+func (e *Engine) UnblockIP(ctx context.Context, ip string, resetBackoff bool) (UnblockReset, error) {
+	ip = canonIP(ip)
+	var out UnblockReset
+	// Both of these are preparatory. The generation read only says which old
+	// counter keys can be reclaimed early, and the hold only keeps ordinary
+	// traffic off the IP while that runs; neither decides the outcome, because
+	// CommitUnblock below rotates the generation whatever happened here. So a
+	// failure is logged and does not make the result incomplete.
+	resetGeneration, generationErr := e.board.unblockToken(ctx, ip)
+	if generationErr != nil {
+		e.log.Warn("unblock could not read the behaviour-counter generation, skipping their early cleanup",
+			"ip", ip, "err", generationErr)
+	}
+	if err := e.board.HoldUnblock(ctx, ip); err != nil {
+		e.log.Warn("unblock could not hold off concurrent scoring while it ran", "ip", ip, "err", err)
+	}
+	e.resetBlockCounters(ctx, ip, resetGeneration, generationErr == nil, &out)
+	if err := e.board.CommitUnblock(ctx, ip, resetBackoff); err != nil {
+		return out, err
+	}
+	if resetBackoff {
+		out.BackoffReset = true
+	}
+	return out, nil
+}
+
+// maxEscalationResetHosts bounds how many host+IP escalation counters a single
+// unblock clears. chesc: is not enumerable by prefix (the host sits before the
+// IP in the key), so the set is reconstructed, and a config with hundreds of
+// vhosts would otherwise turn one admin click into hundreds of store deletes.
+const maxEscalationResetHosts = 128
+
+func (e *Engine) resetBlockCounters(ctx context.Context, ip, generation string, resetEvents bool, out *UnblockReset) {
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		out.Incomplete = true
+		return // engine closing: no config to rebuild keys from
+	}
+	defer snap.release()
+
+	if resetEvents {
+		// Reclamation, not correctness: these keys are named after the
+		// generation CommitUnblock is about to replace, so one left behind is
+		// unreachable and expires on its own window. A failure is therefore
+		// worth a log line and not an incomplete result.
+		keys, failed := e.board.ResetEventCounters(ctx, ip, generation, snap.cfg.BehaviourWindows())
+		out.EventKeys = keys
+		if failed > 0 {
+			e.log.Warn("unblock could not clear every behaviour counter; they are already unreachable",
+				"ip", ip, "keys", keys, "failed", failed)
+		}
+	}
+
+	if e.pow != nil {
+		hosts, truncated := e.escalationHosts(snap.cfg, ip)
+		for _, host := range hosts {
+			keys, err := e.pow.ResetEscalation(ctx, host, ip)
+			out.EscalationKeys += keys
+			if err != nil {
+				out.Incomplete = true
+				e.log.Warn("unblock could not clear a challenge escalation counter",
+					"ip", ip, "host", host, "cleared", keys, "err", err)
+			}
+		}
+		if truncated {
+			out.Incomplete = true
+			e.log.Warn("unblock cleared challenge escalation for only the first hosts",
+				"ip", ip, "hosts", len(hosts), "limit", maxEscalationResetHosts)
+		}
+	}
+
+}
+
+// escalationHosts is the set of hosts whose chesc:<host>:<ip> counter an
+// unblock of ip should clear, normalized the way the challenge path keys them.
+//
+// Hosts this IP was actually acted on come first: the decision ring records
+// every non-allow decision with its Host, and a client only ever reaches the
+// challenge page after one. The configured vhosts follow, covering an IP whose
+// ring entries the bounded window has already overwritten. Neither source is
+// complete on its own and the union still is not: an IP challenged on a host
+// that is not configured (it falls through to defaults) and has since aged out
+// of the ring keeps its escalation counter until the challenge TTL lapses.
+func (e *Engine) escalationHosts(cfg *Config, ip string) (hosts []string, truncated bool) {
+	seen := make(map[string]bool, 8)
+	add := func(raw string) bool {
+		host := normalizeHost(raw)
+		if host == "" || seen[host] {
+			return true
+		}
+		if len(hosts) >= maxEscalationResetHosts {
+			return false
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+		return true
+	}
+	// The ring stores the address exactly as the transport delivered it, while
+	// ip is already canonical, so a match compares parsed addresses rather than
+	// strings. netip.Addr is comparable and ParseAddr does not allocate, which
+	// keeps a full-ring walk cheap; the string compare short-circuits the
+	// overwhelmingly common identical-form case first.
+	target, targetErr := netip.ParseAddr(ip)
+	sameIP := func(raw string) bool {
+		if raw == ip {
+			return true
+		}
+		if targetErr != nil {
+			return false
+		}
+		addr, err := netip.ParseAddr(raw)
+		return err == nil && addr.Unmap() == target
+	}
+	for _, d := range e.recent.list(0) {
+		if sameIP(d.IP) && !add(d.Host) {
+			return hosts, true
+		}
+	}
+	// Sorted, so which hosts survive the cap does not depend on map order.
+	configured := make([]string, 0, len(cfg.resolved))
+	for host := range cfg.resolved {
+		configured = append(configured, host)
+	}
+	sort.Strings(configured)
+	for _, host := range configured {
+		if !add(host) {
+			return hosts, true
+		}
+	}
+	return hosts, false
 }
 
 // BlockStatus reports whether an IP is currently blocked and why (admin API).
 func (e *Engine) BlockStatus(ctx context.Context, ip string) (reason string, blocked bool, err error) {
 	v, ok, err := e.store.Get(ctx, BlockKey(ip))
-	return string(v), ok, err
+	return store.BlockReason(v), ok, err
 }
 
 // BlockDetail is the single-IP block view: BlockStatus plus the two things an
@@ -564,7 +750,7 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 	}
 	out := make([]BlockEntry, 0, len(kvs))
 	for _, kv := range kvs {
-		b := BlockEntry{IP: kv.Key[len(blockKeyPrefix):], Reason: string(kv.Value)}
+		b := BlockEntry{IP: kv.Key[len(blockKeyPrefix):], Reason: store.BlockReason(kv.Value)}
 		if !kv.ExpiresAt.IsZero() {
 			exp := kv.ExpiresAt
 			b.ExpiresAt = &exp

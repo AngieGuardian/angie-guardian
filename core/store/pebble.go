@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -207,6 +208,131 @@ func (p *Pebble) CompareAndSwap(_ context.Context, key string, old, new []byte, 
 	return compareAndSwapEmulated(p.get, p.rawSet, kb, old, new, ttl)
 }
 
+func (p *Pebble) CompareAndDelete(_ context.Context, key string, old []byte) (bool, error) {
+	kb := []byte(key)
+	unlock := p.locks.lock(kb)
+	defer unlock()
+	del := func(k []byte) error { return p.db.Delete(k, p.writeOpts) }
+	return compareAndDeleteEmulated(p.get, del, kb, old)
+}
+
+func (p *Pebble) CommitBlock(_ context.Context, c BlockCommit) (BlockCommitResult, error) {
+	blockKey := []byte(c.BlockKey)
+	counterKey := []byte(c.CounterKey)
+	guardKey := []byte(c.GuardKey)
+	holdKey := []byte(c.HoldKey)
+	unlock := p.locks.lockMany(blockKey, counterKey, guardKey, holdKey)
+	defer unlock()
+
+	if _, holdOK, err := p.get(holdKey); err != nil {
+		return BlockCommitResult{}, err
+	} else if holdOK {
+		return BlockCommitResult{Refusal: BlockRefusalHold}, nil
+	}
+	guard, guardOK, err := p.get(guardKey)
+	if err != nil {
+		return BlockCommitResult{}, err
+	}
+	if c.GuardValue == nil {
+		if guardOK {
+			return BlockCommitResult{Refusal: BlockRefusalGeneration}, nil
+		}
+	} else if !guardOK || !bytesEqual(guard, c.GuardValue) {
+		return BlockCommitResult{Refusal: BlockRefusalGeneration}, nil
+	}
+	block, blockOK, err := p.get(blockKey)
+	if err != nil {
+		return BlockCommitResult{}, err
+	}
+	if c.ExpectedBlock == nil {
+		if blockOK {
+			return BlockCommitResult{Refusal: BlockRefusalBlock}, nil
+		}
+	} else if !blockOK || !bytesEqual(block, c.ExpectedBlock) {
+		return BlockCommitResult{Refusal: BlockRefusalBlock}, nil
+	}
+
+	counter, counterExpiry, counterOK, err := p.getExpiry(counterKey)
+	if err != nil {
+		return BlockCommitResult{}, err
+	}
+	offenses := int64(1)
+	if counterOK {
+		offenses = counterValue(counter) + 1
+	} else if c.CounterTTL > 0 {
+		counterExpiry = time.Now().Add(c.CounterTTL).UnixNano()
+	}
+	ttl := blockBackoffTTL(c.BaseTTL, c.MaxTTL, offenses)
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(counterKey,
+		encodeExpiryDeadline([]byte(strconv.FormatInt(offenses, 10)), counterExpiry), nil); err != nil {
+		return BlockCommitResult{}, err
+	}
+	if err := batch.Set(blockKey, encodeExpiry(c.NewBlock, ttl), nil); err != nil {
+		return BlockCommitResult{}, err
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		return BlockCommitResult{}, err
+	}
+	return BlockCommitResult{Committed: true, Offenses: offenses, TTL: ttl}, nil
+}
+
+func (p *Pebble) CommitEvent(_ context.Context, c EventCommit) (EventCommitResult, error) {
+	counterKey := []byte(c.CounterKey)
+	holdKey := []byte(c.HoldKey)
+	unlock := p.locks.lockMany(counterKey, holdKey)
+	defer unlock()
+
+	if _, holdOK, err := p.get(holdKey); err != nil {
+		return EventCommitResult{}, err
+	} else if holdOK {
+		return EventCommitResult{}, nil
+	}
+	counter, counterExpiry, counterOK, err := p.getExpiry(counterKey)
+	if err != nil {
+		return EventCommitResult{}, err
+	}
+	value := int64(1)
+	if counterOK {
+		value = counterValue(counter) + 1
+	} else if c.CounterTTL > 0 {
+		counterExpiry = time.Now().Add(c.CounterTTL).UnixNano()
+	}
+	if err := p.setDeadline(counterKey, []byte(strconv.FormatInt(value, 10)), counterExpiry); err != nil {
+		return EventCommitResult{}, err
+	}
+	return EventCommitResult{Committed: true, Value: value}, nil
+}
+
+func (p *Pebble) CommitUnblock(_ context.Context, c UnblockCommit) error {
+	holdKey := []byte(c.HoldKey)
+	generationKey := []byte(c.GenerationKey)
+	blockKey := []byte(c.BlockKey)
+	counterKey := []byte(c.CounterKey)
+	unlock := p.locks.lockMany(holdKey, generationKey, blockKey, counterKey)
+	defer unlock()
+
+	batch := p.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(holdKey, encodeExpiry(c.HoldValue, c.HoldTTL), nil); err != nil {
+		return err
+	}
+	if err := batch.Set(generationKey, encodeExpiry(c.Generation, c.GenerationTTL), nil); err != nil {
+		return err
+	}
+	if err := batch.Delete(blockKey, nil); err != nil {
+		return err
+	}
+	if c.ResetBackoff {
+		if err := batch.Delete(counterKey, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(p.writeOpts)
+}
+
 // rawSet writes an already-formed value with the given TTL under the caller's
 // shard lock (used by the emulated CAS/incr helpers).
 func (p *Pebble) rawSet(key, value []byte, ttl time.Duration) error {
@@ -402,6 +528,23 @@ func (s *shardLocks) lock(key []byte) func() {
 	return mu.Unlock
 }
 
+func (s *shardLocks) lockMany(keys ...[]byte) func() {
+	idxs := make([]int, 0, len(keys))
+	for _, key := range keys {
+		idxs = append(idxs, int(fnv1a32(string(key))&s.mask))
+	}
+	slices.Sort(idxs)
+	idxs = slices.Compact(idxs)
+	for _, idx := range idxs {
+		s.mus[idx].Lock()
+	}
+	return func() {
+		for i := len(idxs) - 1; i >= 0; i-- {
+			s.mus[idxs[i]].Unlock()
+		}
+	}
+}
+
 // getFunc / rawSetFunc are the read + raw-write primitives the emulated helpers
 // compose, so Pebble and goleveldb share one CAS/incr implementation.
 type getFunc func(key []byte) ([]byte, bool, error)
@@ -430,6 +573,29 @@ func compareAndSwapEmulated(get getFunc, set rawSetFunc, key, old, new []byte, t
 		return false, nil
 	}
 	if err := set(key, new, ttl); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// rawDeleteFunc removes a key outright, the primitive compareAndDeleteEmulated
+// composes with a read.
+type rawDeleteFunc func(key []byte) error
+
+// compareAndDeleteEmulated implements store.CompareAndDelete for a backend with
+// no atomic RMW. The caller must already hold the key's shard lock.
+func compareAndDeleteEmulated(get getFunc, del rawDeleteFunc, key, old []byte) (bool, error) {
+	if old == nil {
+		return false, nil // nothing to take back
+	}
+	cur, ok, err := get(key)
+	if err != nil {
+		return false, err
+	}
+	if !ok || !bytesEqual(cur, old) {
+		return false, nil
+	}
+	if err := del(key); err != nil {
 		return false, err
 	}
 	return true, nil

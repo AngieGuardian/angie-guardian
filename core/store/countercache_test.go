@@ -97,6 +97,90 @@ func TestCounterCacheForget(t *testing.T) {
 	}
 }
 
+// TestCounterCacheForgetSync clears both copies like Forget, and, unlike
+// Forget, reports whether the shared delete landed. An operator reset that
+// only queued the delete could be told the counter was cleared while the
+// shared total survived for the next flush to merge back over it.
+func TestCounterCacheForgetSync(t *testing.T) {
+	ctx := context.Background()
+	c, st := inlineCounterCache(t)
+
+	c.Incr("k", time.Minute)
+	c.Incr("k", time.Minute)
+	if err := c.ForgetSync(ctx, "k"); err != nil {
+		t.Fatalf("ForgetSync against a healthy store: %v", err)
+	}
+	if _, ok, _ := st.Get(ctx, "k"); ok {
+		t.Fatal("store counter survived ForgetSync")
+	}
+	if n := c.Incr("k", time.Minute); n != 1 {
+		t.Fatalf("bump after ForgetSync = %d, want 1", n)
+	}
+
+	// A store that cannot delete must say so rather than reporting a clean
+	// reset: Forget's queued delete is the path that swallowed this.
+	down := NewCounterCache(failingStore{})
+	down.Go = func(f func()) { f() }
+	down.Incr("k", time.Minute)
+	if err := down.ForgetSync(ctx, "k"); !errors.Is(err, errStoreDown) {
+		t.Fatalf("ForgetSync with the store down = %v, want %v", err, errStoreDown)
+	}
+	// The local counter still resets: the caller decides what to do about the
+	// shared one, and local enforcement should not stay stuck at the ceiling.
+	if n := down.Incr("k", time.Minute); n != 1 {
+		t.Fatalf("local bump after a failed ForgetSync = %d, want 1", n)
+	}
+}
+
+// TestForgetSyncReportsUnclearableSketchState: a key shed into the overload
+// sketch cannot be reset per key (cells are shared, so zeroing one would zero
+// other live keys). ForgetSync must say so instead of returning nil while the
+// local count stays pinned, because an operator reset is most likely to be
+// needed in exactly the overload conditions that put keys there.
+func TestForgetSyncReportsUnclearableSketchState(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemory()
+	t.Cleanup(func() { mem.Close() })
+	c := NewCounterCache(mem)
+	c.Go = func(f func()) { f() }
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	// Fill the exact cache so a previously unseen key is shed to the sketch.
+	c.mu.Lock()
+	for i := range maxCounterEntries {
+		key := fmt.Sprintf("protected-%d", i)
+		c.m[key] = counterEntry{n: 1, expires: base.Add(time.Minute).UnixNano(), pending: 1}
+	}
+	c.mu.Unlock()
+
+	const key = "chesc:example.com:198.51.100.9"
+	for i := range 10 {
+		if n := c.Incr(key, time.Minute); n != int64(i+1) {
+			t.Fatalf("sketch count %d = %d", i+1, n)
+		}
+	}
+
+	err := c.ForgetSync(ctx, key)
+	if !errors.Is(err, ErrForgetIncomplete) {
+		t.Fatalf("ForgetSync on a shed key = %v, want ErrForgetIncomplete", err)
+	}
+	// The report is the point: the count really does survive, so a caller that
+	// took nil for an answer would have told an operator it was cleared.
+	if n := c.Incr(key, time.Minute); n == 1 {
+		t.Fatal("sketch state was cleared after all; the error is now wrong rather than conservative")
+	}
+
+	// A key the sketch never saw resets cleanly, so the signal is not just
+	// "always incomplete once the sketch has anything in it".
+	c.mu.Lock()
+	clear(c.m)
+	c.mu.Unlock()
+	if err := c.ForgetSync(ctx, "chesc:example.com:203.0.113.77"); err != nil {
+		t.Fatalf("ForgetSync on a key that was never shed = %v, want nil", err)
+	}
+}
+
 // failingStore errors on every op; the cache must keep counting locally.
 type failingStore struct{ Store }
 

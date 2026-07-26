@@ -26,7 +26,7 @@ func scoreboardBlocked(t *testing.T, st store.Store, ip string) (string, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(v), ok
+	return store.BlockReason(v), ok
 }
 
 func TestThresholdBlocks(t *testing.T) {

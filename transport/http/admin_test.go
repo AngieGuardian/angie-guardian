@@ -333,11 +333,38 @@ func TestAdminBlockLifecycle(t *testing.T) {
 	if m["blocked"] != true || m["reason"] != "manual" {
 		t.Fatalf("after block: %v", m)
 	}
-	// Unblock.
-	adminReq(t, ts, "DELETE", "/admin/blocks/"+ip, adminToken, "")
+	// Unblock. It also clears the counters that could re-block the IP, and
+	// reports what it addressed.
+	m = decodeJSON(t, adminReq(t, ts, "DELETE", "/admin/blocks/"+ip, adminToken, ""))
+	reset, ok := m["reset"].(map[string]any)
+	if !ok {
+		t.Fatalf("DELETE response has no reset object: %v", m)
+	}
+	if reset["backoff_reset"] != true {
+		t.Errorf("backoff_reset = %v, want true by default", reset["backoff_reset"])
+	}
+	if n, _ := reset["event_keys"].(float64); n == 0 {
+		t.Errorf("event_keys = %v, want the configured thresholds to be addressed", reset["event_keys"])
+	}
+	if reset["incomplete"] != nil {
+		t.Errorf("incomplete = %v against a healthy store", reset["incomplete"])
+	}
 	m = decodeJSON(t, adminReq(t, ts, "GET", "/admin/blocks/"+ip, adminToken, ""))
 	if m["blocked"] != false {
 		t.Fatalf("after DELETE: blocked = %v, want false", m["blocked"])
+	}
+
+	// reset_backoff=false keeps the repeat-offender ladder.
+	adminReq(t, ts, "PUT", "/admin/blocks/"+ip, adminToken, `{"reason":"manual"}`)
+	m = decodeJSON(t, adminReq(t, ts, "DELETE", "/admin/blocks/"+ip+"?reset_backoff=false", adminToken, ""))
+	if reset, _ := m["reset"].(map[string]any); reset["backoff_reset"] != false {
+		t.Errorf("reset_backoff=false: backoff_reset = %v, want false", reset["backoff_reset"])
+	}
+
+	// Anything that is not a boolean is a client error, not a silent default.
+	resp := adminReq(t, ts, "DELETE", "/admin/blocks/"+ip+"?reset_backoff=maybe", adminToken, "")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("reset_backoff=maybe: status = %d, want 400", resp.StatusCode)
 	}
 }
 

@@ -101,7 +101,9 @@ func TestBlockDetailReportsOffenses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := e.UnblockIP(ctx, ip); err != nil {
+	// resetBackoff=false: the "give this client another chance" unblock, which
+	// is the one that leaves a history to report.
+	if _, err := e.UnblockIP(ctx, ip, false); err != nil {
 		t.Fatal(err)
 	}
 

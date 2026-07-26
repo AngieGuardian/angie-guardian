@@ -359,3 +359,26 @@ func BenchmarkShedDecision(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkRecordEvent is the behaviour-scoring write path: one bad event
+// counted for one IP, below the threshold so no block is placed. It is not the
+// auth hot path (only a non-allow decision produces events), but a signature
+// flood drives it once per request. It performs two exact-key store operations:
+// a generation read and one atomic guarded increment. Measured here so that
+// coordination's cost remains a number.
+func BenchmarkRecordEvent(b *testing.B) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	defer st.Close()
+	board := NewScoreboard(st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		// A fresh IP every 1000 events, so the counter neither trips the
+		// threshold nor turns into a single-key hot spot.
+		ip := "198.51." + strconv.Itoa(i/1000%256) + "." + strconv.Itoa(i%256)
+		if _, err := board.RecordEvent(ctx, ip, "signature", 1<<30, time.Minute, time.Minute, time.Hour); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -244,7 +244,7 @@ func TestBehaviourBlock(t *testing.T) {
 		t.Fatalf("nowaf.test should still enforce an existing block, got %s", d.Action)
 	}
 
-	if err := e.UnblockIP(ctx, ip); err != nil {
+	if _, err := e.UnblockIP(ctx, ip, true); err != nil {
 		t.Fatal(err)
 	}
 	if d := e.Evaluate(ctx, req("x.test", ip, "/", "Mozilla")); d.Action != ActionAllow {
@@ -275,7 +275,7 @@ func TestBehaviourBlockIPv6(t *testing.T) {
 		}
 	}
 	// Unblock via yet another form lifts it for all of them.
-	if err := e.UnblockIP(ctx, "2001:0db8:0:0:0:0:0:66"); err != nil {
+	if _, err := e.UnblockIP(ctx, "2001:0db8:0:0:0:0:0:66", true); err != nil {
 		t.Fatal(err)
 	}
 	if d := e.Evaluate(ctx, req("x.test", "2001:db8::66", "/", "Mozilla")); d.Action != ActionAllow {

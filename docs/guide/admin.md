@@ -64,7 +64,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
      $A/admin/blocks/203.0.113.9
 
-# Lift a block.
+# Lift a block, clearing the counters that placed it (see "Unblocking an IP"
+# below). Add ?reset_backoff=false to keep the repeat-offender history.
 curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
 
 # "Why would this request be challenged?" Score it against the domain's
@@ -107,6 +108,42 @@ curl -s $A/metrics | grep guardian_
 
 The full endpoint list with request/response shapes is in the
 [Admin API reference](/reference/admin-api).
+
+### Unblocking an IP
+
+`DELETE /admin/blocks/{ip}` lifts the block **and clears the counters that
+placed it**. That matters: the behaviour counter that crossed a
+`waf.ip_behaviour` threshold stays above the limit for the rest of its window,
+so an unblock that left it there would let the very next bad-looking request
+re-block the IP, for twice as long as before. Clearing it is what makes the
+unblock stick.
+
+The one part you choose is the repeat-offender ladder: the 24h count of
+automatic blocks that doubles each successive block's TTL, reported as
+`offenses` by `GET /admin/blocks/{ip}`. It is cleared by default, on the
+reasoning that an operator lifting a block is saying the block was wrong, so
+the offense it recorded is wrong too.
+
+```sh
+# Clear it: this block was a false positive.
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
+
+# Keep it: a borderline client is getting another chance, and its history is real.
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE \
+     "$A/admin/blocks/203.0.113.9?reset_backoff=false"
+```
+
+On the dashboard the same choice is a checkbox beside the Unblock buttons,
+checked by default. The response reports what the reset covered, and says so
+when it could only cover part of it; see the
+[endpoint reference](/reference/admin-api#delete-admin-blocks-ip).
+
+One consequence worth knowing: for a few seconds after an unblock, that IP
+cannot be *automatically* re-blocked. The reset runs against live traffic that
+is still scoring the IP, and without holding those writers off, a request that
+read a saturated counter before the reset simply writes its block after it. If
+you unblock an IP and immediately change your mind, block it by hand: manual
+blocks are not held off.
 
 ### Blocking an IP range at runtime
 
@@ -151,8 +188,9 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 
 ![The Guardian admin dashboard](/dashboard.png)
 
-The dashboard shows active blocks (with one-click unblock and a block-an-IP
-form), the recent deny/challenge feed (filterable by action and free text),
+The dashboard shows active blocks (with one-click unblock, a checkbox for
+whether that unblock also resets the repeat-offender backoff, and a
+block-an-IP form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

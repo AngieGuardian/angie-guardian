@@ -8,8 +8,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"math/rand/v2"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +21,93 @@ type KV struct {
 	Key       string
 	Value     []byte
 	ExpiresAt time.Time // zero = no expiry
+}
+
+// BlockCommit is the complete conditional mutation behind one automatic
+// behavioural block. GuardValue and ExpectedBlock use the same nil spelling:
+// nil requires the corresponding key to be absent.
+//
+// The guard is the IP's unblock generation. Coupling it to the block CAS and
+// offense increment means an unblock is ordered wholly before or wholly after
+// this write; there is no successful block followed by a counter increment
+// that can leak across an already-completed reset.
+type BlockCommit struct {
+	BlockKey      string
+	ExpectedBlock []byte
+	NewBlock      []byte
+	BaseTTL       time.Duration
+	MaxTTL        time.Duration
+	CounterKey    string
+	CounterTTL    time.Duration
+	HoldKey       string
+	GuardKey      string
+	GuardValue    []byte
+}
+
+// BlockCommitResult reports whether the comparisons succeeded and, when they
+// did, the offense count and TTL committed atomically with the block. When
+// they did not, Refusal says which one stopped it: the three causes mean
+// different things to an operator asking why an IP was not blocked, and only
+// the backend that ran them inside its transaction can tell them apart.
+type BlockCommitResult struct {
+	Committed bool
+	Offenses  int64
+	TTL       time.Duration
+	Refusal   BlockRefusal
+}
+
+// BlockRefusal identifies the comparison that stopped a CommitBlock.
+type BlockRefusal uint8
+
+const (
+	BlockRefusalNone       BlockRefusal = iota // committed
+	BlockRefusalHold                           // an unblock of this IP is in flight
+	BlockRefusalGeneration                     // an unblock completed since the caller was admitted
+	BlockRefusalBlock                          // another writer replaced the block this caller observed
+)
+
+func (r BlockRefusal) String() string {
+	switch r {
+	case BlockRefusalNone:
+		return "none"
+	case BlockRefusalHold:
+		return "unblock_in_flight"
+	case BlockRefusalGeneration:
+		return "unblock_completed"
+	case BlockRefusalBlock:
+		return "newer_block"
+	}
+	return "unknown"
+}
+
+// EventCommit is one behaviour-event increment admitted under an unblock
+// generation. CounterKey already contains that generation, so a late write
+// cannot refill a newer generation. The backend checks that HoldKey is absent
+// in the same mutation that increments it.
+type EventCommit struct {
+	CounterKey string
+	CounterTTL time.Duration
+	HoldKey    string
+}
+
+type EventCommitResult struct {
+	Committed bool
+	Value     int64
+}
+
+// UnblockCommit is the final, atomic boundary of an operator unblock. It
+// publishes a fresh suppression hold and generation while removing the active
+// block and, when ResetBackoff is true, its repeat-offender counter.
+type UnblockCommit struct {
+	HoldKey       string
+	HoldValue     []byte
+	HoldTTL       time.Duration
+	GenerationKey string
+	Generation    []byte
+	GenerationTTL time.Duration
+	BlockKey      string
+	CounterKey    string
+	ResetBackoff  bool
 }
 
 // Store is the shared-state interface. All values are TTL-based so nothing
@@ -43,8 +133,9 @@ type Store interface {
 	// key starts at delta with the given TTL; an existing key keeps its
 	// original expiry. It lets a caller that coalesced several events flush
 	// the whole batch in one round instead of losing all but one. delta may be
-	// zero (a no-op that still reports the current value) but should not be
-	// negative for the counter use cases here.
+	// zero (a no-op that still reports the current value) or negative (plain
+	// arithmetic). A negative delta on an absent key creates it at that
+	// negative value like any other.
 	IncrBy(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error)
 
 	// IncrByDeadline is IncrBy against an absolute window deadline (unix nanos,
@@ -65,8 +156,40 @@ type Store interface {
 
 	// CompareAndSwap atomically replaces the current value with new if it
 	// equals old. old == nil requires the key to be absent (create-only).
-	// This is what makes spent-challenge marking replay-safe.
+	// This is what makes spent-challenge marking replay-safe, and it is how a
+	// writer fences a write against state it has not observed.
 	CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (swapped bool, err error)
+
+	// CompareAndDelete atomically removes key if its current value is exactly
+	// old, and reports whether it did. It is the counterpart CompareAndSwap
+	// needs: a writer that has to take back a write it made, without removing
+	// whatever somebody else has put there since. old == nil is not the
+	// create-only spelling it is on CompareAndSwap and never deletes anything,
+	// because an absent key has nothing to take back.
+	CompareAndDelete(ctx context.Context, key string, old []byte) (deleted bool, err error)
+
+	// CommitBlock atomically:
+	//   1. requires HoldKey to be absent and GuardKey and BlockKey to equal
+	//      their expected values;
+	//   2. increments CounterKey, preserving a live counter's expiry;
+	//   3. derives the exponential block TTL from the resulting count; and
+	//   4. writes NewBlock and the counter together.
+	// A failed comparison changes nothing. This is intentionally one store
+	// primitive: splitting any of these effects lets an unblock or newer block
+	// take ownership between them.
+	CommitBlock(ctx context.Context, commit BlockCommit) (BlockCommitResult, error)
+
+	// CommitUnblock atomically rotates the generation and suppression hold,
+	// removes BlockKey, and optionally removes CounterKey. Automatic block
+	// commits compare that generation in the same transaction, so they land
+	// entirely before this reset (and are removed) or entirely after it (and
+	// fail their stale guard).
+	CommitUnblock(ctx context.Context, commit UnblockCommit) error
+
+	// CommitEvent atomically requires an absent unblock hold, then increments
+	// the generation-scoped counter. It replaces a racy presence-check followed
+	// by Incr without adding another store round trip to the scored-event path.
+	CommitEvent(ctx context.Context, commit EventCommit) (EventCommitResult, error)
 
 	// Scan returns every live key with the given literal prefix, sorted by
 	// key. An admin/reporting read (listing active blocks), NOT for the auth
@@ -81,6 +204,88 @@ type Store interface {
 // limit. A non-positive limit requests the full result, like Store.Scan.
 type LimitedScanner interface {
 	ScanLimit(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
+}
+
+// blockValueSep separates a block's reason from the owner token that follows
+// it. A NUL cannot occur in a reason (they are built from config identifiers
+// and event names), so a value written before this existed, or by an operator
+// poking the store, reads back as a reason with no owner and cannot be claimed
+// by anyone.
+const blockValueSep = 0
+
+// BlockValue is what goes under a block:<ip> key: the reason an operator
+// reads, plus a token identifying this one write.
+//
+// The token lets a delayed enforcement notification verify that its own block
+// is still authoritative instead of publishing an unblock's predecessor or
+// overwriting a newer mirror entry. Reasons cannot serve as identity, since
+// two blocks of the same IP for the same threshold are byte for byte the same.
+// The token need only be unlikely to repeat, not unguessable: nobody outside
+// the process ever sees it.
+func BlockValue(reason string) []byte {
+	b := make([]byte, 0, len(reason)+17)
+	b = append(b, reason...)
+	b = append(b, blockValueSep)
+	return strconv.AppendUint(b, rand.Uint64(), 16)
+}
+
+// BlockReason recovers the operator-facing reason from a stored block value,
+// dropping the owner token. Everything that shows a block to a human, feeds
+// one to Angie, or mirrors one goes through here.
+func BlockReason(v []byte) string {
+	if i := bytes.IndexByte(v, blockValueSep); i >= 0 {
+		return string(v[:i])
+	}
+	return string(v)
+}
+
+// Degenerate block bounds are normalized rather than obeyed: a zero or
+// negative TTL means "no expiry" to Set, which for a block is a permanent one
+// only an admin can lift. A caller that passes one has a broken config, not an
+// intent to block forever.
+const (
+	defaultBlockBaseTTL = time.Minute
+	defaultBlockMaxTTL  = 30 * 24 * time.Hour
+)
+
+// BackoffBounds normalizes CommitBlock's TTL bounds. Every backend must apply
+// it before deriving a TTL, including the ones that compute the ladder outside
+// blockBackoffTTL (Redis does it in Lua), or the same commit would produce a
+// different block depending on the store behind it.
+func BackoffBounds(base, cap time.Duration) (time.Duration, time.Duration) {
+	if base <= 0 {
+		base = defaultBlockBaseTTL
+	}
+	if cap <= 0 {
+		cap = defaultBlockMaxTTL
+	}
+	return base, cap
+}
+
+// blockBackoffTTL applies the scoreboard's exponential repeat-offender ladder
+// without iterating a corrupt/untrusted counter billions of times. Once the
+// cap is reached, further offenses cannot change the result.
+func blockBackoffTTL(base, cap time.Duration, offenses int64) time.Duration {
+	base, cap = BackoffBounds(base, cap)
+	ttl := base
+	for n := int64(1); n < offenses && ttl < cap; n++ {
+		if ttl > cap/2 {
+			return cap
+		}
+		ttl *= 2
+	}
+	if ttl > cap || ttl <= 0 {
+		return cap
+	}
+	return ttl
+}
+
+func counterValue(v []byte) int64 {
+	n, err := strconv.ParseInt(string(v), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // ErrCapabilityUnsupported lets callers safely fall back when a wrapper or
@@ -102,9 +307,11 @@ type PostureVotes interface {
 // ActiveBlockScanner enumerates the active-block index without walking the
 // store's general keyspace. complete is false when the caller's limit omitted
 // entries, matching LimitedScanner's safety contract. The reserved block:*
-// namespace is indexed when callers mutate it through Store.Set/Delete (the
-// production Scoreboard contract); CompareAndSwap/Incr are not block mutation
-// APIs and must not be used to create or remove active blocks.
+// namespace is indexed when callers mutate it through Store.Set, Delete,
+// CompareAndSwap, CompareAndDelete, CommitBlock or CommitUnblock. A conditional
+// block mutation is still a block mutation, so it maintains the index exactly
+// as its unconditional counterpart does. Incr is not a block mutation API and
+// must not be used to create or remove active blocks.
 type ActiveBlockScanner interface {
 	ScanActiveBlocks(ctx context.Context, prefix string, limit int) (kvs []KV, complete bool, err error)
 }

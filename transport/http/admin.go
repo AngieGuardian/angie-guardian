@@ -248,12 +248,30 @@ func (s *AdminServer) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.engine.UnblockIP(r.Context(), ip); err != nil {
+	// Lifting a block always clears the counters that produced it, or the
+	// unblock is a no-op the IP undoes on its next request (see
+	// Engine.UnblockIP). The only choice is the repeat-offender ladder, and it
+	// defaults to clearing: an operator unblocking is asserting the block was
+	// wrong, which makes the offense it recorded wrong too. reset_backoff=false
+	// keeps that history for an IP being given another chance instead.
+	resetBackoff := true
+	if raw := r.URL.Query().Get("reset_backoff"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "reset_backoff must be true or false"})
+			return
+		}
+		resetBackoff = v
+	}
+	reset, err := s.engine.UnblockIP(r.Context(), ip, resetBackoff)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.log.Info("admin unblocked ip", "ip", ip)
-	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "blocked": false})
+	s.log.Info("admin unblocked ip", "ip", ip,
+		"reset_backoff", reset.BackoffReset, "event_keys", reset.EventKeys,
+		"escalation_keys", reset.EscalationKeys, "incomplete", reset.Incomplete)
+	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "blocked": false, "reset": reset})
 }
 
 func canonicalAdminIP(w http.ResponseWriter, raw string) (string, bool) {

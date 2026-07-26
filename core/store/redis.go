@@ -247,12 +247,273 @@ func (s *Redis) CompareAndSwap(ctx context.Context, key string, old, new []byte,
 	} else {
 		oldArg = string(old)
 	}
+	if strings.HasPrefix(key, "block:") {
+		// A fenced block write is still a block write and must land in the
+		// index, exactly as Set does (store.go ActiveBlockScanner contract).
+		n, err := casBlockScript.Run(ctx, s.rdb,
+			[]string{key, redisBlockIndex, redisBlockIndexGeneration},
+			oldArg, string(new), pexpireArg(ttl), createOnly).Int64()
+		if err != nil {
+			return false, err
+		}
+		return n == 1, nil
+	}
 	n, err := casScript.Run(ctx, s.rdb, []string{key},
 		oldArg, string(new), pexpireArg(ttl), createOnly).Int64()
 	if err != nil {
 		return false, err
 	}
 	return n == 1, nil
+}
+
+// casBlockScript is casScript with redisSetBlockScript's index maintenance
+// folded in, so a conditional block write is indexed like an unconditional one.
+var casBlockScript = redis.NewScript(`
+local cur = redis.call('GET', KEYS[1])
+local createOnly = ARGV[4] == '1'
+if createOnly then
+  if cur then return 0 end
+else
+  if not cur or cur ~= ARGV[1] then return 0 end
+end
+local ttl = tonumber(ARGV[3])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[2])
+end
+local score = 9000000000000000
+if ttl > 0 then
+  local t = redis.call('TIME')
+  score = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000) + ttl
+end
+redis.call('ZADD', KEYS[2], score, KEYS[1])
+redis.call('INCR', KEYS[3])
+return 1
+`)
+
+// cadScript / cadBlockScript: delete only if the value is exactly ARGV[1]. The
+// block variant clears the index entry too, matching redisDeleteBlockScript.
+var cadScript = redis.NewScript(`
+local cur = redis.call('GET', KEYS[1])
+if not cur or cur ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])
+`)
+
+var cadBlockScript = redis.NewScript(`
+local cur = redis.call('GET', KEYS[1])
+if not cur or cur ~= ARGV[1] then return 0 end
+local deleted = redis.call('DEL', KEYS[1])
+local removed = redis.call('ZREM', KEYS[2], KEYS[1])
+if deleted > 0 or removed > 0 then redis.call('INCR', KEYS[3]) end
+return deleted
+`)
+
+func (s *Redis) CompareAndDelete(ctx context.Context, key string, old []byte) (bool, error) {
+	if old == nil {
+		return false, nil // nothing to take back
+	}
+	var (
+		n   int64
+		err error
+	)
+	if strings.HasPrefix(key, "block:") {
+		n, err = cadBlockScript.Run(ctx, s.rdb,
+			[]string{key, redisBlockIndex, redisBlockIndexGeneration}, string(old)).Int64()
+	} else {
+		n, err = cadScript.Run(ctx, s.rdb, []string{key}, string(old)).Int64()
+	}
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// commitBlockScript atomically validates the unblock generation and block
+// predecessor, advances the offense ladder, derives the TTL, writes the block,
+// and maintains the active-block index.
+var commitBlockScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[4]) == 1 then
+  return {0, 0, 0, 1}
+end
+
+local guard = redis.call('GET', KEYS[3])
+if ARGV[5] == '1' then
+  if guard then return {0, 0, 0, 2} end
+elseif not guard or guard ~= ARGV[4] then
+  return {0, 0, 0, 2}
+end
+
+local block = redis.call('GET', KEYS[1])
+if ARGV[3] == '1' then
+  if block then return {0, 0, 0, 3} end
+elseif not block or block ~= ARGV[1] then
+  return {0, 0, 0, 3}
+end
+
+local counter = redis.call('GET', KEYS[2])
+local offenses = 1
+local counterTTL = -2
+if counter then
+  offenses = (tonumber(counter) or 0) + 1
+  if offenses < 1 then offenses = 1 end
+  counterTTL = redis.call('PTTL', KEYS[2])
+end
+
+local ttl = tonumber(ARGV[6])
+local cap = tonumber(ARGV[7])
+local n = 1
+while n < offenses and ttl < cap do
+  if ttl > math.floor(cap / 2) then
+    ttl = cap
+  else
+    ttl = ttl * 2
+  end
+  n = n + 1
+end
+if ttl > cap then ttl = cap end
+
+redis.call('SET', KEYS[2], tostring(offenses))
+if counter then
+  if counterTTL > 0 then redis.call('PEXPIRE', KEYS[2], counterTTL) end
+else
+  local freshTTL = tonumber(ARGV[8])
+  if freshTTL > 0 then redis.call('PEXPIRE', KEYS[2], freshTTL) end
+end
+
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[2])
+end
+local score = 9000000000000000
+if ttl > 0 then
+  local t = redis.call('TIME')
+  score = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000) + ttl
+end
+redis.call('ZADD', KEYS[5], score, KEYS[1])
+redis.call('INCR', KEYS[6])
+return {1, offenses, ttl, 0}
+`)
+
+func (s *Redis) CommitBlock(ctx context.Context, c BlockCommit) (BlockCommitResult, error) {
+	blockCreateOnly, oldBlock := "0", ""
+	if c.ExpectedBlock == nil {
+		blockCreateOnly = "1"
+	} else {
+		oldBlock = string(c.ExpectedBlock)
+	}
+	guardAbsent, guard := "0", ""
+	if c.GuardValue == nil {
+		guardAbsent = "1"
+	} else {
+		guard = string(c.GuardValue)
+	}
+	// The ladder runs in Lua, so the bounds are normalized here instead of in
+	// blockBackoffTTL. Without this a degenerate config would place a block
+	// with no expiry on redis and a defaulted one everywhere else.
+	base, cap := BackoffBounds(c.BaseTTL, c.MaxTTL)
+	res, err := commitBlockScript.Run(ctx, s.rdb,
+		[]string{
+			c.BlockKey, c.CounterKey, c.GuardKey, c.HoldKey,
+			redisBlockIndex, redisBlockIndexGeneration,
+		},
+		oldBlock, string(c.NewBlock), blockCreateOnly,
+		guard, guardAbsent,
+		pexpireArg(base), pexpireArg(cap), pexpireArg(c.CounterTTL)).Slice()
+	if err != nil {
+		return BlockCommitResult{}, err
+	}
+	if len(res) != 4 {
+		return BlockCommitResult{}, fmt.Errorf("commitBlock: unexpected script result %v", res)
+	}
+	committed, ok1 := res[0].(int64)
+	offenses, ok2 := res[1].(int64)
+	ttlMillis, ok3 := res[2].(int64)
+	refusal, ok4 := res[3].(int64)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return BlockCommitResult{}, fmt.Errorf("commitBlock: non-integer script result %v", res)
+	}
+	return BlockCommitResult{
+		Committed: committed == 1,
+		Offenses:  offenses,
+		TTL:       time.Duration(ttlMillis) * time.Millisecond,
+		Refusal:   BlockRefusal(refusal),
+	}, nil
+}
+
+var commitEventScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return {0, 0}
+end
+
+local counter = redis.call('GET', KEYS[1])
+local value = 1
+local counterTTL = -2
+if counter then
+  value = (tonumber(counter) or 0) + 1
+  counterTTL = redis.call('PTTL', KEYS[1])
+end
+redis.call('SET', KEYS[1], tostring(value))
+if counter then
+  if counterTTL > 0 then redis.call('PEXPIRE', KEYS[1], counterTTL) end
+else
+  local freshTTL = tonumber(ARGV[1])
+  if freshTTL > 0 then redis.call('PEXPIRE', KEYS[1], freshTTL) end
+end
+return {1, value}
+`)
+
+func (s *Redis) CommitEvent(ctx context.Context, c EventCommit) (EventCommitResult, error) {
+	res, err := commitEventScript.Run(ctx, s.rdb,
+		[]string{c.CounterKey, c.HoldKey},
+		pexpireArg(c.CounterTTL)).Slice()
+	if err != nil {
+		return EventCommitResult{}, err
+	}
+	if len(res) != 2 {
+		return EventCommitResult{}, fmt.Errorf("commitEvent: unexpected script result %v", res)
+	}
+	committed, ok1 := res[0].(int64)
+	value, ok2 := res[1].(int64)
+	if !ok1 || !ok2 {
+		return EventCommitResult{}, fmt.Errorf("commitEvent: non-integer script result %v", res)
+	}
+	return EventCommitResult{Committed: committed == 1, Value: value}, nil
+}
+
+var commitUnblockScript = redis.NewScript(`
+local holdTTL = tonumber(ARGV[2])
+if holdTTL > 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', holdTTL)
+else
+  redis.call('SET', KEYS[1], ARGV[1])
+end
+local genTTL = tonumber(ARGV[4])
+if genTTL > 0 then
+  redis.call('SET', KEYS[2], ARGV[3], 'PX', genTTL)
+else
+  redis.call('SET', KEYS[2], ARGV[3])
+end
+local deleted = redis.call('DEL', KEYS[3])
+local removed = redis.call('ZREM', KEYS[5], KEYS[3])
+if deleted > 0 or removed > 0 then redis.call('INCR', KEYS[6]) end
+if ARGV[5] == '1' then redis.call('DEL', KEYS[4]) end
+return 1
+`)
+
+func (s *Redis) CommitUnblock(ctx context.Context, c UnblockCommit) error {
+	reset := "0"
+	if c.ResetBackoff {
+		reset = "1"
+	}
+	return commitUnblockScript.Run(ctx, s.rdb,
+		[]string{
+			c.HoldKey, c.GenerationKey, c.BlockKey, c.CounterKey,
+			redisBlockIndex, redisBlockIndexGeneration,
+		},
+		string(c.HoldValue), pexpireArg(c.HoldTTL),
+		string(c.Generation), pexpireArg(c.GenerationTTL), reset).Err()
 }
 
 // globEscape neutralizes SCAN MATCH glob metacharacters so a prefix is always
