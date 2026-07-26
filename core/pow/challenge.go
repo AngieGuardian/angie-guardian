@@ -580,7 +580,7 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 
 	// The client just proved it solves what it requests: forget its
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
-	m.counters.Forget(escalationKey(rec.Host, rec.IP))
+	m.ForgetEscalation(rec.Host, rec.IP)
 
 	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, tokenTTL)
 	if err != nil {

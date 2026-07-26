@@ -276,7 +276,7 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 var errSpentCASFailed = fmt.Errorf("stateless spend cas failed; token minted fail-open")
 
 func (m *Manager) finishStateless(p *statelessPayload, req *RedeemRequest, tokenTTL time.Duration, softErr error) (*RedeemResult, error) {
-	m.counters.Forget(escalationKey(p.Host, p.IP))
+	m.ForgetEscalation(p.Host, p.IP)
 	token, err := m.mintToken(p.Host, Fingerprint(req.IP, req.UserAgent), "", p.Bits, tokenTTL)
 	if err != nil {
 		return nil, err

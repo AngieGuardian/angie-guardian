@@ -250,6 +250,57 @@ Which value fires:
   with JavaScript off) do not get near it; tighten to e.g. `30/h` when
   farmers are a problem.
 
+  Requests that cannot run the interstitial are never issued one, so they are
+  never counted here at all. The challenge page needs a same-origin document
+  context: it renders markup, runs an inline script and spawns a Web Worker to
+  search for the nonce. A request whose `Sec-Fetch-Dest` names a subresource
+  (`image`, `style`, `script`, `font`, `empty` for `fetch()`/XHR, and the rest)
+  gets markup it cannot parse, so it is answered with a plain `403` instead,
+  counted as `guardian_challenges_total{outcome="subresource_refused"}`. Without
+  this an ordinary browser polling `/favicon.ico` escalates itself into a
+  `challenge_farm` block within the hour, having abandoned nothing.
+
+  A missing or unrecognized `Sec-Fetch-Dest` keeps the ordinary challenge path,
+  so old clients and non-browsers are unaffected, and stripping the header is
+  not a way around escalation. Claiming a subresource destination is not one
+  either: that client is refused the challenge, so it has nothing to farm.
+
+  **Framed navigations that may not render are never blocked for it.** A framed
+  destination (`iframe`, `frame`, `embed`, `object`) whose `Sec-Fetch-Site` is
+  `cross-site` or `same-site`, and `fencedframe` in every case, may be refused
+  rendering by the interstitial's own `frame-ancestors 'self'` policy; the
+  `SameSite=Lax` token cookie is not sent on a cross-site frame load either, so
+  even a visitor already holding a token arrives looking unvouched. Blocking on
+  those issuances lets any third-party page frame a protected URL in a loop and
+  drive an arbitrary visitor's IP (and, behind a NAT, everyone sharing it) into
+  a `challenge_farm` block on a site the attacker does not control. They are
+  counted as `guardian_challenges_total{outcome="frame_unscored"}`.
+
+  Three things are true of these at once, and all three are needed:
+
+  - They **are issued** a challenge, unlike subresources. `Sec-Fetch-Site` is
+    not proof the frame is foreign: it is computed over the request's whole
+    redirect chain against the initiator's origin and says nothing about the
+    frame ancestor, so a same-origin iframe reached through a cross-site
+    redirect (an SSO callback) arrives tagged `cross-site` while
+    `frame-ancestors 'self'` renders it perfectly well. Refusing would break
+    those logins. This is also why the metric alone does not prove a hostile
+    third party: your own embedded login callback appears here too.
+  - They **are escalated**, on a separate counter, so difficulty still ramps.
+    Any HTTP client can send these headers, and without the ramp the pair would
+    be a cheap-challenge exemption. A solve clears both counters.
+  - They are **never reported** as `challenge_farm`, which is the part that
+    cannot be aimed safely when the signal is ambiguous.
+
+  A same-origin frame is scored exactly as before, and a top-level navigation is
+  never treated as framed, so an inbound cross-site link is unaffected.
+
+  ::: warning HTTPS only
+  Browsers send `Sec-Fetch-*` only to potentially-trustworthy origins (HTTPS and
+  localhost). A site served over plain HTTP receives neither header, so every
+  request reads as unknown and none of the protection above applies there.
+  :::
+
 ### Measured solve times and recommended values
 
 The interstitial solves in parallel web workers (up to 8) with a pure-JS
