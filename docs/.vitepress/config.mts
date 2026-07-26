@@ -77,6 +77,7 @@ export default defineConfig({
     socialLinks: [
       { icon: 'gitlab', link: 'https://gitlab.melroy.org/melroy/angie-guardian' },
       { icon: 'github', link: 'https://github.com/AngieGuardian/angie-guardian' },
+      { icon: 'matrix', link: 'https://matrix.to/#/#angieguardian:melroy.org' },
     ],
 
     editLink: {
