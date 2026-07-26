@@ -267,6 +267,34 @@ type challengePayload struct {
 	PassURL     string `json:"pass_url"`
 }
 
+// refuseChallenge writes a challenge refusal: a plain 403 with an explanation,
+// no page policy since this is not a document response, and no-store.
+//
+// A 403 is not cacheable by default, but say so anyway: a cached refusal would
+// keep failing after the client earns a token.
+//
+// A short max-age here was tried and measured, on the theory that a client
+// which never sends a cookie cannot be harmed by a cached refusal and would
+// stop re-asking on every page render. It bought nothing on the path it was
+// aimed at. Serving the refusal with private, max-age=30, must-revalidate
+// produced the same request rate as no-store (Floorp 153 favicon loads against
+// a local origin: 38 requests over 1.7 minutes against 40 over 2.1), while the
+// identical policy on a 200 collapsed the same repetition from 46 requests to
+// 5, so the instrument could see storage working.
+//
+// Scope that result honestly: it says this Floorp 153 favicon path did not
+// reuse a cacheable 403. It is NOT a general claim that error statuses are
+// unstorable, and RFC 9111 does not say so either, since explicit freshness
+// makes a final status storable whatever it is. Another client, another status
+// or another fetch path could behave differently. It was enough to drop the
+// header here, because a cache directive that changes nothing still has to be
+// reasoned about forever. Re-measure before re-adding it.
+func refuseChallenge(w http.ResponseWriter, msg string) {
+	w.Header()["Cache-Control"] = hdrValNoStore
+	securityHeaders(w, "", "")
+	http.Error(w, msg, http.StatusForbidden)
+}
+
 // handleChallenge issues a PoW challenge and serves the interstitial. Angie
 // diverts 401s here via error_page, preserving the client's original URL.
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
@@ -300,16 +328,38 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// Nothing that could have succeeded is refused; see isSubresourceDest for
 	// why an absent or unrecognized destination keeps the ordinary path, and
 	// unscorableFrame for why a frame is never refused, only left unscored.
-	if isSubresourceDest(r.Header.Get(hdrSecFetchDest)) {
+	//
+	// The second branch extends the same argument to a request that sends no
+	// Fetch metadata at all, which is not a hypothetical: the browser's favicon
+	// service refreshes an icon URL it already knows on a system principal, and
+	// that request arrives with no cookie, no Sec-Fetch-* even over HTTPS, and
+	// Accept: */*. It reads as unknown to everything above, so it is issued and
+	// escalated on every render until the visitor's own workstation is reported
+	// as a challenge farmer. Accept is only a heuristic and is consulted only
+	// once the two unforgeable signals have come up empty; see
+	// acceptLooksNonNavigational for what that does and does not establish, and
+	// isDocumentDest for the exemption it yields to.
+	dest := r.Header.Get(hdrSecFetchDest)
+	switch {
+	case isSubresourceDest(dest):
 		s.metrics.Challenge("subresource_refused")
 		s.log.Debug("challenge refused: request cannot run the interstitial",
+			"host", host, "ip", ip, "uri", uri, "dest", dest)
+		refuseChallenge(w, "proof-of-work challenge requires a same-origin document request")
+		return
+
+	case !isDocumentDest(dest) &&
+		r.Header.Get(hdrSecFetchMode) != modeNavigate &&
+		acceptLooksNonNavigational(r.Header.Values(hdrAccept)):
+		s.metrics.Challenge("accept_heuristic_refused")
+		s.log.Debug("challenge refused: request does not look like a navigation",
 			"host", host, "ip", ip, "uri", uri,
-			"dest", r.Header.Get(hdrSecFetchDest))
-		// A 403 is not cacheable by default, but say so anyway: a cached
-		// refusal would keep failing after the client earns a token.
-		w.Header()["Cache-Control"] = hdrValNoStore
-		securityHeaders(w, "", "")
-		http.Error(w, "proof-of-work challenge requires a same-origin document request", http.StatusForbidden)
+			"accept", r.Header.Get(hdrAccept))
+		// Worded as the behavioural requirement, not as a claim about what the
+		// client accepts: this branch fires for Accept: */*, which formally
+		// accepts HTML, so telling that client it does not accept HTML would
+		// be untrue and would contradict the predicate's own reasoning.
+		refuseChallenge(w, "proof-of-work challenge requires a document navigation: Accept must list text/html or text/*")
 		return
 	}
 

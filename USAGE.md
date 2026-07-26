@@ -244,10 +244,38 @@ Which value fires:
   A same-origin frame is scored exactly as before, and a top-level navigation is
   never treated as framed, so an inbound cross-site link is unaffected.
 
-  **HTTPS only.** Browsers send `Sec-Fetch-*` only to potentially-trustworthy
-  origins (HTTPS and localhost). A site served over plain HTTP receives neither
-  header, so every request reads as unknown and none of the protection above
-  applies there.
+  **When no Fetch metadata arrives at all, `Accept` is the last signal left.**
+  The browser's favicon service refreshes an icon URL it already knows on a
+  system principal: no cookie, no `Sec-Fetch-*` even over HTTPS, and
+  `Accept: */*`. Nothing above sees it, so it was issued a challenge on every
+  page render and escalated for abandoning it. A request whose `Accept` is
+  present and names neither `text/html` nor `text/*` is therefore refused a
+  challenge too, counted as
+  `guardian_challenges_total{outcome="accept_heuristic_refused"}`.
+
+  This one is a heuristic and is treated as one. RFC 9110 makes `*/*` formally
+  accept every media type, HTML included, and the Fetch standard only says
+  browsers *should* send the document `Accept` value for a navigation, so the
+  claim is behavioural: mainstream browsers do include an explicit `text/html`
+  range on a navigation, and something that does not is very unlikely to be one.
+  It therefore never overrides a stronger signal. A document-like
+  `Sec-Fetch-Dest`, a `Sec-Fetch-Mode: navigate`, an absent `Accept`, or an
+  `Accept` that cannot be parsed all keep the ordinary path.
+
+  **The tradeoff.** On modern HTTPS browsers a recognized document destination
+  protects customized `Accept` values. When Fetch metadata is unavailable, which
+  means plain HTTP, older clients, or stripped headers, the heuristic can refuse
+  an unusual real navigation whose `Accept` lacks `text/html`. That is an
+  explicit compatibility tradeoff. Withhold the header
+  (`proxy_set_header Accept "";` in `location @guardian_challenge`) to opt out
+  per site.
+
+  **HTTPS only, except for that one.** Browsers send `Sec-Fetch-*` only to
+  potentially-trustworthy origins (HTTPS and localhost). A site served over plain
+  HTTP receives none of those headers, so every destination reads as unknown and
+  the subresource and frame protections above do not apply there. The `Accept`
+  refusal needs no Fetch metadata, so it is the only one that does work over
+  plain HTTP, and equally the only one whose false-positive risk is higher there.
 
 #### Measured solve times and recommended values
 
