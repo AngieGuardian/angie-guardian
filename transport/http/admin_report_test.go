@@ -409,3 +409,24 @@ func TestAdminDashboardGate(t *testing.T) {
 		t.Errorf("dashboard disabled: status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// TestDashboardReloadControlContract pins what the page's reload button needs
+// from this server: the preflight route it asks first, the reload route it
+// posts to, and the restart_required field it names the offending keys from.
+// Renaming any of them server-side would leave the button posting blind, which
+// is the one thing this control exists to avoid.
+func TestDashboardReloadControlContract(t *testing.T) {
+	ts, _ := reportServer(t, reportYAML)
+	body, _ := io.ReadAll(adminReq(t, ts, "GET", "/admin/dashboard", "", "").Body)
+	page := string(body)
+	for _, want := range []string{"/admin/reload/preflight", "/admin/reload", "restart_required"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard does not reference %q", want)
+		}
+	}
+	// Ships hidden: an embedded build with no reload closure answers 503 on the
+	// preflight, and the page only reveals the button after that probe passes.
+	if !strings.Contains(page, `<button id="reload" hidden`) {
+		t.Error("reload button is not hidden by default; a daemon without a reload closure would show a button that can only fail")
+	}
+}

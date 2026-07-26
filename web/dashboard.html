@@ -229,6 +229,21 @@
   #lu-feeds { display: flex; flex-wrap: wrap; gap: 0.75rem; }
   #lu-feeds:not(:empty) { margin-top: 0.35rem; }
 
+  /* Config reload. The preflight verdict, the restart-required confirmation
+     and the outcome all land in one panel that stays until it is dismissed: an
+     operator has to be able to read which keys did not take effect, and a
+     message that vanishes on the next refresh tick cannot carry that. Neutral
+     surface by default because most outcomes are good news; .bad is reserved
+     for a config the daemon refused, where the running config is what the
+     message is reassuring about. */
+  #reload-panel { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+                  margin: 1rem 0 0; padding: 0.6rem 0.9rem; border-radius: 6px;
+                  border: 1px solid var(--border); background: var(--surface); }
+  #reload-panel.bad { border-color: var(--critical); color: var(--critical); }
+  /* A YAML error is one long unbroken line often enough that it needs to be
+     allowed to break anywhere rather than push the buttons off the panel. */
+  #reload-msg { flex: 1 1 20rem; min-width: 0; overflow-wrap: anywhere; }
+
   /* Token gate */
   #gate { max-width: 26rem; margin: 15vh auto 0; background: var(--surface);
           border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; }
@@ -265,6 +280,10 @@
       <option value="60000">Refresh: 60s</option>
       <option value="0">Refresh: off</option>
     </select>
+    <!-- Revealed only once the daemon answers the preflight (see probeReload):
+         an embedded build without a config path has no reload to offer. -->
+    <button id="reload" hidden
+            title="Re-read guardian.yaml and apply it, after checking what a reload would actually change">Reload config</button>
     <button id="theme">Theme: auto</button>
     <button id="pause">Pause</button>
     <button id="logout">Forget token</button>
@@ -283,6 +302,15 @@
   <div id="health-banner" role="status" hidden
        style="margin:1rem 0 0;padding:.6rem .9rem;border-radius:6px;font-weight:600;
               background:#7a2020;color:#fff;"></div>
+
+  <!-- Config-reload outcome. Last in the banner stack: it answers a click the
+       operator just made, while the banners above report the state of the
+       traffic, which outranks it. -->
+  <div id="reload-panel" role="status" hidden>
+    <span id="reload-msg"></span>
+    <button type="button" id="reload-confirm" hidden>Reload anyway</button>
+    <button type="button" id="reload-dismiss">Dismiss</button>
+  </div>
 
   <div class="tiles">
     <div class="tile"><div class="label">Active blocks</div>
@@ -752,7 +780,12 @@
         const body = await r.json();
         if (body && typeof body.error === "string" && body.error) msg = body.error;
       } catch { /* non-JSON error body: keep the status-code message */ }
-      throw new Error(msg);
+      // The status rides along on the error: the config-reload flow has to tell
+      // "this daemon has no reload" (503) from "the file on disk is broken"
+      // (422), and those two need opposite handling.
+      const err = new Error(msg);
+      err.status = r.status;
+      throw err;
     }
     return r.json();
   };
@@ -2721,6 +2754,7 @@
     $("gate").hidden = true; $("app").hidden = false;
     tick();
     armTimer();
+    probeReload();
     // Deep link: /admin/dashboard?ip=... opens the lookup on load, so an
     // operator can share a lookup URL with the on-call.
     const linked = new URLSearchParams(location.search).get("ip");
@@ -2729,6 +2763,8 @@
   const logout = (msg) => {
     sessionStorage.removeItem(KEY);
     clearInterval(timer);
+    hideReload(); // a reload verdict is about a session that just ended
+    $("reload").hidden = true;
     $("app").hidden = true; $("gate").hidden = false;
     $("gate-err").textContent = msg || "";
   };
@@ -2759,6 +2795,97 @@
     renderCharts();
   });
   $("logout").addEventListener("click", () => logout());
+
+  // --- Config reload -------------------------------------------------------
+  // Every reload from this page goes through GET /admin/reload/preflight first.
+  // guardiand refuses the whole file when a restart-required key differs from
+  // the running process, so a bare POST turns an edit that touched one such key
+  // into a flat rejection with no hint of which key caused it. The preflight
+  // names them before anything is sent, which is the difference between "your
+  // reload did nothing" and "your reload did nothing because of listen".
+  const showReload = (msg, bad) => {
+    $("reload-msg").textContent = msg;
+    $("reload-panel").classList.toggle("bad", !!bad);
+    $("reload-panel").hidden = false;
+  };
+  const hideReload = () => {
+    $("reload-confirm").hidden = true;
+    $("reload-panel").hidden = true;
+  };
+
+  // Applies what is on disk. Reached either straight from a clean preflight or
+  // from the confirmation below; a reload is all-or-nothing, so success here
+  // means the whole file is live and there is nothing left to qualify.
+  const applyReload = async () => {
+    $("reload").disabled = true;
+    try {
+      await api("/admin/reload", { method: "POST" });
+    } catch (err) {
+      if (err.message === "unauthorized") return;
+      // 422 means the daemon refused the file and kept serving on the config it
+      // already had. The daemon's own reason is the whole value of the message,
+      // so it is passed through untouched.
+      showReload(err.status === 422
+        ? "Reload rejected, the running config is untouched: " + err.message
+        : "Reload failed: " + err.message, true);
+      return;
+    } finally {
+      $("reload").disabled = false;
+      $("reload-confirm").hidden = true;
+    }
+    showReload("Config reloaded.");
+    // The per-domain table and the health card are drawn from /admin/config and
+    // /admin/stats on the tick, so pull one now rather than leave a pre-reload
+    // view sitting under a message that says it changed.
+    render(true).catch(() => {});
+  };
+
+  $("reload").addEventListener("click", async () => {
+    hideReload();
+    $("reload").disabled = true;
+    let pre;
+    try {
+      pre = await api("/admin/reload/preflight");
+    } catch (err) {
+      if (err.message === "unauthorized") return;
+      if (err.status === 503) { $("reload").hidden = true; return; }
+      showReload(err.status === 422
+        ? "guardian.yaml on disk does not load, so nothing was applied and the running config is untouched: " + err.message
+        : "Preflight failed, nothing was applied: " + err.message, true);
+      return;
+    } finally {
+      $("reload").disabled = false;
+    }
+    if (pre.reloadable) { applyReload(); return; }
+    // Restart-required keys differ from the running process, so the daemon will
+    // turn this reload down whole. Say which keys and what that costs before
+    // sending anything: an operator who reads it here can revert them or plan a
+    // restart, instead of reading a bare rejection afterwards. The send stays
+    // available because the file can be fixed between this verdict and the
+    // click, and because the daemon's own answer is worth having.
+    showReload("Only a restart applies these changed keys: " +
+      (pre.restart_required || []).join(", ") +
+      ". guardiand rejects the whole reload while they differ from the running process, so nothing on disk is applied until you revert them or restart.");
+    $("reload-confirm").hidden = false;
+  });
+  $("reload-confirm").addEventListener("click", () => {
+    hideReload();
+    applyReload();
+  });
+  $("reload-dismiss").addEventListener("click", hideReload);
+
+  // Both reload routes answer 503 when main wired no reload closure, so ask
+  // once at login instead of offering a button that can only fail. A 422 here
+  // is the opposite signal: the file on disk is broken, which is a reason to
+  // keep the control within reach, not to take it away.
+  const probeReload = async () => {
+    try {
+      await api("/admin/reload/preflight");
+    } catch (err) {
+      if (err.status === 503 || err.message === "unauthorized") return;
+    }
+    $("reload").hidden = false;
+  };
 
   // Block-an-IP form.
   $("block-form").addEventListener("submit", async (e) => {

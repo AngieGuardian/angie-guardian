@@ -207,6 +207,25 @@ Each section heading carries a small circled **i** linking to the page on this
 site that explains it, opened in a new tab so the live dashboard (and the token
 held in that tab) stays put.
 
+### Reloading the config
+
+The header carries a **Reload config** button, which re-reads `guardian.yaml`
+exactly like SIGHUP or `POST /admin/reload`. It never posts blind: every click
+runs [`GET /admin/reload/preflight`](/reference/admin-api) first, so the page
+can tell you what a reload would really do.
+
+- Fully reloadable: the config is applied and the page refreshes immediately.
+- Restart-required keys changed: the button names those keys and stops there,
+  because guardiand rejects the whole file while they differ from the running
+  process. Revert them or plan a restart; **Reload anyway** sends it regardless
+  and shows the daemon's own verdict.
+- The config on disk does not parse: the daemon's error is shown verbatim,
+  along with the fact that the running config is untouched. Guardian keeps
+  serving on the config it already had.
+
+The button is absent when this guardiand has no reload wired (an embedded build
+with no config path); it is never shown as a control that can only fail.
+
 ### IP lookup
 
 The **IP lookup** panel above the Active blocks table answers "why was this
