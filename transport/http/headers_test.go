@@ -64,6 +64,53 @@ func TestGuardPagesCarryOwnSecurityHeaders(t *testing.T) {
 	}
 }
 
+// Neither guard page may gain an img-src, because the absence of one is what
+// stops a browser from asking for a favicon.
+//
+// A document that declares no <link rel="icon"> falls back to requesting
+// /favicon.ico from the origin root. On a pow.mode: always domain that request
+// is itself challenged, so the interstitial would generate the traffic the
+// interstitial exists to filter (#44). Measured against both engines: an
+// otherwise identical page served with and without default-src 'none' emits
+// /favicon.ico only without it, in Chrome 150 and in Firefox alike. The fetch
+// is blocked before it reaches the wire.
+//
+// Only the daemon's own policy is asserted here, and that is sufficient: a
+// browser enforces every CSP it receives, so a policy without img-src blocks
+// images whatever the Angie glue's copy allows.
+//
+// Adding an icon to these pages therefore does not work the way it looks. It
+// needs img-src, which re-enables the implicit fallback for anything that fails
+// to use the declared icon, and it widens the two tightest policies in the
+// product to buy a suppression that is already in place.
+func TestGuardPagesAllowNoImagesSoNoFaviconIsFetched(t *testing.T) {
+	ts := testServer(t)
+	defer ts.Close()
+
+	for _, path := range []string{"/challenge", "/denied"} {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Guardian-Host", "html.test")
+		req.Header.Set("X-Guardian-IP", "198.51.100.9")
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+
+		csp := resp.Header.Get("Content-Security-Policy")
+		if !strings.Contains(csp, "default-src 'none'") {
+			t.Errorf("GET %s: Content-Security-Policy = %q, want default-src 'none'", path, csp)
+		}
+		if strings.Contains(csp, "img-src") {
+			t.Errorf("GET %s: Content-Security-Policy = %q gained an img-src; "+
+				"the guard pages must not load images, or every render provokes a challenged /favicon.ico", path, csp)
+		}
+	}
+}
+
 // A JSON response is not a document, so it gets no page policy, but it must
 // still be nosniff: without it a browser may render an admin body as HTML.
 func TestJSONResponsesAreNosniffWithoutCSP(t *testing.T) {
