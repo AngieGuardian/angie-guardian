@@ -86,6 +86,39 @@ the refusal off, because withholding the header does the same job with no daemon
 change: add `proxy_set_header Sec-Fetch-Dest "";` to
 `location @guardian_challenge` and Guardian is back to challenging everything.
 
+**`curl`, an API client or a feed reader gets a bare `403` instead of the
+interstitial.** Counted as
+`guardian_challenges_total{outcome="accept_heuristic_refused"}`. When a request
+carries no Fetch metadata at all, its `Accept` header is the only thing left
+that distinguishes a page navigation from something that could never render one,
+so a request whose `Accept` is present and names neither `text/html` nor
+`text/*` is refused a challenge instead of being issued one it will drop. The
+request this was built for is the browser's own favicon service, which refreshes
+a known icon URL on a system principal with no cookie, no `Sec-Fetch-*` even
+over HTTPS, and `Accept: */*`, and used to escalate the visitor on every page
+render.
+
+`Accept` is a heuristic, not proof: `*/*` formally accepts HTML, and the Fetch
+standard only says browsers *should* send the document `Accept` value for a
+navigation. So it is consulted last, and never against a stronger signal:
+`Sec-Fetch-Dest` naming any document-like destination, or
+`Sec-Fetch-Mode: navigate`, exempts the request whatever it asks for. So does an
+absent `Accept`, and so does one that is not a well-formed media range, since
+refusing on input that cannot be read is deciding from noise.
+
+The 403 body names what would change the outcome, so it is worth reading rather
+than just counting: `proof-of-work challenge requires a document navigation:
+Accept must list text/html or text/*`.
+
+**The tradeoff, stated plainly.** On modern HTTPS browsers a recognized document
+destination protects customized `Accept` values. Where Fetch metadata is
+unavailable, meaning plain HTTP, older clients, or a proxy that strips the
+headers, this can refuse an unusual real navigation whose `Accept` lacks
+`text/html`. That is deliberate, and it is the case to watch if you serve a
+plain-HTTP vhost to unusual clients. The off switch is the same shape as the one
+above and needs no daemon change: add `proxy_set_header Accept "";` to
+`location @guardian_challenge`.
+
 **`guardian_challenges_total{outcome="frame_unscored"}` is climbing.** Your
 protected URLs are being loaded in a frame whose Fetch metadata cannot establish
 that the interstitial will render, so those issuances raise difficulty but are
@@ -102,10 +135,16 @@ concluding you are being framed, check whether the URIs involved are your own
 SSO or embed callbacks. A steady rate against ordinary page URLs you never frame
 yourself is the signal worth chasing.
 
-**None of the above appears on a plain-HTTP site.** Browsers send `Sec-Fetch-*`
-only to potentially-trustworthy origins (HTTPS and localhost), so over plain
-HTTP every request reads as unknown and the pre-existing challenge-everything
-behaviour applies, favicon false positives included.
+**The `Sec-Fetch-*` protections above do not apply on a plain-HTTP site.**
+Browsers send those headers only to potentially-trustworthy origins (HTTPS and
+localhost), so over plain HTTP every destination reads as unknown and the
+pre-existing challenge-everything behaviour applies to subresources and frames
+alike.
+
+The `Accept` refusal is the exception, and the only one: it needs no Fetch
+metadata, so it is the sole protection that works over plain HTTP. It is also
+the only one whose false-positive risk is higher there, for exactly the same
+reason, since nothing stronger is available to exempt an unusual navigation.
 
 **Everyone is challenged too aggressively.** If `pow.mode: always`, every
 unvouched request is challenged once per `token_ttl`. Lower `base_difficulty`

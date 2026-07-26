@@ -61,6 +61,43 @@ func TestIsSubresourceDest(t *testing.T) {
 	}
 }
 
+// TestIsDocumentDest pins the exemption the Accept heuristic yields to. The
+// direction that matters is the opposite of isSubresourceDest's: here a false
+// negative is the dangerous one, because a destination wrongly reported as
+// non-document lets a weaker signal (Accept) decide a request that a stronger,
+// unforgeable one had already answered.
+//
+// Absent and unrecognized are deliberately false. That is not an oversight to
+// be "fixed" later: the browser's favicon service sends no Fetch metadata at
+// all, even over HTTPS, and it is exactly the request this whole path exists
+// for.
+func TestIsDocumentDest(t *testing.T) {
+	cases := []struct {
+		dest string
+		want bool
+		why  string
+	}{
+		{"document", true, "a top-level navigation, whatever it says it accepts"},
+		{"iframe", true, "nested navigation; unscorableFrame decides the scoring, not this"},
+		{"frame", true, "legacy nested navigation"},
+		{"embed", true, "renders HTML with script"},
+		{"object", true, "renders HTML with script"},
+		{"fencedframe", true, "a navigation, and unconditionally unscored elsewhere"},
+
+		{"", false, "absent: the favicon service sends none of these, even over HTTPS"},
+		{"image", false, "already refused by isSubresourceDest before this is consulted"},
+		{"empty", false, "fetch()/XHR"},
+		{"Document", false, "non-conforming casing is not a conforming destination"},
+		{"future-dest", false, "unknown stays unknown; the Accept heuristic may then speak"},
+	}
+
+	for _, c := range cases {
+		if got := isDocumentDest(c.dest); got != c.want {
+			t.Errorf("isDocumentDest(%q) = %v, want %v (%s)", c.dest, got, c.want, c.why)
+		}
+	}
+}
+
 // TestUnscorableFrame covers the origin half, which controls scoring only and
 // never whether a challenge is issued. The interstitial is served with
 // frame-ancestors 'self' and X-Frame-Options: SAMEORIGIN, so a frame from

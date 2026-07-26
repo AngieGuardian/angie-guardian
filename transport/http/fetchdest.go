@@ -18,14 +18,26 @@ package httptransport
 // user-initiated load (typed address, bookmark). Set by the browser alongside
 // Sec-Fetch-Dest and equally unforgeable from page script.
 //
-// Both headers are only sent to potentially-trustworthy URLs, i.e. HTTPS and
-// localhost. A site served over plain HTTP receives neither, which reads as
-// unknown and keeps the ordinary path everywhere below: correct, but it means
-// none of the false-positive protection in this file applies there.
+// hdrSecFetchMode names the request mode: "navigate" for a top-level or nested
+// document load, "no-cors"/"cors" for subresources, "same-origin", "websocket".
+// Only "navigate" is read here, as a second, independent way for a request to
+// prove it is a navigation when its destination says nothing.
+//
+// All three headers are only sent to potentially-trustworthy URLs, i.e. HTTPS
+// and localhost. A site served over plain HTTP receives none of them, which
+// reads as unknown and keeps the ordinary path everywhere below: correct, but
+// it means none of the false-positive protection in this file applies there.
+// The Accept heuristic in accept.go is the one that does, precisely because it
+// needs no Fetch metadata, and it consults the predicates here to decide when
+// it must stay out of the way.
 const (
 	hdrSecFetchDest = "Sec-Fetch-Dest"
 	hdrSecFetchSite = "Sec-Fetch-Site"
+	hdrSecFetchMode = "Sec-Fetch-Mode"
 )
+
+// modeNavigate is the Sec-Fetch-Mode value of a document navigation.
+const modeNavigate = "navigate"
 
 // unscorableFrame reports whether a challenge request is a framed navigation
 // that MAY be unable to render the interstitial, in which case the issuance is
@@ -86,6 +98,26 @@ func isFramedDest(dest string) bool {
 		return true
 	}
 	return false
+}
+
+// isDocumentDest reports whether dest names a destination that renders a
+// document, at the top level or nested. It is the exemption the Accept
+// heuristic yields to: a request whose destination already tells us it is a
+// navigation must keep the existing destination-driven path whatever it asks
+// for, since the destination is the stronger signal and, unlike Accept, is set
+// by the browser and unforgeable from page script.
+//
+// "Existing destination-driven path" is three paths, not one: a subresource is
+// refused outright by isSubresourceDest, a foreign frame or a fencedframe is
+// issued a challenge and left unscored by unscorableFrame, and anything else
+// document-like gets the ordinary challenge with ordinary farm scoring. This
+// predicate only keeps the Accept heuristic out of all three.
+//
+// Absent and unrecognized are deliberately NOT document-like here, which is
+// what lets the heuristic act on the request this was written for: the browser's
+// favicon service sends no Fetch metadata at all, even over HTTPS.
+func isDocumentDest(dest string) bool {
+	return dest == "document" || dest == "fencedframe" || isFramedDest(dest)
 }
 
 // isForeignSite reports whether site explicitly says something other than the

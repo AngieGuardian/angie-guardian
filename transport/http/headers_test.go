@@ -111,6 +111,79 @@ func TestGuardPagesAllowNoImagesSoNoFaviconIsFetched(t *testing.T) {
 	}
 }
 
+// TestChallengeRefusalsAreNotStored pins both refusals as no-store, and exists
+// mostly to record why the obvious alternative was rejected on evidence rather
+// than on taste.
+//
+// A short max-age looks right for the Accept-heuristic refusal: that client
+// sends no cookie and never will, so the usual objection (a cached refusal
+// outliving the client's token) does not apply to it, and letting the response
+// be stored would stop it re-asking on every render. It was implemented, with
+// Vary naming every header the decision read, and then measured. On the path it
+// was aimed at it changed nothing: private, max-age=30, must-revalidate drew 38
+// requests in 1.7 minutes against no-store's 40 in 2.1, while the same policy
+// on a 200 took the identical repetition from 46 requests to 5, so the
+// instrument could see storage working.
+//
+// That result is about Floorp 153's favicon path, not about error statuses in
+// general; RFC 9111 makes a final status storable when it carries explicit
+// freshness, whatever the status is. It was enough to drop the header, since a
+// cache directive that changes nothing still has to be reasoned about forever.
+//
+// So both refusals stay no-store, and a Vary would be answering a question
+// nothing asks. If someone re-adds a cache header here, this test should fail
+// until they have re-measured and can say what changed.
+func TestChallengeRefusalsAreNotStored(t *testing.T) {
+	ts := testServer(t)
+	defer ts.Close()
+
+	cases := []struct {
+		name    string
+		headers map[string]string
+		why     string
+	}{
+		{
+			name:    "accept heuristic",
+			headers: map[string]string{"Accept": "*/*"},
+			why:     "a cacheable 403 was measured and made no difference",
+		},
+		{
+			name:    "subresource",
+			headers: map[string]string{"Sec-Fetch-Dest": "image"},
+			why:     "that client sends a cookie, so a cached refusal could outlive its token",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, ts.URL+"/challenge", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("X-Guardian-Host", "html.test")
+			req.Header.Set("X-Guardian-IP", "198.51.100.10")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store (%s)", got, tc.why)
+			}
+			if got := resp.Header.Get("Vary"); got != "" {
+				t.Errorf("Vary = %q, want none: nothing here is storable, so nothing needs a cache key", got)
+			}
+		})
+	}
+}
+
 // A JSON response is not a document, so it gets no page policy, but it must
 // still be nosniff: without it a browser may render an admin body as HTML.
 func TestJSONResponsesAreNosniffWithoutCSP(t *testing.T) {

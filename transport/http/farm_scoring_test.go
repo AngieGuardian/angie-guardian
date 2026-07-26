@@ -409,3 +409,189 @@ func TestUnknownDestStillFarms(t *testing.T) {
 		t.Fatalf("an unrecognized Sec-Fetch-Dest escaped farm scoring: action=%q", got)
 	}
 }
+
+// TestAnonymousNonNavigationChallengeRefusedNotCounted is the half of the
+// /favicon.ico incident that Sec-Fetch-Dest cannot see. The browser's favicon
+// service refreshes a known icon URL on a system principal: no cookie, no Fetch
+// metadata at all even over HTTPS, and Accept: */*. Every one of those reads as
+// unknown to the destination checks, so it used to be issued an interstitial it
+// cannot run and scored for abandoning it, and a real deployment reported 73
+// farm events against its own operator's workstation inside half an hour.
+//
+// Accept is the only thing left that distinguishes it, so it decides here and
+// only here: after both unforgeable signals have come up empty.
+func TestAnonymousNonNavigationChallengeRefusedNotCounted(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.82", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/favicon.ico", ua)
+	h["Accept"] = "*/*"
+	// Twenty is far past both the free allowance (4) and the 2/min threshold.
+	for i := range 20 {
+		resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("anonymous non-navigation challenge %d: status = %d, want 403", i+1, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("refusal Content-Type = %q, want text/plain (never an unusable page)", ct)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("blocked by requests that were never issued a challenge: reason=%q",
+			resp.Header.Get("X-Guardian-Reason"))
+	}
+	if _, _, d := fetchChallenge(t, ts, ip, ua); d != 4 {
+		t.Fatalf("difficulty after 20 refused requests = %d, want base 4 (nothing counted)", d)
+	}
+}
+
+// TestDocumentDestWithWildcardAcceptIsStillChallenged pins the composition rule,
+// and is the test that fails if anyone later simplifies the refusal to consult
+// Accept alone.
+//
+// Accept is a heuristic: RFC 9110 makes */* formally accept every media type,
+// HTML included, and the Fetch standard only says browsers SHOULD send the
+// document Accept value for a navigation. Sec-Fetch-Dest is not a heuristic, so
+// where the two disagree the destination wins and the request keeps the ordinary
+// challenge path, scoring included. Otherwise a visitor whose Accept has been
+// customized, or an engine that classifies a navigation differently, is refused
+// entry to the site on the weaker of two available signals.
+func TestDocumentDestWithWildcardAcceptIsStillChallenged(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.83", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Dest"] = "document"
+	h["Accept"] = "*/*"
+	for i := range 7 { // issuances 6 and 7 score at the pinned ceiling
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("document challenge %d with Accept: */*: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("a document destination escaped farm scoring because of its Accept: action=%q", got)
+	}
+}
+
+// TestNavigateModeWithWildcardAcceptIsStillChallenged: Sec-Fetch-Mode is the
+// second unforgeable navigation signal and exempts on its own, without any
+// destination. Costs nothing against the request this was built for, which sends
+// no Fetch metadata whatsoever, and covers a client that reports the mode but
+// not the destination.
+func TestNavigateModeWithWildcardAcceptIsStillChallenged(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.84", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Mode"] = "navigate"
+	h["Accept"] = "*/*"
+	for i := range 7 {
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("navigate-mode challenge %d with Accept: */*: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("Sec-Fetch-Mode: navigate escaped farm scoring: action=%q", got)
+	}
+}
+
+// TestSubresourceWithHTMLAcceptIsStillRefused: when the two rules disagree, the
+// destination wins.
+//
+// A fetch()/XHR asking for text/html is the case that only #45 can catch: it
+// says it accepts HTML, so the Accept heuristic must leave it alone, but
+// Sec-Fetch-Dest: empty proves it will never render a document and it would be
+// scored for abandoning a challenge it cannot run. The refusal therefore has to
+// come from the subresource branch.
+//
+// So this is the test that fails if anyone concludes the Accept heuristic
+// subsumes #45 and removes it: verified by disabling that branch, which turns
+// these 403s into issued challenges. Note it does NOT depend on the order of the
+// two cases, since the Accept branch cannot fire on a request naming text/html
+// whichever position it holds.
+func TestSubresourceWithHTMLAcceptIsStillRefused(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.86", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/api/data", ua)
+	h["Sec-Fetch-Dest"] = "empty"
+	h["Accept"] = "text/html,application/xhtml+xml"
+	for i := range 20 {
+		resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("subresource %d claiming to accept HTML: status = %d, want 403", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("blocked by requests that were never issued a challenge: reason=%q",
+			resp.Header.Get("X-Guardian-Reason"))
+	}
+}
+
+// TestSecondAcceptFieldLineExemptsTheRequest: Accept may arrive as several field
+// lines, and text/html in any of them is an exemption.
+//
+// The handler must therefore read Header.Values, not Header.Get, which returns
+// only the first line. Nothing else catches that substitution: the predicate's
+// own table covers multi-line input, but it is handed a slice by the test rather
+// than by the handler, so swapping Values for Get leaves every other test green
+// while refusing a client that plainly asked for HTML.
+func TestSecondAcceptFieldLineExemptsTheRequest(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.87", "Mozilla/5.0"
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/challenge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range guardianHeaders("html.test", ip, "/original?q=1", ua) {
+		req.Header.Set(k, v)
+	}
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Accept", "text/html")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("two Accept field lines, the second naming text/html: status = %d, want 200 interstitial; body=%s",
+			resp.StatusCode, b)
+	}
+}
+
+// TestAbsentAcceptStillFarms: a request carrying no Accept at all keeps the
+// ordinary challenge path, exactly as an absent Sec-Fetch-Dest does.
+//
+// Every other test in this file happens to send no Accept, so this invariant is
+// load-bearing everywhere and named nowhere. It is asserted here because the
+// tempting "simplification" is to treat absence as evidence of a non-navigation,
+// which would refuse a challenge to every HTTP/1.0 client, minimal tool and
+// header-stripping proxy on the internet, none of which can be distinguished
+// from a browser without the header they did not send.
+func TestAbsentAcceptStillFarms(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.85", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	for i := range 7 {
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("challenge %d without an Accept header: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("a request with no Accept escaped farm scoring: action=%q", got)
+	}
+}
