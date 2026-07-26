@@ -221,8 +221,9 @@ defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 15m          # first offense; doubles per repeat; max 8760h
-      max_block_ttl: 4h       # backoff cap; max 8760h
+      block_ttl: 30m          # first offense; doubles per repeat; max 8760h
+      max_block_ttl: 12h      # backoff cap: 30m, 1h, 2h, 4h, 8h, 12h. Reached
+                              # on the 6th block within 24h; max 8760h
       thresholds:             # bad events per window before the IP is blocked;
                               # "off" disables one event type individually
         signature: 10/min     # WAF keyword/regex rule hits (waf.keywords);

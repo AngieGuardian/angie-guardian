@@ -48,8 +48,8 @@ defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 15m          # maximum 8760h
-      max_block_ttl: 4h       # maximum 8760h
+      block_ttl: 30m          # maximum 8760h
+      max_block_ttl: 12h      # maximum 8760h
       thresholds:
         signature: 10/min
         pow_fail: 10/min

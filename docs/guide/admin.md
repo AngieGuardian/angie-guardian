@@ -58,7 +58,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit
 # average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
-# Block an IP for two hours (reason + ttl optional; default 15m, max 8760h).
+# Block an IP for two hours (reason + ttl optional; default 24h, max 8760h).
 # Equivalent IPv6 spellings are canonicalized to one block.
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \

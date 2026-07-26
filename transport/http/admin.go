@@ -206,7 +206,12 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ttl := 15 * time.Minute
+	// A manual block is a deliberate operator act, not a reflex from the
+	// behavioural ladder, so it defaults long rather than to the ladder's first
+	// rung: someone who reaches for this endpoint has decided the IP is bad and
+	// rarely means "for the next quarter of an hour". Callers wanting a shorter
+	// block pass an explicit ttl.
+	ttl := 24 * time.Hour
 	if body.TTL != "" {
 		// duration.Parse, not time.ParseDuration: the same units guardian.yaml
 		// accepts, so "30d" works here too rather than forcing "720h".
