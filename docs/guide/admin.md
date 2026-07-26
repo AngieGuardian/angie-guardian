@@ -203,6 +203,10 @@ headline count comes from the bounded in-process mirror and is shown as a lower
 bound when that mirror is capacity-incomplete, so leaving the dashboard open
 never triggers an unbounded store scan.
 
+Each section heading carries a small circled **i** linking to the page on this
+site that explains it, opened in a new tab so the live dashboard (and the token
+held in that tab) stays put.
+
 ### IP lookup
 
 The **IP lookup** panel above the Active blocks table answers "why was this

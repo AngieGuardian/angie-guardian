@@ -74,6 +74,18 @@
   h2.section-tools .chart-window-tools { text-transform: none; letter-spacing: normal;
                                          font-weight: 400; }
   .meta { color: var(--muted); font-size: 0.8rem; }
+  /* Docs pointers: a small circled "i" beside a section heading linking to the
+     matching page on angieguardian.org. Muted, so it reads as a footnote on the
+     heading rather than a control. Opens in a new tab: a click must never
+     navigate the live page away (the token lives in this tab only). Its own
+     text-transform/letter-spacing because h2 uppercases its content. */
+  a.help { display: inline-flex; align-items: center; justify-content: center;
+           width: 1.35em; height: 1.35em; margin-left: 0.4em; flex: none;
+           border: 1px solid var(--border); border-radius: 50%;
+           color: var(--muted); text-decoration: none; font-weight: 600;
+           font-size: 0.85em; line-height: 1; text-transform: none;
+           letter-spacing: normal; vertical-align: baseline; }
+  a.help:hover, a.help:focus-visible { color: var(--ink); border-color: var(--muted); }
   button { font: inherit; color: var(--ink); background: var(--surface);
            border: 1px solid var(--border); border-radius: 6px;
            padding: 0.25rem 0.7rem; cursor: pointer; }
@@ -297,7 +309,11 @@
 
   <h2 id="health-h2" hidden>System health
     <span class="meta">(counters marked "since start" only count as degradation
-      when they move between refreshes)</span></h2>
+      when they move between refreshes)</span><a class="help"
+      href="https://angieguardian.org/guide/admin#system-health"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: reading the System health card"
+      aria-label="Documentation: System health">i</a></h2>
   <div class="tablewrap" id="health-card" hidden>
     <table>
       <thead><tr><th>Component</th><th>State</th><th>Detail</th></tr></thead>
@@ -306,7 +322,11 @@
   </div>
 
   <h2 class="section-tools">
-    <span>Activity <span class="meta">(recent ring, non-allow decisions)</span></span>
+    <span>Activity <span class="meta">(recent ring, non-allow decisions)</span><a class="help"
+      href="https://angieguardian.org/guide/admin#graphs"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: what the graphs are drawn from"
+      aria-label="Documentation: dashboard graphs">i</a></span>
     <span class="chart-window-tools">
       <label class="meta" for="chart-window">Window</label>
       <select id="chart-window" aria-label="Decision chart time window">
@@ -358,7 +378,11 @@
   </div>
 
   <section id="anomaly-health" hidden>
-    <h2>Anomaly baselines <span class="meta">configured coverage and active artifacts</span></h2>
+    <h2>Anomaly baselines <span class="meta">configured coverage and active artifacts</span><a class="help"
+      href="https://angieguardian.org/guide/anomaly"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: training and scoring anomaly baselines"
+      aria-label="Documentation: anomaly baselines">i</a></h2>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Scope</th><th>Mode</th><th>Coverage</th><th>Segments</th>
@@ -371,7 +395,11 @@
   <!-- IP lookup: one card answering "what does the daemon know about this
        IP?" from endpoints the page is already authenticated for. Every IP
        rendered elsewhere on the page links here (see ipCell). -->
-  <h2 id="lookup-h2">IP lookup</h2>
+  <h2 id="lookup-h2">IP lookup<a class="help"
+      href="https://angieguardian.org/guide/admin#ip-lookup"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: answering &quot;why was this client denied?&quot;"
+      aria-label="Documentation: IP lookup">i</a></h2>
   <form id="lookup-form" class="toolbar">
     <input id="lookup-ip" placeholder="IP to look up" size="24" autocomplete="off">
     <button type="submit">Look up</button>
@@ -411,7 +439,11 @@
       not proof this IP sent nothing.</div>
   </div>
 
-  <h2>Active blocks</h2>
+  <h2>Active blocks<a class="help"
+      href="https://angieguardian.org/guide/admin#everyday-operations"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: blocking, unblocking and TTL backoff"
+      aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
   <form id="block-form" class="toolbar">
     <input id="block-ip" placeholder="IP to block" required>
     <input id="block-ttl" placeholder="TTL (15m)" size="8"
@@ -440,7 +472,11 @@
     </div>
   </div>
 
-  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
+  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span><a class="help"
+      href="https://angieguardian.org/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: what a reason means, and what to do about a false positive"
+      aria-label="Documentation: decision reasons and false positives">i</a></h2>
   <div class="toolbar">
     <select id="f-action" aria-label="Filter by action">
       <option value="">all actions</option>
@@ -465,7 +501,11 @@
     </div>
   </div>
 
-  <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span></h2>
+  <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span><a class="help"
+      href="https://angieguardian.org/guide/admin#top-offenders"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: ranked sources, the world map and its controls"
+      aria-label="Documentation: top offenders">i</a></h2>
   <!-- World map: only rendered when a location_db is loaded (see renderGeoMap). -->
   <div class="charts" id="geomap-card" hidden>
     <div class="chart-card">
@@ -502,7 +542,11 @@
 
   <div class="cols">
     <div>
-      <h2>Domains</h2>
+      <h2>Domains<a class="help"
+        href="https://angieguardian.org/reference/configuration#per-domain-options-defaults-and-domains-host"
+        target="_blank" rel="noopener noreferrer"
+        title="Docs: per-domain options reference"
+        aria-label="Documentation: per-domain configuration">i</a></h2>
       <div class="tablewrap">
         <table>
           <thead><tr><th>Domain</th><th>PoW</th><th>Mode</th><th>Signatures</th><th>Anomaly</th>
@@ -523,7 +567,11 @@
     </div>
   </div>
 
-  <h2>IP intelligence <span class="meta" id="intel-dbs"></span></h2>
+  <h2>IP intelligence <span class="meta" id="intel-dbs"></span><a class="help"
+      href="https://angieguardian.org/guide/bots-ip-intel#ip-reputation-feeds"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: GeoIP databases and reputation feeds"
+      aria-label="Documentation: GeoIP and reputation feeds">i</a></h2>
   <div class="tablewrap">
     <table>
       <thead><tr><th>Feed</th><th>Action</th><th>Entries</th><th>Refreshed</th>
@@ -534,7 +582,11 @@
   </div>
 
   <h2 id="angie-h2" hidden>Server traffic
-    <span class="meta">from Angie's API (includes allowed traffic Guardian never records)</span></h2>
+    <span class="meta">from Angie's API (includes allowed traffic Guardian never records)</span><a class="help"
+      href="https://angieguardian.org/guide/admin#server-traffic-angie-api"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: enabling the Angie API and what each panel needs"
+      aria-label="Documentation: server traffic from the Angie API">i</a></h2>
   <div class="empty" id="angie-note" hidden></div>
   <div class="tiles" id="angie-tiles" hidden>
     <div class="tile" id="ta-version-tile" hidden><div class="label">Angie</div>
