@@ -5,6 +5,7 @@
 package waf
 
 import (
+	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -31,11 +32,33 @@ func TestSignedIDRoundTrip(t *testing.T) {
 	if err := s.Verify(id, "challenge", "evil.com"); !errors.Is(err, ErrIDTampered) {
 		t.Errorf("cross-host: %v, want ErrIDTampered", err)
 	}
-	if err := s.Verify(id[:len(id)-2]+"xx", "challenge", "example.com"); !errors.Is(err, ErrIDTampered) {
-		t.Errorf("tampered: %v, want ErrIDTampered", err)
-	}
 	if err := s.Verify("not-base64!!!", "challenge", "example.com"); !errors.Is(err, ErrIDTampered) {
 		t.Errorf("garbage: %v, want ErrIDTampered", err)
+	}
+
+	// Flipping any single bit of the decoded ID must fail verification, which
+	// covers the expiry, the random component and the MAC in one sweep.
+	// Integrity is checked before expiry, so even a mangled expiry reports as
+	// tampered rather than expired.
+	//
+	// Mutating the decoded bytes rather than splicing the base64 text is not
+	// cosmetic. The final two characters of a RawURLEncoding string encode only
+	// the last byte, and the splice this replaces ("...xx") always decoded that
+	// byte to 0xC7, so it silently mutated nothing whenever the genuine MAC
+	// already ended in 0xC7. That is a 1 in 256 chance per run of asserting
+	// that a *genuine* ID is rejected, which is how this test failed on main
+	// (job 40682) having passed thousands of times before.
+	raw, err := base64.RawURLEncoding.DecodeString(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range raw {
+		raw[i] ^= 0x01
+		mutated := base64.RawURLEncoding.EncodeToString(raw)
+		if err := s.Verify(mutated, "challenge", "example.com"); !errors.Is(err, ErrIDTampered) {
+			t.Errorf("flipped bit 0 of byte %d: %v, want ErrIDTampered", i, err)
+		}
+		raw[i] ^= 0x01
 	}
 
 	// A different signer never validates IDs from this one.
