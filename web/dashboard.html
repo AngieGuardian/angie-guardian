@@ -192,10 +192,14 @@
   /* Toolbars (block form, decision filters) */
   .toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
              margin: 0 0 0.5rem; }
-  .toolbar input, .toolbar select {
+  .toolbar input:not([type="checkbox"]), .toolbar select {
     font: inherit; color: var(--ink); background: var(--surface);
     border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem; }
   .toolbar .err { color: var(--critical); font-size: 0.8rem; }
+  /* Checkbox option, sized like .meta so a toggle sitting beside an action
+     button reads as a qualifier on it rather than a second control. */
+  label.opt { display: inline-flex; align-items: center; gap: 0.3rem;
+              color: var(--muted); font-size: 0.8rem; cursor: pointer; }
   /* Pager footer: centre the controls under the table, count trailing.
      Symmetric top/bottom margin so it doesn't butt against the card edge. */
   .toolbar.pager { justify-content: center; margin: 0.75rem 0; }
@@ -380,6 +384,11 @@
       <span id="lu-block-chip"></span>
       <span class="meta" id="lu-block-detail"></span>
       <button type="button" id="lu-unblock" hidden>Unblock</button>
+      <label class="opt reset-backoff-opt" id="lu-reset-backoff-opt" hidden
+             title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused this block are always cleared.">
+        <input type="checkbox" class="reset-backoff" id="lu-reset-backoff" checked>
+        reset backoff
+      </label>
       <input id="lu-block-ttl" placeholder="TTL (15m)" size="8"
              title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 15m." hidden>
       <input id="lu-block-reason" placeholder="reason" size="14" maxlength="200" hidden>
@@ -411,6 +420,13 @@
     <button type="submit">Block IP</button>
     <span class="err" id="block-err"></span>
   </form>
+  <div class="toolbar">
+    <label class="opt reset-backoff-opt"
+           title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused the block are always cleared.">
+      <input type="checkbox" class="reset-backoff" id="blk-reset-backoff" checked>
+      Unblock also resets the repeat-offender backoff
+    </label>
+  </div>
   <div class="tablewrap">
     <table>
       <thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
@@ -421,6 +437,31 @@
       <button id="blk-prev" type="button">‹ Prev</button>
       <button id="blk-next" type="button">Next ›</button>
       <span class="meta" id="blk-page"></span>
+    </div>
+  </div>
+
+  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
+  <div class="toolbar">
+    <select id="f-action" aria-label="Filter by action">
+      <option value="">all actions</option>
+      <option value="deny">deny</option>
+      <option value="challenge">challenge</option>
+    </select>
+    <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
+    <span class="meta" id="f-count"></span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
+                 <th>IP</th><th id="dec-geo" hidden>Geo</th>
+                 <th>Request</th><th>User-Agent</th></tr></thead>
+      <tbody id="decisions"></tbody>
+    </table>
+    <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
+    <div class="toolbar pager" id="dec-pager" hidden>
+      <button id="dec-prev" type="button">‹ Prev</button>
+      <button id="dec-next" type="button">Next ›</button>
+      <span class="meta" id="dec-page"></span>
     </div>
   </div>
 
@@ -458,31 +499,6 @@
     </div>
   </div>
   <div class="empty" id="offenders-empty" hidden>Nothing challenged or denied yet.</div>
-
-  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span></h2>
-  <div class="toolbar">
-    <select id="f-action" aria-label="Filter by action">
-      <option value="">all actions</option>
-      <option value="deny">deny</option>
-      <option value="challenge">challenge</option>
-    </select>
-    <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
-    <span class="meta" id="f-count"></span>
-  </div>
-  <div class="tablewrap">
-    <table>
-      <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
-                 <th>IP</th><th id="dec-geo" hidden>Geo</th>
-                 <th>Request</th><th>User-Agent</th></tr></thead>
-      <tbody id="decisions"></tbody>
-    </table>
-    <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
-    <div class="toolbar pager" id="dec-pager" hidden>
-      <button id="dec-prev" type="button">‹ Prev</button>
-      <button id="dec-next" type="button">Next ›</button>
-      <span class="meta" id="dec-page"></span>
-    </div>
-  </div>
 
   <div class="cols">
     <div>
@@ -2024,6 +2040,32 @@
       : "";
   };
 
+  // --- Unblock -------------------------------------------------------------
+  // An unblock always clears the counters that caused the block; leaving them
+  // is what made unblock a no-op the IP undid on its next request. The toggle
+  // governs only the 24h repeat-offender ladder behind the block TTL doubling.
+  // Two copies sit beside the two Unblock actions (the table and the lookup
+  // card) and share one state, so the choice cannot silently differ by which
+  // button you happen to press. Deliberately not persisted: this decides how
+  // the daemon treats an IP, and a setting remembered from last week is not a
+  // decision anyone made today.
+  const resetBoxes = () => document.querySelectorAll(".reset-backoff");
+  for (const box of resetBoxes()) {
+    box.addEventListener("change", () => {
+      for (const other of resetBoxes()) other.checked = box.checked;
+    });
+  }
+  // unblock returns the daemon's reset report so callers can say when part of
+  // it did not run; it throws like any other api() call on failure.
+  const unblock = async (ip) => api("/admin/blocks/" + encodeURIComponent(ip) +
+    "?reset_backoff=" + ($("blk-reset-backoff").checked ? "true" : "false"),
+    { method: "DELETE" });
+  // What to tell the operator when the daemon could only partly reset. Empty
+  // string on a clean unblock.
+  const resetWarning = (res) => (res && res.reset && res.reset.incomplete)
+    ? "Unblocked, but some counters could not be cleared (see the daemon log): this IP may re-block."
+    : "";
+
   const renderBlocks = () => {
     const all = lastBlocks.blocks || [];
     const pages = Math.max(1, Math.ceil(all.length / BLK_PAGE_SIZE));
@@ -2033,13 +2075,22 @@
 
     const bt = $("blocks");
     bt.replaceChildren(...pageRows.map((b) => {
-      const unblock = el("button", null, "Unblock");
-      unblock.addEventListener("click", async () => {
-        await api("/admin/blocks/" + encodeURIComponent(b.ip), { method: "DELETE" });
+      const btn = el("button", null, "Unblock");
+      btn.addEventListener("click", async () => {
+        let res;
+        try {
+          res = await unblock(b.ip);
+        } catch (err) {
+          // A failed unblock used to leave the row sitting there with no
+          // explanation; the panel already has an error span, so use it.
+          if (err.message !== "unauthorized") $("block-err").textContent = "unblock failed: " + err.message;
+          return;
+        }
+        $("block-err").textContent = resetWarning(res);
         lastBlocksAt = 0;
         render(true).catch(() => {});
       });
-      const act = td(null, ""); act.appendChild(unblock);
+      const act = td(null, ""); act.appendChild(btn);
       return row(ipCell(b.ip), td("wrap", b.reason),
         td("time", b.expires_at ? relTime(b.expires_at) : "never"), act);
     }));
@@ -2162,24 +2213,29 @@
     const showBlockForm = (on) => {
       for (const id of ["lu-block", "lu-block-ttl", "lu-block-reason"]) $(id).hidden = !on;
     };
+    // The backoff toggle is a qualifier on Unblock, so it appears and
+    // disappears with it rather than floating next to a Block form.
+    const showUnblock = (on) => {
+      for (const id of ["lu-unblock", "lu-reset-backoff-opt"]) $(id).hidden = !on;
+    };
     if (block.error) {
       chip.replaceChildren(el("span", "chip", "unknown"));
       $("lu-block-detail").textContent = "block status unavailable: " + block.error;
-      $("lu-unblock").hidden = true;
+      showUnblock(false);
       // Status unknown, so offer neither action: the store is unreachable and
       // both would fail anyway.
       showBlockForm(false);
     } else if (block.blocked) {
       chip.replaceChildren(el("span", "chip deny", "blocked"));
       $("lu-block-detail").textContent = blockDetailText(block);
-      $("lu-unblock").hidden = false;
+      showUnblock(true);
       showBlockForm(false);
     } else {
       chip.replaceChildren(el("span", "chip on", "not blocked"));
       // Not blocked now, but the backoff counter survives 24h, so a repeat
       // offender that has just expired still says so.
       $("lu-block-detail").textContent = blockDetailText(block);
-      $("lu-unblock").hidden = true;
+      showUnblock(false);
       showBlockForm(true);
     }
 
@@ -2693,13 +2749,14 @@
   // The forced render refreshes both the blocks table and this card.
   $("lu-unblock").addEventListener("click", async () => {
     if (!lookupIP) return;
+    let res;
     try {
-      await api("/admin/blocks/" + encodeURIComponent(lookupIP), { method: "DELETE" });
+      res = await unblock(lookupIP);
     } catch (err) {
       if (err.message !== "unauthorized") $("lu-err").textContent = "unblock failed: " + err.message;
       return;
     }
-    $("lu-err").textContent = "";
+    $("lu-err").textContent = resetWarning(res);
     lastBlocksAt = 0;
     render(true).catch(() => {});
   });

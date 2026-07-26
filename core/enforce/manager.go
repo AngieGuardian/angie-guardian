@@ -5,6 +5,7 @@
 package enforce
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -65,10 +66,11 @@ type Manager struct {
 	lastReconcile  atomic.Int64
 	reconcileErrs  atomic.Uint64
 
-	now    func() time.Time
-	kick   chan struct{}
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	notifyMu sync.Mutex // orders ownership checks with local add/remove events
+	now      func() time.Time
+	kick     chan struct{}
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
 
 // New builds a manager. Sink construction failures are logged and reported
@@ -211,6 +213,41 @@ func (m *Manager) Notify(ev BlockEvent) {
 	if m == nil || !ev.IP.IsValid() {
 		return
 	}
+	m.notifyMu.Lock()
+	defer m.notifyMu.Unlock()
+	m.notifyLocked(ev)
+}
+
+// NotifyOwned applies an automatic block only if the exact store value written
+// by that caller is still current. The ownership read and local mirror update
+// share notifyMu with ordinary add/remove notifications: if an unblock or
+// replacement mutates the store concurrently, its later notification is
+// necessarily applied after this one; if it notified first, this validation
+// sees that owner is stale and drops it.
+func (m *Manager) NotifyOwned(ctx context.Context, ev BlockEvent, key string, owner []byte) {
+	if m == nil || !ev.IP.IsValid() {
+		return
+	}
+	m.notifyMu.Lock()
+	defer m.notifyMu.Unlock()
+	current, ok, err := m.st.Get(ctx, key)
+	if err != nil {
+		// A complete authoritative mirror must not silently miss a committed
+		// block because its ownership validation read failed. Force read-through
+		// until reconciliation repairs and republishes completeness.
+		m.markMirrorIncomplete()
+		m.log.Warn("could not validate block ownership for enforcement",
+			"ip", ev.IP.String(), "err", err)
+		return
+	}
+	if !ok || !bytes.Equal(current, owner) {
+		return
+	}
+	m.notifyLocked(ev)
+}
+
+// notifyLocked is Notify's mutation body. The caller holds notifyMu.
+func (m *Manager) notifyLocked(ev BlockEvent) {
 	ev.IP = ev.IP.Unmap()
 	now := m.now()
 	if ev.Remove {
@@ -359,8 +396,8 @@ func (m *Manager) reconcileOnce(ctx context.Context) {
 		if !kv.ExpiresAt.IsZero() {
 			exp = kv.ExpiresAt.UnixNano()
 		}
-		active[a] = entry{reason: string(kv.Value), expiresAt: exp, insertedAt: scanStart.UnixNano()}
-		list = append(list, ActiveBlock{Addr: a, Reason: string(kv.Value), ExpiresAt: kv.ExpiresAt})
+		active[a] = entry{reason: store.BlockReason(kv.Value), expiresAt: exp, insertedAt: scanStart.UnixNano()}
+		list = append(list, ActiveBlock{Addr: a, Reason: store.BlockReason(kv.Value), ExpiresAt: kv.ExpiresAt})
 	}
 	m.publishMirrorReconcile(scanGeneration, m.mir.reconcile(active, scanStart.UnixNano(), scannedAll))
 	m.seeded.Store(true)

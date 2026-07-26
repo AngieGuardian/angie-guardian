@@ -660,8 +660,17 @@ curl -s -H "Authorization: Bearer $TOKEN" -X PUT \
      -d '{"reason":"manual abuse report","ttl":"2h"}' \
      $A/admin/blocks/203.0.113.9
 
-# Lift a block.
+# Lift a block. This also clears the behaviour counters and the challenge
+# escalation that caused it: leaving them at the threshold would let the very
+# next scored event re-block the IP, for twice as long. reset_backoff (default
+# true) additionally clears the 24h repeat-offender count behind that
+# doubling; set it to false to give a borderline client another chance while
+# keeping its history.
 curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $A/admin/blocks/203.0.113.9
+# {"ip":"203.0.113.9","blocked":false,
+#  "reset":{"event_keys":15,"escalation_keys":4,"backoff_reset":true}}
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE \
+     "$A/admin/blocks/203.0.113.9?reset_backoff=false"
 
 # "Why would this request be challenged?" Score it against the domain's
 # anomaly model, for tuning challenge_at / deny_at.
@@ -714,8 +723,9 @@ Paste the token from `admin.token_file` (or your configured secret) into the
 login gate. Configured and persistent bearer credentials are never embedded
 in process logs; the page keeps the token in the tab's sessionStorage.
 
-The dashboard shows active blocks (with one-click unblock and a block-an-IP
-form), the recent deny/challenge feed (filterable by action and free text),
+The dashboard shows active blocks (with one-click unblock, a checkbox for
+whether that unblock also resets the repeat-offender backoff, and a
+block-an-IP form), the recent deny/challenge feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

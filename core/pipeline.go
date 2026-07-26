@@ -182,11 +182,14 @@ func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, en
 		return nil, err
 	}
 	if blocked {
+		// Only reached once the IP is already blocked, so the owner token this
+		// strips costs the allow path nothing.
+		why := store.BlockReason(reason)
 		env.metrics.BlockLookup("store", "hit")
-		env.enforcer.Learn(req.RemoteAddr, string(reason))
+		env.enforcer.Learn(req.RemoteAddr, why)
 		return &Decision{
 			Action: ActionDeny,
-			Reason: "behaviour_block:" + string(reason),
+			Reason: "behaviour_block:" + why,
 		}, nil
 	}
 	env.metrics.BlockLookup("store", "miss")

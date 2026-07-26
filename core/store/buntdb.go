@@ -227,6 +227,157 @@ func (b *BuntDB) CompareAndSwap(_ context.Context, key string, old, new []byte, 
 	return swapped, err
 }
 
+func (b *BuntDB) CompareAndDelete(_ context.Context, key string, old []byte) (bool, error) {
+	if old == nil {
+		return false, nil // nothing to take back
+	}
+	var deleted bool
+	err := b.db.Update(func(tx *buntdb.Tx) error {
+		cur, err := tx.Get(key)
+		if errors.Is(err, buntdb.ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if !bytesEqual(buntDecode(cur), old) {
+			return nil
+		}
+		deleted = true
+		_, err = tx.Delete(key)
+		return err
+	})
+	return deleted, err
+}
+
+func (b *BuntDB) CommitBlock(_ context.Context, c BlockCommit) (BlockCommitResult, error) {
+	var out BlockCommitResult
+	err := b.db.Update(func(tx *buntdb.Tx) error {
+		if _, err := tx.Get(c.HoldKey); err == nil {
+			out.Refusal = BlockRefusalHold
+			return nil
+		} else if !errors.Is(err, buntdb.ErrNotFound) {
+			return err
+		}
+
+		guard, err := tx.Get(c.GuardKey)
+		guardExists := true
+		if errors.Is(err, buntdb.ErrNotFound) {
+			guardExists = false
+		} else if err != nil {
+			return err
+		}
+		if c.GuardValue == nil {
+			if guardExists {
+				out.Refusal = BlockRefusalGeneration
+				return nil
+			}
+		} else if !guardExists || !bytesEqual(buntDecode(guard), c.GuardValue) {
+			out.Refusal = BlockRefusalGeneration
+			return nil
+		}
+
+		block, err := tx.Get(c.BlockKey)
+		blockExists := true
+		if errors.Is(err, buntdb.ErrNotFound) {
+			blockExists = false
+		} else if err != nil {
+			return err
+		}
+		if c.ExpectedBlock == nil {
+			if blockExists {
+				out.Refusal = BlockRefusalBlock
+				return nil
+			}
+		} else if !blockExists || !bytesEqual(buntDecode(block), c.ExpectedBlock) {
+			out.Refusal = BlockRefusalBlock
+			return nil
+		}
+
+		counter, err := tx.Get(c.CounterKey)
+		counterExists := true
+		if errors.Is(err, buntdb.ErrNotFound) {
+			counterExists = false
+		} else if err != nil {
+			return err
+		}
+		offenses := int64(1)
+		counterOpts := setOpts(c.CounterTTL)
+		if counterExists {
+			offenses = counterValue(buntDecode(counter)) + 1
+			counterOpts, err = preservedOpts(tx, c.CounterKey)
+			if err != nil {
+				return err
+			}
+		}
+		ttl := blockBackoffTTL(c.BaseTTL, c.MaxTTL, offenses)
+		if _, _, err = tx.Set(c.CounterKey,
+			buntEncode([]byte(strconv.FormatInt(offenses, 10))), counterOpts); err != nil {
+			return err
+		}
+		if _, _, err = tx.Set(c.BlockKey, buntEncode(c.NewBlock), setOpts(ttl)); err != nil {
+			return err
+		}
+		out = BlockCommitResult{Committed: true, Offenses: offenses, TTL: ttl}
+		return nil
+	})
+	return out, err
+}
+
+func (b *BuntDB) CommitEvent(_ context.Context, c EventCommit) (EventCommitResult, error) {
+	var out EventCommitResult
+	err := b.db.Update(func(tx *buntdb.Tx) error {
+		if _, err := tx.Get(c.HoldKey); err == nil {
+			return nil
+		} else if !errors.Is(err, buntdb.ErrNotFound) {
+			return err
+		}
+
+		counter, err := tx.Get(c.CounterKey)
+		counterExists := true
+		if errors.Is(err, buntdb.ErrNotFound) {
+			counterExists = false
+		} else if err != nil {
+			return err
+		}
+		value := int64(1)
+		counterOpts := setOpts(c.CounterTTL)
+		if counterExists {
+			value = counterValue(buntDecode(counter)) + 1
+			counterOpts, err = preservedOpts(tx, c.CounterKey)
+			if err != nil {
+				return err
+			}
+		}
+		if _, _, err = tx.Set(c.CounterKey,
+			buntEncode([]byte(strconv.FormatInt(value, 10))), counterOpts); err != nil {
+			return err
+		}
+		out = EventCommitResult{Committed: true, Value: value}
+		return nil
+	})
+	return out, err
+}
+
+func (b *BuntDB) CommitUnblock(_ context.Context, c UnblockCommit) error {
+	return b.db.Update(func(tx *buntdb.Tx) error {
+		if _, _, err := tx.Set(c.HoldKey, buntEncode(c.HoldValue), setOpts(c.HoldTTL)); err != nil {
+			return err
+		}
+		if _, _, err := tx.Set(c.GenerationKey, buntEncode(c.Generation), setOpts(c.GenerationTTL)); err != nil {
+			return err
+		}
+		if _, err := tx.Delete(c.BlockKey); err != nil && !errors.Is(err, buntdb.ErrNotFound) {
+			return err
+		}
+		if c.ResetBackoff {
+			if _, err := tx.Delete(c.CounterKey); err != nil && !errors.Is(err, buntdb.ErrNotFound) {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (b *BuntDB) Scan(ctx context.Context, prefix string) ([]KV, error) {
 	out, _, err := b.ScanLimit(ctx, prefix, 0)
 	return out, err

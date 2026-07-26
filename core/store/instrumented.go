@@ -94,6 +94,34 @@ func (s *Instrumented) CompareAndSwap(ctx context.Context, key string, old, new 
 	return ok, err
 }
 
+func (s *Instrumented) CompareAndDelete(ctx context.Context, key string, old []byte) (bool, error) {
+	start := time.Now()
+	ok, err := s.inner.CompareAndDelete(ctx, key, old)
+	s.observe("cas", start, err)
+	return ok, err
+}
+
+func (s *Instrumented) CommitBlock(ctx context.Context, commit BlockCommit) (BlockCommitResult, error) {
+	start := time.Now()
+	out, err := s.inner.CommitBlock(ctx, commit)
+	s.observe("block_commit", start, err)
+	return out, err
+}
+
+func (s *Instrumented) CommitUnblock(ctx context.Context, commit UnblockCommit) error {
+	start := time.Now()
+	err := s.inner.CommitUnblock(ctx, commit)
+	s.observe("unblock_commit", start, err)
+	return err
+}
+
+func (s *Instrumented) CommitEvent(ctx context.Context, commit EventCommit) (EventCommitResult, error) {
+	start := time.Now()
+	out, err := s.inner.CommitEvent(ctx, commit)
+	s.observe("event_commit", start, err)
+	return out, err
+}
+
 func (s *Instrumented) Scan(ctx context.Context, prefix string) ([]KV, error) {
 	start := time.Now()
 	kvs, err := s.inner.Scan(ctx, prefix)

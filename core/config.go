@@ -1944,6 +1944,54 @@ func (c *Config) Warnings() []string {
 	return out
 }
 
+// BehaviourWindow is one ip_behaviour event type paired with the window its
+// counter buckets by. Together they are everything needed to rebuild the ev:
+// store key for an IP without enumerating the keyspace.
+type BehaviourWindow struct {
+	Event  string
+	Window time.Duration
+}
+
+// BehaviourWindows returns every distinct event/window pair this config can
+// write a behaviour counter under: the defaults, every domain, and every
+// paths: overlay. Thresholds resolve per scope, so one IP can hold counters
+// for the same event type bucketed several different ways, and an admin reset
+// has to clear all of them. The result is sorted, so a truncated or logged
+// reset reads the same way twice.
+//
+// A threshold of "off" (count <= 0) is skipped because recordEvents never
+// writes a counter for it. ip_behaviour.enabled is deliberately not consulted:
+// counters written while the layer was on outlive a reload that turns it off,
+// and clearing them is still the right thing to do.
+func (c *Config) BehaviourWindows() []BehaviourWindow {
+	seen := make(map[BehaviourWindow]bool, 8)
+	out := make([]BehaviourWindow, 0, 8)
+	collect := func(dc *DomainConfig) {
+		for event, rate := range dc.WAF.IPBehaviour.Thresholds {
+			w := BehaviourWindow{Event: event, Window: rate.Per}
+			if rate.Count <= 0 || rate.Per <= 0 || seen[w] {
+				continue
+			}
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	collect(&c.Defaults)
+	for _, dc := range c.resolved {
+		collect(dc)
+		for i := range dc.pathOverrides {
+			collect(dc.pathOverrides[i].cfg)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Event != out[j].Event {
+			return out[i].Event < out[j].Event
+		}
+		return out[i].Window < out[j].Window
+	})
+	return out
+}
+
 // DomainFor returns the resolved config for a host, falling back to Defaults
 // for unknown hosts. The host may carry a port suffix and any case.
 func (c *Config) DomainFor(host string) *DomainConfig {

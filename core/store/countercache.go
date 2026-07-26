@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/maphash"
 	"sync"
@@ -378,6 +379,64 @@ func (c *CounterCache) Forget(key string) {
 	if spawn {
 		c.Go(c.drain)
 	}
+}
+
+// ForgetSync is Forget with a reportable outcome for the shared counter.
+//
+// Forget's store delete is queued behind the flush machinery, which is right
+// for the hot path and wrong for an operator action that has to state what it
+// achieved: a failed round is dropped silently, and at queue saturation the
+// delete is never enqueued at all. Either way the local counter resets while
+// the shared one survives, and the next flush merges that stale total back
+// over the reset.
+//
+// So this forgets locally (which also marks the key for the owning drainer, so
+// an in-flight round that recreates the key is cleaned up behind us) and then
+// deletes in the shared store synchronously, returning that error. Callers on
+// a request path should keep using Forget; this one blocks on the store.
+//
+// It also reports ErrForgetIncomplete when the key may be counted in the
+// overload sketch, which no per-key reset can clear (see Forget). Both copies
+// this call CAN clear are still cleared; the error says the local count may
+// nonetheless stay pinned, which matters exactly in the overload conditions
+// where a reset is most likely to be needed.
+//
+// Nothing here runs on the counting hot path: the sketch probe is read-only,
+// costs one hash and one cell read per row, and only ForgetSync pays it.
+func (c *CounterCache) ForgetSync(ctx context.Context, key string) error {
+	c.Forget(key)
+	err := c.store.Delete(ctx, key)
+	c.mu.Lock()
+	shed := c.overflowCountLocked(key, c.now().UnixNano()) > 0
+	c.mu.Unlock()
+	if shed {
+		return errors.Join(err, ErrForgetIncomplete)
+	}
+	return err
+}
+
+// ErrForgetIncomplete reports that a key's local count could not be
+// guaranteed cleared because the overload sketch may still hold it. Callers
+// that report a reset to an operator must not present that as a clean reset.
+var ErrForgetIncomplete = errors.New("counter cache: overload-sketch state for this key cannot be cleared")
+
+// overflowCountLocked reads the sketch's count for key without touching it,
+// mirroring incrOverflowLocked's lookup. Being a count-min sketch, a nonzero
+// answer means "this key may have been shed here", not "it definitely was": a
+// collision can only inflate the count, never hide one. That direction is the
+// right one for a caller deciding whether it can claim a complete reset, since
+// it can over-report a problem but never miss one. c.mu must be held.
+func (c *CounterCache) overflowCountLocked(key string, now int64) int64 {
+	minimum := int64(^uint64(0) >> 1)
+	for i := range c.overflow {
+		idx := maphash.String(c.overflowSeeds[i], key) & (overflowCounterWidth - 1)
+		cell := &c.overflow[i][idx]
+		if cell.n == 0 || (cell.expires > 0 && now >= cell.expires) {
+			return 0 // one empty or lapsed row is enough: the minimum is zero
+		}
+		minimum = min(minimum, cell.n)
+	}
+	return minimum
 }
 
 // markDirtyLocked records one unit of pending shared-store work for key (a

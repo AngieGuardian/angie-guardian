@@ -266,6 +266,51 @@ func blockStatus(t *testing.T, ip string) (blocked bool, reason string) {
 	return out.Blocked, out.Reason
 }
 
+// offenses reports the 24h repeat-offender count behind the block-TTL
+// doubling, 0 when the admin API omits it (never automatically blocked).
+func offenses(t *testing.T, ip string) int64 {
+	t.Helper()
+	resp := adminReq(t, http.MethodGet, "/admin/blocks/"+ip, nil)
+	var out struct {
+		Offenses int64 `json:"offenses"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode block detail: %v", err)
+	}
+	return out.Offenses
+}
+
+// blockIP places a manual block through the admin API.
+func blockIP(t *testing.T, ip, reason string) {
+	t.Helper()
+	body := strings.NewReader(`{"reason":"` + reason + `"}`)
+	if resp := adminReq(t, http.MethodPut, "/admin/blocks/"+ip, body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("block %s: status %d", ip, resp.StatusCode)
+	}
+}
+
+// unblock lifts a block, choosing whether the repeat-offender ladder goes with
+// it. The counters that caused the block are cleared either way.
+func unblock(t *testing.T, ip string, resetBackoff bool) {
+	t.Helper()
+	path := "/admin/blocks/" + ip + "?reset_backoff=" + strconv.FormatBool(resetBackoff)
+	resp := adminReq(t, http.MethodDelete, path, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unblock %s: status %d", ip, resp.StatusCode)
+	}
+	var out struct {
+		Reset struct {
+			Incomplete bool `json:"incomplete"`
+		} `json:"reset"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode unblock response: %v", err)
+	}
+	if out.Reset.Incomplete {
+		t.Fatalf("unblock %s reported an incomplete counter reset", ip)
+	}
+}
+
 // activeBlocks returns every currently active behavioural block (IP →
 // reason) from the admin API. All host traffic arrives from a single source
 // IP, but its address depends entirely on the Docker daemon's configuration
@@ -299,10 +344,22 @@ func activeBlocks() map[string]string {
 	return blocks
 }
 
+// unblockResetWindow mirrors core's unblockHoldWindow: for that long after an
+// unblock, the IP cannot be automatically re-blocked, which is what stops a
+// concurrent scorer from undoing the reset. The suite feels it far more than a
+// real deployment does, because every request here shares one source IP, so
+// one test's cleanup gags the next test's WAF block.
+const unblockResetWindow = 2 * time.Second
+
 // clearGatewayBlocks lifts every active behavioural block so a WAF `block`
 // from one test cannot poison the next. The suite owns the whole stack (fresh
 // store volume per run), so every block in it is ours to clear. Best-effort.
+//
+// It waits out the reset window when it actually cleared something, so the
+// next test starts able to block again. A call that found nothing blocked
+// wrote no guard and returns immediately, which is most of them.
 func clearGatewayBlocks() {
+	cleared := false
 	for ip := range activeBlocks() {
 		r, err := http.NewRequest(http.MethodDelete, admin+"/admin/blocks/"+ip, nil)
 		if err != nil {
@@ -311,7 +368,11 @@ func clearGatewayBlocks() {
 		r.Header.Set("Authorization", "Bearer "+adminToken)
 		if resp, err := noRedirect.Do(r); err == nil {
 			resp.Body.Close()
+			cleared = true
 		}
+	}
+	if cleared {
+		time.Sleep(unblockResetWindow)
 	}
 }
 

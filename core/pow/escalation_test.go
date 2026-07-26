@@ -88,6 +88,74 @@ func TestEscalationResetsOnRedeem(t *testing.T) {
 	}
 }
 
+// TestForgetEscalation: the explicit reset an operator's unblock runs, for a
+// client pinned at the difficulty ceiling that would otherwise keep reporting
+// challenge_farm events the moment its block is lifted.
+func TestForgetEscalation(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	ip := "198.51.100.44"
+
+	for range escalationFreeIssues + 2*escalationStep {
+		m.BumpEscalation(ctx, "example.com", ip, time.Minute)
+	}
+	if got := m.BumpEscalation(ctx, "example.com", ip, time.Minute); got == 0 {
+		t.Fatal("counter should have escalated before the reset")
+	}
+	// The frame counter is a separate key space and is cleared too.
+	for range escalationFreeIssues + 2*escalationStep + 1 {
+		m.BumpFrameEscalation(ctx, "example.com", ip, time.Minute)
+	}
+	// Another host's counter is a separate pair and must survive.
+	for range escalationFreeIssues + 2*escalationStep + 1 {
+		m.BumpEscalation(ctx, "other.example", ip, time.Minute)
+	}
+
+	// Normalized like the issuance path, and the shared deletes are reported.
+	if keys, err := m.ResetEscalation(ctx, "EXAMPLE.com:443", ip); err != nil || keys != 2 {
+		t.Fatalf("ResetEscalation = %d keys, %v; want 2, nil", keys, err)
+	}
+	if got := m.BumpEscalation(ctx, "example.com", ip, time.Minute); got != 0 {
+		t.Fatalf("extra bits after the reset = %d, want 0", got)
+	}
+	if got := m.BumpFrameEscalation(ctx, "example.com", ip, time.Minute); got != 0 {
+		t.Fatalf("extra bits on the frame counter after the reset = %d, want 0", got)
+	}
+	if got := m.BumpEscalation(ctx, "other.example", ip, time.Minute); got == 0 {
+		t.Fatal("resetting one host cleared another host's counter")
+	}
+
+	var nilManager *Manager
+	if keys, err := nilManager.ResetEscalation(ctx, "example.com", ip); err != nil || keys != 0 {
+		t.Fatalf("nil manager (PoW unconfigured) = %d, %v", keys, err) // a no-op, not a panic
+	}
+	nilManager.ForgetEscalation("example.com", ip)
+}
+
+// TestEscalationKeyUnmapsIPv4: a dual-stack listener reports an IPv4 client as
+// "::ffff:1.2.3.4". The escalation counter has to key that the same way the
+// block key and the behaviour counters do, or one client counts twice and an
+// admin reset rebuilding the key misses it.
+func TestEscalationKeyUnmapsIPv4(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+
+	for _, form := range []string{"::ffff:198.51.100.50", "198.51.100.50", "::FFFF:198.51.100.50"} {
+		m.BumpEscalation(ctx, "example.com", form, time.Minute)
+	}
+	// Three issuances against one counter, so a fourth still sits inside the
+	// free allowance; three separate counters would each be at 1.
+	if got := escalationKey(escalationPrefix, "example.com", "::ffff:198.51.100.50"); got != "chesc:example.com:198.51.100.50" {
+		t.Fatalf("escalationKey = %q, want the unmapped form", got)
+	}
+	if _, err := m.ResetEscalation(ctx, "example.com", "198.51.100.50"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.BumpEscalation(ctx, "example.com", "::ffff:198.51.100.50", time.Minute); got != 0 {
+		t.Fatalf("extra bits = %d after resetting via the plain v4 form, want 0", got)
+	}
+}
+
 // TestEscalationSurvivesFailedRedeem: a wrong nonce must NOT reset the
 // counter, or a farmer could clear its slate with garbage solutions.
 func TestEscalationSurvivesFailedRedeem(t *testing.T) {

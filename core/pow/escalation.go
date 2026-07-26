@@ -6,7 +6,9 @@ package pow
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -58,15 +60,58 @@ func escalationKey(prefix, host, ip string) string {
 		}
 	}
 	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	// Unmap an IPv4-mapped IPv6 address ("::ffff:1.2.3.4" -> "1.2.3.4"), which
+	// is what a dual-stack listener hands the transport for an IPv4 client.
+	// Without it these counters key the same client differently from the block
+	// key and the behaviour counters, which both canonicalize (core.canonIP),
+	// and an admin reset reconstructing the key would miss. Only the mapped
+	// form is rewritten: every other address already arrives in the same
+	// textual form netip would print, so the common path pays a parse and no
+	// allocation. This runs once per challenge issuance.
+	if addr, err := netip.ParseAddr(ip); err == nil && addr.Is4In6() {
+		ip = addr.Unmap().String()
+	}
 	return prefix + host + ":" + ip
 }
 
 // ForgetEscalation clears both escalation counters for one host+IP pair. A
 // solve proves the client is not discarding interstitials, whichever context it
 // arrived in, so redemption resets both.
+//
+// This is the redemption path, so the shared copies are deleted in the
+// background like any other counter flush. An operator reset that has to report
+// what it achieved wants ResetEscalation.
+//
+// Nil-safe: PoW may not be configured at all.
 func (m *Manager) ForgetEscalation(host, ip string) {
+	if m == nil {
+		return
+	}
 	m.counters.Forget(escalationKey(escalationPrefix, host, ip))
 	m.counters.Forget(escalationKey(frameEscalationPrefix, host, ip))
+}
+
+// ResetEscalation is ForgetEscalation for an operator lifting a block: same two
+// counters, but the shared copies are deleted synchronously and the outcome is
+// reported, so an unblock cannot claim an escalation was cleared when the
+// delete failed, never enqueued under flush-queue saturation, or landed on a
+// key the counter cache had shed into its overload sketch. In all three the
+// local count resets while the shared one survives for the next flush to merge
+// back over the reset, and the operator would have been told otherwise.
+//
+// Returns how many of the two counters were actually cleared. Nil-safe.
+func (m *Manager) ResetEscalation(ctx context.Context, host, ip string) (keys int, err error) {
+	if m == nil {
+		return 0, nil
+	}
+	for _, prefix := range [...]string{escalationPrefix, frameEscalationPrefix} {
+		if e := m.counters.ForgetSync(ctx, escalationKey(prefix, host, ip)); e != nil {
+			err = errors.Join(err, e)
+			continue
+		}
+		keys++
+	}
+	return keys, err
 }
 
 // BumpEscalation counts one challenge issuance against host+ip and returns
