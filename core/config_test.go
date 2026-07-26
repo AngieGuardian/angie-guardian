@@ -488,6 +488,59 @@ func TestDomainLabel(t *testing.T) {
 	}
 }
 
+// TestDomainLabelStamping pins where the metric label actually comes from. It
+// rides on the resolved config itself rather than being carried alongside it,
+// so every config a request can land on has to be stamped at load: the domain,
+// each of its path overlays, and Defaults. Miss one and that config reports an
+// empty label, which no other test would catch, because DomainLabel resolves
+// the host without ever consulting an overlay.
+//
+// An overlay must carry its HOST's label, never its path: paths are
+// client-controlled and unbounded, so one reaching a metric is the same
+// series-explosion the whole labelling scheme exists to prevent.
+func TestDomainLabelStamping(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: false }
+domains:
+  SHOP.test:
+    pow: { enabled: true, base_difficulty: 1 }
+    paths:
+      "/admin/":
+        pow: { base_difficulty: 2 }
+      "/api":
+        pow: { enabled: false }
+`)
+	cases := []struct{ host, uri, want string }{
+		{"shop.test", "/", "shop.test"},
+		{"SHOP.test:8443", "/admin/panel", "shop.test"}, // overlay keeps the host key
+		{"shop.test", "/api", "shop.test"},
+		{"unconfigured.test", "/admin/panel", "default"},
+	}
+	for _, tc := range cases {
+		if got := cfg.ConfigFor(tc.host, tc.uri).label; got != tc.want {
+			t.Errorf("ConfigFor(%q, %q).label = %q, want %q", tc.host, tc.uri, got, tc.want)
+		}
+	}
+	// Reached directly by every unconfigured host, so it must never be blank.
+	if cfg.Defaults.label != "default" {
+		t.Errorf("Defaults.label = %q, want %q", cfg.Defaults.label, "default")
+	}
+	// Belt and braces: nothing a request can resolve to may be unlabelled.
+	for key, dc := range cfg.resolved {
+		if dc.label != key {
+			t.Errorf("resolved[%q].label = %q, want %q", key, dc.label, key)
+		}
+		for _, ov := range dc.pathOverrides {
+			if ov.cfg.label != key {
+				t.Errorf("resolved[%q] overlay %q label = %q, want %q", key, ov.key, ov.cfg.label, key)
+			}
+		}
+	}
+}
+
 const geoYAML = `
 geoip:
   location_db: /var/lib/test/country.mmdb

@@ -261,7 +261,7 @@ Query parameters:
 |---|---|---|
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
 | `action` | | Filter: `deny` or `challenge`. |
-| `reason` | | Filter by reason prefix, e.g. `waf`. |
+| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict. A challenge that was not vouched names its cause: `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty` or `pow:token_invalid` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
 | `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
 | `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing. |
 

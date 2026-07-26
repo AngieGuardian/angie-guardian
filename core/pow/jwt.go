@@ -96,6 +96,33 @@ func (m *Manager) verificationKeys() []managerKey {
 
 const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 
+// Why VerifyToken rejected a token. Every rejection wraps exactly one of these,
+// so a caller can report the cause without parsing error text. The wrapped
+// message keeps the detail (which host, how many bits); the sentinel is the
+// part callers are allowed to branch on.
+//
+// These exist so an operator can tell "the request arrived without a usable
+// cookie" from "the cookie was fine but bound to another client", which is the
+// question a re-challenge loop actually poses. Keep the set small: each one
+// becomes a decision reason that reaches the client in X-Guardian-Reason.
+var (
+	// ErrTokenInvalid is a token that does not parse, does not verify under any
+	// live key, or violates a structural rule (missing iat/exp, an impossible
+	// lifetime, issued after its key was retired). From the client's side these
+	// are indistinguishable and all mean "solve again".
+	ErrTokenInvalid = errors.New("token invalid")
+	// ErrTokenExpired is a token past its own exp, or older than the maxAge the
+	// target path allows. Its work was real, it just no longer counts.
+	ErrTokenExpired = errors.New("token expired")
+	// ErrTokenBinding is a well-formed, in-date, correctly signed token
+	// presented on the wrong host or by a different client fingerprint. This is
+	// the replay case, and the one worth telling apart from an absent cookie.
+	ErrTokenBinding = errors.New("token binding mismatch")
+	// ErrTokenUnderDifficulty is a valid token solved at fewer bits than this
+	// path demands. Not the client's fault: it was earned somewhere cheaper.
+	ErrTokenUnderDifficulty = errors.New("token below required difficulty")
+)
+
 // VerifyToken checks signature, exp/nbf, the host + fingerprint binding, that
 // the token was solved at no less than minBits difficulty, and that it is no
 // older than maxAge. The token carries the difficulty it was actually solved
@@ -110,6 +137,11 @@ const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
 // signature is checked against the current key first, then any previous
 // verification keys, so tokens minted before a rotation stay valid until they
 // age out via exp.
+//
+// Every rejection wraps one of ErrTokenInvalid, ErrTokenExpired,
+// ErrTokenBinding or ErrTokenUnderDifficulty, except the two key-refresh
+// failures below: those are faults in this daemon, not in the token, so they
+// stay unclassified rather than blaming the client for a local I/O problem.
 func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, maxAge time.Duration) error {
 	// Refresh before consulting the cache as well as before signature
 	// verification. A cached or signature-valid token from a key this replica
@@ -136,7 +168,7 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 		return err
 	}
 	if claims.Difficulty < minBits {
-		return fmt.Errorf("token solved at %d bits, path requires %d", claims.Difficulty, minBits)
+		return fmt.Errorf("%w: solved at %d bits, path requires %d", ErrTokenUnderDifficulty, claims.Difficulty, minBits)
 	}
 	// The target path may demand a shorter lifetime than the path that issued
 	// the token. Reject once iat+maxAge has elapsed even though exp is later.
@@ -146,7 +178,7 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 			expiry = ttlExpiry
 		}
 		if !now.Before(expiry) {
-			return fmt.Errorf("token older than path token_ttl %v", maxAge)
+			return fmt.Errorf("%w: older than path token_ttl %v", ErrTokenExpired, maxAge)
 		}
 	}
 	// Cache only up to the effective expiry so a later re-verification with a
@@ -213,29 +245,46 @@ func (m *Manager) verifyTokenOnce(token, host, ip, userAgent string) (*TokenClai
 			continue
 		}
 		if claims.IssuedAt == nil || claims.ExpiresAt == nil {
-			return nil, errors.New("token requires issued-at and expiration claims")
+			return nil, fmt.Errorf("%w: requires issued-at and expiration claims", ErrTokenInvalid)
 		}
 		if !claims.ExpiresAt.Time.After(claims.IssuedAt.Time) ||
 			claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > maxAcceptedTokenLifetime {
-			return nil, fmt.Errorf("token lifetime exceeds %v", maxAcceptedTokenLifetime)
+			return nil, fmt.Errorf("%w: lifetime exceeds %v", ErrTokenInvalid, maxAcceptedTokenLifetime)
 		}
 		if !key.retiredAt.IsZero() {
 			if claims.IssuedAt.Time.After(key.retiredAt) {
-				return nil, errors.New("token was issued after its signing key was retired")
+				return nil, fmt.Errorf("%w: issued after its signing key was retired", ErrTokenInvalid)
 			}
 			if claims.ExpiresAt.Time.After(key.retiredAt.Add(maxAcceptedTokenLifetime)) {
-				return nil, errors.New("token outlives the retired-key acceptance horizon")
+				return nil, fmt.Errorf("%w: outlives the retired-key acceptance horizon", ErrTokenInvalid)
 			}
 		}
 		if !strings.EqualFold(claims.Host, host) {
-			return nil, fmt.Errorf("token bound to host %q, presented on %q", claims.Host, host)
+			return nil, fmt.Errorf("%w: bound to host %q, presented on %q", ErrTokenBinding, claims.Host, host)
 		}
 		if claims.Subject != Fingerprint(ip, userAgent) {
-			return nil, fmt.Errorf("token fingerprint mismatch")
+			return nil, fmt.Errorf("%w: fingerprint mismatch", ErrTokenBinding)
 		}
 		return claims, nil
 	}
-	return nil, errors.Join(errs...)
+	// Nothing parsed under any live key. Expiry is checked inside
+	// ParseWithClaims, so without this it would arrive indistinguishable from a
+	// bad signature — and "your token aged out" is the far likelier and far more
+	// actionable of the two. A token that expired under one key and failed to
+	// verify under another is reported as expired: the key that could read it
+	// is the one whose verdict means anything.
+	if len(errs) == 0 {
+		// No key was live enough to even attempt a parse. Unreachable while the
+		// current key is present (its retiredAt is zero, so verificationKeys
+		// always yields it), but returning an error rather than (nil, nil) keeps
+		// the caller's claims dereference safe if that ever stops holding.
+		return nil, fmt.Errorf("%w: no live verification keys", ErrTokenInvalid)
+	}
+	err := errors.Join(errs...)
+	if errors.Is(err, jwt.ErrTokenExpired) {
+		return nil, fmt.Errorf("%w: %w", ErrTokenExpired, err)
+	}
+	return nil, fmt.Errorf("%w: %w", ErrTokenInvalid, err)
 }
 
 // Fingerprint identifies a client for token binding without storing any PII:

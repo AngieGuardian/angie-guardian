@@ -169,6 +169,14 @@ Three tiers, cheapest and most reliable first:
    alone, so it stays a profiling benchmark while `BenchmarkIssue` gates the
    deterministic core of the same path. Check a candidate holds steady across
    `GOMAXPROCS=1,2,4,8` before adding it.
+
+   The gate covers `allocs/op` only, so it can miss a real regression: growing
+   a per-request struct past an allocator size class costs every request more
+   memory while the allocation *count* never moves. `make bench-report` shows
+   the `B/op` column the gate does not, summarized across several runs
+   (`296.0 ± 0%`). It is manual and machine-specific: at the fixed iteration
+   count the gate uses, `B/op` still carries per-P setup cost that varies with
+   core count, which is why it is reported rather than gated.
 2. **CPU per request** — run one `guardian-loadtest` scenario against each
    build and divide the daemon's `utime+stime` by the completed requests. A few
    percent of noise on a pinned machine; measures the whole daemon, not just

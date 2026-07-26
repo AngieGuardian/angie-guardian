@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress seed
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -57,6 +57,36 @@ e2e-nft:
 bench-store:
 	go test -run '^$$' -bench '^Benchmark(SpentFlood|TTLCounter|MixedReadWrite|ExpiryReclaim)$$' \
 		-benchmem -benchtime 2s -count 6 ./core/store/
+
+# Request-path snapshot of the CURRENT tree: every hot-path benchmark run
+# BENCH_COUNT times and summarized by benchstat, which reports each figure as a
+# median plus the spread across those runs ("236.3n ± 2%") instead of the one
+# noisy number a bare `go test -bench` prints. It answers "where does a request
+# spend time and memory right now"; it gates nothing and is not a CI job, for
+# the same reason bench-store is not: benchmark variance must never redden a
+# build. Give it a quiet machine.
+#
+# Read the B/op column. It is the one hot-path number that bench-regress cannot
+# gate today and that no test would otherwise show you: a change can push a
+# per-request struct across an allocator size class, so every request costs
+# more memory, while allocs/op never moves and the gate stays green.
+#
+# benchstat is pinned rather than @latest so two runs a month apart are
+# summarized by the same code. It is deliberately not a go.mod dependency: this
+# target is manual, and a reporting tool has no business in the module graph of
+# a daemon.
+BENCHSTAT := golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d
+BENCH_HOT := ^Benchmark(Evaluate|ShedDecision|RecordEvent|VerifyToken|Issue|Auth|RequestContext|ChallengeIssue)
+BENCH_COUNT ?= 6
+BENCH_OUT ?= bench-current.txt
+
+bench-report:
+	@echo "running $(BENCH_COUNT) rounds of $(BENCH_HOT); minutes, and it wants a quiet machine"
+	@go test -run '^$$' -bench '$(BENCH_HOT)' -benchmem -count=$(BENCH_COUNT) \
+		./core/ ./core/pow/ ./transport/http/ > $(BENCH_OUT)
+	@go run $(BENCHSTAT) current=$(BENCH_OUT)
+	@echo
+	@echo "raw run kept in $(BENCH_OUT)"
 
 # Hot-path allocation regression gate (also a CI job). allocs/op at a FIXED
 # iteration count is deterministic for these benchmarks, so it can gate a

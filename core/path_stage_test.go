@@ -116,8 +116,11 @@ func TestPathTokenDifficulty(t *testing.T) {
 	}
 	r = req("shop.test", ip, "/admin/panel", ua)
 	r.Cookie = pow.CookieName + "=" + cheap
-	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Difficulty != 8 {
-		t.Errorf("4-bit token on 8-bit path: got %s (dif %d), want challenge at 8 bits", d.Action, d.Difficulty)
+	// The reason names the cause: this is a real token that simply was not
+	// solved hard enough for here, not a missing or forged one.
+	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Difficulty != 8 || d.Reason != "pow:token_underdifficulty" {
+		t.Errorf("4-bit token on 8-bit path: got %s/%s (dif %d), want challenge/pow:token_underdifficulty at 8 bits",
+			d.Action, d.Reason, d.Difficulty)
 	}
 
 	strong := mintTestToken(t, mgr, "shop.test", ip, ua, 8)
@@ -187,8 +190,10 @@ domains:
 	time.Sleep(1100 * time.Millisecond)
 	r = req("shop.test", ip, "/admin/panel", ua)
 	r.Cookie = pow.CookieName + "=" + tok
-	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge {
-		t.Errorf("aged token on /admin/ (1s ttl): got %s/%s, want challenge", d.Action, d.Reason)
+	// Reported as expired, not as absent or forged: the work was real, it just
+	// no longer counts on this path.
+	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Reason != "pow:token_expired" {
+		t.Errorf("aged token on /admin/ (1s ttl): got %s/%s, want challenge/pow:token_expired", d.Action, d.Reason)
 	}
 	// The lax "/" path still honors the token's full 1h lifetime.
 	r = req("shop.test", ip, "/", ua)
