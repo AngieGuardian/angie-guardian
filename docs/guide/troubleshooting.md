@@ -73,6 +73,40 @@ challenged before verification completes, then cached. If a genuine crawler
 never verifies, its rDNS may not match the configured domains; see
 [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
+**A stylesheet, image or `fetch()` gets a bare `403` instead of the page.** A
+request that cannot execute the interstitial is refused a challenge rather than
+issued one, because scoring it for abandoning a page it cannot run is how an
+ordinary browser talks itself into a `challenge_farm` block. Counted as
+`guardian_challenges_total{outcome="subresource_refused"}`; usually a favicon or
+a stale SPA `fetch()`, and benign. A subresource carrying a valid token is never
+affected, since the token stage allows it long before the challenge handler is
+reached. If a top-level *navigation* is being refused, an intermediate proxy is
+rewriting `Sec-Fetch-Dest`; stop it doing that. There is no config key to turn
+the refusal off, because withholding the header does the same job with no daemon
+change: add `proxy_set_header Sec-Fetch-Dest "";` to
+`location @guardian_challenge` and Guardian is back to challenging everything.
+
+**`guardian_challenges_total{outcome="frame_unscored"}` is climbing.** Your
+protected URLs are being loaded in a frame whose Fetch metadata cannot establish
+that the interstitial will render, so those issuances raise difficulty but are
+never reported as `challenge_farm`. Before that exemption, a third party could
+drive arbitrary visitors into a block on your site simply by framing it in a
+loop.
+
+**This metric does not by itself mean a hostile third party.** The metadata is
+ambiguous, which is the whole reason these are issued rather than refused.
+`Sec-Fetch-Site` accumulates across the redirect chain, so your own embedded
+login callback (`A -> IdP -> A` inside a same-origin iframe) reports
+`cross-site` and lands here too, as does any `fencedframe` navigation. Before
+concluding you are being framed, check whether the URIs involved are your own
+SSO or embed callbacks. A steady rate against ordinary page URLs you never frame
+yourself is the signal worth chasing.
+
+**None of the above appears on a plain-HTTP site.** Browsers send `Sec-Fetch-*`
+only to potentially-trustworthy origins (HTTPS and localhost), so over plain
+HTTP every request reads as unknown and the pre-existing challenge-everything
+behaviour applies, favicon false positives included.
+
 **Everyone is challenged too aggressively.** If `pow.mode: always`, every
 unvouched request is challenged once per `token_ttl`. Lower `base_difficulty`
 or switch to `pow.mode: suspicion` (disables the catch-all; explicit anomaly,

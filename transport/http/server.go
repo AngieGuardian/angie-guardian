@@ -277,6 +277,42 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// difficulty, TTLs) to a URI prefix within the host.
 	dcfg := s.engine.Config().ConfigFor(host, uri)
 
+	// A subresource cannot run the interstitial, so it is refused one rather
+	// than issued one it will silently drop. The page renders markup, runs
+	// inline script and spawns a blob: Web Worker to search for the nonce;
+	// handing all that to an <img>, a stylesheet or an XHR produces nothing but
+	// a decode failure. Two things follow from issuing anyway, and both are
+	// fixed by not issuing:
+	//
+	//   - The issuance counts against the host+IP escalation counter as an
+	//     abandoned challenge. Difficulty climbs, pins at the ceiling, and
+	//     challenge_farm is reported against a client that never abandoned
+	//     anything. An ordinary browser polling /favicon.ico blocks itself this
+	//     way in under an hour.
+	//   - Refusing the challenge, rather than merely skipping the escalation
+	//     bump, is also what keeps the farming defence intact. Skipping the
+	//     bump alone would let a farmer collect unlimited cheap base-difficulty
+	//     challenges just by claiming Sec-Fetch-Dest: image. A client that
+	//     says it cannot use a challenge is simply not given one, so there is
+	//     nothing left to farm.
+	//
+	// The client sees what it saw before: a subresource that fails to load.
+	// Nothing that could have succeeded is refused; see isSubresourceDest for
+	// why an absent or unrecognized destination keeps the ordinary path, and
+	// unscorableFrame for why a frame is never refused, only left unscored.
+	if isSubresourceDest(r.Header.Get(hdrSecFetchDest)) {
+		s.metrics.Challenge("subresource_refused")
+		s.log.Debug("challenge refused: request cannot run the interstitial",
+			"host", host, "ip", ip, "uri", uri,
+			"dest", r.Header.Get(hdrSecFetchDest))
+		// A 403 is not cacheable by default, but say so anyway: a cached
+		// refusal would keep failing after the client earns a token.
+		w.Header()["Cache-Control"] = hdrValNoStore
+		securityHeaders(w, "", "")
+		http.Error(w, "proof-of-work challenge requires a same-origin document request", http.StatusForbidden)
+		return
+	}
+
 	h := w.Header()
 	h["Content-Type"] = hdrValHTML
 	h["Cache-Control"] = hdrValNoStore
@@ -330,12 +366,35 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Escalate for clients that keep requesting challenges without solving
-	// them: within the rate limit above, a challenge farmer would otherwise
-	// pay base difficulty forever. Each unsolved issuance past a small
-	// allowance raises the work, capped at the ceiling; a successful
-	// redemption resets this host+IP counter (core/pow/escalation.go).
-	if extra := s.pow.BumpEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+	// A framed navigation that may not be able to render the interstitial is
+	// escalated on its own counter and never reported as a farmer. The
+	// interstitial's own frame-ancestors 'self' may stop the browser showing
+	// it, so "unsolved" here says nothing about the client, and blocking on it
+	// lets any page drive an arbitrary visitor into a challenge_farm block by
+	// framing a protected URL in a loop. It is still issued, and still
+	// escalated: Sec-Fetch-Site cannot tell a hostile frame apart from a
+	// same-origin one reached through a cross-site redirect (an SSO callback),
+	// which renders and solves fine, so refusing would break those logins, and
+	// dropping the difficulty ramp as well would turn two forgeable header
+	// values into a cheap-challenge exemption. See unscorableFrame.
+	if unscorableFrame(r.Header.Get(hdrSecFetchDest), r.Header.Get(hdrSecFetchSite)) {
+		s.metrics.Challenge("frame_unscored")
+		s.log.Debug("challenge issued unscored: framed navigation may not render",
+			"host", host, "ip", ip, "uri", uri,
+			"dest", r.Header.Get(hdrSecFetchDest), "site", r.Header.Get(hdrSecFetchSite))
+		if extra := s.pow.BumpFrameEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+			difficulty = min(difficulty+extra, maxBits)
+			s.metrics.Challenge("escalated")
+			s.log.Info("challenge difficulty escalated",
+				"ip", ip, "host", host, "extra_bits", extra, "difficulty", difficulty, "framed", true)
+		}
+	} else if extra := s.pow.BumpEscalation(r.Context(), host, ip, dcfg.PoW.ChallengeTTL.Std()); extra > 0 {
+		// Escalate for clients that keep requesting challenges without solving
+		// them: within the rate limit above, a challenge farmer would otherwise
+		// pay base difficulty forever. Each unsolved issuance past a small
+		// allowance raises the work, capped at the ceiling; a successful
+		// redemption resets this host+IP counter (core/pow/escalation.go).
+		//
 		// Escalation alone pinned at the ceiling means this client has
 		// abandoned enough challenges that no amount of extra work can be
 		// demanded anymore: a challenge farmer. Report it as a scoreboard

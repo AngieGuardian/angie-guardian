@@ -18,6 +18,7 @@ of these prefixes are enumerable, and only enumerable state can be listed.
 | `blkct:` | Per-IP count of automatic blocks, 24h window | Repeat offenders restart at the first-offense `block_ttl` instead of a doubled one | [`/admin/blocks/{ip}`](/reference/admin-api#get-admin-blocks-ip) as `offenses` |
 | `ev:` | Per-IP behaviour counters, one key per event type and window bucket | Progress toward an `ip_behaviour` threshold resets | Not surfaced |
 | `chesc:` | Per host+IP unsolved-issuance escalation | A client that farms challenges drops back to base difficulty | Not surfaced; the escalation itself is logged and counted in `guardian_challenges_total{outcome="escalated"}` |
+| `chfesc:` | As `chesc:`, but for framed navigations whose Fetch metadata cannot establish that the interstitial will render | A client farming challenges through a claimed frame context drops back to base difficulty | Not surfaced; counted in `guardian_challenges_total{outcome="frame_unscored"}` |
 | `chrl:` | Per-IP challenge issuance rate limit | An IP's issuance budget resets | Not surfaced |
 | `botdns:` | Verified-crawler rDNS verdicts | Every crawler IP needs a fresh forward-confirmed DNS round trip | Not surfaced |
 | `challenge:` | Issued challenge records and their spent markers | A solved challenge could be replayed until `challenge_ttl` elapsed | Not surfaced |

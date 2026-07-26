@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,289 @@ domains:
 	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
 	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
 		t.Fatalf("farming blocked without an opt-in challenge_farm threshold: action=%q", got)
+	}
+}
+
+// TestSubresourceChallengeRefusedNotCounted is the /favicon.ico incident: an
+// ordinary browser fetching a subresource is handed an interstitial it cannot
+// possibly run, and every one of those issuances used to count as an abandoned
+// challenge until the IP blocked itself. The request is now refused outright,
+// so nothing is issued and nothing is counted: well past the farm threshold
+// the client is still unblocked, and a real navigation from the same IP is
+// still at base difficulty.
+func TestSubresourceChallengeRefusedNotCounted(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.74", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/favicon.ico", ua)
+	h["Sec-Fetch-Dest"] = "image"
+	// Twenty is far past both the free allowance (4) and the 2/min threshold.
+	for i := range 20 {
+		resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("subresource challenge %d: status = %d, want 403", i+1, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("subresource refusal Content-Type = %q, want text/plain (never an unusable page)", ct)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("blocked by subresource requests that were never issued a challenge: reason=%q",
+			resp.Header.Get("X-Guardian-Reason"))
+	}
+	// base_difficulty 1 is 4 leading-zero bits (config units are quarter
+	// steps), and farmYAML pins max to the same value, so any escalation at all
+	// would have shown up as a farm block above rather than as extra bits here.
+	if _, _, d := fetchChallenge(t, ts, ip, ua); d != 4 {
+		t.Fatalf("difficulty after 20 refused subresource requests = %d, want base 4 (nothing counted)", d)
+	}
+}
+
+// TestDocumentDestStillFarms pins the other half: the exemption is paired with
+// refusing to issue, so claiming a destination is not a way around escalation.
+// A farmer that fetches interstitials as documents, which is what the defence
+// was built for, is scored exactly as it was before the header was consulted.
+func TestDocumentDestStillFarms(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.75", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Dest"] = "document"
+	for i := range 7 { // issuances 6 and 7 score at the pinned ceiling
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("document challenge %d: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("Sec-Fetch-Dest: document escaped farm scoring: action=%q", got)
+	}
+}
+
+// TestCrossOriginFrameNotCounted is the weaponized form of the same bug: a
+// hostile page framing a protected URL in a loop. The interstitial is served
+// frame-ancestors 'self', so the browser refuses to render it and the visitor
+// cannot solve it however long the loop runs; counting those issuances used to
+// escalate and eventually block the *visitor's* IP (and behind a NAT everyone
+// sharing it) from a site the attacker does not control. The challenge is still
+// issued, because the metadata cannot prove the frame is really foreign (see
+// TestSameOriginFrameViaCrossSiteRedirect), but nothing is scored.
+func TestCrossOriginFrameNotCounted(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.77", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/page", ua)
+	h["Sec-Fetch-Dest"] = "iframe"
+	h["Sec-Fetch-Site"] = "cross-site"
+	for i := range 20 {
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("cross-origin frame challenge %d: status = %d, want 200 (issued, just unscored)", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("a third-party page framing a protected URL blocked the visitor: reason=%q",
+			resp.Header.Get("X-Guardian-Reason"))
+	}
+	// The visitor's ordinary browsing is on the other counter and untouched, so
+	// being framed by a hostile page costs them nothing at all.
+	if _, _, d := fetchChallenge(t, ts, ip, ua); d != 4 {
+		t.Fatalf("difficulty of a normal navigation after 20 framed issuances = %d, want base 4", d)
+	}
+}
+
+// TestFramedEscalationIsNotACheapChallengeExemption: Sec-Fetch-* is forbidden
+// to page script but any HTTP client can send it, so the unscored path must not
+// become a way to farm unlimited base-difficulty challenges. Withholding the
+// challenge_farm BLOCK is what protects framed visitors; withholding the
+// difficulty ramp would protect farmers, so the ramp still applies on the
+// separate counter.
+//
+// farmYAML pins base == max, which would hide a difficulty ramp, so this uses
+// a domain with headroom.
+func TestFramedEscalationIsNotACheapChallengeExemption(t *testing.T) {
+	const yaml = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+domains:
+  html.test:
+    pow: { enabled: true, base_difficulty: 1, max_difficulty: 2 }
+`
+	ts := testServerWithYAML(t, yaml)
+	ip, ua := "198.51.100.81", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/page", ua)
+	h["Sec-Fetch-Dest"] = "iframe"
+	h["Sec-Fetch-Site"] = "cross-site"
+
+	var last struct {
+		ChallengeID string `json:"challenge_id"`
+		Challenge   string `json:"challenge"`
+		Difficulty  int    `json:"difficulty_bits"`
+	}
+	// Allowance 4, step 2: issuances 1-5 at base 4 bits, 6-7 at +1, 8 at +2.
+	want := []int{4, 4, 4, 4, 4, 5, 5, 6}
+	for i, w := range want {
+		resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("framed issuance %d: status = %d, want 200", i+1, resp.StatusCode)
+		}
+		page, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := dataRe.FindSubmatch(page)
+		if m == nil {
+			t.Fatalf("no challenge payload in issuance %d", i+1)
+		}
+		if err := json.Unmarshal(m[1], &last); err != nil {
+			t.Fatal(err)
+		}
+		if last.Difficulty != w {
+			t.Fatalf("framed issuance %d: difficulty = %d bits, want %d (claiming a frame must not buy cheap challenges)",
+				i+1, last.Difficulty, w)
+		}
+	}
+
+	// The two counters are independent: a farmer cannot raise a bystander's
+	// ordinary difficulty, and cannot escape its own by switching contexts.
+	if _, _, d := fetchChallenge(t, ts, ip, ua); d != 4 {
+		t.Fatalf("unframed difficulty after 8 framed issuances = %d, want base 4 (separate counters)", d)
+	}
+
+	// And a solve clears the frame counter too, so the embedded-SSO visitor who
+	// does complete a challenge starts over rather than carrying the ramp.
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": last.ChallengeID,
+		"nonce":        solve(t, last.Challenge, last.Difficulty),
+	})
+	if r := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/page", ua), body); r.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(r.Body)
+		t.Fatalf("redeem: status = %d body = %s", r.StatusCode, b)
+	}
+	resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+	page, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := dataRe.FindSubmatch(page)
+	if m == nil {
+		t.Fatalf("no challenge payload after the solve")
+	}
+	if err := json.Unmarshal(m[1], &last); err != nil {
+		t.Fatal(err)
+	}
+	if last.Difficulty != 4 {
+		t.Fatalf("framed difficulty after a solve = %d bits, want base 4 (redemption must clear both counters)", last.Difficulty)
+	}
+}
+
+// TestSameOriginFrameViaCrossSiteRedirect is the case that forbids refusing
+// these outright. Fetch Metadata computes Sec-Fetch-Site over the request's
+// whole URL list against the INITIATOR's origin, so an A -> B -> A chain (an
+// SSO callback landing back in a same-origin iframe) arrives tagged cross-site
+// even though the frame ancestor is still A. frame-ancestors 'self' permits it,
+// so the interstitial renders and the visitor can solve it. A 403 here would
+// break embedded login flows; the challenge must be issued and solvable.
+func TestSameOriginFrameViaCrossSiteRedirect(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.80", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/sso/callback?code=abc", ua)
+	h["Sec-Fetch-Dest"] = "iframe"
+	h["Sec-Fetch-Site"] = "cross-site" // tainted by the hop through the IdP
+	resp := do(t, "GET", ts.URL+"/challenge", h, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("redirect-tainted same-origin frame: status = %d, want 200", resp.StatusCode)
+	}
+
+	// And the challenge it carries is a real one the visitor can redeem.
+	page, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := dataRe.FindSubmatch(page)
+	if m == nil {
+		t.Fatalf("no challenge payload in the interstitial:\n%s", page)
+	}
+	var data struct {
+		ChallengeID string `json:"challenge_id"`
+		Challenge   string `json:"challenge"`
+		Difficulty  int    `json:"difficulty_bits"`
+	}
+	if err := json.Unmarshal(m[1], &data); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": data.ChallengeID,
+		"nonce":        solve(t, data.Challenge, data.Difficulty),
+	})
+	if r := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/sso/callback?code=abc", ua), body); r.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(r.Body)
+		t.Fatalf("embedded SSO callback could not redeem its challenge: status = %d body = %s", r.StatusCode, b)
+	}
+}
+
+// TestSameOriginFrameStillFarms: a site framing its own protected page renders
+// and solves the interstitial normally, so it is challenged and escalated
+// exactly as before. Without this the exemption would be a bypass of its own,
+// farmable by claiming Sec-Fetch-Dest: iframe.
+func TestSameOriginFrameStillFarms(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.78", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Dest"] = "iframe"
+	h["Sec-Fetch-Site"] = "same-origin"
+	for i := range 7 {
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("same-origin frame challenge %d: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("Sec-Fetch-Dest: iframe escaped farm scoring same-origin: action=%q", got)
+	}
+}
+
+// TestCrossSiteNavigationStillChallenged: an inbound link from another site is
+// a top-level navigation, never a frame. It must keep being challenged, or
+// every visitor arriving from a search engine is refused the page.
+func TestCrossSiteNavigationStillChallenged(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.79", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Dest"] = "document"
+	h["Sec-Fetch-Site"] = "cross-site"
+	if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("cross-site inbound link: status = %d, want 200 (a normal navigation)", resp.StatusCode)
+	}
+}
+
+// TestUnknownDestStillFarms: a farmer that strips the header, or sends a value
+// no standard defines, falls in the unknown bucket and keeps the pre-existing
+// behaviour. Absent is covered by every other test in this file, which sends
+// no Sec-Fetch-Dest at all.
+func TestUnknownDestStillFarms(t *testing.T) {
+	ts := testServerWithYAML(t, farmYAML)
+	ip, ua := "198.51.100.76", "Mozilla/5.0"
+
+	h := guardianHeaders("html.test", ip, "/original?q=1", ua)
+	h["Sec-Fetch-Dest"] = "not-a-real-destination"
+	for i := range 7 {
+		if resp := do(t, "GET", ts.URL+"/challenge", h, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("unknown-dest challenge %d: status = %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got != "deny" {
+		t.Fatalf("an unrecognized Sec-Fetch-Dest escaped farm scoring: action=%q", got)
 	}
 }
