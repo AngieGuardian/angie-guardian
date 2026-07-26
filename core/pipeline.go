@@ -6,6 +6,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -30,20 +31,23 @@ type Stage interface {
 }
 
 // stageEnv bundles what stages may consult besides the request itself.
+// The bounded metric label for the resolved domain lives on domain itself
+// (DomainConfig.label, never the raw Host), not as a field here: stageEnv is
+// allocated once per request and a string header is 16 bytes on the hot path.
 type stageEnv struct {
-	store       store.Store
-	domain      *DomainConfig
-	domainLabel string // bounded metric label for the resolved domain (never the raw Host)
-	pow         *pow.Manager
-	rules       *waf.RuleCache
-	models      *anomaly.ModelCache
-	intel       *intel.Provider // nil when no geoip/reputation is configured
-	metrics     *metrics.Metrics
-	bots        *botverify.Verifier
-	enforcer    *enforce.Manager  // nil = store-only block enforcement
-	attack      *attackmode.State // never nil (Normal when attack mode is off)
+	store    store.Store
+	domain   *DomainConfig
+	pow      *pow.Manager
+	rules    *waf.RuleCache
+	models   *anomaly.ModelCache
+	intel    *intel.Provider // nil when no geoip/reputation is configured
+	metrics  *metrics.Metrics
+	bots     *botverify.Verifier
+	enforcer *enforce.Manager  // nil = store-only block enforcement
+	attack   *attackmode.State // never nil (Normal when attack mode is off)
 
-	origin *intel.Info // memoized geo lookup: both intel stages share one
+	origin *intel.Info  // memoized geo lookup: both intel stages share one
+	token  tokenVerdict // memoized PoW cookie check: up to three stages share one
 }
 
 // effBits resolves the difficulty window for the resolved domain, shifted up
@@ -345,8 +349,9 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 
 // powTokenStage — pipeline stage 3. A valid signed token vouches for the
 // client and short-circuits the expensive stages; this is the common fast
-// path. An invalid token is treated as absent (the client just gets
-// re-challenged; P2 additionally scores it as a tamper signal).
+// path. An invalid token is treated as absent for policy purposes: the client
+// is simply re-challenged, and nothing is scored against it. Only the reason
+// string records which of the failure modes it was.
 type powTokenStage struct{}
 
 func (powTokenStage) Name() string { return "pow_token" }
@@ -365,11 +370,82 @@ func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	return decisionPoWToken, nil
 }
 
-func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
-	if env.pow == nil || !env.domain.PoW.Enabled {
-		return false
+// tokenVerdict is one request's PoW cookie check, and its zero value means
+// "not checked yet". Deliberately a byte rather than the {bool, string} pair it
+// stands for: stageEnv is allocated once per request and sits exactly on a
+// 112-byte size class, so widening it by a string header would round every
+// request's allocation up two classes and cost more on the hot path than the
+// diagnostic is worth. The reason string is materialized only when a challenge
+// is actually being emitted.
+type tokenVerdict uint8
+
+const (
+	tokenUnchecked tokenVerdict = iota
+	tokenValid
+	tokenAbsent          // no cookie at all
+	tokenInvalid         // unparseable, unsigned, or structurally bad
+	tokenExpired         // past exp, or older than this path's token_ttl
+	tokenBinding         // valid, but bound to another host or client
+	tokenUnderDifficulty // valid, but solved below this path's bits
+)
+
+// Failure reasons. These reach the client in X-Guardian-Reason, so they are
+// static and config-independent by construction: an operator learns which of
+// the five conditions fired, an attacker learns nothing it did not already know
+// from being re-challenged. Never fold the underlying error text in here — that
+// would leak host bindings and configured difficulty. All five keep the "pow:"
+// prefix, so reasonCategory still collapses them to a single metric series.
+const (
+	reasonNoToken        = "pow:no_token"
+	reasonTokenInvalid   = "pow:token_invalid"
+	reasonTokenExpired   = "pow:token_expired"
+	reasonTokenBinding   = "pow:token_binding"
+	reasonTokenUnderDiff = "pow:token_underdifficulty"
+)
+
+// reason is the decision reason for a verdict that did not vouch.
+func (v tokenVerdict) reason() string {
+	switch v {
+	case tokenInvalid:
+		return reasonTokenInvalid
+	case tokenExpired:
+		return reasonTokenExpired
+	case tokenBinding:
+		return reasonTokenBinding
+	case tokenUnderDifficulty:
+		return reasonTokenUnderDiff
+	default:
+		// tokenAbsent, and tokenUnchecked/tokenValid which no caller asks for.
+		return reasonNoToken
 	}
-	token := cookieValue(req.Cookie, pow.CookieName)
+}
+
+// powToken verifies this request's PoW cookie at most once and memoizes the
+// verdict. Three call sites ask (the WAF challenge-rule path, powTokenStage,
+// and the overload shed path) and the answer cannot change mid-request: the
+// host, IP, User-Agent and Cookie are fixed, env.domain is the already-resolved
+// scope, and env is built fresh per request.
+//
+// Memoizing is not just tidiness. Without it, a token that fails on its binding
+// would be verified once by powTokenStage and again by powChallengeStage to
+// name the cause, so a replayed token — which an attacker can send freely, and
+// which is the one failure mode that costs a full Ed25519 verification rather
+// than a cheap parse error — would cost twice as much to reject as to accept.
+func (env *stageEnv) powToken(req *RequestContext) tokenVerdict {
+	if env.token != tokenUnchecked {
+		return env.token
+	}
+	if env.pow == nil || !env.domain.PoW.Enabled {
+		// No PoW on this scope, so no token can vouch and no reason is ever
+		// emitted from it. Memoize as "absent" purely to skip the re-check.
+		env.token = tokenAbsent
+		return env.token
+	}
+	token, present := cookieValue(req.Cookie, pow.CookieName)
+	if !present {
+		env.token = tokenAbsent
+		return env.token
+	}
 	// The resolved (possibly per-path) base difficulty is the floor: a token
 	// solved on a cheaper path must not vouch here. An under-difficulty token
 	// counts as absent, so the client is re-challenged at this path's bits.
@@ -381,7 +457,40 @@ func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
 	// re-challenge stampede at the worst possible moment. Only NEW challenges
 	// get harder; tokens already held stay valid at the difficulty they were
 	// solved for.
-	return token != "" && env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent, env.domain.PoW.BaseBits(), env.domain.PoW.TokenTTL.Std()) == nil
+	env.token = classifyToken(env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent,
+		env.domain.PoW.BaseBits(), env.domain.PoW.TokenTTL.Std()))
+	return env.token
+}
+
+// classifyToken maps a VerifyToken result onto a verdict. Order does not
+// matter: VerifyToken wraps exactly one sentinel per rejection.
+func classifyToken(err error) tokenVerdict {
+	switch {
+	case err == nil:
+		return tokenValid
+	case errors.Is(err, pow.ErrTokenBinding):
+		return tokenBinding
+	case errors.Is(err, pow.ErrTokenUnderDifficulty):
+		return tokenUnderDifficulty
+	case errors.Is(err, pow.ErrTokenExpired):
+		return tokenExpired
+	case errors.Is(err, pow.ErrTokenInvalid):
+		return tokenInvalid
+	default:
+		// A key-refresh fault: this daemon could not read its own keys, so the
+		// token was never judged. Reported as invalid because the client's
+		// remedy is the same (solve again) and inventing a sixth reason for a
+		// local I/O failure would put daemon internals in a response header.
+		// Still strictly more visible than before, when every cause alike
+		// vanished into "pow:no_token".
+		return tokenInvalid
+	}
+}
+
+// hasValidPoWToken reports whether this request carries a token that vouches
+// for it. Callers that also need the failure cause use env.powToken directly.
+func hasValidPoWToken(req *RequestContext, env *stageEnv) bool {
+	return env.powToken(req) == tokenValid
 }
 
 // anomalyStage is pipeline stage 5. It scores the request against the trained
@@ -405,12 +514,12 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 		decodePath(requestPath(req.URI)),
 		decodeQuery(requestQuery(req.URI)),
 		req.UserAgent)
-	env.metrics.AnomalyBaseline(env.domainLabel, result.Level)
+	env.metrics.AnomalyBaseline(env.domain.label, result.Level)
 	if !result.Found {
 		return nil, nil
 	}
 	score := result.Score
-	env.metrics.AnomalyScore(env.domainLabel, score)
+	env.metrics.AnomalyScore(env.domain.label, score)
 	if a.ObserveOnly {
 		return nil, nil
 	}
@@ -463,21 +572,28 @@ func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *s
 		return nil, nil
 	}
 	base, _ := env.effBits()
+	// powTokenStage already ran and memoized why the token did not vouch, so
+	// this costs a field read. "pow:no_token" still means exactly what it always
+	// did (no cookie arrived); the other four separate the cases that used to
+	// hide behind it, which is what makes a re-challenge loop diagnosable from
+	// /admin/decisions instead of a browser-side capture.
 	return &Decision{
 		Action:     ActionChallenge,
 		Difficulty: base,
-		Reason:     "pow:no_token",
+		Reason:     env.powToken(req).reason(),
 	}, nil
 }
 
 // cookieValue extracts one cookie from a raw Cookie header without pulling
-// net/http into the transport-agnostic core.
-func cookieValue(header, name string) string {
+// net/http into the transport-agnostic core. The boolean distinguishes a
+// missing cookie from a present empty value: the latter is unusable token data
+// and must be reported as invalid rather than as "no token arrived".
+func cookieValue(header, name string) (string, bool) {
 	for part := range strings.SplitSeq(header, ";") {
 		part = strings.TrimSpace(part)
 		if v, ok := strings.CutPrefix(part, name+"="); ok {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }

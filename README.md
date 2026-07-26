@@ -266,6 +266,7 @@ The default suite is self-contained; Docker is only needed for end-to-end tests.
 | Fuzz | `make fuzz` | Untrusted and hot-reloaded parsers |
 | Benchmarks | `go test -bench=. -benchmem ./core/... ./transport/http/` | Request hot paths |
 | Allocation gate | `make bench-regress` | Hot-path `allocs/op` against `allocs-baseline.txt`; also a CI job |
+| Hot-path snapshot | `make bench-report` | Request-path `sec/op`, `B/op` and `allocs/op` for the current tree, with the spread across runs; manual, gates nothing |
 
 The [end-to-end suite](test/e2e/) covers proof-of-work, WAF outcomes,
 behavioural blocking, fail-open, metrics, and the Admin API. CI runs it on
@@ -421,6 +422,9 @@ falling line means the aggregate is blending regimes and only fixed-work runs
 with identical flags are comparable. `make bench-regress` is the companion CI
 gate: hot-path allocs/op against the committed baselines in
 `allocs-baseline.txt`, deterministic and machine-independent.
+`make bench-report` is the manual counterpart: the same hot paths run several
+times and summarized with their spread, so you can read `B/op` and `sec/op`
+without a baseline to compare against.
 
 Micro-benchmarks live alongside the code and cover every layer of the hot path:
 the `/auth` handler and the request value it builds, `Evaluate` per verdict,

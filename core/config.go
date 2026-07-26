@@ -645,6 +645,20 @@ type DomainConfig struct {
 	// pathOverrides are the compiled paths: entries, sorted most specific
 	// first (see resolvePaths); populated only on resolved domain configs.
 	pathOverrides []pathOverride
+
+	// label is the bounded metric label for the host this config was resolved
+	// for: the normalized domain key, or "default". Stamped once at load (see
+	// resolve) rather than carried alongside the config through the request,
+	// which cost the per-request stage environment a whole string header.
+	//
+	// Every path overlay carries its HOST's label, not its path: paths are
+	// client-controlled and unbounded, so one must never reach a metric.
+	//
+	// Unexported on purpose. Domain and overlay configs are built by
+	// marshalling a parent config to YAML and decoding it onto a fresh value,
+	// so an exported field would have every domain inherit the defaults' label
+	// and silently relabel the entire fleet as "default".
+	label string
 }
 
 // pathOverride is one compiled paths: entry: a full DomainConfig resolved as
@@ -1249,8 +1263,19 @@ func (c *Config) finalize() error {
 		if err != nil {
 			return err
 		}
+		// Stamp the metric label onto the config itself, and onto every path
+		// overlay, so resolving a request yields the label for free instead of
+		// normalizing the host a second time or threading a string through the
+		// pipeline. Overlays take the host's key, never their own path.
+		dc.label = key
+		for i := range dc.pathOverrides {
+			dc.pathOverrides[i].cfg.label = key
+		}
 		c.resolved[key] = dc
 	}
+	// Any host that is not a configured domain resolves here, and the raw Host
+	// header must never become a label value.
+	c.Defaults.label = "default"
 	if err := c.Defaults.validate(); err != nil {
 		return fmt.Errorf("defaults: %w", err)
 	}
@@ -2033,31 +2058,13 @@ func (c *Config) ConfigFor(host, uri string) *DomainConfig {
 	return c.DomainFor(host).ForPath(stateless.NormalizePath(stateless.RequestPath(uri)))
 }
 
-// hostScope is one Host header resolved once: the effective domain config and
-// the bounded metric label for it. Deriving them separately (DomainFor plus
-// DomainLabel) normalized the same host twice per request, and normalization is
-// not free.
-type hostScope struct {
-	domain *DomainConfig
-	label  string
-}
-
 // scopeForRequest resolves both the host and the path for one request, reusing
 // the request's memoized normalized path so the pipeline stages that match on
-// it do not each recompute it.
-func (c *Config) scopeForRequest(req *RequestContext) (*DomainConfig, string) {
-	scope := c.hostScope(req.Host)
-	return scope.domain.ForPath(req.NormalizedPath()), scope.label
-}
-
-func (c *Config) hostScope(host string) hostScope {
-	key := normalizeHost(host)
-	if dc, ok := c.resolved[key]; ok {
-		return hostScope{domain: dc, label: key}
-	}
-	// The raw Host header is client-controlled and unbounded, so an unconfigured
-	// host must never become a metric label value (see DomainLabel).
-	return hostScope{domain: &c.Defaults, label: "default"}
+// it do not each recompute it. The returned config carries its own metric
+// label (see DomainConfig.label), so the host is normalized once per request
+// and nothing else has to be carried alongside it.
+func (c *Config) scopeForRequest(req *RequestContext) *DomainConfig {
+	return c.DomainFor(req.Host).ForPath(req.NormalizedPath())
 }
 
 // PoWAnywhere reports whether PoW is enabled at the domain level or in any of
@@ -2099,7 +2106,7 @@ func (dc *DomainConfig) PathOverrideViews() []PathOverrideView {
 // header is client-controlled and unbounded, so it must never be a label value
 // directly — a flood of distinct Host headers would otherwise explode the
 // Prometheus series count and OOM both this process and the scrape target.
-func (c *Config) DomainLabel(host string) string { return c.hostScope(host).label }
+func (c *Config) DomainLabel(host string) string { return c.DomainFor(host).label }
 
 func normalizeHost(host string) string { return stateless.NormalizeHost(host) }
 

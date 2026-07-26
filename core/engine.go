@@ -321,10 +321,10 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	// path-matching stage shares the latter through the request's memo. The
 	// metric label stays host-scoped because paths are client-controlled and
 	// unbounded, so they must never become a label value.
-	dcfg, label := snap.cfg.scopeForRequest(req)
+	dcfg := snap.cfg.scopeForRequest(req)
 	// One posture load per request, shared by every stage so a mid-request
 	// transition can't split the decision.
-	env := &stageEnv{store: e.store, domain: dcfg, domainLabel: label, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
+	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -340,7 +340,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 		}
 	}
 	e.metrics.EvaluateLatency(time.Since(start).Seconds())
-	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), label)
+	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), dcfg.label)
 	if d.Action != ActionAllow {
 		e.recent.add(RecentDecision{
 			Time: start, Host: req.Host, IP: req.RemoteAddr,
@@ -836,7 +836,7 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 		return ShedReject
 	}
 	defer snap.release()
-	dcfg, _ := snap.cfg.scopeForRequest(req)
+	dcfg := snap.cfg.scopeForRequest(req)
 	env := &stageEnv{
 		domain: dcfg, pow: e.pow, enforcer: e.enforcer,
 		rules: snap.rules, intel: snap.intel, attack: e.attack.State(),

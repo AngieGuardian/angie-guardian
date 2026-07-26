@@ -113,6 +113,24 @@ or switch to `pow.mode: suspicion` (disables the catch-all; explicit anomaly,
 WAF, GeoIP, and reputation challenge policies still apply); see
 [Configuration](/guide/configuration).
 
+**A visitor is challenged in a loop even though they hold a cookie.** The
+reason names which check the token failed, so you can tell this from the
+server side without a browser capture. Read it from
+`GET /admin/decisions?reason=pow`, the dashboard's Recent decisions table, the
+`X-Guardian-Reason` response header, or the JSON decision log.
+
+| `reason` | What it means | Where to look |
+|---|---|---|
+| `pow:no_token` | No `guardian_token` cookie arrived at all. | The client is fetching anonymously, or the cookie never reached Guardian: check that Angie relays it with `proxy_set_header X-Guardian-Cookie $http_cookie`. Favicon and other subresource requests can appear here too, but this reason alone does not prove the browser omitted the cookie; compare the browser's request headers with what Angie relayed before concluding that. |
+| `pow:token_expired` | Real work, but past its `exp` or older than this path's `token_ttl`. | Normal once per `token_ttl`. A tight loop means `token_ttl` is shorter than you meant, a [per-path overlay](/reference/configuration#per-domain-options-defaults-and-domains-host) sets a shorter one than the path that issued the token, or the verifier's clock is ahead. |
+| `pow:token_binding` | Correctly signed and in date, but bound to another host or client. | Tokens bind to host + IP + User-Agent. Expect this from a visitor whose egress IP changes (mobile, CGNAT, a VPN toggling) or across two hostnames of the same site. Persistent and site-wide means the client IP Guardian sees is not stable: check `proxy_set_header X-Guardian-IP` and any proxy in front of Angie. |
+| `pow:token_underdifficulty` | Real token, solved at fewer bits than this path demands. | A per-path `base_difficulty` higher than where the visitor earned their token. Expected on entering a stricter path; they solve once more and continue. |
+| `pow:token_invalid` | Did not parse or verify under any live signing key. | An empty, truncated, or mangled cookie; a token from another deployment; a signing key that rotated out; or an issuer clock ahead of the verifier, leaving `nbf` in the future. If it appears fleet-wide after a restart or rotation, see [Tokens rejected across replicas / after a restart](#tokens-rejected-across-replicas-after-a-restart). |
+
+All five collapse to the single `pow` category in `guardian_decisions_total`,
+so they cost no extra Prometheus series and existing `pow` alerts keep
+matching.
+
 ## "Guardian is down but the site still works"
 
 This is **fail-open** working as designed. When guardiand is unreachable, Angie's
@@ -217,6 +235,13 @@ removes the write at issue time entirely when a flood trips the posture. See
 [Choosing a store backend](/guide/production#choosing-a-store-backend).
 
 ## Tokens rejected across replicas / after a restart
+
+The signal to look for is `pow:token_invalid` in
+`GET /admin/decisions?reason=pow`: a key problem rejects tokens at the
+signature, so it reads as invalid rather than expired or wrongly bound. Clock
+skew can produce either time verdict: a verifier behind the issuer sees a
+not-yet-valid `nbf` and reports `pow:token_invalid`, while a verifier far enough
+ahead sees an elapsed `exp` and reports `pow:token_expired`.
 
 Multi-instance replicas must share the signing key (`signing_key_file`) and
 `previous_key_dir`, or one instance won't verify another's tokens. Across a

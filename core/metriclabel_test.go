@@ -34,6 +34,14 @@ func TestReasonCategoryBounded(t *testing.T) {
 		"geo:asn:64500",
 		"honeypot:path",
 		"default",
+		// The PoW token-failure causes are static, but there are five of them
+		// where there used to be one; they must keep collapsing to a single
+		// "pow" series rather than fanning the label out five-fold.
+		reasonNoToken,
+		reasonTokenInvalid,
+		reasonTokenExpired,
+		reasonTokenBinding,
+		reasonTokenUnderDiff,
 	}
 	for _, r := range cases {
 		cat := reasonCategory(r)

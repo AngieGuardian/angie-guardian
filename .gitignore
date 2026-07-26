@@ -8,6 +8,10 @@
 *.test
 coverage.out
 
+# `make bench-report` raw run (a machine-specific snapshot, never a baseline
+# to commit; the committed baselines live in allocs-baseline.txt)
+/bench-current.txt
+
 # Runtime data
 *.db
 *.key
