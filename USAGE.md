@@ -649,7 +649,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 # average solve seconds). (Long-horizon numbers live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
-# Block an IP for two hours (reason + ttl optional; default 15m, max 8760h).
+# Block an IP for two hours (reason + ttl optional; default 24h, max 8760h).
 # All block member routes validate the IP and canonicalize equivalent IPv6
 # spellings to one key.
 # NOTE: a crawler that passes verified_bots outranks these blocks (so a

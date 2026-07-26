@@ -417,8 +417,8 @@
         <input type="checkbox" class="reset-backoff" id="lu-reset-backoff" checked>
         reset backoff
       </label>
-      <input id="lu-block-ttl" placeholder="TTL (15m)" size="8"
-             title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 15m." hidden>
+      <input id="lu-block-ttl" placeholder="TTL (24h)" size="8"
+             title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h." hidden>
       <input id="lu-block-reason" placeholder="reason" size="14" maxlength="200" hidden>
       <button type="button" id="lu-block" hidden>Block</button>
       <span class="err" id="lu-err"></span>
@@ -446,8 +446,8 @@
       aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
   <form id="block-form" class="toolbar">
     <input id="block-ip" placeholder="IP to block" required>
-    <input id="block-ttl" placeholder="TTL (15m)" size="8"
-           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 15m.">
+    <input id="block-ttl" placeholder="TTL (24h)" size="8"
+           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h.">
     <input id="block-reason" placeholder="reason" size="16" maxlength="200">
     <button type="submit">Block IP</button>
     <span class="err" id="block-err"></span>

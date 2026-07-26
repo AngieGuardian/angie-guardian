@@ -1167,11 +1167,16 @@ func (c *Config) finalize() error {
 	if c.Defaults.PoW.IssuanceRateLimit.Count == 0 {
 		c.Defaults.PoW.IssuanceRateLimit = Rate{Count: 60, Per: time.Minute}
 	}
+	// The two ends of the repeat-offender ladder are chosen together: blocks
+	// double from BlockTTL up to MaxBlockTTL, so 30m/12h walks
+	// 30m -> 1h -> 2h -> 4h -> 8h -> 12h and reaches the cap on the sixth
+	// offense. Raising the cap alone would only add rungs past the point where
+	// blkct: (24h retention) expires and restarts the ladder anyway.
 	if c.Defaults.WAF.IPBehaviour.BlockTTL == 0 {
-		c.Defaults.WAF.IPBehaviour.BlockTTL = Duration(15 * time.Minute)
+		c.Defaults.WAF.IPBehaviour.BlockTTL = Duration(30 * time.Minute)
 	}
 	if c.Defaults.WAF.IPBehaviour.MaxBlockTTL == 0 {
-		c.Defaults.WAF.IPBehaviour.MaxBlockTTL = Duration(4 * time.Hour)
+		c.Defaults.WAF.IPBehaviour.MaxBlockTTL = Duration(12 * time.Hour)
 	}
 	// The built-in thresholds merge into whatever the operator wrote (their
 	// value wins per key) instead of applying only when the map is absent.

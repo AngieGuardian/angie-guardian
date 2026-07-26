@@ -137,9 +137,12 @@ simply absent, and `blocked`/`reason` still answer.
 ### `PUT /admin/blocks/{ip}`
 
 Place a manual block. Body fields `reason` and `ttl` are optional; the
-default TTL is `15m`. An explicit TTL must be greater than zero and at most one
-year (`8760h`, i.e. `1y`). Malformed or unknown JSON fields return `400`
-without changing block state.
+default TTL is `24h`. It is deliberately far longer than the behavioural
+ladder's first rung (`block_ttl`, `30m`): a manual block is an operator
+deciding an IP is bad, not the scoreboard reacting to one burst. Pass an
+explicit `ttl` for a shorter block. An explicit TTL must be greater than zero
+and at most one year (`8760h`, i.e. `1y`). Malformed or unknown JSON fields
+return `400` without changing block state.
 
 `ttl` takes the same units as [`guardian.yaml`
 durations](/reference/configuration#duration-units): `30d`, `2w`, `1y` and
