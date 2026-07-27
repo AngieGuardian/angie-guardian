@@ -134,9 +134,9 @@ func ParseLogRecord(line []byte) (LogRecord, error) {
 		return rec, fmt.Errorf("status %d is outside 100..599", rec.Status)
 	}
 	switch rec.GuardianAction {
-	case "allow", "challenge", "deny", "shed":
+	case "allow", "challenge", "deny", "shed", "refuse":
 	default:
-		return rec, fmt.Errorf("guardian_action must be allow, challenge, deny, or shed")
+		return rec, fmt.Errorf("guardian_action must be allow, challenge, deny, shed, or refuse")
 	}
 	return rec, nil
 }

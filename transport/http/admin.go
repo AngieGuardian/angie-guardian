@@ -354,7 +354,7 @@ func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
 // handleDecisions returns the engine's recent non-allow decisions, newest
 // first. The default detailed view is enriched with configured GeoIP/ASN data;
 // view=compact returns only time/action/reason for live charts. Query: ?limit=
-// (default 50, or "all" for the bounded ring), ?action=deny|challenge,
+// (default 50, or "all" for the bounded ring), ?action=deny|challenge|refuse,
 // ?reason=<prefix>, ?ip=<exact ip>, ?view=compact.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

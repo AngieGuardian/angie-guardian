@@ -46,6 +46,38 @@ func TestParseLogRecordStrictSchema(t *testing.T) {
 	}
 }
 
+// TestParseLogRecordAcceptsEveryEmittedAction pins the coupling between this
+// validator and the actions guardiand can write into a JSON access log. An
+// unrecognized action is rejected as *invalid input*, not filtered, so adding
+// one to the pipeline without adding it here silently turns ordinary traffic
+// into parse errors and can fail a training run on the bad-input threshold.
+// `refuse` alone is a large share of lines on any host whose visitors poll
+// /favicon.ico, which is exactly how it was introduced.
+func TestParseLogRecordAcceptsEveryEmittedAction(t *testing.T) {
+	// Keep in sync with stateless.Action, plus the transport-only "shed".
+	// Not imported, because core/anomaly must not depend on the engine.
+	for _, action := range []string{"allow", "challenge", "deny", "shed", "refuse"} {
+		t.Run(action, func(t *testing.T) {
+			line := fmt.Sprintf(`{"host":"x.test","method":"GET","uri":"/","status":200,`+
+				`"user_agent":"curl","guardian_action":%q}`, action)
+			rec, err := ParseLogRecord([]byte(line))
+			if err != nil {
+				t.Fatalf("action %q rejected as invalid input: %v", action, err)
+			}
+			// Being excluded from the baseline is the correct outcome for every
+			// non-allow action, and is a different thing from being malformed:
+			// one is expected traffic, the other counts against the run.
+			want := FilterAction
+			if action == "allow" {
+				want = FilterIncluded
+			}
+			if got := Eligible(&rec); got != want {
+				t.Errorf("Eligible = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestScoreSelectsMostSpecificBaseline(t *testing.T) {
 	domain := &DomainModel{Baseline: testBaseline(100), Segments: []Segment{
 		{Method: "GET", Route: "/shop", Baseline: testBaseline(30)},

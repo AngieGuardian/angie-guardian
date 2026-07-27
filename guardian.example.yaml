@@ -11,11 +11,12 @@
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
 listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
-# At `info`, every challenge and deny is logged with the client IP, User-Agent,
-# method and the FULL raw URI, query string included. With pow.mode: always
-# that covers the first request of essentially every visitor, so reset tokens,
-# OAuth codes and other query-string secrets can land in your logs: mind log
-# access control and retention, or use `warn` if you don't need that detail.
+# At `info`, every non-allow decision (challenge, refuse, deny) is logged with
+# the client IP, User-Agent, method and the FULL raw URI, query string
+# included. With pow.mode: always that covers the first request of essentially
+# every visitor, so reset tokens, OAuth codes and other query-string secrets
+# can land in your logs: mind log access control and retention, or use `warn`
+# if you don't need that detail.
 log_level: info
 
 # The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
@@ -55,7 +56,7 @@ admin:
                               # lives in the service-writable state dir, not
                               # the root-owned read-only /etc/guardian
   # Built-in reporting page at GET /admin/dashboard: active blocks (one-click
-  # block/unblock), the recent deny/challenge feed with filters, activity and
+  # block/unblock), the recent non-allow decision feed with filters, activity and
   # distribution graphs, a top-offenders panel, challenge stats, and per-domain
   # config. On startup guardiand logs the bare login URL ("admin dashboard
   # ready"). Read the token from token_file and paste it into the page;
@@ -280,6 +281,14 @@ defaults:
     mode: always              # always: challenge every unvouched request
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
+    # Withhold challenges from declared subresources and from requests with no
+    # Fetch metadata whose Accept is present and names neither text/html nor text/*.
+    # The latter is a compatibility heuristic; set false fleet-wide, per domain, or per path
+    # to restore the older challenge-everything behavior. Use this key rather
+    # than clearing Accept or Sec-Fetch-Dest in only one Angie location: the
+    # auth and challenge hops would otherwise record and serve different
+    # outcomes. Hot-reloadable; sidecar only (inert in the stateless WASM guest).
+    refuse_unchallengeable: true
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
     # See docs/guide/configuration.md, "Measured solve times", before changing these.

@@ -127,6 +127,14 @@ domains:
     paths:
       "/api/":
         pow: { enabled: false }
+      # The documented rollback for the unchallengeable-request refusal, scoped
+      # to one path so the rest of the host keeps refusing. Exists because the
+      # rollback is the case where the two Angie hops could disagree: the auth
+      # subrequest records the decision and the challenge handler serves it, so
+      # a switch either of them could read differently would report a withheld
+      # challenge while handing the client a real one.
+      "/rollback-refusal":
+        pow: { refuse_unchallengeable: false }
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }

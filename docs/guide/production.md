@@ -499,7 +499,7 @@ daemon's. A steady-state instance sits in the low tens of MiB plus whatever
 Guardian ships its own reporting dashboard: set `admin.dashboard: true` and open
 `GET /admin/dashboard`. It gives you a live, at-a-glance view with no extra
 services to run: active blocks with one-click block/unblock, the recent
-deny/challenge feed, activity and distribution graphs (decisions over time, the
+non-allow decision feed, activity and distribution graphs (decisions over time, the
 proof-of-work funnel, solve-time and anomaly histograms), a top-offenders panel,
 per-domain feature status, and, when pointed at Angie's API, real server traffic.
 For most single-instance deployments this is all you need. See

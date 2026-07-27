@@ -193,6 +193,10 @@
                   background: var(--muted); flex: none; }
   .chip.deny::before { background: var(--critical); }
   .chip.challenge::before { background: var(--warning); }
+  /* A refusal is neither a block nor a puzzle anyone was asked to solve: the
+     client could not have completed a challenge, so it was not given one.
+     Muted on purpose, so a favicon poll cannot look like an attack. */
+  .chip.refuse::before { background: var(--muted); }
   .chip.on::before { background: var(--good); }
 
   /* Domains carries eight columns against the two of the reason rollup, so it
@@ -510,6 +514,7 @@
       <option value="">all actions</option>
       <option value="deny">deny</option>
       <option value="challenge">challenge</option>
+      <option value="refuse">refuse</option>
     </select>
     <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
     <span class="meta" id="f-count"></span>
@@ -521,7 +526,9 @@
                  <th>Request</th><th>User-Agent</th></tr></thead>
       <tbody id="decisions"></tbody>
     </table>
-    <div class="empty" id="decisions-empty" hidden>Nothing challenged or denied yet.</div>
+    <!-- Action-neutral: this feed also carries refusals, and the message shows
+         whenever a filter matches nothing, not only on an empty ring. -->
+    <div class="empty" id="decisions-empty" hidden>No matching recent decisions.</div>
     <div class="toolbar pager" id="dec-pager" hidden>
       <button id="dec-prev" type="button">‹ Prev</button>
       <button id="dec-next" type="button">Next ›</button>
@@ -566,7 +573,7 @@
         <tbody id="off-countries"></tbody></table>
     </div>
   </div>
-  <div class="empty" id="offenders-empty" hidden>Nothing challenged or denied yet.</div>
+  <div class="empty" id="offenders-empty" hidden>No non-allow decisions recorded yet.</div>
 
   <div class="cols">
     <div>
@@ -1094,7 +1101,7 @@
   // collapsing guardian_decisions_total uses to bound its label cardinality),
   // so each gets a fixed categorical hue slot. In this chart hue is *identity*
   // — which rule fired — not severity: every series here is already a non-allow
-  // decision, and severity is carried by the deny/challenge chart above. The
+  // decision, and severity is carried by the decisions-over-time chart above. The
   // previous map keyed on severity instead, which painted waf and
   // behaviour_block the same red and made a stacked bar unreadable.
   //
@@ -1167,8 +1174,11 @@
       return Number.isFinite(t) && t >= bounds.lo && t <= bounds.hi;
     });
 
-    // 1. Decisions over time: stacked area, deny vs challenge.
-    const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge"], 32, bounds.lo, bounds.hi);
+    // 1. Decisions over time: stacked area, deny, challenge and refuse.
+    // The series list is explicit, so a new action must be added here as well
+    // as to the datasets below: bucketize only counts the keys it is given, and
+    // a missing one renders as a permanently empty band rather than an error.
+    const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge", "refuse"], 32, bounds.lo, bounds.hi);
     const coverage = chartCoverageLabel(decisions.length, bounds, now);
     $("chart-decisions-window").textContent = coverage;
     $("chart-reasons-window").textContent = coverage;
@@ -1180,6 +1190,12 @@
           tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
         { label: "challenge", data: dt.counts.challenge || [], borderColor: c.warning,
           backgroundColor: alpha(c.warning, 0.25), fill: true, stack: "s",
+          tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+        // Its own band rather than folded into challenge: these are requests
+        // that were never given a puzzle, and a client polling an icon it can
+        // never authenticate produces a lot of them.
+        { label: "refuse", data: dt.counts.refuse || [], borderColor: c.muted,
+          backgroundColor: alpha(c.muted, 0.25), fill: true, stack: "s",
           tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
       ] },
       options: baseOptions(c, true),
@@ -1270,8 +1286,8 @@
     // Per-domain traffic: stacked bars, one bar per domain, segments by action.
     const perDomain = lastDist.per_domain || {};
     const domains = Object.keys(perDomain).sort();
-    const actions = ["allow", "challenge", "deny", "shed"];
-    const actionColor = { allow: cols.good, challenge: cols.warning, deny: cols.critical, shed: cols.muted };
+    const actions = ["allow", "challenge", "refuse", "deny", "shed"];
+    const actionColor = { allow: cols.good, challenge: cols.warning, refuse: cols.muted, deny: cols.critical, shed: cols.muted };
     const hasDomains = domains.length > 0;
     $("dist-charts").hidden = !hasDomains;
     if (hasDomains) {
@@ -2236,7 +2252,9 @@
   // the footnote spells out; whole=false means the server did not support ?ip=
   // and the counts cover only the rows this page happens to hold, so say so
   // rather than passing a partial count off as the total.
-  const ACTION_ORDER = ["deny", "challenge"];
+  // Ranking only: an action missing from this list still renders, it just sorts
+  // last. Ordered by how much operator attention it deserves.
+  const ACTION_ORDER = ["deny", "challenge", "refuse"];
   const renderLookupTotals = (rows, whole) => {
     const counts = new Map();
     for (const d of rows) counts.set(d.action, (counts.get(d.action) || 0) + 1);

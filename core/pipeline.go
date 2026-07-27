@@ -391,16 +391,26 @@ const (
 
 // Failure reasons. These reach the client in X-Guardian-Reason, so they are
 // static and config-independent by construction: an operator learns which of
-// the five conditions fired, an attacker learns nothing it did not already know
+// the six conditions fired, an attacker learns nothing it did not already know
 // from being re-challenged. Never fold the underlying error text in here — that
-// would leak host bindings and configured difficulty. All five keep the "pow:"
+// would leak host bindings and configured difficulty. All six keep the "pow:"
 // prefix, so reasonCategory still collapses them to a single metric series.
+//
+// Five name a token that did not vouch. The sixth, reasonUnchallengeable, says
+// no challenge was issued at all, and is the only one paired with an action
+// other than ActionChallenge.
 const (
 	reasonNoToken        = "pow:no_token"
 	reasonTokenInvalid   = "pow:token_invalid"
 	reasonTokenExpired   = "pow:token_expired"
 	reasonTokenBinding   = "pow:token_binding"
 	reasonTokenUnderDiff = "pow:token_underdifficulty"
+	// reasonUnchallengeable replaces whichever of the five above would have been
+	// reported, when the client could not have completed the challenge in any
+	// case. Naming the impossibility is strictly more useful than naming the
+	// missing cookie: an anonymous favicon fetch reports "no_token" truthfully
+	// and misleadingly at once, since no cookie was ever going to arrive.
+	reasonUnchallengeable = "pow:unchallengeable"
 )
 
 // reason is the decision reason for a verdict that did not vouch.

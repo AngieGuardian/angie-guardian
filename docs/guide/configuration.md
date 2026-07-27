@@ -344,8 +344,14 @@ Which value fires:
   `Accept` values. When Fetch metadata is unavailable, which means plain HTTP,
   older clients, or a proxy that strips the headers, the heuristic can refuse an
   unusual real navigation whose `Accept` lacks `text/html`. That is deliberate.
-  Withhold the header with `proxy_set_header Accept "";` in
-  `location @guardian_challenge` to opt out per site, no daemon change needed.
+  Opt out per site, per path, or fleet-wide with
+  `pow: { refuse_unchallengeable: false }`. The auth subrequest decides and
+  relays its verdict to the challenge hop, so the recorded decision and the
+  served response agree even if you flip the key while a request is between the
+  two. Clearing the header in `location @guardian_challenge` is not the same
+  thing and does not roll anything back: it changes only what the second hop
+  serves, leaving the log describing a response nobody received, and it hides
+  `Accept` from WAF `header:accept` rules besides.
   :::
 
   ::: warning HTTPS only, except for that one
