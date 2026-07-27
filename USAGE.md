@@ -40,6 +40,12 @@ defaults:
   pow: { enabled: true, base_difficulty: 5 }
   waf:
     ip_behaviour: { enabled: true }
+  # Fleet-wide per-path overlays, inherited by every host: a crawler cannot
+  # solve the interstitial, so files meant for machines skip only that layer
+  # (blocks, GeoIP and the WAF still apply, unlike allowlist.paths).
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults

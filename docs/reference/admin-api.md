@@ -574,9 +574,11 @@ not automatically deleted from disk).
 The active per-domain configuration: which features are enabled where,
 including PoW base/max difficulty, each scope's effective signature-rule
 selection (`waf_rules_file` plus `waf_disabled_rule_ids`, both omitted when
-empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a domain defines
+empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a scope defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
-a `paths` object with the same view per overlay:
+a `paths` object with the same view per overlay. `defaults` carries its own
+`paths` when the fleet-wide overlays are configured; a domain's `paths` lists
+its effective overlays, inherited entries included:
 
 ```json
 {

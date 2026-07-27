@@ -164,15 +164,26 @@ type Config struct {
 	// isolation (see TrustedProxy) remains the only control that prevents
 	// spoofing. Off by default so probing Guardian directly (dev, tests, curl)
 	// keeps working; healthz and the denied page are never gated.
-	RequireProxied bool                 `yaml:"require_proxied"`
-	Admin          AdminConfig          `yaml:"admin"`
-	Store          StoreConfig          `yaml:"store"`
-	Enforcement    EnforcementConfig    `yaml:"enforcement"`
-	AttackMode     AttackModeConfig     `yaml:"attack_mode"`
-	GeoIP          GeoIPConfig          `yaml:"geoip"`
-	Reputation     ReputationFeeds      `yaml:"reputation"`
-	Defaults       DomainConfig         `yaml:"defaults"`
-	Domains        map[string]yaml.Node `yaml:"domains"`
+	RequireProxied bool              `yaml:"require_proxied"`
+	Admin          AdminConfig       `yaml:"admin"`
+	Store          StoreConfig       `yaml:"store"`
+	Enforcement    EnforcementConfig `yaml:"enforcement"`
+	AttackMode     AttackModeConfig  `yaml:"attack_mode"`
+	GeoIP          GeoIPConfig       `yaml:"geoip"`
+	Reputation     ReputationFeeds   `yaml:"reputation"`
+	// DefaultsNode is the raw defaults: mapping. It is captured as a node, not
+	// decoded straight into a DomainConfig, so its paths: key can be split off
+	// before the struct decode exactly like a domain's (see splitPathsNode):
+	// DomainConfig has no Paths field, so the strict decoder would otherwise
+	// reject it. Read Defaults, not this, after finalize.
+	DefaultsNode yaml.Node            `yaml:"defaults"`
+	Domains      map[string]yaml.Node `yaml:"domains"`
+
+	// Defaults is DefaultsNode resolved: the fleet-wide base every domain is
+	// merged over, and the effective config for unknown hosts. Its own
+	// pathOverrides are the defaults: paths: entries, inherited by every
+	// domain (see resolvePaths).
+	Defaults DomainConfig `yaml:"-"`
 
 	resolved map[string]*DomainConfig
 }
@@ -628,11 +639,11 @@ type FeedConfig struct {
 }
 
 // DomainConfig is the per-domain feature configuration. Domain entries are
-// merged over Defaults field-by-field at load time. A domain entry may also
-// carry a paths: map of per-path overlays; that key is split off before this
-// struct is decoded (see finalize), so DomainConfig itself deliberately has no
-// Paths field. That keeps paths: under defaults, or nested inside another path
-// overlay, an unknown-field load error.
+// merged over Defaults field-by-field at load time. A domain entry, and the
+// defaults block itself, may also carry a paths: map of per-path overlays;
+// that key is split off before this struct is decoded (see finalize), so
+// DomainConfig itself deliberately has no Paths field. That keeps paths:
+// nested inside another path overlay an unknown-field load error.
 type DomainConfig struct {
 	WAF          WAFConfig          `yaml:"waf"`
 	PoW          PoWConfig          `yaml:"pow"`
@@ -1163,6 +1174,20 @@ func (c *Config) finalize() error {
 		return err
 	}
 
+	// defaults: is decoded here rather than by the top-level decoder so its
+	// paths: overlays can be split off first. Everything below this point reads
+	// c.Defaults, so it has to happen before the first default is filled in.
+	defaultPathsNode := splitPathsNode(&c.DefaultsNode)
+	if c.DefaultsNode.Kind != 0 && c.DefaultsNode.Tag != "!!null" {
+		if err := decodeStrict(&c.DefaultsNode, &c.Defaults); err != nil {
+			return fmt.Errorf("defaults: %w", err)
+		}
+	}
+	defaultPaths, err := pathNodes("defaults", defaultPathsNode)
+	if err != nil {
+		return err
+	}
+
 	// Defaults for the defaults. Difficulty 5 = 20 leading zero bits: with the
 	// in-page JS solver that is roughly a second on a mid-range phone and near
 	// instant on a desktop (see USAGE.md for the measured table).
@@ -1230,8 +1255,29 @@ func (c *Config) finalize() error {
 		c.Defaults.VerifiedBots.NegativeTTL = Duration(time.Hour)
 	}
 
+	// Defaults first, including their own paths: overlays, so a mistake in the
+	// fleet-wide base is reported against defaults rather than against the
+	// first domain that happens to inherit it. Any host that is not a
+	// configured domain resolves here, and the raw Host header must never
+	// become a label value.
+	c.Defaults.label = "default"
+	if err := c.Defaults.validate(); err != nil {
+		return fmt.Errorf("defaults: %w", err)
+	}
+	if err := c.checkGeoRefs(&c.Defaults); err != nil {
+		return fmt.Errorf("defaults: %w", err)
+	}
+	if err := c.resolvePaths("defaults", &c.Defaults, nil, defaultPaths); err != nil {
+		return err
+	}
+	for i := range c.Defaults.pathOverrides {
+		c.Defaults.pathOverrides[i].cfg.label = "default"
+	}
+
 	// Domain configs = defaults deep-copied, then the domain's own YAML node
-	// decoded on top so only the fields it mentions are overridden.
+	// decoded on top so only the fields it mentions are overridden. The
+	// defaults' pathOverrides are unexported, so the copy carries none: every
+	// domain recompiles the inherited entries over its own resolved config.
 	defaultsRaw, err := yaml.Marshal(&c.Defaults)
 	if err != nil {
 		return fmt.Errorf("marshal defaults: %w", err)
@@ -1256,7 +1302,11 @@ func (c *Config) finalize() error {
 		if err := c.checkGeoRefs(dc); err != nil {
 			return fmt.Errorf("domain %s: %w", host, err)
 		}
-		if err := c.resolvePaths(host, dc, pathsNode); err != nil {
+		ownPaths, err := pathNodes("domain "+host, pathsNode)
+		if err != nil {
+			return err
+		}
+		if err := c.resolvePaths("domain "+host, dc, defaultPaths, ownPaths); err != nil {
 			return err
 		}
 		key, err := stateless.NormalizeHostKey(seen, host)
@@ -1272,15 +1322,6 @@ func (c *Config) finalize() error {
 			dc.pathOverrides[i].cfg.label = key
 		}
 		c.resolved[key] = dc
-	}
-	// Any host that is not a configured domain resolves here, and the raw Host
-	// header must never become a label value.
-	c.Defaults.label = "default"
-	if err := c.Defaults.validate(); err != nil {
-		return fmt.Errorf("defaults: %w", err)
-	}
-	if err := c.checkGeoRefs(&c.Defaults); err != nil {
-		return fmt.Errorf("defaults: %w", err)
 	}
 	if err := c.validateFeatureDependencies(); err != nil {
 		return err
@@ -1303,35 +1344,56 @@ func (c *Config) validateAttackDifficultyCap() error {
 		return nil
 	}
 	capBits := c.AttackMode.CapBits()
-	check := func(label string, dc *DomainConfig) error {
+	return c.eachScope(func(label, _ string, dc *DomainConfig) error {
 		if dc.PoW.Enabled && dc.PoW.BaseBits() > capBits {
 			return fmt.Errorf("%s: pow.base_difficulty (%v = %d bits) exceeds attack_mode.effects.difficulty_cap (%v = %d bits); raise the cap so attack mode can never issue below the domain base",
 				label, dc.PoW.BaseDifficulty, dc.PoW.BaseBits(), c.AttackMode.Effects.cap(), capBits)
 		}
 		return nil
-	}
-	if err := check("defaults", &c.Defaults); err != nil {
-		return err
-	}
-	for host, dc := range c.resolved {
-		if err := check("domain "+host, dc); err != nil {
+	})
+}
+
+// eachScope calls fn for every effective config in a stable order: the
+// defaults, the defaults' path overlays, then each domain (hosts sorted) with
+// its own overlays. host is the domain key, empty for the defaults and their
+// overlays, which apply to arbitrary unknown hosts. Every walk that has to
+// cover "everything configured anywhere" goes through this, so adding a scope
+// layer cannot leave one caller silently behind. fn returning an error stops
+// the walk and propagates it.
+func (c *Config) eachScope(fn func(label, host string, dc *DomainConfig) error) error {
+	visit := func(label, host string, dc *DomainConfig) error {
+		if err := fn(label, host, dc); err != nil {
 			return err
 		}
 		for i := range dc.pathOverrides {
 			o := &dc.pathOverrides[i]
-			if err := check("domain "+host+" path "+o.key, o.cfg); err != nil {
+			if err := fn(label+" path "+o.key, host, o.cfg); err != nil {
 				return err
 			}
+		}
+		return nil
+	}
+	if err := visit("defaults", "", &c.Defaults); err != nil {
+		return err
+	}
+	hosts := make([]string, 0, len(c.resolved))
+	for host := range c.resolved {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	for _, host := range hosts {
+		if err := visit("domain "+host, host, c.resolved[host]); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// splitPathsNode removes the paths key from a domain mapping node and returns
-// its value node, so the remainder decodes into DomainConfig. Splitting before
-// the decode is what lets DomainConfig stay Paths-free: a paths key anywhere
-// else (defaults, or nested inside a path overlay) hits the KnownFields
-// decoder and fails the load.
+// splitPathsNode removes the paths key from a defaults or domain mapping node
+// and returns its value node, so the remainder decodes into DomainConfig.
+// Splitting before the decode is what lets DomainConfig stay Paths-free: a
+// paths key nested inside another path overlay hits the KnownFields decoder
+// and fails the load.
 func splitPathsNode(node *yaml.Node) *yaml.Node {
 	if node.Kind != yaml.MappingNode {
 		return nil
@@ -1370,26 +1432,16 @@ func validatePathKey(key string) error {
 	return nil
 }
 
-// resolvePaths compiles a domain's paths: overlays. Each entry deep-copies the
-// already resolved domain config (so defaulted scalars propagate), decodes the
-// path's own YAML node on top, and re-runs validate so compiled state (list
-// prefixes, geo maps, bot needles) is rebuilt for the merged result. Overlays
-// are sorted most specific first: longest bare key, an exact key before a
-// prefix key of the same length, then lexicographic for determinism.
-func (c *Config) resolvePaths(host string, dc *DomainConfig, pathsNode *yaml.Node) error {
-	if pathsNode == nil || pathsNode.Tag == "!!null" {
-		return nil
+// pathNodes decodes a paths: mapping node into its per-key overlay nodes and
+// checks every key once, at the scope that wrote it: a bad key under defaults:
+// must name defaults, not the first domain that happens to inherit it.
+func pathNodes(label string, node *yaml.Node) (map[string]yaml.Node, error) {
+	if node == nil || node.Kind == 0 || node.Tag == "!!null" {
+		return nil, nil
 	}
 	var nodes map[string]yaml.Node
-	if err := pathsNode.Decode(&nodes); err != nil {
-		return fmt.Errorf("domain %s: paths: %w", host, err)
-	}
-	if len(nodes) == 0 {
-		return nil
-	}
-	baseRaw, err := yaml.Marshal(dc)
-	if err != nil {
-		return fmt.Errorf("domain %s: marshal resolved config: %w", host, err)
+	if err := node.Decode(&nodes); err != nil {
+		return nil, fmt.Errorf("%s: paths: %w", label, err)
 	}
 	keys := make([]string, 0, len(nodes))
 	for k := range nodes {
@@ -1398,23 +1450,57 @@ func (c *Config) resolvePaths(host string, dc *DomainConfig, pathsNode *yaml.Nod
 	sort.Strings(keys)
 	for _, key := range keys {
 		if err := validatePathKey(key); err != nil {
-			return fmt.Errorf("domain %s: paths key %q: %w", host, key, err)
+			return nil, fmt.Errorf("%s: paths key %q: %w", label, key, err)
 		}
+	}
+	return nodes, nil
+}
+
+// resolvePaths compiles a scope's paths: overlays from two layers: inherited
+// (the defaults: paths: entries, which every domain gets) and own (the scope's
+// own entries, which win key by key and field by field). Each entry deep-copies
+// the already resolved config (so defaulted scalars propagate), decodes the
+// inherited node and then the own node on top, and re-runs validate so compiled
+// state (list prefixes, geo maps, bot needles) is rebuilt for the merged result.
+// Overlays are sorted most specific first: longest bare key, an exact key before
+// a prefix key of the same length, then lexicographic for determinism.
+func (c *Config) resolvePaths(label string, dc *DomainConfig, inherited, own map[string]yaml.Node) error {
+	if len(inherited) == 0 && len(own) == 0 {
+		return nil
+	}
+	baseRaw, err := yaml.Marshal(dc)
+	if err != nil {
+		return fmt.Errorf("%s: marshal resolved config: %w", label, err)
+	}
+	keys := make([]string, 0, len(inherited)+len(own))
+	for k := range inherited {
+		keys = append(keys, k)
+	}
+	for k := range own {
+		if _, dup := inherited[k]; !dup {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
 		pc := &DomainConfig{}
 		if err := yaml.Unmarshal(baseRaw, pc); err != nil {
-			return fmt.Errorf("domain %s path %s: copy config: %w", host, key, err)
+			return fmt.Errorf("%s path %s: copy config: %w", label, key, err)
 		}
-		node := nodes[key]
-		if node.Kind != 0 && node.Tag != "!!null" {
+		for _, layer := range []map[string]yaml.Node{inherited, own} {
+			node, ok := layer[key]
+			if !ok || node.Kind == 0 || node.Tag == "!!null" {
+				continue
+			}
 			if err := decodeStrict(&node, pc); err != nil {
-				return fmt.Errorf("domain %s path %s: %w", host, key, err)
+				return fmt.Errorf("%s path %s: %w", label, key, err)
 			}
 		}
 		if err := pc.validate(); err != nil {
-			return fmt.Errorf("domain %s path %s: %w", host, key, err)
+			return fmt.Errorf("%s path %s: %w", label, key, err)
 		}
 		if err := c.checkGeoRefs(pc); err != nil {
-			return fmt.Errorf("domain %s path %s: %w", host, key, err)
+			return fmt.Errorf("%s path %s: %w", label, key, err)
 		}
 		dc.pathOverrides = append(dc.pathOverrides, pathOverride{
 			key:    key,
@@ -1441,7 +1527,7 @@ func (c *Config) resolvePaths(host string, dc *DomainConfig, pathsNode *yaml.Nod
 // Run after domain inheritance has been resolved so every effective config is
 // checked, including Defaults (which applies to unknown hosts).
 func (c *Config) validateFeatureDependencies() error {
-	check := func(label string, dc *DomainConfig) error {
+	return c.eachScope(func(label, _ string, dc *DomainConfig) error {
 		if dc.PoW.Enabled && strings.TrimSpace(c.SigningKeyFile) == "" {
 			return fmt.Errorf("%s: pow is enabled but signing_key_file is not configured", label)
 		}
@@ -1455,28 +1541,7 @@ func (c *Config) validateFeatureDependencies() error {
 			return fmt.Errorf("%s: reputation is enabled but no reputation.feeds are configured", label)
 		}
 		return nil
-	}
-	if err := check("defaults", &c.Defaults); err != nil {
-		return err
-	}
-	hosts := make([]string, 0, len(c.resolved))
-	for host := range c.resolved {
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	for _, host := range hosts {
-		dc := c.resolved[host]
-		if err := check("domain "+host, dc); err != nil {
-			return err
-		}
-		for i := range dc.pathOverrides {
-			o := &dc.pathOverrides[i]
-			if err := check("domain "+host+" path "+o.key, o.cfg); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	})
 }
 
 func (dc *DomainConfig) validate() error {
@@ -1802,18 +1867,12 @@ func (c *Config) AttackModeSettings() attackmode.Config {
 // unspecified.
 func (c *Config) AllowlistUnion() []netip.Prefix {
 	seen := make(map[netip.Prefix]bool)
-	add := func(dc *DomainConfig) {
+	_ = c.eachScope(func(_, _ string, dc *DomainConfig) error {
 		for _, p := range dc.Allowlist.Prefixes() {
 			seen[p] = true
 		}
-	}
-	add(&c.Defaults)
-	for _, dc := range c.resolved {
-		add(dc)
-		for i := range dc.pathOverrides {
-			add(dc.pathOverrides[i].cfg)
-		}
-	}
+		return nil
+	})
 	out := make([]netip.Prefix, 0, len(seen))
 	for p := range seen {
 		out = append(out, p)
@@ -1831,10 +1890,10 @@ func (c *Config) AllowlistUnion() []netip.Prefix {
 func (c *Config) RuleVariants() []waf.VariantSpec {
 	var order []string
 	byKey := make(map[string]*waf.VariantSpec)
-	add := func(label string, dc *DomainConfig) {
+	_ = c.eachScope(func(label, _ string, dc *DomainConfig) error {
 		kw := &dc.WAF.Keywords
 		if kw.RulesFile == "" || (!kw.Enabled && len(kw.DisabledRuleIDs) == 0) {
-			return
+			return nil
 		}
 		spec, ok := byKey[kw.ruleKey]
 		if !ok {
@@ -1843,21 +1902,8 @@ func (c *Config) RuleVariants() []waf.VariantSpec {
 			order = append(order, kw.ruleKey)
 		}
 		spec.Scopes = append(spec.Scopes, label)
-	}
-	add("defaults", &c.Defaults)
-	hosts := make([]string, 0, len(c.resolved))
-	for host := range c.resolved {
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	for _, host := range hosts {
-		dc := c.resolved[host]
-		add("domain "+host, dc)
-		for i := range dc.pathOverrides {
-			o := &dc.pathOverrides[i]
-			add("domain "+host+" path "+o.key, o.cfg)
-		}
-	}
+		return nil
+	})
 	specs := make([]waf.VariantSpec, 0, len(order))
 	for _, key := range order {
 		specs = append(specs, *byKey[key])
@@ -1895,19 +1941,12 @@ func (c *Config) ModelSpecs() []anomaly.ModelSpec {
 			byPath[path][host] = true
 		}
 	}
-	if a := c.Defaults.WAF.Anomaly; a.Enabled {
-		add(a.Model, "")
-	}
-	for host, dc := range c.resolved {
+	_ = c.eachScope(func(_, host string, dc *DomainConfig) error {
 		if a := dc.WAF.Anomaly; a.Enabled {
 			add(a.Model, host)
 		}
-		for i := range dc.pathOverrides {
-			if a := dc.pathOverrides[i].cfg.WAF.Anomaly; a.Enabled {
-				add(a.Model, host)
-			}
-		}
-	}
+		return nil
+	})
 	paths := make([]string, 0, len(byPath))
 	for path := range byPath {
 		paths = append(paths, path)
@@ -1956,21 +1995,12 @@ func (c *Config) Warnings() []string {
 			out = append(out, "waf.honeypot enabled but no paths configured for "+scope+": it has no effect (add paths, or set enabled: false)")
 		}
 	}
-	check("defaults", &c.Defaults)
-	// Sort hosts so the warning order is stable across runs (map iteration is not).
-	hosts := make([]string, 0, len(c.resolved))
-	for host := range c.resolved {
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	for _, host := range hosts {
-		dc := c.resolved[host]
-		check("domain "+host, dc)
-		for i := range dc.pathOverrides {
-			o := &dc.pathOverrides[i]
-			check("domain "+host+" path "+o.key, o.cfg)
-		}
-	}
+	// eachScope sorts hosts, so the warning order is stable across runs (map
+	// iteration is not).
+	_ = c.eachScope(func(label, _ string, dc *DomainConfig) error {
+		check(label, dc)
+		return nil
+	})
 	return out
 }
 
@@ -1996,7 +2026,7 @@ type BehaviourWindow struct {
 func (c *Config) BehaviourWindows() []BehaviourWindow {
 	seen := make(map[BehaviourWindow]bool, 8)
 	out := make([]BehaviourWindow, 0, 8)
-	collect := func(dc *DomainConfig) {
+	_ = c.eachScope(func(_, _ string, dc *DomainConfig) error {
 		for event, rate := range dc.WAF.IPBehaviour.Thresholds {
 			w := BehaviourWindow{Event: event, Window: rate.Per}
 			if rate.Count <= 0 || rate.Per <= 0 || seen[w] {
@@ -2005,14 +2035,8 @@ func (c *Config) BehaviourWindows() []BehaviourWindow {
 			seen[w] = true
 			out = append(out, w)
 		}
-	}
-	collect(&c.Defaults)
-	for _, dc := range c.resolved {
-		collect(dc)
-		for i := range dc.pathOverrides {
-			collect(dc.pathOverrides[i].cfg)
-		}
-	}
+		return nil
+	})
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Event != out[j].Event {
 			return out[i].Event < out[j].Event

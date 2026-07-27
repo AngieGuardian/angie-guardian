@@ -51,9 +51,8 @@ tune the thresholds from `guardian_anomaly_score`, then remove it or set it to
 ## Per-path overrides
 
 When a site and its machine endpoints share one host, a domain entry can scope
-any setting to a URI prefix with a `paths` map. Overlays merge in three
-levels (defaults, then the domain, then the path), the most specific key wins,
-and matching is against the percent-decoded path:
+any setting to a URI prefix with a `paths` map. The most specific key wins, and
+matching is against the percent-decoded path:
 
 ```yaml
 domains:
@@ -66,6 +65,25 @@ domains:
       "/account/login":
         pow: { base_difficulty: 6 }
 ```
+
+The same map under `defaults` is fleet-wide: every domain and every unknown
+host inherits it, merged over that domain's own settings. That is the place
+for files a crawler must be able to fetch but can never solve a challenge for:
+
+```yaml
+defaults:
+  pow: { enabled: true }
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+```
+
+Leaving PoW on at `/robots.txt` means well-behaved crawlers get the
+interstitial instead of your `Disallow` rules, including the ones steering
+them away from [honeypot](/reference/configuration#waf-honeypot) traps. This is
+narrower than an `allowlist.paths` entry, which ends the pipeline outright: here
+blocks, GeoIP, reputation and the WAF still apply. A single host overrides an
+inherited entry by naming the same key in its own `paths`.
 
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.

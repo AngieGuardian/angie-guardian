@@ -73,6 +73,19 @@ challenged before verification completes, then cached. If a genuine crawler
 never verifies, its rDNS may not match the configured domains; see
 [Bots, GeoIP & Reputation](/guide/bots-ip-intel).
 
+**`/robots.txt` serves the interstitial instead of the file.** With
+`pow.mode: always` every unvouched request is challenged, and a crawler cannot
+solve one, so it never reads your `Disallow` rules (including the ones steering
+it away from honeypot traps). Exempt the file fleet-wide with a
+[per-path overlay](/reference/configuration#per-path-overrides-domains-host-paths)
+under `defaults`, which leaves blocks, GeoIP and the WAF in place:
+
+```yaml
+defaults:
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+```
+
 **A stylesheet, image or `fetch()` gets a bare `403` instead of the page.** A
 request that cannot execute the interstitial is refused a challenge rather than
 issued one, because scoring it for abandoning a page it cannot run is how an

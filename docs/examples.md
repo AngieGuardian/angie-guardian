@@ -26,6 +26,11 @@ defaults:
                                   # 5.25-5.5 when actively scraped
   waf:
     ip_behaviour: { enabled: true }
+  paths:                          # fleet-wide overlays, inherited by every
+                                  # host: files a crawler must reach but can
+                                  # never solve a challenge for
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults
@@ -81,6 +86,25 @@ domains:
         pow: { enabled: false }
       "/account/login":
         pow: { base_difficulty: 6 }
+```
+
+The same map under `defaults` applies to every host at once, known or not,
+which is how public files stay reachable fleet-wide. An entry only turns off
+the layers it names, so unlike `allowlist.paths` (a terminal stage-0 allow)
+blocks, GeoIP, reputation and the WAF keep covering them:
+
+```yaml
+defaults:
+  pow: { enabled: true }
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+
+domains:
+  example.com: {}                 # inherits both entries
+  api.example.com:
+    paths:
+      "/robots.txt": { pow: { enabled: true } }   # opt this host back in
 ```
 
 ## Signature rules: one starter file, scoped per domain

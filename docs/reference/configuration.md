@@ -58,7 +58,7 @@ A duration is a number followed by a unit.
 | `store` | object | | See [store](#store). |
 | `geoip` | object | | GeoIP databases for the per-domain `geo` scoping. See [geoip](#geoip). |
 | `reputation` | object | | Global IP reputation feeds; domains opt in via `reputation.enabled`. See [reputation](#reputation). |
-| `defaults` | object | | The base [domain config](#per-domain-options-defaults-and-domains) every domain inherits from. |
+| `defaults` | object | | The base [domain config](#per-domain-options-defaults-and-domains) every domain inherits from. May carry [`paths`](#per-path-overrides-domains-host-paths) overlays of its own, which every domain and every unknown host inherits. |
 | `domains` | map | | Per-domain overrides, merged field-by-field over `defaults`. Host keys and anomaly-model lookups share one normalization for case, ports, trailing dots, and bracketed IPv6 (`A.test.:443` = `a.test`); two keys that collapse to the same host are rejected. A domain entry may also carry [`paths`](#per-path-overrides-domains-host-paths) overlays scoped to URI prefixes within the host. |
 
 ## admin
@@ -180,11 +180,11 @@ Each feed entry:
 ## Per-domain options (`defaults` and `domains.<host>`)
 
 Each domain entry has these sections: `waf`, `pow`, `geo`, `reputation`,
-`allowlist`, `denylist`, `verified_bots`. A `domains.<host>` entry (but not
-`defaults`) may additionally carry a `paths` map of per-path overlays; see
-[per-path overrides](#per-path-overrides-domains-host-paths).
+`allowlist`, `denylist`, `verified_bots`. Both `defaults` and a
+`domains.<host>` entry may additionally carry a `paths` map of per-path
+overlays; see [per-path overrides](#per-path-overrides-domains-host-paths).
 
-## Per-path overrides (`domains.<host>.paths`)
+## Per-path overrides (`defaults.paths`, `domains.<host>.paths`) {#per-path-overrides-domains-host-paths}
 
 A domain entry may scope any part of its configuration to a URI prefix, so one
 vhost can, for example, keep PoW on for the whole site while exempting a
@@ -201,10 +201,32 @@ domains:
         pow: { base_difficulty: 6 }
 ```
 
-Each `paths` value is a full domain-config overlay, merged in three levels:
-`defaults`, then the domain's own settings, then the path's. A path entry only
+The same `paths` map under `defaults` is a fleet-wide overlay: it applies to
+every configured domain and to unknown hosts alike, which is the place for
+public files no crawler can solve a challenge for:
+
+```yaml
+defaults:
+  pow: { enabled: true }
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+```
+
+Unlike an [`allowlist.paths`](#allowlist-denylist) entry, which ends the
+pipeline at stage 0, this only turns off the layers it names: blocks, GeoIP,
+reputation and the WAF still cover `/robots.txt` here.
+
+Each `paths` value is a full domain-config overlay, merged in four levels:
+`defaults`, then the domain's own settings, then the `defaults` overlay for
+that key, then the domain's own overlay for that key. A path entry only
 overrides the fields it mentions; everything else is inherited, exactly like a
 domain entry over `defaults`. An empty path body inherits everything.
+
+An inherited key is compiled over each domain's own config, so a domain that
+raises `base_difficulty` keeps that value inside the inherited overlay. A
+domain opts out of a fleet-wide entry by naming the same key and setting the
+field back (`"/robots.txt": { pow: { enabled: true } }`).
 
 Matching rules:
 
@@ -223,8 +245,8 @@ Matching rules:
 
 Restrictions and behavior notes:
 
-- `paths` is only valid inside a `domains.<host>` entry: not under `defaults`
-  and not nested inside another path overlay. Both are load errors.
+- `paths` is valid under `defaults` and inside a `domains.<host>` entry, but
+  never nested inside another path overlay: that is a load error.
 - A WAF signature with `action: challenge` degrades to a deny on a path whose
   overlay disables PoW, exactly as it does on a PoW-disabled domain.
 - A PoW token records the difficulty it was solved at and only vouches where

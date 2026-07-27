@@ -27,6 +27,30 @@ func TestAllowlistedPathReachesBackend(t *testing.T) {
 	}
 }
 
+// TestDefaultsPathOverlay confirms a paths: overlay under defaults reaches
+// every host (localhost declares its own paths: map, wp.localhost declares
+// none) and, unlike an allowlist entry, only turns off the layer it names:
+// the WAF still inspects the exempted path.
+func TestDefaultsPathOverlay(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+
+	for _, host := range []string{powHost, wpHost} {
+		resp := get(t, "/public-feed.xml", host, browserUA, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s /public-feed.xml: status %d, want 200 (defaults overlay disables pow)", host, resp.StatusCode)
+		}
+		if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
+			t.Fatalf("%s /public-feed.xml did not reach whoami backend; body:\n%s", host, body)
+		}
+	}
+
+	// Not a terminal allow: the path-traversal rule (deny, targets path+query)
+	// still fires on the same path.
+	if r := get(t, "/public-feed.xml?f=../../etc/passwd", powHost, browserUA, nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("traversal on the exempted path: status %d, want 403 (the WAF must still run)", r.StatusCode)
+	}
+}
+
 // TestBrowserGetIsChallenged confirms an unvouched GET on a PoW-always host
 // is diverted to the interstitial (Angie turns the 401 into 200 HTML) and that
 // the page carries the embedded challenge JSON.

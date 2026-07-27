@@ -392,8 +392,11 @@ func TestConfigValidation(t *testing.T) {
 		"infinite max difficulty":                "defaults: { pow: { max_difficulty: .inf } }",
 		"subsecond pow token ttl":                "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 999ms } }",
 		"nan anomaly threshold":                  "defaults: { anomaly: { model: model.json, challenge_threshold: .nan } }",
-		"paths under defaults":                   "defaults: { paths: { \"/api/\": { pow: { enabled: false } } } }",
 		"nested paths":                           "domains: { a.test: { paths: { \"/api/\": { paths: { \"/v1/\": } } } } }",
+		"nested paths under defaults":            "defaults: { paths: { \"/api/\": { paths: { \"/v1/\": } } } }",
+		"bad path key under defaults":            "defaults: { paths: { \"api/\": { pow: { enabled: false } } } }",
+		"typo inside defaults path overlay":      "defaults: { paths: { \"/api/\": { pow: { enabeld: true } } } }",
+		"defaults path pow without signing key":  "defaults: { paths: { \"/app/\": { pow: { enabled: true } } } }",
 		"path key without slash":                 "domains: { a.test: { paths: { \"api/\": { pow: { enabled: false } } } } }",
 		"empty path key":                         "domains: { a.test: { paths: { \"\": { pow: { enabled: false } } } } }",
 		"percent-encoded path key":               "domains: { a.test: { paths: { \"/api%2Fv1/\": { pow: { enabled: false } } } } }",
@@ -739,9 +742,142 @@ func TestPathOverlayDecodedMatch(t *testing.T) {
 	if cfg.ConfigFor("EXAMPLE.com:443", "/api/x").PoW.Enabled {
 		t.Error("host normalization must apply before path resolution")
 	}
-	// Unknown hosts fall back to defaults, which never have overlays.
+	// Unknown hosts fall back to defaults, which carry no overlays here.
 	if cfg.ConfigFor("unknown.test", "/api/x") != &cfg.Defaults {
 		t.Error("unknown host must resolve to defaults regardless of path")
+	}
+}
+
+const defaultsPathOverlayYAML = `
+listen: 127.0.0.1:9999
+signing_key_file: test-signing.key
+store:
+  backend: memory
+defaults:
+  pow: { enabled: true, base_difficulty: 5, max_difficulty: 6 }
+  paths:
+    "/robots.txt":
+      pow: { enabled: false }
+    "/api/":
+      pow: { base_difficulty: 5.5 }
+domains:
+  plain.test:
+    pow: { base_difficulty: 6 }
+  own.test:
+    paths:
+      "/api/":
+        pow: { enabled: false }
+      "/shop/":
+        pow: { base_difficulty: 5.25 }
+  optout.test:
+    paths:
+      "/robots.txt":
+        pow: { enabled: true }
+`
+
+// TestDefaultsPathOverlayInherited pins the fleet-wide overlay: a paths: entry
+// under defaults: applies to unknown hosts and to every configured domain,
+// over that domain's own settings rather than the defaults'.
+func TestDefaultsPathOverlayInherited(t *testing.T) {
+	cfg := loadTestConfig(t, defaultsPathOverlayYAML)
+
+	// Unknown hosts resolve through the defaults' own overlays.
+	if cfg.ConfigFor("unknown.test", "/robots.txt").PoW.Enabled {
+		t.Error("defaults overlay must disable pow at /robots.txt for unknown hosts")
+	}
+	if !cfg.ConfigFor("unknown.test", "/other").PoW.Enabled {
+		t.Error("unmatched path on an unknown host must keep the defaults' pow")
+	}
+	if cfg.ConfigFor("unknown.test", "/other") != &cfg.Defaults {
+		t.Error("unmatched path must return the defaults pointer, not a copy")
+	}
+
+	// A domain that declares no paths: of its own still inherits them, and the
+	// overlay sits on top of that domain's config: base_difficulty stays the
+	// domain's 6, not the defaults' 5.
+	plain := cfg.ConfigFor("plain.test", "/robots.txt")
+	if plain.PoW.Enabled {
+		t.Error("plain.test must inherit the defaults' /robots.txt overlay")
+	}
+	if plain.PoW.BaseDifficulty != 6 {
+		t.Errorf("inherited overlay base_difficulty = %v, want the domain's 6", plain.PoW.BaseDifficulty)
+	}
+	if got := cfg.ConfigFor("plain.test", "/api/x").PoW.BaseDifficulty; got != 5.5 {
+		t.Errorf("plain.test /api/ base_difficulty = %v, want the inherited 5.5", got)
+	}
+
+	// A domain with its own paths: keeps the inherited keys too, and its own
+	// entry for a shared key merges over the inherited one field by field.
+	if cfg.ConfigFor("own.test", "/robots.txt").PoW.Enabled {
+		t.Error("own paths: must not drop the inherited /robots.txt overlay")
+	}
+	api := cfg.ConfigFor("own.test", "/api/x")
+	if api.PoW.Enabled {
+		t.Error("own.test /api/ must win over the inherited overlay")
+	}
+	if api.PoW.BaseDifficulty != 5.5 {
+		t.Errorf("own.test /api/ base_difficulty = %v, want the inherited layer's 5.5", api.PoW.BaseDifficulty)
+	}
+	if got := cfg.ConfigFor("own.test", "/shop/x").PoW.BaseDifficulty; got != 5.25 {
+		t.Errorf("own.test /shop/ base_difficulty = %v, want 5.25", got)
+	}
+
+	// Naming the same key is how a domain opts out of an inherited overlay.
+	if !cfg.ConfigFor("optout.test", "/robots.txt").PoW.Enabled {
+		t.Error("optout.test must be able to re-enable pow at an inherited key")
+	}
+
+	// Neither the defaults nor a domain config is mutated by its overlays.
+	if !cfg.Defaults.PoW.Enabled || cfg.Defaults.PoW.BaseDifficulty != 5 {
+		t.Errorf("defaults mutated by path overlays: %+v", cfg.Defaults.PoW)
+	}
+	if dom := cfg.DomainFor("plain.test"); !dom.PoW.Enabled || dom.PoW.BaseDifficulty != 6 {
+		t.Errorf("domain mutated by inherited path overlays: %+v", dom.PoW)
+	}
+}
+
+// TestDefaultsPathOverlayScopeWalks: config walks that must cover every scope
+// (files to watch, allowlist union, behaviour windows, metric labels) have to
+// see the defaults' overlays too, not just the domains'.
+func TestDefaultsPathOverlayScopeWalks(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+geoip: { asn_db: /x.mmdb }
+defaults:
+  allowlist: { ips: [ "10.0.0.0/8" ] }
+  paths:
+    "/robots.txt":
+      allowlist: { ips: [ "192.0.2.0/24" ] }
+      waf:
+        keywords: { enabled: true, rules_file: rules.yaml }
+        ip_behaviour: { enabled: true, thresholds: { signature: 3/h } }
+domains:
+  a.test: {}
+`)
+	overlay := cfg.ConfigFor("unknown.test", "/robots.txt")
+	if !overlay.Allowlist.MatchIP(netip.MustParseAddr("192.0.2.7")) {
+		t.Error("defaults path overlay allowlist must be compiled")
+	}
+	if overlay.label != "default" {
+		t.Errorf("defaults overlay label = %q, want %q", overlay.label, "default")
+	}
+	var found bool
+	for _, p := range cfg.AllowlistUnion() {
+		if p == netip.MustParsePrefix("192.0.2.0/24") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("AllowlistUnion must include prefixes from defaults path overlays")
+	}
+	if files := cfg.RuleFiles(); len(files) != 1 || files[0] != "rules.yaml" {
+		t.Errorf("RuleFiles = %v, want [rules.yaml] from the defaults path overlay", files)
+	}
+	if scopes := cfg.RuleVariants()[0].Scopes; len(scopes) == 0 || scopes[0] != "defaults path /robots.txt" {
+		t.Errorf("RuleVariants scopes = %v, want the defaults path overlay named", scopes)
+	}
+	if !slices.Contains(cfg.BehaviourWindows(), BehaviourWindow{Event: "signature", Window: time.Hour}) {
+		t.Errorf("BehaviourWindows = %v, want the defaults path overlay 1h signature window", cfg.BehaviourWindows())
 	}
 }
 

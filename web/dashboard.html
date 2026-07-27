@@ -1320,8 +1320,9 @@
     $("anomaly-health").hidden = scopes.length === 0;
     const models = new Map((data.models || []).map((model) => [model.path, model]));
     $("anomaly-models").replaceChildren(...scopes.map((scope) => {
+      // A path overlay under defaults has no host: it applies to every one.
       const label = scope.scope === "defaults" ? "defaults" :
-        scope.host + (scope.path ? " " + scope.path : "");
+        (scope.host || "defaults") + (scope.path ? " " + scope.path : "");
       const coverageClass = scope.coverage === "ready" ? "chip on" :
         scope.coverage === "missing" ? "chip deny" : "chip challenge";
       const coverage = td(null, "");
