@@ -91,25 +91,36 @@ request that cannot execute the interstitial is refused a challenge rather than
 issued one, because scoring it for abandoning a page it cannot run is how an
 ordinary browser talks itself into a `challenge_farm` block. Counted as
 `guardian_challenges_total{outcome="subresource_refused"}`; usually a favicon or
-a stale SPA `fetch()`, and benign. A subresource carrying a valid token is never
-affected, since the token stage allows it long before the challenge handler is
-reached. If a top-level *navigation* is being refused, an intermediate proxy is
-rewriting `Sec-Fetch-Dest`; stop it doing that. There is no config key to turn
-the refusal off, because withholding the header does the same job with no daemon
-change: add `proxy_set_header Sec-Fetch-Dest "";` to
-`location @guardian_challenge` and Guardian is back to challenging everything.
+a stale SPA `fetch()`, and benign. The decision is recorded as `refuse`, so it
+does not inflate challenge counts and is filtered out of
+`GET /admin/decisions?action=challenge`. A token-failure refusal has reason
+`pow:unchallengeable`; one selected by another policy keeps that policy's
+reason. A subresource carrying a valid token is never affected, since the token
+stage allows it long before the challenge handler is reached. If a top-level
+*navigation* is being refused, an intermediate proxy is
+rewriting `Sec-Fetch-Dest`; stop it doing that. To turn the refusal off, set
+`pow: { refuse_unchallengeable: false }` (fleet-wide, per domain, or per path)
+and Guardian is back to challenging everything. Do not clear the header in
+`location @guardian_challenge` to achieve it: the decision is recorded at the
+auth subrequest, which still sees the client's real header, so clearing it in
+one location only would leave the log saying a challenge was withheld from a
+client that was handed one.
 
 **`curl`, an API client or a feed reader gets a bare `403` instead of the
 interstitial.** Counted as
 `guardian_challenges_total{outcome="accept_heuristic_refused"}`. When a request
-carries no Fetch metadata at all, its `Accept` header is the only thing left
-that distinguishes a page navigation from something that could never render one,
-so a request whose `Accept` is present and names neither `text/html` nor
-`text/*` is refused a challenge instead of being issued one it will drop. The
+carries no Fetch metadata at all, its `Accept` header is the only heuristic left
+for distinguishing a page navigation from a request unlikely to render one, so
+a request whose `Accept` is present and names neither `text/html` nor `text/*`
+is refused a challenge instead of being issued one it will probably drop. The
 request this was built for is the browser's own favicon service, which refreshes
 a known icon URL on a system principal with no cookie, no `Sec-Fetch-*` even
 over HTTPS, and `Accept: */*`, and used to escalate the visitor on every page
-render.
+render. That channel is anonymous by construction: it sends no cookie whatever
+the token's `SameSite` policy, so no token-based allowance can ever reach it and
+the only response that stops it re-requesting is the real file. If the request
+volume is the problem rather than the decision, exempt the path with a
+`pow: { enabled: false }` overlay so the file is served and cached.
 
 `Accept` is a heuristic, not proof: `*/*` formally accepts HTML, and the Fetch
 standard only says browsers *should* send the document `Accept` value for a
@@ -128,9 +139,11 @@ destination protects customized `Accept` values. Where Fetch metadata is
 unavailable, meaning plain HTTP, older clients, or a proxy that strips the
 headers, this can refuse an unusual real navigation whose `Accept` lacks
 `text/html`. That is deliberate, and it is the case to watch if you serve a
-plain-HTTP vhost to unusual clients. The off switch is the same shape as the one
-above and needs no daemon change: add `proxy_set_header Accept "";` to
-`location @guardian_challenge`.
+plain-HTTP vhost to unusual clients. The off switch is the same as the one
+above, `pow: { refuse_unchallengeable: false }`, and it can be scoped to the one
+site or path that needs it. Clearing `Accept` in `location @guardian_challenge`
+is not an equivalent: besides the mismatch described above, it would hide the
+header from any WAF rule targeting `header:accept`.
 
 **`guardian_challenges_total{outcome="frame_unscored"}` is climbing.** Your
 protected URLs are being loaded in a frame whose Fetch metadata cannot establish
@@ -166,22 +179,27 @@ WAF, GeoIP, and reputation challenge policies still apply); see
 [Configuration](/guide/configuration).
 
 **A visitor is challenged in a loop even though they hold a cookie.** The
-reason names which check the token failed, so you can tell this from the
-server side without a browser capture. Read it from
+reason names which check the token failed, or that no challenge was issued at
+all, so you can tell this from the server side without a browser capture. Read
+it from
 `GET /admin/decisions?reason=pow`, the dashboard's Recent decisions table, the
 `X-Guardian-Reason` response header, or the JSON decision log.
 
 | `reason` | What it means | Where to look |
 |---|---|---|
-| `pow:no_token` | No `guardian_token` cookie arrived at all. | The client is fetching anonymously, or the cookie never reached Guardian: check that Angie relays it with `proxy_set_header X-Guardian-Cookie $http_cookie`. Favicon and other subresource requests can appear here too, but this reason alone does not prove the browser omitted the cookie; compare the browser's request headers with what Angie relayed before concluding that. |
+| `pow:no_token` | No `guardian_token` cookie arrived at all. | The client is fetching anonymously, or the cookie never reached Guardian: check that Angie relays it with `proxy_set_header X-Guardian-Cookie $http_cookie`. |
+| `pow:unchallengeable` | No cookie arrived **and** Guardian classified the request as unable to complete a challenge, so none was issued. Recorded with action `refuse`, not `challenge`. Only a token-failure reason is replaced this way: a WAF rule, anomaly, GeoIP or reputation challenge aimed at the same client is also refused but keeps its own reason, so you still see which policy fired. | Expected, and usually benign: an `<img>`, an API client, or the browser's own favicon service. Not a token problem, so do not go looking for one. These are the requests that used to be reported as `pow:no_token`, which was true and misleading at once, since no cookie was ever going to arrive. If recurring volume bothers you rather than the decision and the client is polling a path it cannot authenticate, give that path a [`pow: { enabled: false }` overlay](/reference/configuration#per-path-overrides-domains-host-paths) so the real file is served and cached. |
 | `pow:token_expired` | Real work, but past its `exp` or older than this path's `token_ttl`. | Normal once per `token_ttl`. A tight loop means `token_ttl` is shorter than you meant, a [per-path overlay](/reference/configuration#per-domain-options-defaults-and-domains-host) sets a shorter one than the path that issued the token, or the verifier's clock is ahead. |
 | `pow:token_binding` | Correctly signed and in date, but bound to another host or client. | Tokens bind to host + IP + User-Agent. Expect this from a visitor whose egress IP changes (mobile, CGNAT, a VPN toggling) or across two hostnames of the same site. Persistent and site-wide means the client IP Guardian sees is not stable: check `proxy_set_header X-Guardian-IP` and any proxy in front of Angie. |
 | `pow:token_underdifficulty` | Real token, solved at fewer bits than this path demands. | A per-path `base_difficulty` higher than where the visitor earned their token. Expected on entering a stricter path; they solve once more and continue. |
 | `pow:token_invalid` | Did not parse or verify under any live signing key. | An empty, truncated, or mangled cookie; a token from another deployment; a signing key that rotated out; or an issuer clock ahead of the verifier, leaving `nbf` in the future. If it appears fleet-wide after a restart or rotation, see [Tokens rejected across replicas / after a restart](#tokens-rejected-across-replicas-after-a-restart). |
 
-All five collapse to the single `pow` category in `guardian_decisions_total`,
+All six collapse to the single `pow` category in `guardian_decisions_total`,
 so they cost no extra Prometheus series and existing `pow` alerts keep
-matching.
+matching. `pow:unchallengeable` does carry a distinct `action` label value
+(`refuse`), which is the point: a challenge that was never issued should not be
+counted as one. Alerts that count challenges should exclude
+`action="refuse"`.
 
 ## "Guardian is down but the site still works"
 

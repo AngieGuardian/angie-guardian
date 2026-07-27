@@ -247,7 +247,7 @@ works immediately.
 
 ### `GET /admin/decisions`
 
-The recent deny/challenge feed, newest first, from an in-process ring buffer
+The recent non-allow decision feed, newest first, from an in-process ring buffer
 (per instance, cleared on restart, capacity set by `admin.recent_size`). When
 GeoIP/ASN databases are configured,
 each row may also contain `country`, `city`, `subdivision`,
@@ -260,8 +260,8 @@ Query parameters:
 | Parameter | Default | Description |
 |---|---|---|
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
-| `action` | | Filter: `deny` or `challenge`. |
-| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict. A challenge that was not vouched names its cause: `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty` or `pow:token_invalid` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
+| `action` | | Filter: `deny`, `challenge` or `refuse`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. |
+| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict. Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
 | `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
 | `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing. |
 

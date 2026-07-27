@@ -259,6 +259,14 @@ Which value fires:
   challenge too, counted as
   `guardian_challenges_total{outcome="accept_heuristic_refused"}`.
 
+  Both refusals are recorded as the `refuse` action, never as a challenge, so a
+  client polling a path it can never authenticate cannot read as a challenge
+  storm in `/admin/decisions` or inflate
+  `guardian_decisions_total{action="challenge"}`. A token-failure refusal has
+  reason `pow:unchallengeable`; a WAF, anomaly, GeoIP or reputation refusal
+  keeps the policy reason that selected it. Alerts counting challenges should
+  exclude `action="refuse"`.
+
   This one is a heuristic and is treated as one. RFC 9110 makes `*/*` formally
   accept every media type, HTML included, and the Fetch standard only says
   browsers *should* send the document `Accept` value for a navigation, so the
@@ -272,9 +280,11 @@ Which value fires:
   protects customized `Accept` values. When Fetch metadata is unavailable, which
   means plain HTTP, older clients, or stripped headers, the heuristic can refuse
   an unusual real navigation whose `Accept` lacks `text/html`. That is an
-  explicit compatibility tradeoff. Withhold the header
-  (`proxy_set_header Accept "";` in `location @guardian_challenge`) to opt out
-  per site.
+  explicit compatibility tradeoff. Set
+  `pow: { refuse_unchallengeable: false }` to opt out per site, per path, or
+  fleet-wide. The auth subrequest decides and relays its verdict on to the
+  challenge hop, so the recorded decision and the served response agree even
+  across a reload that flips the key mid-request.
 
   **HTTPS only, except for that one.** Browsers send `Sec-Fetch-*` only to
   potentially-trustworthy origins (HTTPS and localhost). A site served over plain
@@ -673,9 +683,12 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 # {"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
 #                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
 
-# What did the guardian just challenge or deny? Newest first, from an
-# in-process ring buffer (per instance, cleared on restart). Filters:
-# ?limit= (default 50), ?action=deny|challenge, ?reason=<prefix e.g. waf>.
+# Every recent non-allow decision, newest first, from an in-process ring
+# buffer (per instance, cleared on restart). Filters: ?limit= (default 50),
+# ?action=deny|challenge|refuse, ?reason=<prefix e.g. waf>.
+# refuse = Guardian withheld the challenge after classifying the request as
+# unable to complete it. Exclude refuse when looking only for puzzles that were
+# really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
 # A small "right now" rollup: active blocks, recent counts by action and
@@ -759,7 +772,7 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent deny/challenge feed (filterable by action and free text),
+block-an-IP form), the recent non-allow decision feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

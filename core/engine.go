@@ -45,6 +45,7 @@ const (
 	ActionAllow     = stateless.ActionAllow
 	ActionChallenge = stateless.ActionChallenge
 	ActionDeny      = stateless.ActionDeny
+	ActionRefuse    = stateless.ActionRefuse
 )
 
 const (
@@ -338,6 +339,44 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 			d = *sd
 			break
 		}
+	}
+	// A challenge aimed at a client that could never complete one is recorded as
+	// what it actually is. Wire behaviour is unchanged: the transport answers a
+	// refusal exactly as it answers a challenge, so Angie still routes to
+	// @guardian_challenge, which serves the terse 403 it already served. Nothing
+	// is scored either way, because escalation is bumped by the challenge
+	// handler, which refuses before reaching it. What changes is that
+	// /admin/decisions, the decision log and guardian_decisions_total stop
+	// reporting an unsatisfiable refusal as an issued challenge, which is what
+	// made a favicon poll read as a challenge storm. See
+	// RequestContext.Unchallengeable.
+	//
+	// Deliberately after the stage loop rather than inside one stage: anomaly,
+	// pow_challenge, a WAF challenge rule and attack mode can all reach the same
+	// client with the same impossibility, so the conversion belongs at the one
+	// point they all pass through. Events already recorded stand, since they
+	// describe what the request looked like and that is still true.
+	// Gated on the same resolved key the challenge handler reads, which is the
+	// whole reason it is a config key and not a proxy_set_header: both hops
+	// answer from one source for this host and path, so the recorded outcome
+	// and the served response cannot disagree.
+	//
+	// Only a token-failure reason is replaced. ActionRefuse already carries the
+	// "no puzzle was issued" half, so overwriting the reason as well would throw
+	// away which policy asked for the challenge in the first place: a WAF rule,
+	// the anomaly scorer, GeoIP or a reputation feed. That is the signal an
+	// operator actually acts on, and folding it into pow:unchallengeable would
+	// make guardian_decisions_total{reason="waf"} and every reason-based
+	// dashboard undercount. The favicon case reaches here as one of the five
+	// pow: reasons, which is exactly the one worth replacing, since naming a
+	// missing cookie for a client that could never have sent one is what made
+	// this misleading to begin with.
+	if d.Action == ActionChallenge && req.Unchallengeable && dcfg.PoW.RefusesUnchallengeable() {
+		reason := d.Reason
+		if reasonCategory(reason) == "pow" {
+			reason = reasonUnchallengeable
+		}
+		d = Decision{Action: ActionRefuse, Reason: reason}
 	}
 	e.metrics.EvaluateLatency(time.Since(start).Seconds())
 	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), dcfg.label)

@@ -49,6 +49,7 @@ const (
 	hdrCookie     = "X-Guardian-Cookie"
 	hdrProto      = "X-Guardian-Proto"
 	hdrDifficulty = "X-Guardian-Difficulty"
+	hdrRefusal    = "X-Guardian-Refusal"
 )
 
 type Server struct {
@@ -162,6 +163,12 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 			}
 			return r.Header.Values(name)
 		},
+		// Answered here rather than in the engine because it is protocol
+		// knowledge: which Fetch destinations can render a document, and what an
+		// Accept header implies about a request's intent. The engine only needs
+		// the verdict, and turns a challenge it cannot be satisfied by into
+		// core.ActionRefuse.
+		Unchallengeable: refusalKind(r.Header) != "",
 	}
 }
 
@@ -226,6 +233,26 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	case core.ActionChallenge:
 		w.Header().Set(hdrDifficulty, strconv.Itoa(d.Difficulty))
+		// Says "a challenge was recorded, do not refuse this", so a reload
+		// landing between the two subrequests cannot make the next hop refuse
+		// what this one just recorded as a challenge. See relayedRefusal.
+		w.Header().Set(hdrRefusal, refusalNone)
+		s.logDecision(req, d)
+		w.WriteHeader(http.StatusUnauthorized)
+	case core.ActionRefuse:
+		// The same 401 a challenge gets, deliberately. Angie routes on the
+		// status, so the request still reaches @guardian_challenge, which
+		// refuses it with the terse 403 it already served today: no operator
+		// config changes, no new named location, no wire-visible difference.
+		// Only the recorded action and reason differ. No difficulty header,
+		// because no challenge is being issued to carry one.
+		//
+		// The kind is recomputed rather than threaded out of requestContext,
+		// which leaves that signature (and the allocation benchmark measuring
+		// the whole per-request setup through it) alone. refusalKind is two
+		// switches over short tokens and an allocation-free Accept scan, on a
+		// branch that is about to cost a whole second subrequest anyway.
+		w.Header().Set(hdrRefusal, refusalKind(r.Header))
 		s.logDecision(req, d)
 		w.WriteHeader(http.StatusUnauthorized)
 	case core.ActionDeny:
@@ -339,21 +366,39 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// once the two unforgeable signals have come up empty; see
 	// acceptLooksNonNavigational for what that does and does not establish, and
 	// isDocumentDest for the exemption it yields to.
-	dest := r.Header.Get(hdrSecFetchDest)
-	switch {
-	case isSubresourceDest(dest):
-		s.metrics.Challenge("subresource_refused")
+	// Whether to refuse is the auth hop's call, not this one's: it is the hop
+	// that recorded the decision, and re-deciding here is what let the record
+	// and the response disagree. Angie relays its verdict, so this hop obeys
+	// rather than re-derives, and the two cannot drift across a config reload
+	// or a header cleared in one location. See relayedRefusal.
+	//
+	// Deciding locally is the fallback for an Angie config too old to relay
+	// (the auth_request_set line is new), which is exactly the behaviour that
+	// config had before, so upgrading the daemon alone changes nothing. Only
+	// that fallback reads the key here; when a verdict was relayed the auth hop
+	// has already applied it, and applying it twice is what would let a reload
+	// between the hops undo it. See PoWConfig.RefuseUnchallengeable for why the
+	// key replaced a per-location proxy_set_header lever.
+	kind, relayed := relayedRefusal(r.Header)
+	if !relayed && dcfg.PoW.RefusesUnchallengeable() {
+		kind = refusalKind(r.Header)
+	}
+	switch kind {
+	case outcomeSubresourceRefused:
+		s.metrics.Challenge(kind)
+		// "relayed" answers the question an operator has right after adding the
+		// auth_request_set line: did it take effect? false here means this hop
+		// decided for itself, i.e. Angie is not relaying yet.
 		s.log.Debug("challenge refused: request cannot run the interstitial",
-			"host", host, "ip", ip, "uri", uri, "dest", dest)
+			"host", host, "ip", ip, "uri", uri, "relayed", relayed,
+			"dest", r.Header.Get(hdrSecFetchDest))
 		refuseChallenge(w, "proof-of-work challenge requires a same-origin document request")
 		return
 
-	case !isDocumentDest(dest) &&
-		r.Header.Get(hdrSecFetchMode) != modeNavigate &&
-		acceptLooksNonNavigational(r.Header.Values(hdrAccept)):
-		s.metrics.Challenge("accept_heuristic_refused")
+	case outcomeAcceptRefused:
+		s.metrics.Challenge(kind)
 		s.log.Debug("challenge refused: request does not look like a navigation",
-			"host", host, "ip", ip, "uri", uri,
+			"host", host, "ip", ip, "uri", uri, "relayed", relayed,
 			"accept", r.Header.Get(hdrAccept))
 		// Worded as the behavioural requirement, not as a claim about what the
 		// client accepts: this branch fires for Accept: */*, which formally

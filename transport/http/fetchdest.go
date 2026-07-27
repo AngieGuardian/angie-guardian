@@ -4,6 +4,101 @@
 
 package httptransport
 
+import "net/http"
+
+// Metric outcome labels for the two ways a request can be refused a challenge.
+// They double as refusalKind's return values so the label, the log line and the
+// branch that produced them cannot disagree.
+const (
+	outcomeSubresourceRefused = "subresource_refused"
+	outcomeAcceptRefused      = "accept_heuristic_refused"
+)
+
+// refusalNone is what the auth hop relays when it recorded a challenge, as
+// distinct from relaying nothing at all. The difference matters: "nothing" means
+// an Angie config that predates the relay, which has to keep working.
+const refusalNone = "none"
+
+// relayedRefusal reads the verdict the auth hop reached for this same client
+// request, which Angie captures with auth_request_set and replays on the way
+// into @guardian_challenge. It reports the refusal kind ("" when the auth hop
+// recorded an ordinary challenge) and whether a verdict was relayed at all.
+//
+// The two hops are separate HTTP requests, so before this they each decided
+// independently and could disagree in two ways, both of which put the decision
+// log at odds with what the client was actually served:
+//
+//   - A config reload in the gap between them. The auth hop resolves
+//     pow.refuse_unchallengeable from the snapshot live when it runs and the
+//     challenge hop from the snapshot live when IT runs, so toggling the key
+//     mid-flight makes one hop refuse while the other issues. Reproduced in
+//     both directions; see TestRefusalVerdictSurvivesAReloadBetweenTheHops.
+//   - Any difference in the headers reaching the two locations. Refusing is
+//     decided from Sec-Fetch-* and Accept, and only the shipped config
+//     guarantees both hops see the client's own values. Clearing or rewriting
+//     one of them in a single location (an operator's own directive, a
+//     third-party header module) silently drifts the hops apart.
+//
+// Relaying the verdict closes both, because the challenge hop stops deciding.
+// Carrying the KIND rather than a bare "refused" flag is what closes the second
+// one: the hop then needs no header of the client's to act, so it cannot be
+// affected by a header it no longer reads.
+//
+// This follows what X-Guardian-Difficulty already does for the other half of
+// the same decision (see handleChallenge), and inherits the same forgery
+// question. With the shipped config the answer is that the client cannot reach
+// it: proxy_set_header overwrites the header unconditionally, and an empty
+// $guardian_refusal removes it. On a config too old to relay, a forged value is
+// accepted, so weigh what it buys: "none" obtains an ordinary challenge, with
+// ordinary escalation and difficulty, which the same client obtains anyway by
+// sending Accept: text/html, since refusalKind is a statement about the request
+// and not a farming defence. A forged kind refuses the forger. Neither is a
+// gain, which is why the relay is trusted where the difficulty is clamped.
+//
+// An unrecognized value reads as "not relayed" so it fails to the local
+// decision, never to a silent pass.
+func relayedRefusal(h http.Header) (kind string, relayed bool) {
+	switch v := h.Get(hdrRefusal); v {
+	case refusalNone:
+		return "", true
+	case outcomeSubresourceRefused, outcomeAcceptRefused:
+		return v, true
+	}
+	return "", false
+}
+
+// refusalKind reports why this request could never complete a PoW challenge,
+// naming the cause, or "" if it might complete one.
+//
+// The auth path is the caller that matters: the decision it records should say
+// "refused" rather than "challenge" for a request that was never going to solve
+// anything (see core.RequestContext.Unchallengeable), and it relays the answer
+// on to the hop that serves the refusal, which obeys it rather than asking
+// again (see relayedRefusal). handleChallenge still asks directly when no
+// verdict was relayed, which is an Angie config predating the relay.
+//
+// Note what is and is not config-dependent here, since it is what makes the
+// relay small: this function reads headers only. Whether to act on it at all is
+// pow.refuse_unchallengeable, and that gate is the only part a reload can move
+// underneath a request already in flight.
+//
+// Cheap enough for the auth hot path by ordering: a document navigation is
+// rejected by isDocumentDest and a subresource by isSubresourceDest, both plain
+// switches over a short token, so only a request carrying no Fetch metadata at
+// all ever reaches the Accept parse.
+func refusalKind(h http.Header) string {
+	dest := h.Get(hdrSecFetchDest)
+	switch {
+	case isSubresourceDest(dest):
+		return outcomeSubresourceRefused
+	case !isDocumentDest(dest) &&
+		h.Get(hdrSecFetchMode) != modeNavigate &&
+		acceptLooksNonNavigational(h.Values(hdrAccept)):
+		return outcomeAcceptRefused
+	}
+	return ""
+}
+
 // hdrSecFetchDest is the Fetch Metadata request header naming what the client
 // intends to do with the response: "document" for a navigation, "image" for an
 // <img>, "empty" for fetch()/XHR, and so on. Browsers set it themselves on

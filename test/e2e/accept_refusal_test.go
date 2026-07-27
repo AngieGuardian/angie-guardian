@@ -7,6 +7,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -86,5 +87,127 @@ func TestAcceptHeuristicRefusalThroughAngie(t *testing.T) {
 	}
 	if navBody := bodyOf(t, nav); !strings.Contains(navBody, "guardian-data") {
 		t.Fatalf("navigation Accept did not receive the interstitial; body:\n%s", navBody)
+	}
+}
+
+// TestRefusalIsRecordedAsRefused covers the hop the test above cannot: the auth
+// subrequest. The decision that reaches /admin/decisions, the decision log and
+// guardian_decisions_total is made at `location = /__guardian/auth`, a
+// different Angie location with its own proxy_set_header block, so Accept
+// arriving at @guardian_challenge says nothing about whether it arrives at
+// /auth. If it does not, the daemon records "challenge / pow:no_token" for a
+// request it then refuses, every in-process test still passes, and an operator
+// reading the dashboard sees a challenge storm that never happened. That is the
+// exact misreporting this was written to end, so it needs a test that fails
+// through the real glue rather than an assumption about nginx defaults.
+func TestRefusalIsRecordedAsRefused(t *testing.T) {
+	const uri = "/refusal-recorded"
+	before := metric(t, "guardian_decisions_total", `action="refuse"`)
+
+	// The production shape: anonymous, no Fetch metadata, Accept: */*. This is
+	// the browser's favicon service, which fetches on a channel that carries no
+	// cookie and therefore can never present a token.
+	resp := get(t, uri, powHost, browserUA, map[string]string{"Accept": "*/*"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d, want 403; body:\n%s", resp.StatusCode, bodyOf(t, resp))
+	}
+
+	var dl struct {
+		Decisions []struct {
+			URI    string `json:"uri"`
+			Action string `json:"action"`
+			Reason string `json:"reason"`
+		} `json:"decisions"`
+	}
+	dr := adminReq(t, http.MethodGet, "/admin/decisions?limit=50", nil)
+	if err := json.NewDecoder(dr.Body).Decode(&dl); err != nil {
+		t.Fatalf("decode /admin/decisions: %v", err)
+	}
+
+	// Every decision recorded for this path must be the refusal. Asserting over
+	// all of them, rather than looking for one refuse row, is what catches the
+	// regression: a stray "challenge / pow:no_token" beside it means the auth
+	// hop never saw Accept and the record is lying again.
+	var seen int
+	for _, d := range dl.Decisions {
+		if !strings.Contains(d.URI, uri) {
+			continue
+		}
+		seen++
+		if d.Action != "refuse" || d.Reason != "pow:unchallengeable" {
+			t.Errorf("decision for %s = %s/%s, want refuse/pow:unchallengeable",
+				d.URI, d.Action, d.Reason)
+		}
+	}
+	if seen == 0 {
+		t.Fatalf("no decision recorded for %s in %+v", uri, dl.Decisions)
+	}
+
+	if got := metric(t, "guardian_decisions_total", `action="refuse"`); got < before+1 {
+		t.Errorf("decisions action=refuse: %v → %v, want +1", before, got)
+	}
+}
+
+// TestRefusalRollbackIsConsistentAcrossBothHops covers the documented opt-out,
+// which is the case where the two Angie hops can disagree and the only reason
+// the switch is a config key rather than the per-location
+// `proxy_set_header Accept "";` it replaces. That lever lived only in
+// `location @guardian_challenge`, so with it applied the auth subrequest still
+// classified the client's real headers and recorded a refusal while this hop,
+// seeing the cleared header, issued a real puzzle: the log claimed a challenge
+// was withheld from a client that had just been handed one.
+//
+// `/rollback-refusal` carries `pow: { refuse_unchallengeable: false }`, so the
+// identical request must get the interstitial here and be recorded as a
+// challenge, while the rest of the host still refuses. Asserting both halves is
+// the point: either alone passes just as well if the key is ignored.
+func TestRefusalRollbackIsConsistentAcrossBothHops(t *testing.T) {
+	const uri = "/rollback-refusal"
+	anon := map[string]string{"Accept": "*/*"}
+
+	// The wire: a challenge is really served, not a 403.
+	resp := get(t, uri, powHost, browserUA, anon)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rolled-back path: status %d, want 200 interstitial; body:\n%s",
+			resp.StatusCode, bodyOf(t, resp))
+	}
+	if body := bodyOf(t, resp); !strings.Contains(body, "guardian-data") {
+		t.Fatalf("rolled-back path did not receive the interstitial; body:\n%s", body)
+	}
+
+	// The record agrees with the wire. This is the assertion that would have
+	// failed before the key existed.
+	var dl struct {
+		Decisions []struct {
+			URI    string `json:"uri"`
+			Action string `json:"action"`
+			Reason string `json:"reason"`
+		} `json:"decisions"`
+	}
+	dr := adminReq(t, http.MethodGet, "/admin/decisions?limit=50", nil)
+	if err := json.NewDecoder(dr.Body).Decode(&dl); err != nil {
+		t.Fatalf("decode /admin/decisions: %v", err)
+	}
+	var seen int
+	for _, d := range dl.Decisions {
+		if !strings.Contains(d.URI, uri) {
+			continue
+		}
+		seen++
+		if d.Action != "challenge" {
+			t.Errorf("decision for %s = %s/%s, want challenge: the opt-out must roll "+
+				"back the record as well as the response", d.URI, d.Action, d.Reason)
+		}
+	}
+	if seen == 0 {
+		t.Fatalf("no decision recorded for %s in %+v", uri, dl.Decisions)
+	}
+
+	// The rest of the host is unaffected, so this is an opt-out and not an
+	// accidental global disable.
+	other := get(t, "/still-refused", powHost, browserUA, anon)
+	if other.StatusCode != http.StatusForbidden {
+		t.Errorf("unscoped path: status %d, want 403; the overlay must not leak",
+			other.StatusCode)
 	}
 }

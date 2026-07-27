@@ -18,7 +18,20 @@ series.
 
 Label values are bounded by construction:
 
-- `action` is `allow`, `challenge` or `deny`.
+- `action` is `allow`, `challenge`, `refuse` or `deny`. `refuse` means Guardian
+  withheld a challenge after classifying the request as unable to complete it
+  (typically an anonymous favicon fetch, an `<img>`, or an API client), so it is
+  neither a block nor a puzzle anyone was asked to solve. Those requests used to
+  count as `challenge` with reason `pow:no_token`, which made an unsatisfiable
+  refusal read as a challenge storm; alerts that count challenges should
+  exclude it.
+
+  The `reason` still names the policy that asked for the challenge. Only a
+  token-failure reason is replaced (by `pow:unchallengeable`), so a WAF rule,
+  the anomaly scorer, GeoIP or a reputation feed that selects a request
+  classified as unable to solve a puzzle is recorded as `refuse` while keeping
+  `waf`, `anomaly`, `geo` or `reputation`. Reason-based dashboards therefore
+  keep counting it.
 - `reason` is the decision reason collapsed to its leading category
   (`waf:dotfile-probe` counts as `waf`), one of: `default`, `allowlist`,
   `denylist`, `verified_bot`, `bot_spoof`, `geo`, `reputation`,
@@ -111,7 +124,7 @@ Stateless behavior adds three outcomes on `guardian_challenges_total`:
 ## Useful queries
 
 ```
-# Deny/challenge rate by category, per domain:
+# Non-allow decision rate by category, per domain (denies, challenges, refusals):
 sum by (reason, domain) (rate(guardian_decisions_total{action!="allow"}[5m]))
 
 # Auth hot-path latency, p99:

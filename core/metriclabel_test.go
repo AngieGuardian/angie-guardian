@@ -42,6 +42,9 @@ func TestReasonCategoryBounded(t *testing.T) {
 		reasonTokenExpired,
 		reasonTokenBinding,
 		reasonTokenUnderDiff,
+		// Emitted with ActionRefuse in place of any of the five above when the
+		// client could never have completed the challenge.
+		reasonUnchallengeable,
 	}
 	for _, r := range cases {
 		cat := reasonCategory(r)

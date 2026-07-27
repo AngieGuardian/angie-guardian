@@ -46,8 +46,11 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # is 1000 and the hard maximum is 10000; complete=false means more exist.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
-# What did the guardian just challenge or deny? Newest first, from an
-# in-process ring buffer (per instance, cleared on restart).
+# Every recent non-allow decision, newest first, from an in-process ring
+# buffer (per instance, cleared on restart). ?action= takes deny, challenge or
+# refuse; refuse means Guardian withheld the challenge after classifying the
+# request as unable to complete it. Exclude refuse to see only puzzles that were
+# really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
 # Compact full-ring feed for live charting (still bounded by admin.recent_size).
@@ -190,7 +193,7 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent deny/challenge feed (filterable by action and free text),
+block-an-IP form), the recent non-allow decision feed (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and
@@ -289,7 +292,7 @@ The page renders graphs with a local copy of Chart.js (no CDN). The charts are
 drawn entirely from data the dashboard already fetches, at no cost to the hot
 path:
 
-- **Activity**: decisions over time (deny vs challenge) and by reason category,
+- **Activity**: decisions over time (deny, challenge and refuse) and by reason category,
   bucketed from the recent-decisions ring with shared fixed-axis
   **5m / 15m / 30m / 1h / all** controls, plus the proof-of-work funnel (issued,
   solved, failed). Coverage labels distinguish a complete selected interval,

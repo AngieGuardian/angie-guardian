@@ -972,6 +972,28 @@ type PoWConfig struct {
 	// attack. Default 60/min preserves the historical behaviour.
 	IssuanceRateLimit Rate `yaml:"issuance_rate_limit"`
 	NoScriptFallback  bool `yaml:"noscript_fallback"`
+	// RefuseUnchallengeable withholds a challenge from a client that provably
+	// could not complete one (a declared subresource, or a request carrying no
+	// Fetch metadata whose Accept names no HTML), answering a terse 403 instead
+	// of an interstitial it would only drop. Default true; set false to restore
+	// the older challenge-everything path.
+	//
+	// This is a config key rather than the `proxy_set_header Accept "";` lever
+	// it replaces because the decision is now taken twice per request, at the
+	// auth subrequest (which records the outcome) and at the challenge handler
+	// (which serves it). A header cleared in one Angie location and not the
+	// other made those two disagree: the decision log said a challenge was
+	// withheld while the client was handed one. Both hops resolve this same
+	// key for the same host and path, so they cannot drift, and unlike a
+	// proxy_set_header it is hot-reloadable and does not hide the header from
+	// WAF header:<name> rules. Scoped per domain and per path like the rest of
+	// PoW.
+	RefuseUnchallengeable *bool `yaml:"refuse_unchallengeable"`
+}
+
+// RefusesUnchallengeable resolves the *bool default (true).
+func (p *PoWConfig) RefusesUnchallengeable() bool {
+	return p.RefuseUnchallengeable == nil || *p.RefuseUnchallengeable
 }
 
 // maxPoWTTL caps token_ttl and challenge_ttl so a mistyped unit (e.g. a value
