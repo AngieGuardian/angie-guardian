@@ -65,6 +65,69 @@ type backend struct {
 
 func sleepAdvance(d time.Duration) { time.Sleep(d) }
 
+// assertDeadlineExpiry proves IncrByDeadline rules (3) and (4) on one key: an
+// absent key is created at delta and expires AT the deadline, and adding to it
+// while it is live keeps that expiry instead of adopting the later deadline the
+// second call carries. Together they are what stops a per-window flush that
+// arrives late from keeping the previous window's counter alive into the next
+// one.
+//
+// Both writes have to land while the window is open for any of that to be
+// observable, so the window is timed rather than assumed. An fsync-per-write
+// backend on a loaded CI runner can spend longer on a write than a sub-second
+// window allows, and a store that was never given a live key has not failed to
+// keep one alive: a blown window widens it and retries on a fresh key. Only a
+// store that misses four increasingly generous windows fails here.
+func assertDeadlineExpiry(t *testing.T, s Store, advance func(time.Duration), shortTTL, margin time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	window := shortTTL
+	for attempt := 0; ; attempt++ {
+		key := fmt.Sprintf("dl%d", attempt)
+		deadline := time.Now().Add(window).UnixNano()
+
+		// (3) Absent key -> created at delta, applied=true.
+		fresh, freshApplied, err := s.IncrByDeadline(ctx, key, 3, deadline)
+		if err != nil {
+			t.Fatalf("fresh IncrByDeadline: %v", err)
+		}
+		if time.Now().UnixNano() >= deadline {
+			// The deadline passed before the write landed, so the store was
+			// right to skip it (rule 2). Nothing is proven either way.
+			if attempt == 3 {
+				t.Fatalf("IncrByDeadline never landed inside a %v window", window)
+			}
+			window *= 4
+			continue
+		}
+		if fresh != 3 || !freshApplied {
+			t.Fatalf("fresh IncrByDeadline = %d applied=%v, want 3 true", fresh, freshApplied)
+		}
+
+		// (4) Existing live key -> delta added, applied=true, expiry kept.
+		live, liveApplied, err := s.IncrByDeadline(ctx, key, 2, time.Now().Add(time.Hour).UnixNano())
+		if err != nil {
+			t.Fatalf("live IncrByDeadline: %v", err)
+		}
+		if time.Now().UnixNano() >= deadline {
+			if attempt == 3 {
+				t.Fatalf("two IncrByDeadline writes never landed inside a %v window", window)
+			}
+			window *= 4
+			continue
+		}
+		if live != 5 || !liveApplied {
+			t.Fatalf("live IncrByDeadline = %d applied=%v, want 5 true", live, liveApplied)
+		}
+
+		advance(window + margin)
+		if _, ok, _ := s.Get(ctx, key); ok {
+			t.Fatal("IncrByDeadline key outlived its deadline: the second call's later deadline was adopted")
+		}
+		return
+	}
+}
+
 func backends(t *testing.T) map[string]backend {
 	t.Helper()
 	bunt, err := NewBuntDB(filepath.Join(t.TempDir(), "test.db"), BuntDBOptions{Sync: true})
@@ -191,22 +254,11 @@ func assertStoreConformance(t *testing.T, s Store, advance func(time.Duration), 
 			}
 
 			// IncrByDeadline: the four atomic properties that keep a delayed
-			// per-window flush from polluting the next window.
+			// per-window flush from polluting the next window. (3) creation at
+			// the deadline and (4) an expiry kept across a later one are timed,
+			// so they live in their own helper.
 			nowNanos := func() int64 { return time.Now().UnixNano() }
-			// (3) Absent key -> created at delta, applied=true, expiring AT the
-			// deadline: after the window elapses it is gone.
-			dl := nowNanos() + shortTTL.Nanoseconds()
-			if n, applied, err := s.IncrByDeadline(ctx, "dl", 3, dl); err != nil || n != 3 || !applied {
-				t.Fatalf("fresh IncrByDeadline = %d applied=%v err=%v, want 3 true nil", n, applied, err)
-			}
-			// (4) Existing live key -> delta added, applied=true, expiry kept.
-			if n, applied, _ := s.IncrByDeadline(ctx, "dl", 2, nowNanos()+time.Hour.Nanoseconds()); n != 5 || !applied {
-				t.Fatalf("live IncrByDeadline = %d applied=%v, want 5 true", n, applied)
-			}
-			advance(shortTTL + margin)
-			if _, ok, _ := s.Get(ctx, "dl"); ok {
-				t.Fatal("IncrByDeadline fresh key did not expire at its deadline")
-			}
+			assertDeadlineExpiry(t, s, advance, shortTTL, margin)
 			// (2) Deadline already in the past -> no write, applied=false, and
 			// the value reflects the (absent) key as 0.
 			past := nowNanos() - time.Minute.Nanoseconds()
