@@ -281,24 +281,14 @@ defaults:
     mode: always              # always: challenge every unvouched request
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
-    # Default true. A request that cannot run the interstitial gets a terse 403
-    # instead of a challenge it would only drop: a declared subresource
-    # (Sec-Fetch-Dest image, style, script, ...) and, when no Fetch metadata
-    # arrives at all, a request whose Accept is present and names neither
-    # text/html nor text/*. These are recorded as action "refuse" (reason
-    # pow:unchallengeable when a missing token was the only thing wrong) and are
-    # never scored, so a browser fetching /favicon.ico anonymously cannot walk
-    # its own visitor toward a challenge_farm block.
-    #
-    # Set false to challenge those requests anyway. Worth it only if the Accept
-    # half costs you: it is a heuristic, and the only one of the two that also
-    # applies over plain HTTP, where no Sec-Fetch-* arrives to protect an
-    # unusual client whose Accept omits HTML on a real navigation. Scoped
-    # fleet-wide, per domain, or per path.
-    #
-    # Use this key rather than clearing Accept or Sec-Fetch-Dest in a single
-    # Angie location: the auth and challenge hops would then record and serve
-    # different outcomes. Hot-reloadable; sidecar only (inert in the WASM guest).
+    # Default true: a request that cannot run the interstitial gets a terse 403
+    # instead of a challenge it would only drop, recorded as action "refuse"
+    # and never scored, so an anonymous /favicon.ico poll cannot walk a real
+    # visitor into a challenge_farm block. Covers declared subresources and,
+    # when no Fetch metadata arrives, an Accept naming neither text/html nor
+    # text/*. Set false to challenge them anyway: that Accept test is a
+    # heuristic, and over plain HTTP it can refuse an unusual real navigation.
+    # Scoped per domain and per path; sidecar only (inert in the WASM guest).
     refuse_unchallengeable: true
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
