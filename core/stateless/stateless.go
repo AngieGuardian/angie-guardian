@@ -41,12 +41,14 @@ type RequestContext struct {
 	// targets simply never match. Read it via HeaderValues.
 	Header func(name string) []string
 
-	// Unchallengeable reports that this request provably cannot complete a PoW
-	// challenge, so issuing one would only be recorded as an abandoned
-	// challenge. The transport sets it, because deciding this is protocol
-	// knowledge (Fetch metadata and Accept semantics for HTTP) that the core
-	// deliberately does not carry; false means "not known to be", which is the
-	// safe default every other transport gets for free.
+	// Unchallengeable reports that this request is classified as unable to
+	// complete a PoW challenge, so issuing one would only be recorded as an
+	// abandoned challenge. Strength varies by cause: a declared subresource
+	// provably cannot run the interstitial, while a request judged by its Accept
+	// header is a behavioural heuristic. The transport sets it, because this is
+	// protocol knowledge (Fetch metadata and Accept semantics for HTTP) that
+	// the core deliberately does not carry; false means "not known to be",
+	// which is the safe default every other transport gets for free.
 	//
 	// It exists because the alternative is worse than a flag. The browser's
 	// favicon service fetches an icon on an anonymous channel: no cookie
@@ -110,8 +112,8 @@ const (
 	ActionAllow     Action = "allow"
 	ActionChallenge Action = "challenge"
 	ActionDeny      Action = "deny"
-	// ActionRefuse is a challenge withheld from a client that could never have
-	// completed it (RequestContext.Unchallengeable). It is deliberately not
+	// ActionRefuse is a challenge withheld from a request classified as unable
+	// to complete it (RequestContext.Unchallengeable). It is deliberately not
 	// ActionDeny: the client is not blocked, nothing is scored against it, and
 	// the transport answers exactly as it would have for ActionChallenge, so
 	// the wire behaviour and the Angie routing are unchanged. Only the recorded

@@ -67,11 +67,14 @@ func relayedRefusal(h http.Header) (kind string, relayed bool) {
 	return "", false
 }
 
-// refusalKind reports why this request could never complete a PoW challenge,
-// naming the cause, or "" if it might complete one.
+// refusalKind reports why this request is not expected to complete a PoW
+// challenge, naming the cause, or "" if it might complete one. The two causes
+// differ in strength, and the names carry it: a declared subresource provably
+// cannot run the interstitial, while the Accept branch is a behavioural
+// heuristic (see accept.go).
 //
 // The auth path is the caller that matters: the decision it records should say
-// "refused" rather than "challenge" for a request that was never going to solve
+// "refused" rather than "challenge" for a request that was not going to solve
 // anything (see core.RequestContext.Unchallengeable), and it relays the answer
 // on to the hop that serves the refusal, which obeys it rather than asking
 // again (see relayedRefusal). handleChallenge still asks directly when no

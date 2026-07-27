@@ -972,22 +972,26 @@ type PoWConfig struct {
 	// attack. Default 60/min preserves the historical behaviour.
 	IssuanceRateLimit Rate `yaml:"issuance_rate_limit"`
 	NoScriptFallback  bool `yaml:"noscript_fallback"`
-	// RefuseUnchallengeable withholds a challenge from a client that provably
-	// could not complete one (a declared subresource, or a request carrying no
-	// Fetch metadata whose Accept names no HTML), answering a terse 403 instead
-	// of an interstitial it would only drop. Default true; set false to restore
-	// the older challenge-everything path.
+	// RefuseUnchallengeable withholds a challenge from a request classified as
+	// unable to complete one (a declared subresource, which provably cannot run
+	// the interstitial, or a request carrying no Fetch metadata whose Accept
+	// names no HTML, which is a behavioural heuristic), answering a terse 403
+	// instead of an interstitial it would only drop. Default true; set false to
+	// restore the older challenge-everything path.
 	//
 	// This is a config key rather than the `proxy_set_header Accept "";` lever
 	// it replaces because the decision is now taken twice per request, at the
 	// auth subrequest (which records the outcome) and at the challenge handler
 	// (which serves it). A header cleared in one Angie location and not the
 	// other made those two disagree: the decision log said a challenge was
-	// withheld while the client was handed one. Both hops resolve this same
-	// key for the same host and path, so they cannot drift, and unlike a
-	// proxy_set_header it is hot-reloadable and does not hide the header from
-	// WAF header:<name> rules. Scoped per domain and per path like the rest of
-	// PoW.
+	// withheld while the client was handed one. Both hops resolve this same key
+	// for the same host and path, and the auth hop relays the verdict it reached
+	// (X-Guardian-Refusal) so the challenge hop obeys rather than deciding
+	// again: reading one key is not enough on its own, since the two hops read
+	// it at different moments and a reload landing in that gap would still drift
+	// them apart. Unlike a proxy_set_header it is also hot-reloadable and does
+	// not hide the header from WAF header:<name> rules. Scoped per domain and
+	// per path like the rest of PoW.
 	RefuseUnchallengeable *bool `yaml:"refuse_unchallengeable"`
 }
 

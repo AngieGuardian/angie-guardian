@@ -340,10 +340,11 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 			break
 		}
 	}
-	// A challenge aimed at a client that could never complete one is recorded as
-	// what it actually is. Wire behaviour is unchanged: the transport answers a
-	// refusal exactly as it answers a challenge, so Angie still routes to
-	// @guardian_challenge, which serves the terse 403 it already served. Nothing
+	// A challenge aimed at a client classified as unable to complete one is
+	// recorded as what it actually is. Wire behaviour is unchanged: the
+	// transport answers a refusal exactly as it answers a challenge, so Angie
+	// still routes to @guardian_challenge, which serves the terse 403 it
+	// already served. Nothing
 	// is scored either way, because escalation is bumped by the challenge
 	// handler, which refuses before reaching it. What changes is that
 	// /admin/decisions, the decision log and guardian_decisions_total stop
