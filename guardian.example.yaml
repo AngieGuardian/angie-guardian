@@ -348,11 +348,26 @@ defaults:
     # (example in deploy/angie-guardian.conf) so it never reaches Guardian, or
     # allowlist "/.well-known/acme-challenge/" only on the domains whose
     # certificates you renew that way. To merely skip the PoW interstitial for
-    # public assets like /robots.txt, use a per-path overlay instead
-    # (example.com below): the rest of the pipeline still runs there.
+    # public assets like /robots.txt, use the fleet-wide paths: overlay below:
+    # the rest of the pipeline still runs there.
     paths: []
   denylist:
     ips: []
+  # Fleet-wide per-path overlays: same syntax as domains.<host>.paths, but
+  # inherited by every host, known or not, and merged over each domain's own
+  # settings (a domain's own paths: entry for the same key wins, which is also
+  # how one host opts back out). Nothing here is terminal: only the layers an
+  # entry names are changed, so blocks, GeoIP, reputation and the WAF still
+  # cover these paths.
+  #
+  # /robots.txt is the case worth shipping: a crawler cannot solve the
+  # interstitial, so leaving PoW on means well-behaved bots never read your
+  # Disallow rules (including the ones pointing away from honeypot traps),
+  # and cached HTML gets served where a text file was expected. Same story
+  # for /favicon.ico, which browsers fetch outside the page context.
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
   # Verified crawler allowlisting (verified_bots) is deliberately NOT set in
   # defaults: a confirmed crawler identity is a terminal allow that skips
   # GeoIP, reputation, behaviour blocks, signatures and PoW alike, and a
@@ -424,19 +439,21 @@ domains:
     # Per-path overlays: scope any setting to a URI prefix within this host.
     # Keys are exact paths, or prefixes when they end with "/"; the most
     # specific key wins, matched against the percent-decoded path. Each entry
-    # only overrides the fields it mentions (defaults, then domain, then
-    # path). CAUTION when an overlay weakens policy: matching percent-decodes
+    # only overrides the fields it mentions (defaults, then domain, then the
+    # defaults.paths entry for that key, then this one). CAUTION when an
+    # overlay weakens policy: matching percent-decodes
     # but deliberately does NOT resolve ../ segments, collapse repeated
     # slashes or fold case, while many backends canonicalize before routing,
     # so a crafted path could select the weaker overlay yet route elsewhere.
     # Keep the starter path-traversal rule on (it denies dot segments), make
     # Angie reject ambiguous paths, or prefer a separate host (like
     # api.example.com below) as the safer security boundary.
+    # The fleet-wide entries from defaults.paths (/robots.txt, /favicon.ico)
+    # already apply to this host and do not need repeating; naming one of
+    # those keys here would override it for example.com alone. This block
+    # holds only what is specific to this host, and can be dropped entirely
+    # when there is nothing:
     paths:
-      # Public assets skip only the interstitial here; unlike a stage-0
-      # allowlist entry, blocks, GeoIP and the WAF still apply.
-      "/robots.txt": { pow: { enabled: false } }
-      "/favicon.ico": { pow: { enabled: false } }
       # The machine-facing API could skip the interstitial while the WAF
       # stays on (challenge-action rules degrade to deny, see the API host
       # below), and the login area can demand harder work. Overlays inherit

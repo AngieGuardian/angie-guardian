@@ -1093,6 +1093,11 @@ func (s *AdminServer) handleAnomaly(w http.ResponseWriter, _ *http.Request) {
 	}
 	cfg := s.engine.Config()
 	scopes := []scopeView{makeScope("defaults", "", "", cfg.Defaults.WAF.Anomaly)}
+	// Defaults can carry path overlays too, and like the defaults themselves
+	// they apply to arbitrary unknown hosts, so their coverage is "dynamic".
+	for _, override := range cfg.Defaults.PathOverrideViews() {
+		scopes = append(scopes, makeScope("path", "", override.Path, override.Config.WAF.Anomaly))
+	}
 	hosts := make([]string, 0, len(cfg.DomainViews()))
 	for host := range cfg.DomainViews() {
 		hosts = append(hosts, host)

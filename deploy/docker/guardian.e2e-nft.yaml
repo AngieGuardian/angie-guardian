@@ -76,8 +76,9 @@ defaults:
     uas: []
     paths:
       # robots.txt stays a terminal allowlist entry here (unlike the
-      # production example, which uses a per-path pow overlay): the compose
-      # healthcheck and several tests fetch it before any challenge flow.
+      # production example, which exempts it with a defaults.paths pow
+      # overlay): the compose healthcheck and several tests fetch it before
+      # any challenge flow, and the block tests expect it to stay reachable.
       - /robots.txt
       - /favicon.ico
       - /.well-known/acme-challenge/

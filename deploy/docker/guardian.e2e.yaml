@@ -95,13 +95,21 @@ defaults:
     uas: []
     paths:
       # robots.txt stays a terminal allowlist entry here (unlike the
-      # production example, which uses a per-path pow overlay): the compose
-      # healthcheck and several tests fetch it before any challenge flow.
+      # production example, which exempts it with a defaults.paths pow
+      # overlay): the compose healthcheck and several tests fetch it before
+      # any challenge flow, and the block tests expect it to stay reachable.
       - /robots.txt
       - /favicon.ico
       - /.well-known/acme-challenge/
   denylist:
     ips: []
+  # Fleet-wide per-path overlay: inherited by every host below and by unknown
+  # hosts, merged over each host's own settings. Unlike the allowlist entries
+  # above it is not terminal: only PoW is off here, the WAF still inspects the
+  # request. TestDefaultsPathOverlay asserts both halves.
+  paths:
+    "/public-feed.xml":
+      pow: { enabled: false }
   # verified_bots is granted per domain (below) like production, never in
   # defaults: a confirmed crawler identity is a terminal allow.
 
