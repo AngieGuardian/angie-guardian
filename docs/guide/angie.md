@@ -56,8 +56,8 @@ upstream my_application {
 }
 
 # each protected server {} block:
-include /etc/angie/angie-guardian.conf;
-include /etc/angie/angie-guardian-location.conf;
+include angie-guardian.conf;
+include angie-guardian-location.conf;
 
 location / {
     proxy_pass http://my_application;
@@ -68,6 +68,14 @@ location / {
 the sidecar is down) and the challenge/pass/denied routes. The companion
 [`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf)
 contains only directives valid in `server` or `location` context.
+
+An `include` path is relative to Angie's **prefix**, not to the file holding
+the `include`. On the official packages and container images that prefix is
+`/etc/angie` (`angie -V` prints `--prefix=/etc/angie`), which is where the
+[getting started guide](/guide/getting-started#_3-install-and-wire-the-angie-configuration)
+installs both snippets. Running under a different prefix, such as a source
+build (`/usr/local/angie/` by default) or a `-p` override, write the paths out
+in full instead.
 
 ## Static files and a PHP front controller
 
@@ -82,8 +90,8 @@ server {
     server_name static.example.com;
     root /var/www/static.example.com;
 
-    include /etc/angie/angie-guardian.conf;
-    include /etc/angie/angie-guardian-location.conf;
+    include angie-guardian.conf;
+    include angie-guardian-location.conf;
 
     location / {
         try_files $uri $uri/ =404;
@@ -111,8 +119,8 @@ server {
     root /var/www/example/public;
 
     # Reused unchanged in every protected vhost.
-    include /etc/angie/angie-guardian.conf;
-    include /etc/angie/angie-guardian-location.conf;
+    include angie-guardian.conf;
+    include angie-guardian-location.conf;
 
     location / {
         # Existing site behavior stays exactly as it was.
@@ -146,8 +154,8 @@ inheritance is the default:
 
 ```nginx
 server {
-    include /etc/angie/angie-guardian.conf;
-    include /etc/angie/angie-guardian-location.conf;
+    include angie-guardian.conf;
+    include angie-guardian-location.conf;
 
     location ^~ /.well-known/acme-challenge/ {
         auth_request off;                 # deliberate public exception

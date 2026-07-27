@@ -245,9 +245,12 @@ content location in that vhost inherits Guardian. Leave all existing static,
 FastCGI, or reverse-proxy locations unchanged:
 
 ```nginx
-include /etc/angie/angie-guardian.conf;
-include /etc/angie/angie-guardian-location.conf;
+include angie-guardian.conf;
+include angie-guardian-location.conf;
 ```
+
+Both names resolve against Angie's prefix, `/etc/angie` on the official
+packages and images: see [Wire it into Angie](/guide/angie).
 
 The [full Angie guide](/guide/angie) explains real client-IP restoration,
 fail-open versus fail-closed operation, request and connection limits, logging,

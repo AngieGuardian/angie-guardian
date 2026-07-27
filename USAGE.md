@@ -530,8 +530,8 @@ upstream guardian {
 }
 
 # each protected server {} block:
-include /etc/angie/angie-guardian.conf;
-include /etc/angie/angie-guardian-location.conf;
+include angie-guardian.conf;
+include angie-guardian-location.conf;
 
 location / {
     proxy_pass http://my_application;     # or keep try_files/static/FastCGI

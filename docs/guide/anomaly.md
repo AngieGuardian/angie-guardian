@@ -54,7 +54,7 @@ the file once, then point each protected vhost's `access_log` at the format.
 
 ```nginx
 # http {} context, once. Declares the guardian_json log_format:
-include /etc/angie/angie-json-log.conf;   # from deploy/angie-json-log.conf
+include angie-json-log.conf;   # from deploy/angie-json-log.conf
 
 # each protected server {} block: write that format to its own file.
 # The second argument is the log_format name, not a path.

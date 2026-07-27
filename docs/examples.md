@@ -277,9 +277,9 @@ server {
     limit_conn_status 429;
 
     # Reusable Guardian endpoints; this file contains no site backend.
-    include /etc/angie/angie-guardian.conf;
+    include angie-guardian.conf;
     # Handler-neutral protection inherited by every content location.
-    include /etc/angie/angie-guardian-location.conf;
+    include angie-guardian-location.conf;
 
     location / {
         proxy_pass http://my_application;
@@ -290,6 +290,9 @@ server {
 
 }
 ```
+
+The `include` names resolve against Angie's prefix, `/etc/angie` on the
+official packages and images: see [Wire it into Angie](/guide/angie).
 
 ## Multi-instance replicas (Redis/Valkey)
 
