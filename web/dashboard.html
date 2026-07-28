@@ -69,10 +69,6 @@
   #gate h1 { justify-content: center; }
   h2 { font-size: 0.85rem; font-weight: 600; color: var(--ink-2);
        text-transform: uppercase; letter-spacing: 0.04em; margin: 1.75rem 0 0.5rem; }
-  h2.section-tools { display: flex; align-items: center; justify-content: space-between;
-                     gap: 0.5rem; flex-wrap: wrap; }
-  h2.section-tools .chart-window-tools { text-transform: none; letter-spacing: normal;
-                                         font-weight: 400; }
   .meta { color: var(--muted); font-size: 0.8rem; }
   /* Docs pointers: a small circled "i" beside a section heading linking to the
      matching page on angieguardian.org. Muted, so it reads as a footnote on the
@@ -127,11 +123,34 @@
                                border: 1px solid var(--border); border-radius: 6px;
                                padding: 0.12rem 0.35rem; cursor: pointer; }
   .chart-card .canvas-wrap { position: relative; height: 220px; margin-top: 0.5rem; }
+  /* A row-per-item chart grows with its data, so past a screenful it scrolls in
+     place rather than stretching the section. The plot scrolls whole, value
+     axis included. Taller than the tables get: rows are the point here, so show
+     as many as fit, while staying inside the viewport on a laptop so the card
+     never becomes the whole screen. */
+  .canvas-scroll { max-height: min(60rem, 75vh); overflow-y: auto; margin-top: 0.5rem; }
+  .canvas-scroll .canvas-wrap { margin-top: 0; }
   .chart-card canvas { max-width: 100%; }
   /* Horizontal bar charts (per-zone, per-peer, per-cache) need room per row. */
   .chart-card .canvas-wrap.tall { height: 320px; }
   /* A charts row holding one full-width card. */
   .charts.wide { grid-template-columns: 1fr; }
+  /* A charts row of equally weighted cards, rather than a lead card plus a
+     narrower companion. */
+  .charts.even { grid-template-columns: 1fr 1fr; }
+  /* Cards hide themselves when they have no data, so a row whose cards are all
+     hidden must not leave its own gap behind. */
+  .charts:not(:has(> .chart-card:not([hidden]))) { display: none; }
+
+  /* Chart groups. The window selector only applies to the charts drawn from the
+     decision ring, so each group states what its cards are drawn from and the
+     selector sits with the group it governs. */
+  .chart-group + .chart-group { margin-top: 1.25rem; }
+  .chart-group-head { display: flex; align-items: baseline; justify-content: space-between;
+                      gap: 0.5rem; flex-wrap: wrap;
+                      border-top: 1px solid var(--border); padding-top: 0.7rem; }
+  .chart-group-head .title { font-size: 0.78rem; font-weight: 600; color: var(--ink-2);
+                             text-transform: uppercase; letter-spacing: 0.04em; }
 
   /* World map: full-width card sitting above the offender tables. */
   #geomap-card { grid-template-columns: 1fr; margin-bottom: 0.75rem; }
@@ -353,59 +372,82 @@
     </table>
   </div>
 
-  <h2 class="section-tools">
-    <span>Activity <span class="meta">(recent ring, non-allow decisions)</span><a class="help"
+  <h2>Activity<a class="help"
       href="https://angieguardian.org/guide/admin#graphs"
       target="_blank" rel="noopener noreferrer"
       title="Docs: what the graphs are drawn from"
-      aria-label="Documentation: dashboard graphs">i</a></span>
-    <span class="chart-window-tools">
-      <label class="meta" for="chart-window">Window</label>
-      <select id="chart-window" aria-label="Decision chart time window">
-        <option value="5m">5m</option>
-        <option value="15m">15m</option>
-        <option value="30m">30m</option>
-        <option value="1h">1h</option>
-        <option value="all" selected>all</option>
-      </select>
-    </span>
-  </h2>
-  <div class="charts">
-    <div class="chart-card">
-      <div class="label"><span>Decisions over time</span>
-        <span class="meta" id="chart-decisions-window"></span></div>
-      <div class="canvas-wrap"><canvas id="chart-decisions"></canvas></div>
+      aria-label="Documentation: dashboard graphs">i</a></h2>
+
+  <!-- Group 1: drawn from the recent-decisions ring, which holds a timestamp per
+       record, so these are the charts the window selector can scope. -->
+  <div class="chart-group">
+    <div class="chart-group-head">
+      <span class="title">Over time <span class="meta">recent ring, non-allow decisions</span></span>
+      <span class="chart-window-tools">
+        <label class="meta" for="chart-window">Window</label>
+        <select id="chart-window" aria-label="Decision chart time window">
+          <option value="5m">5m</option>
+          <option value="15m">15m</option>
+          <option value="30m">30m</option>
+          <option value="1h">1h</option>
+          <option value="all" selected>all</option>
+        </select>
+      </span>
     </div>
-    <div class="chart-card">
-      <div class="label"><span>Proof-of-work funnel</span>
-        <span class="meta">since start</span></div>
-      <div class="canvas-wrap"><canvas id="chart-funnel"></canvas></div>
+    <div class="charts wide">
+      <div class="chart-card">
+        <div class="label"><span>Decisions over time</span>
+          <span class="meta" id="chart-decisions-window"></span></div>
+        <div class="canvas-wrap"><canvas id="chart-decisions"></canvas></div>
+      </div>
     </div>
-  </div>
-  <div class="charts" style="grid-template-columns:1fr;">
-    <div class="chart-card">
-      <div class="label"><span>Decisions by reason over time</span>
-        <span class="meta" id="chart-reasons-window"></span></div>
-      <div class="canvas-wrap"><canvas id="chart-reasons"></canvas></div>
-    </div>
-  </div>
-  <div class="charts" id="dist-charts" hidden>
-    <div class="chart-card">
-      <div class="label"><span>Per-domain traffic</span>
-        <span class="meta">by action, since start</span></div>
-      <div class="canvas-wrap"><canvas id="chart-domains"></canvas></div>
-    </div>
-    <div class="chart-card">
-      <div class="label"><span>Solve-time distribution</span>
-        <span class="meta" id="chart-solvetime-n"></span></div>
-      <div class="canvas-wrap"><canvas id="chart-solvetime"></canvas></div>
+    <div class="charts wide">
+      <div class="chart-card">
+        <div class="label"><span>Decisions by reason over time</span>
+          <span class="meta" id="chart-reasons-window"></span></div>
+        <div class="canvas-wrap"><canvas id="chart-reasons"></canvas></div>
+      </div>
     </div>
   </div>
-  <div class="charts" id="anomaly-charts" hidden style="grid-template-columns:1fr;">
-    <div class="chart-card">
-      <div class="label"><span>Anomaly-score distribution</span>
-        <span class="meta" id="chart-anomaly-n"></span></div>
-      <div class="canvas-wrap"><canvas id="chart-anomaly"></canvas></div>
+
+  <!-- Group 2: counters and histograms, which carry totals but no timestamps.
+       Nothing here can be sliced by the selector above, so they sit apart under
+       a heading that says what period they actually cover. Cards hide
+       individually: the grid closes up around whichever ones have no data. -->
+  <div class="chart-group">
+    <div class="chart-group-head">
+      <span class="title">Totals</span>
+      <span class="meta">counted since daemon start</span>
+    </div>
+    <div class="charts even">
+      <div class="chart-card">
+        <div class="label"><span>Proof-of-work funnel</span>
+          <span class="meta">issued, solved, failed</span></div>
+        <div class="canvas-wrap"><canvas id="chart-funnel"></canvas></div>
+      </div>
+      <div class="chart-card" id="card-solvetime" hidden>
+        <div class="label"><span>Solve-time distribution</span>
+          <span class="meta" id="chart-solvetime-n"></span></div>
+        <div class="canvas-wrap"><canvas id="chart-solvetime"></canvas></div>
+      </div>
+    </div>
+    <!-- Per-domain gets its own full-width row: a deployment can carry many
+         domains, and one bar per domain needs the horizontal room. -->
+    <div class="charts wide">
+      <div class="chart-card" id="card-domains" hidden>
+        <div class="label"><span>Per-domain traffic</span>
+          <span class="meta" id="chart-domains-n">by action</span></div>
+        <div class="canvas-scroll">
+          <div class="canvas-wrap"><canvas id="chart-domains"></canvas></div>
+        </div>
+      </div>
+    </div>
+    <div class="charts wide">
+      <div class="chart-card" id="card-anomaly" hidden>
+        <div class="label"><span>Anomaly-score distribution</span>
+          <span class="meta" id="chart-anomaly-n"></span></div>
+        <div class="canvas-wrap"><canvas id="chart-anomaly"></canvas></div>
+      </div>
     </div>
   </div>
 
@@ -582,7 +624,9 @@
         target="_blank" rel="noopener noreferrer"
         title="Docs: per-domain options reference"
         aria-label="Documentation: per-domain configuration">i</a></h2>
-      <div class="tablewrap">
+      <!-- One row per configured domain, so a large fleet would otherwise push
+           everything below it off the page: scroll in place, header pinned. -->
+      <div class="tablewrap scrolly">
         <table>
           <thead><tr><th>Domain</th><th>PoW</th><th>Mode</th><th>Signatures</th><th>Anomaly</th>
                      <th>Behaviour</th><th>Geo</th><th>Feeds</th></tr></thead>
@@ -1053,11 +1097,19 @@
     const width = span / n;
     const counts = {}; series.forEach((s) => (counts[s] = new Array(n).fill(0)));
     const labels = new Array(n);
-    const fmt = span > 6 * 3600e3
+    // Label granularity. Dropping the clock is only honest once a single bucket
+    // covers a day or more, since otherwise several buckets in a row carry the
+    // same date and the axis stops distinguishing them. Adding the date is only
+    // worth the width once the span exceeds a day, where the clock alone starts
+    // repeating. Everything shorter reads fine as plain clock time, down to
+    // seconds when a bucket is under a minute.
+    const fmt = width >= 86400e3
       ? (t) => new Date(t).toLocaleDateString()
-      : span <= 30 * 60e3
-        ? (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-        : (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      : span > 86400e3
+        ? (t) => new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        : width < 60e3
+          ? (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+          : (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     for (let i = 0; i < n; i++) labels[i] = fmt(lo + (i + 0.5) * width);
     records.forEach((d) => {
       const t = new Date(d.time).getTime();
@@ -1083,6 +1135,20 @@
     // "none" skips the transition on refresh. Animation is already off, so
     // this only avoids re-running layout work every tick.
     chart.update("none");
+  };
+
+  // Chart.js anchors a tooltip to the average position of the elements it is
+  // describing. On a row of stacked segments spanning the card that average
+  // lands wherever the segment widths happen to put it, so the box appears far
+  // from the pointer and slides sideways as the pointer moves straight down.
+  // This positioner keeps it at the cursor, where the reader is looking.
+  const CURSOR_TOOLTIP = "cursor";
+  const useCursorTooltip = () => {
+    const tip = window.Chart && Chart.Tooltip;
+    if (tip && !tip.positioners[CURSOR_TOOLTIP]) {
+      tip.positioners[CURSOR_TOOLTIP] = (_elements, event) => ({ x: event.x, y: event.y });
+    }
+    return CURSOR_TOOLTIP;
   };
 
   const baseOptions = (c, stacked) => ({
@@ -1234,6 +1300,9 @@
       data: { labels: ["issued", "solved", "failed"], datasets: [{
         data: [Math.round(ch.issued || 0), Math.round(ch.solved || 0), Math.round(ch.failed || 0)],
         backgroundColor: [c.muted, c.good, c.critical], borderWidth: 0,
+        // A handful of categories across a wide card would otherwise draw bars
+        // as broad as they are tall.
+        maxBarThickness: 72,
       }] },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
@@ -1256,7 +1325,10 @@
 
   // Draw a Prometheus-style histogram (per-bucket counts) as a bar chart. Skips
   // trailing empty buckets so an all-fast solve distribution isn't mostly blank.
-  const histogramChart = (canvasId, hist, barColor) => {
+  // xTitle names what the bucket bounds are measured in: the bounds themselves
+  // are bare numbers, so without it a reader cannot tell seconds from anything
+  // else. yTitle names what is being counted.
+  const histogramChart = (canvasId, hist, barColor, xTitle, yTitle) => {
     const buckets = (hist && hist.buckets) || [];
     // Trim trailing zero buckets (keep at least one) for a tighter x-axis.
     let end = buckets.length;
@@ -1266,13 +1338,16 @@
       type: "bar",
       data: {
         labels: shown.map((b) => "≤" + b.le),
-        datasets: [{ data: shown.map((b) => b.count), backgroundColor: barColor, borderWidth: 0 }],
+        datasets: [{ data: shown.map((b) => b.count), backgroundColor: barColor,
+                     borderWidth: 0, maxBarThickness: 72 }],
       },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
         scales: {
-          x: { grid: { display: false }, ticks: { color: c.muted, maxRotation: 0, autoSkip: true } },
-          y: { beginAtZero: true, grid: { color: c.grid }, ticks: { color: c.muted, precision: 0 } },
+          x: { grid: { display: false }, ticks: { color: c.muted, maxRotation: 0, autoSkip: true },
+               title: { display: !!xTitle, text: xTitle || "", color: c.muted } },
+          y: { beginAtZero: true, grid: { color: c.grid }, ticks: { color: c.muted, precision: 0 },
+               title: { display: !!yTitle, text: yTitle || "", color: c.muted } },
         },
         plugins: { legend: { display: false } },
       },
@@ -1283,14 +1358,33 @@
     if (!window.Chart || !lastDist) return;
     const cols = themeColors();
 
-    // Per-domain traffic: stacked bars, one bar per domain, segments by action.
+    // Per-domain traffic: stacked bars, one row per domain, segments by action.
+    // Horizontal, because a deployment can serve dozens of domains and domain
+    // names are long: as vertical bars they rotate and collide well before the
+    // count gets interesting, while as rows they stay readable and the card just
+    // grows, scrolling in place past a screenful. Every domain gets a row,
+    // busiest first: an operator looking for their own domain has to be able to
+    // find it, so nothing here is capped away.
     const perDomain = lastDist.per_domain || {};
-    const domains = Object.keys(perDomain).sort();
     const actions = ["allow", "challenge", "refuse", "deny", "shed"];
     const actionColor = { allow: cols.good, challenge: cols.warning, refuse: cols.muted, deny: cols.critical, shed: cols.muted };
+    const domains = Object.keys(perDomain)
+      .map((d) => ({ name: d, total: actions.reduce((n, a) => n + (perDomain[d][a] || 0), 0) }))
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+      .map((d) => d.name);
+    // Each card hides on its own data now that they no longer share a row, so
+    // a deployment with traffic but no solved challenges keeps its domain bars.
     const hasDomains = domains.length > 0;
-    $("dist-charts").hidden = !hasDomains;
+    $("card-domains").hidden = !hasDomains;
     if (hasDomains) {
+      $("chart-domains-n").textContent = "by action, " + domains.length + " domain" +
+        (domains.length === 1 ? "" : "s");
+      // One row per domain, so the card is sized by its contents. Rows tighten
+      // on a large fleet: the canvas is a real pixel buffer, and hundreds of
+      // roomy rows is a lot of memory for a page that refreshes every 5s.
+      const rowPx = domains.length > 60 ? 20 : 28;
+      $("chart-domains").parentElement.style.height =
+        Math.max(160, domains.length * rowPx + 96) + "px";
       upsertChart("chart-domains", (c) => ({
         type: "bar",
         data: {
@@ -1299,19 +1393,47 @@
             label: a, stack: "s", borderWidth: 0,
             backgroundColor: actionColor[a],
             data: domains.map((d) => perDomain[d][a] || 0),
+            // Two domains should not draw two rows as thick as the card; past a
+            // handful the row height is already the binding constraint.
+            maxBarThickness: 34,
           })),
         },
-        options: baseOptions(c, true),
+        options: {
+          indexAxis: "y",
+          responsive: true, maintainAspectRatio: false, animation: false,
+          // axis: "y" to match indexAxis. Chart.js otherwise resolves the
+          // hovered index along x, so sliding the pointer sideways within one
+          // row reports the neighbouring rows instead of the row it is on.
+          interaction: { intersect: false, mode: "index", axis: "y" },
+          scales: {
+            x: { stacked: true, beginAtZero: true, grid: { color: c.grid },
+                 ticks: { color: c.muted, precision: 0 } },
+            // Every domain gets a tick: Chart.js would otherwise thin them out
+            // on a long axis, leaving unlabelled rows.
+            y: { stacked: true, grid: { display: false },
+                 ticks: { color: c.muted, autoSkip: false } },
+          },
+          plugins: {
+            legend: { labels: { color: c.ink, boxWidth: 12 } },
+            tooltip: { position: useCursorTooltip() },
+          },
+        },
       }));
-      const st = lastDist.solve_time || {};
-      $("chart-solvetime-n").textContent = st.count ? Math.round(st.count) + " solves" : "no solves yet";
-      histogramChart("chart-solvetime", st, cols.warning);
+    }
+
+    // Solve times, shown once a challenge has actually been solved.
+    const st = lastDist.solve_time || {};
+    const hasSolves = (st.count || 0) > 0;
+    $("card-solvetime").hidden = !hasSolves;
+    if (hasSolves) {
+      $("chart-solvetime-n").textContent = Math.round(st.count) + " solves";
+      histogramChart("chart-solvetime", st, cols.warning, "solve time (seconds)", "solves");
     }
 
     // Anomaly-score distribution, shown only when the model has scored anything.
     const an = lastDist.anomaly || {};
     const hasAnomaly = (an.count || 0) > 0;
-    $("anomaly-charts").hidden = !hasAnomaly;
+    $("card-anomaly").hidden = !hasAnomaly;
     if (hasAnomaly) {
       const levels = { exact: 0, route: 0, method: 0, domain: 0 };
       for (const counts of Object.values(lastDist.anomaly_selection || {})) {
@@ -1322,7 +1444,7 @@
       $("chart-anomaly-n").textContent = Math.round(an.count) + " scored · " +
         Object.entries(levels).map(([level, count]) => level + " " + Math.round(count)).join(" · ") +
         (misses ? " · misses " + Math.round(misses) : "");
-      histogramChart("chart-anomaly", an, cols.critical);
+      histogramChart("chart-anomaly", an, cols.critical, "anomaly score", "requests");
     }
   };
 
@@ -1926,13 +2048,19 @@
         options: {
           indexAxis: "y",
           responsive: true, maintainAspectRatio: false, animation: false,
-          interaction: { intersect: false, mode: "index" },
+          // axis: "y" to match indexAxis. Chart.js otherwise resolves the
+          // hovered index along x, so sliding the pointer sideways within one
+          // row reports the neighbouring rows instead of the row it is on.
+          interaction: { intersect: false, mode: "index", axis: "y" },
           scales: {
             x: { stacked: true, beginAtZero: true, grid: { color: cc.grid },
                  ticks: { color: cc.muted, precision: 0 } },
             y: { stacked: true, grid: { display: false }, ticks: { color: cc.muted } },
           },
-          plugins: { legend: { labels: { color: cc.ink, boxWidth: 12 } } },
+          plugins: {
+            legend: { labels: { color: cc.ink, boxWidth: 12 } },
+            tooltip: { position: useCursorTooltip() },
+          },
         },
       }));
     }
@@ -1991,14 +2119,20 @@
         options: {
           indexAxis: "y",
           responsive: true, maintainAspectRatio: false, animation: false,
-          interaction: { intersect: false, mode: "index" },
+          // axis: "y" to match indexAxis. Chart.js otherwise resolves the
+          // hovered index along x, so sliding the pointer sideways within one
+          // row reports the neighbouring rows instead of the row it is on.
+          interaction: { intersect: false, mode: "index", axis: "y" },
           scales: {
             x: { beginAtZero: true, grid: { color: cc.grid },
                  title: { display: true, text: "milliseconds", color: cc.muted },
                  ticks: { color: cc.muted } },
             y: { grid: { display: false }, ticks: { color: cc.muted } },
           },
-          plugins: { legend: { labels: { color: cc.ink, boxWidth: 12 } } },
+          plugins: {
+            legend: { labels: { color: cc.ink, boxWidth: 12 } },
+            tooltip: { position: useCursorTooltip() },
+          },
         },
       }));
     }
@@ -2049,7 +2183,10 @@
         options: {
           indexAxis: "y",
           responsive: true, maintainAspectRatio: false, animation: false,
-          interaction: { intersect: false, mode: "index" },
+          // axis: "y" to match indexAxis. Chart.js otherwise resolves the
+          // hovered index along x, so sliding the pointer sideways within one
+          // row reports the neighbouring rows instead of the row it is on.
+          interaction: { intersect: false, mode: "index", axis: "y" },
           scales: {
             x: { stacked: true, beginAtZero: true, max: 100, grid: { color: cc.grid },
                  ticks: { color: cc.muted, callback: (v) => v + "%" } },
@@ -2057,7 +2194,8 @@
           },
           plugins: {
             legend: { labels: { color: cc.ink, boxWidth: 12 } },
-            tooltip: { callbacks: { label: (i) => i.dataset.label + ": " + i.parsed.x.toFixed(1) + "%" } },
+            tooltip: { position: useCursorTooltip(),
+                       callbacks: { label: (i) => i.dataset.label + ": " + i.parsed.x.toFixed(1) + "%" } },
           },
         },
       }));

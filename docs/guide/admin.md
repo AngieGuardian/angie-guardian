@@ -292,15 +292,21 @@ The page renders graphs with a local copy of Chart.js (no CDN). The charts are
 drawn entirely from data the dashboard already fetches, at no cost to the hot
 path:
 
-- **Activity**: decisions over time (deny, challenge and refuse) and by reason category,
-  bucketed from the recent-decisions ring with shared fixed-axis
-  **5m / 15m / 30m / 1h / all** controls, plus the proof-of-work funnel (issued,
-  solved, failed). Coverage labels distinguish a complete selected interval,
-  history overwritten by a full ring, and time before this daemon started.
-- **Distributions**: per-domain traffic volume, the solve-time histogram and
-  the anomaly-score histogram, read from Prometheus histograms via
+- **Activity / over time**: decisions over time (deny, challenge and refuse) and by
+  reason category, bucketed from the recent-decisions ring with shared fixed-axis
+  **5m / 15m / 30m / 1h / all** controls. Coverage labels distinguish a complete
+  selected interval, history overwritten by a full ring, and time before this
+  daemon started.
+- **Activity / totals**: the proof-of-work funnel (issued, solved, failed),
+  per-domain traffic volume, the solve-time histogram and the anomaly-score
+  histogram, read from counters and Prometheus histograms via
+  [`GET /admin/stats`](/reference/admin-api#get-admin-stats) and
   [`GET /admin/distributions`](/reference/admin-api#get-admin-distributions).
-  The histogram cards hide themselves until there is data.
+  These are lifetime totals, so the window controls above do not apply to them;
+  the group is headed `counted since daemon start` for that reason. Cards hide
+  themselves until there is data. Per-domain traffic draws one row per domain,
+  busiest first and never truncated, scrolling in place once the list outgrows
+  the card.
 - **Anomaly coverage**: loaded training times and artifact domain counts,
   configured scope coverage, route/method segment counts, selected fallback
   levels, and any missing
