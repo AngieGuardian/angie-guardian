@@ -403,10 +403,41 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	if s := authStatus(blockedIP); s != http.StatusForbidden {
 		t.Fatalf("pre-outage block gone after recovery: /auth = %d, want 403", s)
 	}
+	// The store process restarted moments ago, so the client's connection pool
+	// can still hold connections to the one that died. core/store/redis.go caps
+	// MaxRetries at 1 on purpose, so a stalled store cannot eat the 2s auth
+	// budget, which means a write that draws a dead connection twice fails
+	// rather than being retried into submission. /readyz turning OK proves one
+	// probe op round-tripped, not that every pooled connection has been reaped.
+	//
+	// So the assertion is "writes come back promptly after recovery", not "the
+	// very first write after /readyz is OK". Same transient class, and the same
+	// bounded-retry shape, as statefulJourney above. This flaked exactly once in
+	// CI (pipeline 11431, July 29 2026) and passed on a retry of the same SHA.
 	const recoveredIP = "203.0.113.77"
-	if r := chaosAdminReq(http.MethodPut, "/admin/blocks/"+recoveredIP,
-		`{"reason":"chaos-e2e-recovery","ttl":"30m"}`); r.StatusCode != http.StatusOK {
-		t.Fatalf("place post-recovery block: status %d", r.StatusCode)
+	const blockAttempts = 3
+	placed, lastStatus := false, 0
+	for i := 1; i <= blockAttempts && !placed; i++ {
+		r := chaosAdminReq(http.MethodPut, "/admin/blocks/"+recoveredIP,
+			`{"reason":"chaos-e2e-recovery","ttl":"30m"}`)
+		if r.StatusCode == http.StatusOK {
+			placed = true
+			if i > 1 {
+				t.Logf("post-recovery block landed on attempt %d/%d", i, blockAttempts)
+			}
+			break
+		}
+		lastStatus = r.StatusCode
+		t.Logf("place post-recovery block: attempt %d/%d = %d (transient store error); retrying",
+			i, blockAttempts, lastStatus)
+		time.Sleep(2 * time.Second)
+	}
+	if !placed {
+		// Carry guardiand's own account of the failure: without it, a CI flake
+		// leaves only a bare status code to reason from, which is exactly the
+		// position the July 2026 failure left us in.
+		t.Fatalf("place post-recovery block: still %d after %d attempts\nguardiand logs (tail):\n%s",
+			lastStatus, blockAttempts, logTail(guardiandLogs(t), 40))
 	}
 	if s := authStatus(recoveredIP); s != http.StatusForbidden {
 		t.Fatalf("post-recovery block not enforced: /auth = %d, want 403", s)
@@ -425,4 +456,14 @@ func parseChallengeJSON(t *testing.T, raw string) (id, challenge string, difficu
 		t.Fatalf("decode challenge json: %v", err)
 	}
 	return cd.ChallengeID, cd.Challenge, cd.Difficulty
+}
+
+// logTail returns the last n lines of a container log, so a chaos failure can
+// carry guardiand's own view of it without dumping the whole run into CI output.
+func logTail(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
