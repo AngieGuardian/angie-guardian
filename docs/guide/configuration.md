@@ -403,7 +403,14 @@ Recommendations:
   mostly punish real visitors on slow devices.
 - Watch `guardian_challenge_solve_seconds` in Prometheus (or the average on
   the dashboard) after changing values: it is the real-world solve time of
-  *your* visitors' devices.
+  *your* visitors' devices. The metric now carries a `domain` label, which the
+  dashboard's "Solve time by domain" card reads, so a difficulty that only hurts
+  one site stands out. Its neighbour, "Solve time by client", answers the same
+  question per class of device from a sample of the recent decisions feed rather
+  than from the metric, since a User-Agent taxonomy is a guess and has no
+  business being a Prometheus label. For a single slow visitor,
+  `GET /admin/decisions?action=solve` names the host, path, IP and User-Agent
+  behind each solve.
 
 ::: tip PoW is not a flood defense
 PoW only taxes clients that solve the puzzle. A client that farms challenges

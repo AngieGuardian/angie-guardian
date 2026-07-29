@@ -6,11 +6,14 @@ package core
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/melroy89/angie-guardian/core/metrics"
 )
 
 func TestRecentRing(t *testing.T) {
@@ -101,6 +104,9 @@ func BenchmarkRecentRingSnapshot(b *testing.B) {
 					Method: "GET", URI: "/wp-login.php?source=distributed-scan",
 					UA:     "Mozilla/5.0 (compatible; GuardianBenchmarkBot/1.0)",
 					Action: "deny", Reason: "denylist:ip",
+					// Solve rows are the widest entry the ring holds, so the
+					// snapshot cost is measured against a fully populated one.
+					SolveMS: 1900, RoundTripMS: 2400, Bits: 20,
 				})
 			}
 			b.ReportAllocs()
@@ -144,6 +150,140 @@ func TestRecentRingCapsEveryClientField(t *testing.T) {
 		}
 		if !strings.HasSuffix(f.value, "…") {
 			t.Errorf("%s is not marked as truncated: %q", f.name, f.value)
+		}
+	}
+}
+
+// A redeemed challenge lands in the same ring as the decisions, carrying what
+// the client paid and what it was asked for. Same-path attribution is the whole
+// point: without it a slow solve is only a number in a process-wide histogram.
+func TestRecordSolve(t *testing.T) {
+	e := &Engine{recent: newRecentRing(8)}
+	e.RecordSolve(SolveRecord{
+		Host: "shop.test", IP: "198.51.100.7", URI: "/checkout",
+		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400, Bits: 20,
+	})
+	got := e.recent.list(0)
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(got))
+	}
+	d := got[0]
+	if d.Action != ActionSolve || d.Reason != ReasonSolved {
+		t.Errorf("action/reason = %s/%s, want %s/%s", d.Action, d.Reason, ActionSolve, ReasonSolved)
+	}
+	if d.SolveMS != 1900 || d.RoundTripMS != 2400 || d.Bits != 20 {
+		t.Errorf("solve = %dms / round trip %dms / %d bits, want 1900/2400/20",
+			d.SolveMS, d.RoundTripMS, d.Bits)
+	}
+	if d.Host != "shop.test" || d.IP != "198.51.100.7" || d.URI != "/checkout" {
+		t.Errorf("attribution = %s %s %s, want shop.test 198.51.100.7 /checkout", d.Host, d.IP, d.URI)
+	}
+	// The redemption is a POST to the pass endpoint; naming that as the request
+	// method would describe the wrong hop.
+	if d.Method != "" {
+		t.Errorf("method = %q, want empty on a solve row", d.Method)
+	}
+	if d.Time.IsZero() {
+		t.Error("solve row has no timestamp")
+	}
+}
+
+// A no-JS redemption waited out the meta refresh instead of hashing, so it has
+// no solve time to report and must not be recorded as an instant solve.
+func TestRecordSolveNoJS(t *testing.T) {
+	e := &Engine{recent: newRecentRing(8)}
+	e.RecordSolve(SolveRecord{Host: "shop.test", IP: "198.51.100.7", RoundTripMS: 5000, Bits: 18, NoJS: true})
+	d := e.recent.list(1)[0]
+	if d.Reason != ReasonNoJS {
+		t.Errorf("reason = %s, want %s", d.Reason, ReasonNoJS)
+	}
+	if d.SolveMS != 0 {
+		t.Errorf("solve_ms = %d, want 0 (nothing was hashed)", d.SolveMS)
+	}
+	if d.RoundTripMS != 5000 {
+		t.Errorf("round_trip_ms = %d, want 5000", d.RoundTripMS)
+	}
+}
+
+// Durations and difficulty cross a package boundary as int64/int. Saturating
+// keeps an absurd value obviously absurd; wrapping would turn it into a small
+// or negative number that reads as a real, fast solve.
+func TestSolveFieldsSaturate(t *testing.T) {
+	if got := clampMS(math.MaxInt64); got != math.MaxInt32 {
+		t.Errorf("clampMS(maxint64) = %d, want %d", got, math.MaxInt32)
+	}
+	if got := clampMS(-5); got != 0 {
+		t.Errorf("clampMS(-5) = %d, want 0", got)
+	}
+	if got := clampBits(9000); got != math.MaxUint8 {
+		t.Errorf("clampBits(9000) = %d, want %d", got, math.MaxUint8)
+	}
+	if got := clampBits(-1); got != 0 {
+		t.Errorf("clampBits(-1) = %d, want 0", got)
+	}
+}
+
+// Solve rows carry the same attacker-supplied strings as decision rows, so they
+// go through the same caps: RecordSolve must not be a way around them.
+func TestRecordSolveCapsClientFields(t *testing.T) {
+	e := &Engine{recent: newRecentRing(4)}
+	e.RecordSolve(SolveRecord{
+		Host: strings.Repeat("h", 4096),
+		URI:  strings.Repeat("u", 16384),
+		UA:   strings.Repeat("a", 16384),
+	})
+	d := e.recent.list(1)[0]
+	for _, f := range []struct {
+		name  string
+		value string
+		cap   int
+	}{
+		{"Host", d.Host, maxRecentHostLen},
+		{"URI", d.URI, maxRecentURILen},
+		{"UA", d.UA, maxRecentUALen},
+	} {
+		if want := f.cap + len("…"); len(f.value) != want {
+			t.Errorf("%s length = %d, want %d", f.name, len(f.value), want)
+		}
+	}
+}
+
+// A redemption is not a pipeline decision and must never be counted as one.
+// RecordSolve deliberately bypasses Evaluate, and this pins the consequence:
+// guardian_decisions_total stays untouched. If a future tidy-up routes solves
+// through Evaluate, every reason rate and per-domain decision total silently
+// inflates by the solve volume, which on a healthy proof-of-work site is a
+// large share of traffic, and the original challenge row has already counted
+// that same client journey once.
+func TestRecordSolveIsNotADecision(t *testing.T) {
+	m := metrics.New("memory")
+	e := &Engine{recent: newRecentRing(64), metrics: m}
+	for range 25 {
+		e.RecordSolve(SolveRecord{
+			Host: "shop.test", IP: "198.51.100.7", URI: "/", UA: "Mozilla/5.0",
+			SolveMS: 900, RoundTripMS: 1200, Bits: 18,
+		})
+	}
+	if got := len(e.recent.list(0)); got != 25 {
+		t.Fatalf("recorded %d rows, want 25", got)
+	}
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_decisions_total":
+			t.Errorf("a solve was counted as a decision: %v", mf.GetMetric())
+		case "guardian_evaluate_seconds":
+			// Evaluate's own latency histogram: a solve never ran the pipeline,
+			// so timing it here would report work that did not happen.
+			for _, series := range mf.GetMetric() {
+				if n := series.GetHistogram().GetSampleCount(); n > 0 {
+					t.Errorf("a solve was timed as an evaluation: %d samples", n)
+				}
+			}
 		}
 	}
 }

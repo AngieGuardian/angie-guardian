@@ -77,3 +77,13 @@ domains:
   # gives the per-domain chart its green band.
   plain.test:
     pow: { enabled: false }
+  # The three hosts the seeder sends traffic to. They would work undeclared
+  # (defaults apply to every host), but then every metric would label them
+  # "default" and the per-domain charts would collapse to a single row.
+  example.com: {}
+  blog.example.com: {}
+  # Deliberately the expensive one, at +2 bits (each quarter step on the config
+  # scale is one bit, so 4.5 is four times the work of the 4 above). It is what
+  # the "solve time by domain" card exists to make obvious.
+  shop.example.com:
+    pow: { base_difficulty: 4.5 }

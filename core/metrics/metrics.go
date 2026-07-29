@@ -24,9 +24,9 @@ type Metrics struct {
 	// label value per target rather than multiplying series.
 	backend string
 
-	decisions           *prometheus.CounterVec // by action, reason_category, domain
-	challenge           *prometheus.CounterVec // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|subresource_refused|accept_heuristic_refused|frame_unscored|solved|failed|spent_cas_failed
-	solveTime           prometheus.Histogram   // client-reported solve time, seconds
+	decisions           *prometheus.CounterVec   // by action, reason_category, domain
+	challenge           *prometheus.CounterVec   // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|subresource_refused|accept_heuristic_refused|frame_unscored|solved|failed|spent_cas_failed
+	solveTime           *prometheus.HistogramVec // client-reported solve time in seconds, by domain
 	anomalyScore        *prometheus.HistogramVec
 	anomalyBaselineMiss *prometheus.CounterVec
 	anomalySelection    *prometheus.CounterVec
@@ -80,11 +80,11 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "challenges_total",
 			Help: "Proof-of-work challenge lifecycle events.",
 		}, []string{"outcome"}),
-		solveTime: f.NewHistogram(prometheus.HistogramOpts{
+		solveTime: f.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "guardian", Name: "challenge_solve_seconds",
-			Help:    "Client-reported proof-of-work solve time.",
+			Help:    "Client-reported proof-of-work solve time, by domain.",
 			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
-		}),
+		}, []string{"domain"}),
 		anomalyScore: f.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "guardian", Name: "anomaly_score",
 			Help:    "Distribution of anomaly scores by domain.",
@@ -212,11 +212,15 @@ func (m *Metrics) Challenge(outcome string) {
 	m.challenge.WithLabelValues(outcome).Inc()
 }
 
-func (m *Metrics) SolveTime(seconds float64) {
+// SolveTime records a client-reported solve time. domain must be the bounded
+// config label (core.Config.DomainLabel), never a raw Host header: this is the
+// same label decisions_total and anomaly_score already carry, so it adds series
+// per configured domain and no more.
+func (m *Metrics) SolveTime(domain string, seconds float64) {
 	if m == nil || seconds <= 0 {
 		return
 	}
-	m.solveTime.Observe(seconds)
+	m.solveTime.WithLabelValues(domain).Observe(seconds)
 }
 
 func (m *Metrics) AnomalyScore(domain string, score float64) {

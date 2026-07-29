@@ -399,6 +399,49 @@ func (e *Engine) RecentDecisions(limit int) []RecentDecision {
 	return e.recent.list(limit)
 }
 
+// SolveRecord is one redeemed proof-of-work challenge, reported by the
+// transport once Redeem has succeeded. SolveMS is the client's own
+// (unauthenticated) hashing time, 0 when it was not reported or was rejected as
+// impossible; RoundTripMS is this process measuring issue to redeem.
+type SolveRecord struct {
+	Host        string
+	IP          string
+	URI         string
+	UA          string
+	SolveMS     int64
+	RoundTripMS int64
+	Bits        int
+	NoJS        bool
+}
+
+// RecordSolve puts a redeemed challenge into the same recent ring the dashboard
+// reads, so the cost of a proof of work is attributable to the host, path, IP
+// and User-Agent that paid it.
+//
+// Deliberately not routed through Evaluate: the pipeline never saw this
+// request. Evaluate takes a config snapshot, runs every stage, records evaluate
+// latency and increments guardian_decisions_total, and a redemption is none of
+// those things; counting it as a decision would double-count the client journey
+// the original challenge row already recorded. This is one ring append with no
+// store write, exactly like the decision path's own.
+//
+// Method is left empty: the redemption itself is a POST to the pass endpoint,
+// which is not what an operator is looking at, and the original request's
+// method was never recorded at issue time. URI is the page the client was
+// trying to reach.
+func (e *Engine) RecordSolve(rec SolveRecord) {
+	reason := ReasonSolved
+	if rec.NoJS {
+		reason = ReasonNoJS
+	}
+	e.recent.add(RecentDecision{
+		Time: time.Now(), Host: rec.Host, IP: rec.IP, URI: rec.URI, UA: rec.UA,
+		Action: ActionSolve, Reason: reason,
+		SolveMS: clampMS(rec.SolveMS), RoundTripMS: clampMS(rec.RoundTripMS),
+		Bits: clampBits(rec.Bits),
+	})
+}
+
 // RecentDecisionSnapshot returns recent decisions and their retention state
 // from one locked point-in-time view. Admin responses use it so entries and
 // coverage metadata cannot disagree during concurrent evaluation.

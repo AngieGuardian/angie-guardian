@@ -146,8 +146,12 @@ func TestAdminStatsChallenges(t *testing.T) {
 	m.Challenge("issued")
 	m.Challenge("solved")
 	m.Challenge("failed")
-	m.SolveTime(1.0)
-	m.SolveTime(3.0)
+	// Two domains on purpose: solve time is a labelled histogram, so the mean
+	// has to be computed over the whole family. Averaging inside the per-series
+	// loop would report whichever domain the registry yielded last (1 or 3
+	// here) and nothing else would fail.
+	m.SolveTime("shop.test", 1.0)
+	m.SolveTime("api.test", 3.0)
 
 	ts := httptest.NewServer(NewAdminServer(engine, cfg, m, adminToken, "", "", nil, slog.Default()))
 	t.Cleanup(ts.Close)
@@ -161,7 +165,8 @@ func TestAdminStatsChallenges(t *testing.T) {
 		t.Errorf("challenges = %v, want issued 2 / solved 1 / failed 1", ch)
 	}
 	if avg, _ := ch["avg_solve_seconds"].(float64); avg != 2.0 {
-		t.Errorf("avg_solve_seconds = %v, want 2", ch["avg_solve_seconds"])
+		t.Errorf("avg_solve_seconds = %v, want 2 (the mean across both domains)",
+			ch["avg_solve_seconds"])
 	}
 }
 

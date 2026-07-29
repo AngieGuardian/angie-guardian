@@ -52,11 +52,31 @@ func TestOffendersTopK(t *testing.T) {
 	engine.Evaluate(ctx, &core.RequestContext{
 		Host: "site.test", Method: "GET", URI: "/ok", RemoteAddr: "198.51.100.1", UserAgent: "curl/8",
 	})
+	// Neither must a solve, however many an address racks up: this list is read
+	// to decide who to block, and the clients that paid their proof of work are
+	// the last ones that belong on it. Loud enough here to top every rollup if
+	// it were counted.
+	for range 20 {
+		engine.RecordSolve(core.SolveRecord{
+			Host: "site.test", IP: "198.51.100.2", URI: "/checkout",
+			UA: "Mozilla/5.0", SolveMS: 1200, RoundTripMS: 1500, Bits: 20,
+		})
+	}
 
 	out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/offenders", adminToken, ""))
 
-	if w := out["window"].(float64); w != 9 { // 5+3+1 denies, allow excluded
-		t.Errorf("window = %v, want 9 (allow must not be counted)", w)
+	if w := out["window"].(float64); w != 9 { // 5+3+1 denies; allow and solves excluded
+		t.Errorf("window = %v, want 9 (allows and solves must not be counted)", w)
+	}
+	for _, row := range out["ips"].([]any) {
+		if key := row.(map[string]any)["key"]; key == "198.51.100.2" {
+			t.Errorf("offender list ranks a solving client: %v", row)
+		}
+	}
+	for _, row := range out["paths"].([]any) {
+		if key := row.(map[string]any)["key"]; key == "/checkout" {
+			t.Errorf("offender paths include a solved page: %v", row)
+		}
 	}
 
 	ips := out["ips"].([]any)

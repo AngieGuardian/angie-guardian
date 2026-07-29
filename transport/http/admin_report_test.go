@@ -430,3 +430,90 @@ func TestDashboardReloadControlContract(t *testing.T) {
 		t.Error("reload button is not hidden by default; a daemon without a reload closure would show a button that can only fail")
 	}
 }
+
+// A redeemed challenge is a first-class row in the same feed, so an operator
+// scanning recent activity sees what the proof of work actually cost the client
+// that paid it, beside the decisions that asked for it.
+func TestAdminDecisionsIncludeSolves(t *testing.T) {
+	ts, engine := reportServer(t, reportYAML)
+	ctx := context.Background()
+
+	d := engine.Evaluate(ctx, &core.RequestContext{
+		Host: "site.test", Method: "GET", URI: "/probe", RemoteAddr: "203.0.113.1", UserAgent: "curl/8",
+	})
+	if d.Action != core.ActionDeny {
+		t.Fatalf("setup: expected deny, got %s", d.Action)
+	}
+	engine.RecordSolve(core.SolveRecord{
+		Host: "site.test", IP: "198.51.100.7", URI: "/checkout",
+		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400, Bits: 20,
+	})
+
+	all := decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions", adminToken, ""))
+	if all["count"] != float64(2) {
+		t.Fatalf("decisions count = %v, want 2 (one deny plus one solve)", all["count"])
+	}
+	// A decision row carries none of the solve fields: absent means unknown,
+	// and a deny row is byte-identical to what it was before solves shared the
+	// ring.
+	deny := all["decisions"].([]any)[1].(map[string]any)
+	for _, key := range []string{"solve_ms", "round_trip_ms", "bits"} {
+		if value, ok := deny[key]; ok {
+			t.Errorf("deny row carries %s=%v", key, value)
+		}
+	}
+
+	only := decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?action=solve", adminToken, ""))
+	if only["count"] != float64(1) {
+		t.Fatalf("action=solve count = %v, want 1", only["count"])
+	}
+	solve := only["decisions"].([]any)[0].(map[string]any)
+	if solve["reason"] != core.ReasonSolved || solve["ip"] != "198.51.100.7" || solve["uri"] != "/checkout" {
+		t.Errorf("solve row = %v, want the checkout solve", solve)
+	}
+	if solve["solve_ms"] != float64(1900) || solve["round_trip_ms"] != float64(2400) || solve["bits"] != float64(20) {
+		t.Errorf("solve row timings = %v", solve)
+	}
+	// The lookup card filters the whole ring by IP, and a client's solves are
+	// exactly what makes its history readable.
+	byIP := decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions?ip=198.51.100.7", adminToken, ""))
+	if byIP["count"] != float64(1) {
+		t.Errorf("ip filter count = %v, want the solve", byIP["count"])
+	}
+}
+
+// The top-reason tile reads the highest by_reason count. Every solve collapses
+// to the "pow" category, and on a healthy proof-of-work site they are a large
+// share of the ring, so counting them there would pin the tile to "pow" forever:
+// proof of work working, displayed as a proof-of-work incident.
+func TestStatsSolvesDoNotMoveTopReason(t *testing.T) {
+	ts, engine := reportServer(t, reportYAML)
+	ctx := context.Background()
+
+	engine.Evaluate(ctx, &core.RequestContext{
+		Host: "site.test", Method: "GET", URI: "/probe", RemoteAddr: "203.0.113.1", UserAgent: "curl/8",
+	})
+	for range 50 {
+		engine.RecordSolve(core.SolveRecord{
+			Host: "site.test", IP: "198.51.100.7", URI: "/", UA: "Mozilla/5.0",
+			SolveMS: 900, RoundTripMS: 1200, Bits: 18,
+		})
+	}
+
+	recent := decodeJSON(t, adminReq(t, ts, "GET", "/admin/stats", adminToken, ""))["recent"].(map[string]any)
+	if recent["total"] != float64(1) {
+		t.Errorf("recent.total = %v, want 1: the total counts decisions", recent["total"])
+	}
+	byReason := recent["by_reason"].(map[string]any)
+	if byReason["denylist"] != float64(1) {
+		t.Errorf("by_reason = %v, want denylist:1", byReason)
+	}
+	if _, ok := byReason["pow"]; ok {
+		t.Errorf("by_reason counts solves under pow: %v", byReason)
+	}
+	// by_action does count them: that is a true statement about the window, and
+	// the solve volume is worth seeing.
+	if byAction := recent["by_action"].(map[string]any); byAction["solve"] != float64(50) {
+		t.Errorf("by_action = %v, want solve:50", byAction)
+	}
+}
