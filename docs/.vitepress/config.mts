@@ -58,6 +58,10 @@ export default defineConfig({
           text: 'Advanced',
           items: [{ text: 'WASM Module', link: '/guide/wasm' }],
         },
+        {
+          text: 'Contributing',
+          items: [{ text: 'Development', link: '/guide/development' }],
+        },
       ],
       '/reference/': [
         {

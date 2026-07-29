@@ -219,6 +219,13 @@ Each section heading carries a small circled **i** linking to the page on this
 site that explains it, opened in a new tab so the live dashboard (and the token
 held in that tab) stays put.
 
+::: tip Changing the page itself
+The dashboard is embedded in the binary, so working on it normally means a
+rebuild. `make dashboard-dev` serves it from a checkout while forwarding the
+data to a daemon that is already running, including a remote one. See
+[Development](/guide/development#try-a-dashboard-change-against-a-running-daemon).
+:::
+
 ### Reloading the config
 
 The header carries a **Reload config** button, which re-reads `guardian.yaml`
