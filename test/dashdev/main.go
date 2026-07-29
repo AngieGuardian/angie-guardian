@@ -98,7 +98,7 @@ func main() {
 	}
 	log.Printf("serving %s; every other /admin/ path is forwarded to %s", from, target)
 	log.Printf("write actions on that page act on %s for real", target)
-	log.Printf("open http://%s/admin/dashboard   (paste the upstream's admin token, or append #token=...)", *listen)
+	log.Printf("open http://%s/admin/dashboard   (enter the upstream's admin token, or append #token=...)", *listen)
 	log.Fatal(http.ListenAndServe(*listen, mux))
 }
 

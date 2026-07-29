@@ -683,7 +683,7 @@ in `error`, exactly what a reload would be rejected for.
 ### `GET /admin/dashboard`
 
 The built-in reporting page (only when `admin.dashboard: true`). On startup
-guardiand logs only the bare URL; paste the token from `admin.token_file` (or
+guardiand logs only the bare URL; enter the token from `admin.token_file` (or
 your configured secret) into the login gate. Configured and persistent tokens
 are never embedded in process logs. Every data call the page makes goes to the
 token-guarded `/admin/*` endpoints. See

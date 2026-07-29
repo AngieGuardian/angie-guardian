@@ -193,7 +193,7 @@ Set `admin.dashboard: true`, start guardiand, and open the URL it prints:
 INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard
 ```
 
-Paste the token from `admin.token_file` (or your configured secret) into the
+Enter the token from `admin.token_file` (or your configured secret) into the
 login gate. Guardian never puts configured or persistent bearer credentials
 in process logs. The page keeps the token only in the tab's sessionStorage.
 
@@ -241,7 +241,7 @@ with no config path); it is never shown as a control that can only fail.
 ### IP lookup
 
 The **IP lookup** panel above the Active blocks table answers "why was this
-client denied?" without leaving the page: paste an IP (IPv6 with or without
+client denied?" without leaving the page: enter an IP (IPv6 with or without
 brackets) and one card collects everything this instance knows about it:
 
 - block status from [`GET /admin/blocks/{ip}`](/reference/admin-api), with the

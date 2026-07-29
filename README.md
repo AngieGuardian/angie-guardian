@@ -302,7 +302,7 @@ make dashboard-dev                                      # against the seed insta
 make dashboard-dev UPSTREAM=http://192.168.1.42:8072    # against a real deployment
 ```
 
-Open <http://127.0.0.1:8073/admin/dashboard> and paste that daemon's admin
+Open <http://127.0.0.1:8073/admin/dashboard> and enter that daemon's admin
 token. Nothing about the page changes: its URLs are origin-relative, so one
 listener answering both the page and `/admin/*` serves it as-is, with no CORS
 and no config key. Two caveats: the local page is served without the

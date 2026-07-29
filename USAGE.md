@@ -778,7 +778,7 @@ Set `admin.dashboard: true`, start guardiand, and open the URL it prints:
 INFO admin dashboard ready url=http://127.0.0.1:8072/admin/dashboard
 ```
 
-Paste the token from `admin.token_file` (or your configured secret) into the
+Enter the token from `admin.token_file` (or your configured secret) into the
 login gate. Configured and persistent bearer credentials are never embedded
 in process logs; the page keeps the token in the tab's sessionStorage.
 
