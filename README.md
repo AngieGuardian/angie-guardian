@@ -289,6 +289,32 @@ Open <http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token>. The linked
 for local development. `make seed` creates a realistic traffic mix; use
 `guardian-loadtest` for throughput measurements.
 
+#### Try a dashboard change against real data
+
+The dashboard is embedded in the binary, so seeing an edit otherwise means a
+rebuild and a deploy. [`make dashboard-dev`](test/dashdev/) serves
+`web/dashboard.html` from the working tree and forwards every other `/admin/`
+path to a guardiand that is already running, so the edit loop is save and
+reload:
+
+```sh
+make dashboard-dev                                      # against the seed instance above
+make dashboard-dev UPSTREAM=http://192.168.1.42:8072    # against a real deployment
+```
+
+Open <http://127.0.0.1:8073/admin/dashboard> and paste that daemon's admin
+token. Nothing about the page changes: its URLs are origin-relative, so one
+listener answering both the page and `/admin/*` serves it as-is, with no CORS
+and no config key. Two caveats: the local page is served without the
+Content-Security-Policy guardiand sets on its own dashboard route, and the
+page's write actions are forwarded like everything else, so against a real
+deployment an unblock is a real unblock.
+
+Behavioural tests for the page's own logic live in
+[`web/dashboard_script_test.go`](web/dashboard_script_test.go), which lifts
+declarations out of `dashboard.html` and runs them in a Go JS interpreter.
+Prefer adding a case there over asserting that a line of markup exists.
+
 ### Building from source
 
 The required Go toolchain is pinned in [go.mod](go.mod). Build the three sidecar

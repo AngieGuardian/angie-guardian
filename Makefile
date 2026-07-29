@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed
+.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -145,6 +145,22 @@ fuzz:
 seed:
 	go run ./test/seed -url http://127.0.0.1:18071 -d $(SEEDTIME) \
 		-admin http://127.0.0.1:18072 -token seed-demo-token
+
+# Developer-only: serve web/dashboard.html from the working tree and forward
+# every other /admin/ path to a guardiand that is already running, so a
+# dashboard change can be tried against real data without building or deploying
+# anything. Edit, reload the tab, done. Point it wherever the data is:
+#
+#   make dashboard-dev                                      # the seed instance above
+#   make dashboard-dev UPSTREAM=http://192.168.1.42:8072    # a real deployment
+#
+# Write actions on that page (unblock, clearing counters) are forwarded too, so
+# against a real deployment they act on it for real.
+UPSTREAM ?= http://127.0.0.1:18072
+DASHDEV_LISTEN ?= 127.0.0.1:8073
+
+dashboard-dev:
+	go run ./test/dashdev -upstream $(UPSTREAM) -listen $(DASHDEV_LISTEN)
 
 vet:
 	go vet ./...
