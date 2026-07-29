@@ -851,6 +851,14 @@
     return fmt(Math.round(abs / 86400), "d");
   };
   const clock = (iso) => new Date(iso).toLocaleTimeString();
+  // The ring can hold decisions older than today (it is bounded by size, not by
+  // time), so the clock alone is ambiguous. Hovering gives the full local date.
+  const timeCell = (iso) => {
+    const cell = td("time", clock(iso));
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) cell.title = d.toLocaleString();
+    return cell;
+  };
   // A Go zero time ("0001-01-01T00:00:00Z") means "never set", not an instant.
   // Local-time formatters render it as a fixed pre-standard-time offset (e.g.
   // 12:17:30 AM in Europe/Brussels), which reads as a real but stuck clock.
@@ -2260,7 +2268,7 @@
     dt.replaceChildren(...pageRows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
-      const cells = [td("time", clock(d.time)), action, td("wrap", d.reason),
+      const cells = [timeCell(d.time), action, td("wrap", d.reason),
         td("wrap", d.host), ipCell(d.ip)];
       if (hasGeo) cells.push(geoCell(d));
       cells.push(td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
@@ -2414,7 +2422,7 @@
     $("lu-decisions").replaceChildren(...rows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
-      return row(td("time", clock(d.time)), action, td("wrap", d.reason),
+      return row(timeCell(d.time), action, td("wrap", d.reason),
         td("wrap", d.host), td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
     }));
     $("lu-dec-empty").hidden = rows.length > 0;
