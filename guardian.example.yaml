@@ -56,7 +56,8 @@ admin:
                               # lives in the service-writable state dir, not
                               # the root-owned read-only /etc/guardian
   # Built-in reporting page at GET /admin/dashboard: active blocks (one-click
-  # block/unblock), the recent non-allow decision feed with filters, activity and
+  # block/unblock), the recent feed of non-allow decisions and solved
+  # challenges with filters, activity and
   # distribution graphs, a top-offenders panel, challenge stats, and per-domain
   # config. On startup guardiand logs the bare login URL ("admin dashboard
   # ready"). Read the token from token_file and paste it into the page;

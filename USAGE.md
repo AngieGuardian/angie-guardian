@@ -332,7 +332,14 @@ Recommendations:
   mostly punish real visitors on slow devices.
 - Watch `guardian_challenge_solve_seconds` in Prometheus (or the average on
   the dashboard) after changing values: it is the real-world solve time of
-  *your* visitors' devices.
+  *your* visitors' devices. The metric now carries a `domain` label, which the
+  dashboard's "Solve time by domain" card reads, so a difficulty that only hurts
+  one site stands out. Its neighbour, "Solve time by client", answers the same
+  question per class of device from a sample of the recent decisions feed rather
+  than from the metric, since a User-Agent taxonomy is a guess and has no
+  business being a Prometheus label. For a single slow visitor,
+  `GET /admin/decisions?action=solve` names the host, path, IP and User-Agent
+  behind each solve.
 
 Note that PoW only taxes clients that solve the puzzle. A client that farms
 challenges without solving them is throttled (60 issuances per IP per minute),
@@ -683,13 +690,18 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 # {"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
 #                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
 
-# Every recent non-allow decision, newest first, from an in-process ring
-# buffer (per instance, cleared on restart). Filters: ?limit= (default 50),
-# ?action=deny|challenge|refuse, ?reason=<prefix e.g. waf>.
+# Every recent non-allow decision and solved challenge, newest first, from an
+# in-process ring buffer (per instance, cleared on restart). Filters: ?limit=
+# (default 50), ?action=deny|challenge|refuse|solve, ?reason=<prefix e.g. waf>.
 # refuse = Guardian withheld the challenge after classifying the request as
 # unable to complete it. Exclude refuse when looking only for puzzles that were
 # really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
+
+# Solved challenges: which host, path, IP and User-Agent paid the proof of work,
+# how long the client says it hashed (solve_ms), how long this daemon measured
+# between issuing and redeeming (round_trip_ms), and the difficulty in bits.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit=20"
 
 # A small "right now" rollup: active blocks, recent counts by action and
 # reason category, and the PoW lifecycle (challenges issued/solved/failed +
@@ -772,7 +784,8 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent non-allow decision feed (filterable by action and free text),
+block-an-IP form), the recent activity feed of non-allow decisions and solved
+challenges (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

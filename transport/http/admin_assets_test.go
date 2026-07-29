@@ -382,3 +382,33 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 		}
 	}
 }
+
+// The solve surface: the column that makes a slow proof of work attributable,
+// the filter that isolates those rows, and the two cards that answer "whose
+// puzzle is too hard" and "which kind of client is struggling". Pinned because
+// all four are wired to field names the Go side owns; a rename that misses the
+// dashboard would leave the page silently blank rather than failing a build.
+func TestDashboardSolveSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, needle := range []string{
+		`id="dec-solve"`, `id="lu-dec-solve"`,
+		`<option value="solve">solve</option>`,
+		`d.action !== "solve"`,
+		`Number(d.solve_ms)`, `d.round_trip_ms`, `d.bits`,
+		`id="card-solve-domains"`, `id="card-solve-clients"`,
+		`lastDist.solve_time_by_domain`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard solve surface missing %q", needle)
+		}
+	}
+	// Solves share the ring with the decisions, so the charts must drop them:
+	// a solve is the consequence of a challenge already in the stacked area,
+	// and its reason would swamp the band that shows pow failures.
+	if !bytes.Contains(page, []byte(`if (d.action === "solve") return false;`)) {
+		t.Error("the chart feed no longer filters solves out; both charts would double-count")
+	}
+}

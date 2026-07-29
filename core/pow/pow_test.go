@@ -129,6 +129,15 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	if res.RedirectURI != "/original?q=1" {
 		t.Errorf("redirect = %q, want original URI", res.RedirectURI)
 	}
+	// The challenge's own authenticated state, returned so the caller can
+	// attribute the solve without a second store read. Unlike the client's
+	// reported elapsed time, neither can be chosen by the solver.
+	if res.Difficulty != 8 {
+		t.Errorf("difficulty = %d, want the 8 bits this challenge was issued at", res.Difficulty)
+	}
+	if res.IssuedAt.IsZero() || time.Since(res.IssuedAt) > time.Minute {
+		t.Errorf("issued_at = %v, want the issue time just now", res.IssuedAt)
+	}
 
 	// The minted token verifies for the same client+host, and only for them.
 	if err := m.VerifyToken(res.Token, "example.com", "198.51.100.7", "Mozilla/5.0", 0, 0); err != nil {

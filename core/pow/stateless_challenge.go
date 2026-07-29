@@ -281,5 +281,8 @@ func (m *Manager) finishStateless(p *statelessPayload, req *RedeemRequest, token
 	if err != nil {
 		return nil, err
 	}
-	return &RedeemResult{Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr}, nil
+	return &RedeemResult{
+		Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr,
+		Difficulty: p.Bits, IssuedAt: time.UnixMilli(p.TS),
+	}, nil
 }

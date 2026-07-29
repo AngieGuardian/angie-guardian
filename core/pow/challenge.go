@@ -505,7 +505,23 @@ type RedeemResult struct {
 	// the stateless path). The caller may count it; the redemption still
 	// succeeds.
 	SoftError error
+
+	// Difficulty is the leading-zero-bit requirement this challenge actually
+	// carried (post-escalation) and IssuedAt when it was minted. Both come from
+	// the challenge's own authenticated state, the stored record or the
+	// MAC-verified stateless payload, so unlike the client's reported elapsed
+	// time they cannot be chosen by the solver. Returned so the caller can
+	// attribute and sanity-check the solve without a second store read.
+	Difficulty int
+	IssuedAt   time.Time
 }
+
+// ClockSkewAllowance is the cross-instance clock tolerance stateless challenges
+// are already verified with. Exported because a caller bounding a
+// client-reported solve time against a server-measured issue-to-redeem duration
+// must allow the same slack: with a shared store, the instance that issued a
+// challenge is often not the one redeeming it.
+const ClockSkewAllowance = statelessSkew
 
 var (
 	ErrChallengeUnknown = errors.New("challenge unknown, expired or already spent")
@@ -586,7 +602,10 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if err != nil {
 		return nil, err
 	}
-	return &RedeemResult{Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI}, nil
+	return &RedeemResult{
+		Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI,
+		Difficulty: rec.Difficulty, IssuedAt: time.UnixMilli(rec.IssuedAt),
+	}, nil
 }
 
 // leadingZeroBits counts the leading zero bits of a hash, the unit of

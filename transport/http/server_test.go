@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -56,10 +57,19 @@ func testServerWithYAML(t testing.TB, yaml string) *httptest.Server {
 
 func testServerAndHandler(t testing.TB, yaml string) (*httptest.Server, *Server) {
 	t.Helper()
-	return testServerAndHandlerWithStore(t, yaml, store.NewMemory())
+	return testServerAndHandlerWithStore(t, yaml, store.NewMemory(), nil)
 }
 
-func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store) (*httptest.Server, *Server) {
+// testServerWithMetrics is the same stack wired to a real registry, for the
+// tests that assert on a counter rather than on a response.
+func testServerWithMetrics(t testing.TB, yaml string) (*httptest.Server, *Server, *metrics.Metrics) {
+	t.Helper()
+	m := metrics.New("memory")
+	ts, h := testServerAndHandlerWithStore(t, yaml, store.NewMemory(), m)
+	return ts, h, m
+}
+
+func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store, m *metrics.Metrics) (*httptest.Server, *Server) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
@@ -81,7 +91,13 @@ func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store) (*
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	h := New(engine, mgr, st, nil, slog.Default())
+	// Only when a test asked for a registry: SetMetrics also pushes the handle
+	// into intel and the anomaly models, and there is no reason for the thirty
+	// tests that pass nil to take that path at all.
+	if m != nil {
+		engine.SetMetrics(m)
+	}
+	h := New(engine, mgr, st, m, slog.Default())
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	return ts, h
@@ -288,7 +304,12 @@ var dataRe = regexp.MustCompile(`<script id="guardian-data" type="application/js
 
 func fetchChallenge(t *testing.T, ts *httptest.Server, ip, ua string) (id, challenge string, difficulty int) {
 	t.Helper()
-	resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders("html.test", ip, "/original?q=1", ua), nil)
+	return fetchChallengeOn(t, ts, "html.test", ip, ua)
+}
+
+func fetchChallengeOn(t *testing.T, ts *httptest.Server, host, ip, ua string) (id, challenge string, difficulty int) {
+	t.Helper()
+	resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders(host, ip, "/original?q=1", ua), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("challenge page: status = %d, want 200", resp.StatusCode)
 	}
@@ -399,7 +420,7 @@ func TestPoWFlowEndToEnd(t *testing.T) {
 
 func TestStoreOutageFallsBackToStatelessChallenge(t *testing.T) {
 	base := store.NewMemory()
-	ts, _ := testServerAndHandlerWithStore(t, testYAML, unavailableCASStore{Store: base})
+	ts, h := testServerAndHandlerWithStore(t, testYAML, unavailableCASStore{Store: base}, nil)
 	ip, ua := "198.51.100.77", "Mozilla/5.0"
 
 	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
@@ -410,7 +431,10 @@ func TestStoreOutageFallsBackToStatelessChallenge(t *testing.T) {
 	if !pow.IsStatelessID(id) {
 		t.Fatalf("store-down fallback issued stateful id %q", id)
 	}
-	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": solve(t, challenge, difficulty)})
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": id, "nonce": solve(t, challenge, difficulty), "elapsed_ms": 40,
+	})
+	time.Sleep(25 * time.Millisecond) // so the measured round trip is not sub-millisecond
 	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/page", ua), body)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -419,10 +443,33 @@ func TestStoreOutageFallsBackToStatelessChallenge(t *testing.T) {
 	if len(resp.Cookies()) == 0 {
 		t.Fatal("stateless fallback did not mint a token cookie")
 	}
+
+	// A stateless challenge carries its difficulty and issue time inside its own
+	// MAC-verified payload rather than in a stored record, so this is the path
+	// where a missing field surfaces as a solve row reading "0 bits" or an
+	// issue time of 1970. It is also the path that runs during a store outage,
+	// which is exactly when someone is watching the dashboard.
+	rows := solveRows(h)
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d solve rows, want 1", len(rows))
+	}
+	d := rows[0]
+	if int(d.Bits) != difficulty {
+		t.Errorf("bits = %d, want the %d this stateless challenge carried", d.Bits, difficulty)
+	}
+	if d.SolveMS != 40 {
+		t.Errorf("solve_ms = %d, want the reported 40", d.SolveMS)
+	}
+	// A zero or garbage issued-at would read as decades, not as a fast solve.
+	// The ceiling is deliberately far above any real interval: it is here to
+	// catch epoch zero, not to time a loaded CI runner.
+	if d.RoundTripMS < 20 || d.RoundTripMS > 600_000 {
+		t.Errorf("round_trip_ms = %d, want the real interval just measured", d.RoundTripMS)
+	}
 }
 
 func TestNoJSFlow(t *testing.T) {
-	ts := testServer(t)
+	ts, h := testServerAndHandler(t, testYAML)
 	ip, ua := "198.51.100.8", "Mozilla/5.0"
 	id, _, _ := fetchChallenge(t, ts, ip, ua)
 
@@ -450,6 +497,23 @@ func TestNoJSFlow(t *testing.T) {
 	}
 	if !found {
 		t.Error("no-JS redeem: no cookie set")
+	}
+
+	// The client waited out the meta refresh instead of hashing, so the row
+	// says so and reports no solve time. Recording the wait as one would put
+	// the configured minimum delay into the solve-time statistics.
+	rows := solveRows(h)
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d solve rows, want 1", len(rows))
+	}
+	if rows[0].Reason != core.ReasonNoJS {
+		t.Errorf("reason = %q, want %q", rows[0].Reason, core.ReasonNoJS)
+	}
+	if rows[0].SolveMS != 0 {
+		t.Errorf("solve_ms = %d, want 0: nothing was hashed", rows[0].SolveMS)
+	}
+	if rows[0].RoundTripMS < 90 {
+		t.Errorf("round_trip_ms = %d, want at least the 100ms wait", rows[0].RoundTripMS)
 	}
 }
 
@@ -683,7 +747,7 @@ func TestHotEnabledMaxInflightCountsExistingEvaluation(t *testing.T) {
 	ts, h := testServerAndHandlerWithStore(t, `
 store: { backend: memory }
 attack_mode: { enabled: true, effects: { max_inflight: 0 } }
-`, st)
+`, st, nil)
 
 	firstDone := make(chan *http.Response, 1)
 	go func() {
@@ -757,5 +821,190 @@ func TestAuxiliaryEndpoints(t *testing.T) {
 	resp := do(t, "POST", ts.URL+"/pass", map[string]string{"Content-Type": "application/json"}, []byte(`{"challenge_id":"x","nonce":"1"}`))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("/pass on non-PoW host: status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// solveOnce walks challenge, hash and redeem, posting the given client-reported
+// elapsed time, and returns the pass response.
+func solveOnce(t *testing.T, ts *httptest.Server, ip, ua string, elapsedMS int64, hold time.Duration) *http.Response {
+	t.Helper()
+	do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/original?q=1", ua), nil)
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": id, "nonce": solve(t, challenge, difficulty), "elapsed_ms": elapsedMS,
+	})
+	// Stands in for the time a real client spends hashing, so the server-side
+	// issue-to-redeem measurement has something to measure.
+	time.Sleep(hold)
+	return do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/original?q=1", ua), body)
+}
+
+func solveRows(h *Server) []core.RecentDecision {
+	var out []core.RecentDecision
+	for _, d := range h.engine.RecentDecisions(0) {
+		if d.Action == core.ActionSolve {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// A solve is attributable: the ring says which host, path, IP and User-Agent
+// paid the proof of work, and at what difficulty. Without this the only record
+// of a ten-second solve is an unlabelled bucket in a process-wide histogram.
+func TestRedeemRecordsSolve(t *testing.T) {
+	ts, h := testServerAndHandler(t, testYAML)
+	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
+
+	if resp := solveOnce(t, ts, ip, ua, 42, 25*time.Millisecond); resp.StatusCode != http.StatusOK {
+		t.Fatalf("pass: status = %d, want 200", resp.StatusCode)
+	}
+
+	rows := solveRows(h)
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d solve rows, want 1", len(rows))
+	}
+	d := rows[0]
+	if d.Reason != core.ReasonSolved {
+		t.Errorf("reason = %q, want %q", d.Reason, core.ReasonSolved)
+	}
+	if d.Host != "html.test" || d.IP != ip || d.UA != ua || d.URI != "/original?q=1" {
+		t.Errorf("attribution = %s %s %s %s", d.Host, d.IP, d.UA, d.URI)
+	}
+	if d.SolveMS != 42 {
+		t.Errorf("solve_ms = %d, want the reported 42", d.SolveMS)
+	}
+	// base_difficulty 1 on the config scale is 4 leading zero bits.
+	if d.Bits != 4 {
+		t.Errorf("bits = %d, want 4", d.Bits)
+	}
+	// The server measures issue to redeem itself, so the client held the
+	// challenge for at least as long as it actually did. (It is not compared
+	// against solve_ms here: the two are only ordered within the clock-skew
+	// allowance, and this test posts a solve time it did not spend.)
+	if d.RoundTripMS < 20 {
+		t.Errorf("round_trip_ms = %d, want at least the 25ms the challenge was held", d.RoundTripMS)
+	}
+}
+
+// elapsed_ms is unauthenticated browser telemetry. A client cannot have hashed
+// for longer than its challenge existed, so an impossible value is dropped to
+// "not reported" and counted, rather than being averaged into the histogram
+// that base_difficulty is tuned against.
+func TestRedeemRejectsImpossibleSolveTime(t *testing.T) {
+	ts, h, m := testServerWithMetrics(t, testYAML)
+
+	// A full day of "hashing" on a challenge issued milliseconds ago.
+	if resp := solveOnce(t, ts, "198.51.100.8", "Mozilla/5.0", 86_400_000, 0); resp.StatusCode != http.StatusOK {
+		t.Fatalf("pass: status = %d, want 200 (the solve itself is valid)", resp.StatusCode)
+	}
+
+	rows := solveRows(h)
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d solve rows, want 1", len(rows))
+	}
+	if rows[0].SolveMS != 0 {
+		t.Errorf("solve_ms = %d, want 0: an impossible report is not a solve time", rows[0].SolveMS)
+	}
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var implausible, observed float64
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_challenges_total":
+			for _, s := range mf.GetMetric() {
+				for _, l := range s.GetLabel() {
+					if l.GetName() == "outcome" && l.GetValue() == "solve_time_implausible" {
+						implausible = s.GetCounter().GetValue()
+					}
+				}
+			}
+		case "guardian_challenge_solve_seconds":
+			for _, s := range mf.GetMetric() {
+				observed += float64(s.GetHistogram().GetSampleCount())
+			}
+		}
+	}
+	if implausible != 1 {
+		t.Errorf("solve_time_implausible = %v, want 1", implausible)
+	}
+	if observed != 0 {
+		t.Errorf("histogram observed %v samples, want 0: the rejected value must not be recorded", observed)
+	}
+}
+
+// The solve-time histogram is labelled by domain, and the Host header that
+// reaches this handler is raw client input. This pins the collapse that keeps
+// the label bounded: a configured domain gets its own series, and every other
+// host, however many distinct ones a flood invents, shares "default".
+//
+// The failure this prevents is not a wrong number on a chart. An unbounded
+// label value means one Prometheus series per distinct Host header, which takes
+// down the daemon's memory and the scrape target with it, from nothing more
+// than a header a client chooses. Same invariant as TestReasonCategoryBounded
+// in core, one metric further along.
+func TestSolveTimeDomainLabelIsBounded(t *testing.T) {
+	const yaml = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: true, base_difficulty: 1, max_difficulty: 6 }
+domains:
+  configured.test: {}
+`
+	ts, _, m := testServerWithMetrics(t, yaml)
+
+	// One solve on the configured domain, then several on hosts nobody
+	// configured, each from its own IP so per-IP issuance limits and difficulty
+	// escalation stay out of it.
+	solveOn := func(host, ip string) {
+		t.Helper()
+		id, challenge, difficulty := fetchChallengeOn(t, ts, host, ip, "Mozilla/5.0")
+		body, _ := json.Marshal(map[string]any{
+			"challenge_id": id, "nonce": solve(t, challenge, difficulty), "elapsed_ms": 30,
+		})
+		resp := do(t, "POST", ts.URL+"/pass", guardianHeaders(host, ip, "/original?q=1", "Mozilla/5.0"), body)
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("%s: redeem status = %d body = %s", host, resp.StatusCode, b)
+		}
+	}
+	solveOn("configured.test", "198.51.100.10")
+	for i, host := range []string{
+		"attacker-chosen-1.example",
+		"attacker-chosen-2.example",
+		strings.Repeat("x", 200) + ".example",
+	} {
+		solveOn(host, fmt.Sprintf("198.51.100.%d", 20+i))
+	}
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]uint64{}
+	for _, mf := range families {
+		if mf.GetName() != "guardian_challenge_solve_seconds" {
+			continue
+		}
+		for _, series := range mf.GetMetric() {
+			for _, l := range series.GetLabel() {
+				if l.GetName() == "domain" {
+					labels[l.GetValue()] += series.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+	}
+	if len(labels) != 2 {
+		t.Fatalf("domain label values = %v, want exactly configured.test and default", labels)
+	}
+	if labels["configured.test"] != 1 {
+		t.Errorf("configured.test observed %d solves, want 1", labels["configured.test"])
+	}
+	if labels["default"] != 3 {
+		t.Errorf("default observed %d solves, want all 3 unconfigured hosts", labels["default"])
 	}
 }

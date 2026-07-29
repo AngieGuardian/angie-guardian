@@ -546,15 +546,29 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	recent := s.engine.RecentDecisionSnapshot().Decisions
 	byAction := map[string]int{}
 	byReason := map[string]int{}
+	decisions := 0
 	for _, d := range recent {
+		// by_action counts everything the ring holds, solves included: that is
+		// a true statement about the window and the solve count is useful.
 		byAction[d.Action]++
+		// by_reason and total are decision-only. A solve is not a verdict, and
+		// every one of them collapses to the "pow" category: on a healthy
+		// proof-of-work site solves are a large share of the ring, so folding
+		// them in would pin the dashboard's top-reason tile to "pow" forever,
+		// reading as a proof-of-work incident when it is proof of work working.
+		if d.Action == core.ActionSolve {
+			continue
+		}
+		decisions++
 		byReason[reasonCat(d.Reason)]++
 	}
 	out := map[string]any{
 		"blocks_active":   blocksActive,
 		"blocks_complete": blocksComplete,
 		"recent": map[string]any{
-			"total":     len(recent),
+			// Decisions only, matching by_reason. by_action carries the solve
+			// count for anyone who wants the ring's full contents.
+			"total":     decisions,
 			"by_action": byAction,
 			"by_reason": byReason,
 		},
@@ -613,11 +627,18 @@ func challengeStats(families []*dto.MetricFamily) map[string]any {
 				}
 			}
 		case "guardian_challenge_solve_seconds":
+			// Labelled by domain, so the family carries one series per
+			// configured domain. Sum first, then divide: dividing inside the
+			// loop would silently report whichever domain the registry happened
+			// to yield last as if it were the fleet average.
+			var sum, count float64
 			for _, m := range mf.GetMetric() {
 				h := m.GetHistogram()
-				if h.GetSampleCount() > 0 {
-					out["avg_solve_seconds"] = h.GetSampleSum() / float64(h.GetSampleCount())
-				}
+				sum += h.GetSampleSum()
+				count += float64(h.GetSampleCount())
+			}
+			if count > 0 {
+				out["avg_solve_seconds"] = sum / count
 			}
 		}
 	}
@@ -726,11 +747,12 @@ func labelValue(m *dto.Metric, name string) string {
 // touches the hot path. Empty (but well-formed) when metrics are disabled.
 func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request) {
 	out := map[string]any{
-		"solve_time":        emptyHistogram(),
-		"anomaly":           emptyHistogram(),
-		"anomaly_selection": map[string]map[string]float64{},
-		"anomaly_misses":    map[string]float64{},
-		"per_domain":        map[string]map[string]float64{},
+		"solve_time":           emptyHistogram(),
+		"solve_time_by_domain": map[string]any{},
+		"anomaly":              emptyHistogram(),
+		"anomaly_selection":    map[string]map[string]float64{},
+		"anomaly_misses":       map[string]float64{},
+		"per_domain":           map[string]map[string]float64{},
 	}
 	families := s.gatherMetrics()
 	if families == nil {
@@ -740,10 +762,19 @@ func (s *AdminServer) handleDistributions(w http.ResponseWriter, _ *http.Request
 	for _, mf := range families {
 		switch mf.GetName() {
 		case "guardian_challenge_solve_seconds":
-			// A single (unlabeled) histogram.
+			// Labelled by domain, like anomaly_score: the merged shape for the
+			// fleet-wide histogram card, plus the per-domain split, which is
+			// what answers "whose puzzle is too hard for its visitors".
+			out["solve_time"] = sumHistograms(mf.GetMetric())
+			byDomain := map[string]any{}
 			for _, m := range mf.GetMetric() {
-				out["solve_time"] = histogramToBuckets(m.GetHistogram())
+				domain := labelValue(m, "domain")
+				if domain == "" {
+					domain = "default"
+				}
+				byDomain[domain] = histogramToBuckets(m.GetHistogram())
 			}
+			out["solve_time_by_domain"] = byDomain
 		case "guardian_anomaly_score":
 			// Labelled by domain; sum every domain's buckets into one
 			// distribution (a per-domain split can come later if wanted).
@@ -912,7 +943,16 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	byIP := map[string]int{}
 	byReason := map[string]int{}
 	byPath := map[string]int{}
+	window := 0
 	for _, d := range decisions {
+		// A solve is not an offence: ranking it here would put the clients that
+		// paid their proof of work at the top of a list an operator reads to
+		// decide who to block. One guard covers all four rollups, since the
+		// country breakdown below is derived from byIP.
+		if d.Action == core.ActionSolve {
+			continue
+		}
+		window++
 		byIP[d.IP]++
 		byReason[reasonCat(d.Reason)]++
 		byPath[normalizePath(d.URI)]++
@@ -956,7 +996,7 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	out := map[string]any{
-		"window":  len(decisions), // ring depth this reflects
+		"window":  window, // non-allow decisions considered; solves excluded
 		"ips":     ips,
 		"reasons": topKEntries(byReason, offenderTopK),
 		"paths":   topKEntries(byPath, offenderTopK),

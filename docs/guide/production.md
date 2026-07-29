@@ -477,7 +477,10 @@ remote OOM). The client-keyed structures and their caps:
 - **Recent-decisions ring** (admin/dashboard feed): bounded by
   `admin.recent_size` (default 4096, maximum 16384), overwrite-oldest. It holds
   raw host/URI/UA strings, so exact bytes vary with traffic, but entry count
-  never grows past the configured cap.
+  never grows past the configured cap. Solved challenges share it, which costs
+  no extra memory (they take ring slots like any other row) but does mean a
+  given size reaches back over less decision history on a site where most
+  challenges are solved.
 - **Bot-verification in-flight map**: bounded by concurrent lookups, not
   distinct IPs (entries are added and removed within one call, and a
   concurrency cap sheds excess). The verification *results* live in the store
@@ -498,9 +501,10 @@ daemon's. A steady-state instance sits in the low tens of MiB plus whatever
 
 Guardian ships its own reporting dashboard: set `admin.dashboard: true` and open
 `GET /admin/dashboard`. It gives you a live, at-a-glance view with no extra
-services to run: active blocks with one-click block/unblock, the recent
-non-allow decision feed, activity and distribution graphs (decisions over time, the
-proof-of-work funnel, solve-time and anomaly histograms), a top-offenders panel,
+services to run: active blocks with one-click block/unblock, the recent feed of
+non-allow decisions and solved challenges, activity and distribution graphs
+(decisions over time, the proof-of-work funnel, solve time overall and by domain
+and client class, and the anomaly histogram), a top-offenders panel,
 per-domain feature status, and, when pointed at Angie's API, real server traffic.
 For most single-instance deployments this is all you need. See
 [Admin API & Dashboard](/guide/admin#the-reporting-dashboard) for the full tour.

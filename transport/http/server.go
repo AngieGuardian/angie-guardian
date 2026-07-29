@@ -660,15 +660,38 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		s.log.Warn("stateless spend cas failed, token minted fail-open",
 			"host", host, "ip", ip, "err", res.SoftError)
 	}
-	// elapsed_ms is browser telemetry, not authenticated challenge state. Only
-	// accept values that fit inside the actual path's challenge lifetime so a
-	// successful client cannot poison the process-lifetime histogram.
-	maxElapsedMS := cfg.ConfigFor(host, res.RedirectURI).PoW.ChallengeTTL.Std().Milliseconds()
-	if elapsedMS > 0 && elapsedMS <= maxElapsedMS {
-		s.metrics.SolveTime(float64(elapsedMS) / 1000)
+	// Issue to redeem, measured here from the challenge's own authenticated
+	// issued-at. This is NOT solve time: it includes page load, both network
+	// legs and any time the tab spent backgrounded. Clamped at zero because a
+	// challenge may have been issued by a peer instance whose clock runs ahead.
+	var roundTripMS int64
+	if !res.IssuedAt.IsZero() {
+		roundTripMS = max(0, time.Since(res.IssuedAt).Milliseconds())
 	}
+	// elapsed_ms is browser telemetry, not authenticated challenge state: a
+	// client cannot have hashed for longer than its challenge existed, so bound
+	// it by our own measurement plus the slack the stateless path is already
+	// verified with. An impossible value is dropped to "not reported" and
+	// counted, so a forged one is visible rather than silently averaged in.
+	// (The previous bound was the challenge lifetime, which at the 30m default
+	// let a client claim almost anything.)
+	if elapsedMS > roundTripMS+pow.ClockSkewAllowance.Milliseconds() {
+		s.metrics.Challenge("solve_time_implausible")
+		elapsedMS = 0
+	}
+	if elapsedMS > 0 {
+		s.metrics.SolveTime(dcfg.MetricLabel(), float64(elapsedMS)/1000)
+	}
+	// Recorded in the recent ring so a slow proof of work is attributable to
+	// the host, path, IP and User-Agent that paid it. No store write.
+	s.engine.RecordSolve(core.SolveRecord{
+		Host: host, IP: ip, URI: res.RedirectURI, UA: req.UserAgent,
+		SolveMS: elapsedMS, RoundTripMS: roundTripMS,
+		Bits: res.Difficulty, NoJS: req.NoJS,
+	})
 	s.log.Info("challenge solved",
-		"host", host, "ip", ip, "nojs", req.NoJS, "elapsed_ms", elapsedMS)
+		"host", host, "ip", ip, "nojs", req.NoJS, "elapsed_ms", elapsedMS,
+		"round_trip_ms", roundTripMS, "bits", res.Difficulty)
 	// Secure by default; dropped only when Angie says the client connection is
 	// plain http (X-Guardian-Proto, $scheme), because a browser will not send
 	// a Secure cookie back over http and the client would loop on the

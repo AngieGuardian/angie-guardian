@@ -57,6 +57,15 @@ func TestStatelessRoundTrip(t *testing.T) {
 	if res.Token == "" || res.RedirectURI != "/page?x=1" || res.SoftError != nil {
 		t.Fatalf("bad result: %+v", res)
 	}
+	// A stateless challenge carries its own difficulty and issue time in the
+	// MAC-verified payload, so a solve redeemed during a store outage is as
+	// attributable as a stateful one.
+	if res.Difficulty != 8 {
+		t.Errorf("difficulty = %d, want 8", res.Difficulty)
+	}
+	if res.IssuedAt.IsZero() || time.Since(res.IssuedAt) > time.Minute {
+		t.Errorf("issued_at = %v, want the issue time just now", res.IssuedAt)
+	}
 	// The minted token verifies at the embedded difficulty.
 	if err := m.VerifyToken(res.Token, "example.test", "203.0.113.7", "Mozilla/5.0", 8, time.Hour); err != nil {
 		t.Fatalf("token does not verify: %v", err)

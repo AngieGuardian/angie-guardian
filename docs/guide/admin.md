@@ -46,12 +46,20 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # is 1000 and the hard maximum is 10000; complete=false means more exist.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
-# Every recent non-allow decision, newest first, from an in-process ring
-# buffer (per instance, cleared on restart). ?action= takes deny, challenge or
-# refuse; refuse means Guardian withheld the challenge after classifying the
-# request as unable to complete it. Exclude refuse to see only puzzles that were
-# really issued.
+# Every recent non-allow decision and solved challenge, newest first, from an
+# in-process ring buffer (per instance, cleared on restart). ?action= takes deny, challenge,
+# refuse or solve; refuse means Guardian withheld the challenge after
+# classifying the request as unable to complete it. Exclude refuse to see only
+# puzzles that were really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
+
+# Solved challenges: which host, path, IP and User-Agent paid the proof of work,
+# how long the client says it hashed (solve_ms), how long this daemon measured
+# between issuing and redeeming (round_trip_ms), and the difficulty in bits.
+# The slowest solves first:
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit=all" \
+  | jq -r '.decisions | sort_by(-.solve_ms)[:10]
+           | .[] | "\(.solve_ms)ms \(.bits)bits \(.host)\(.uri) \(.ua)"'
 
 # Compact full-ring feed for live charting (still bounded by admin.recent_size).
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit=all"
@@ -193,7 +201,8 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent non-allow decision feed (filterable by action and free text),
+block-an-IP form), the recent activity feed of non-allow decisions and solved
+challenges (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and
@@ -240,10 +249,11 @@ brackets) and one card collects everything this instance knows about it:
 - country, locality, ASN and reputation-feed membership from
   [`GET /admin/intel/{ip}`](/reference/admin-api). When IP intelligence is not
   configured the card says so instead of erroring;
-- the IP's recent decisions, matched exactly against the full ring server-side
-  (`GET /admin/decisions?ip=`). The ring is this instance's bounded in-memory
-  window of non-allow decisions, so an empty list means "nothing retained
-  here", not "this IP sent nothing".
+- the IP's recent activity, matched exactly against the full ring server-side
+  (`GET /admin/decisions?ip=`): the decisions taken on it, and any challenges it
+  solved, with what each one cost. The ring is this instance's bounded in-memory
+  window, so an empty list means "nothing retained here", not "this IP sent
+  nothing".
 
 Every IP shown anywhere on the dashboard (recent decisions, active blocks, top
 offenders) is a link that opens the lookup for it. The active lookup is
@@ -298,7 +308,8 @@ path:
   selected interval, history overwritten by a full ring, and time before this
   daemon started.
 - **Activity / totals**: the proof-of-work funnel (issued, solved, failed),
-  per-domain traffic volume, the solve-time histogram and the anomaly-score
+  per-domain traffic volume, the solve-time histogram, **solve time by domain**
+  and **by client** (see below), and the anomaly-score
   histogram, read from counters and Prometheus histograms via
   [`GET /admin/stats`](/reference/admin-api#get-admin-stats) and
   [`GET /admin/distributions`](/reference/admin-api#get-admin-distributions).
@@ -312,6 +323,42 @@ path:
   levels, and any missing
   baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
   and the distribution counters.
+
+Solved challenges are deliberately absent from both time-series charts. A solve
+is the consequence of a challenge already drawn in the stacked area, so its own
+band would draw one client journey twice, and in the by-reason chart every solve
+would collapse to `pow` and swamp the band that exists to show proof-of-work
+*failures*.
+
+#### Is my difficulty too high?
+
+Two cards answer that without reading individual rows:
+
+- **Solve time by domain** ranks domains by mean client-reported solve time,
+  worst first, with a p90 reported as the histogram bucket bound it falls in
+  (`≤ 2 s`, or `> 30 s` past the last one), never an interpolation: bucket
+  counts are all Prometheus keeps. It comes from the `domain`-labelled
+  `guardian_challenge_solve_seconds`, so it covers the whole process lifetime
+  rather than the bounded ring.
+- **Solve time by client** groups solves into coarse classes (`mobile`,
+  `desktop`, `bot`, `none` for an empty User-Agent, `other` for the rest) and
+  shows the median and slowest in each, slowest first, so a difficulty that is
+  fine on a laptop and punishing on a phone is visible. Three things bound what
+  it can tell you: it classifies by matching the User-Agent, which is a
+  forgeable header and a guess; it reads the page's most recent 512 decisions
+  rather than every solve, which is why it is labelled a sample; and it counts
+  only solves that reported a time, so no-JS redemptions and rejected reports
+  are absent and its totals are lower than the funnel's `solved`. A class needs
+  five solves before it appears at all. The taxonomy stays client-side and is
+  deliberately never a metric label: it is a heuristic that will need revising,
+  and a Prometheus label is a one-way door.
+
+For a single visitor, the **Solve** column in the recent activity feed carries
+the client-reported time, and hovering it shows the daemon's own issue-to-redeem
+measurement and the difficulty the challenge was paid at. Neither number is
+authenticated evidence about a client: the reported one is browser telemetry a
+client can under-report, and the measured one includes page load, both network
+legs and any time the tab spent backgrounded.
 
 The activity charts are a bounded, per-instance incident view. Their compact
 feed can use the full configured ring without repeatedly transferring detailed

@@ -7,6 +7,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -130,6 +131,63 @@ func TestPoWFullSolveThroughAngie(t *testing.T) {
 	}
 	if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
 		t.Fatalf("vouched request did not reach backend; body:\n%s", body)
+	}
+
+	// 5. The solve is attributable afterwards: the admin feed says which host,
+	//    path and client paid it, at what difficulty, and what it cost them.
+	//    This is the whole journey end to end, through the real proxy: without
+	//    it a slow proof of work is only an unlabelled histogram bucket.
+	var dl struct {
+		Decisions []struct {
+			Host        string `json:"host"`
+			URI         string `json:"uri"`
+			UA          string `json:"ua"`
+			Action      string `json:"action"`
+			Reason      string `json:"reason"`
+			SolveMS     int    `json:"solve_ms"`
+			RoundTripMS int    `json:"round_trip_ms"`
+			Bits        int    `json:"bits"`
+		} `json:"decisions"`
+	}
+	dr := adminReq(t, http.MethodGet, "/admin/decisions?action=solve&limit=all", nil)
+	if err := json.NewDecoder(dr.Body).Decode(&dl); err != nil {
+		t.Fatalf("decode /admin/decisions: %v", err)
+	}
+	var found bool
+	for _, d := range dl.Decisions {
+		if d.UA != ua {
+			continue // another test's solve; this suite shares one daemon
+		}
+		found = true
+		if d.Action != "solve" || d.Reason != "pow:solved" {
+			t.Errorf("solve row = %s/%s, want solve/pow:solved", d.Action, d.Reason)
+		}
+		if d.URI != "/protected-page" || d.Host != powHost {
+			t.Errorf("solve attribution = %s %s, want %s /protected-page", d.Host, d.URI, powHost)
+		}
+		// solvePoWThroughAngie reports elapsed_ms: 42.
+		if d.SolveMS != 42 {
+			t.Errorf("solve_ms = %d, want the reported 42", d.SolveMS)
+		}
+		if d.Bits <= 0 {
+			t.Errorf("bits = %d, want the difficulty this challenge carried", d.Bits)
+		}
+		// Sane rather than nonzero: the point is that the challenge's issued-at
+		// flowed through, which a zero or garbage value would show as decades.
+		// Asserting strictly positive would rest on the journey never
+		// completing inside a single millisecond.
+		if d.RoundTripMS < 0 || d.RoundTripMS > 600_000 {
+			t.Errorf("round_trip_ms = %d, want the server-measured issue to redeem", d.RoundTripMS)
+		}
+	}
+	if !found {
+		t.Fatalf("no solve recorded for %q in %+v", ua, dl.Decisions)
+	}
+
+	// And the histogram carries the domain, which is what answers the same
+	// question over a Grafana horizon rather than a bounded ring.
+	if n := metric(t, "guardian_challenge_solve_seconds_count", `domain=`); n <= 0 {
+		t.Errorf("guardian_challenge_solve_seconds_count{domain=...} = %v, want a labelled series", n)
 	}
 }
 

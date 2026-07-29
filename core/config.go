@@ -2158,6 +2158,12 @@ func (dc *DomainConfig) PathOverrideViews() []PathOverrideView {
 // Prometheus series count and OOM both this process and the scrape target.
 func (c *Config) DomainLabel(host string) string { return c.DomainFor(host).label }
 
+// MetricLabel is the same bounded label read off a config a caller already
+// resolved, so a hot-ish path that has done its DomainFor lookup does not pay
+// for a second one. Path overlays carry their host's label (a path is
+// client-controlled and could never be one), so this is correct at any scope.
+func (dc *DomainConfig) MetricLabel() string { return dc.label }
+
 func normalizeHost(host string) string { return stateless.NormalizeHost(host) }
 
 func validateListenAddress(field, addr string) error {

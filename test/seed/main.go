@@ -71,6 +71,16 @@ type challengeData struct {
 
 // Traffic shape. Hosts must exist (or fall through to defaults) in the target
 // config with proof of work enabled; allowHost must have it disabled.
+// seedBaseBits is defaults.pow.base_difficulty in guardian.seed.yaml (4 on the
+// config scale) expressed in leading zero bits, the reference point the modelled
+// solve times below scale from. Keep the two in step.
+const seedBaseBits = 16
+
+// maxSeedElapsedMS keeps a modelled solve time inside what the daemon will
+// accept from a client that redeems immediately: pow.ClockSkewAllowance is 30s,
+// and this leaves headroom under it.
+const maxSeedElapsedMS = 25_000
+
 var (
 	hosts = []string{"example.com", "shop.example.com", "blog.example.com"}
 	paths = []string{"/", "/products", "/cart", "/search?q=shoes", "/account", "/blog/post-1", "/checkout"}
@@ -213,12 +223,39 @@ func (s *seeder) visitor(host, uri, ip, ua string, redeem, valid bool) {
 	if valid {
 		nonce = solveNonce(ch.Challenge, ch.Difficulty)
 	}
+	// A plausible spread of client solve times so the solve-time histogram has a
+	// shape instead of a single spike. The seeder solves natively in Go, orders
+	// of magnitude faster than a browser, so the reported figure is modelled
+	// rather than measured: it doubles per difficulty bit, which is what the
+	// work itself does.
+	elapsed := 150 + s.intn(2800)
+	for range ch.Difficulty - seedBaseBits {
+		elapsed *= 2
+	}
+	if strings.Contains(ua, "iPhone") {
+		// Phones hash far slower than laptops, which is the whole point of the
+		// by-client card: a difficulty that is fine on a desktop can be
+		// punishing on mobile.
+		elapsed = elapsed*2 + 900
+	}
+	// The daemon accepts a reported time up to the issue-to-redeem interval it
+	// measured plus pow.ClockSkewAllowance (30s). The seeder redeems within
+	// milliseconds of issuing, so that allowance is the whole budget, and a
+	// modelled value above it would be discarded as impossible: the seeded
+	// histogram would quietly thin out at exactly the difficulties this demo
+	// exists to show. Doubling per bit reaches it once escalation pushes a
+	// client a few bits past base, so cap the model short of the bound and let
+	// the deliberate spike below be the only rejected report.
+	elapsed = min(elapsed, maxSeedElapsedMS)
+	// A rare impossible report, so the rejected-telemetry path (a dashed cell in
+	// the Solve column, and the solve_time_implausible counter) is demoed too.
+	if s.intn(100) == 0 {
+		elapsed = 3_600_000
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"challenge_id": ch.ChallengeID,
 		"nonce":        nonce,
-		// A plausible spread of client solve times so the solve-time histogram
-		// has a shape instead of a single spike.
-		"elapsed_ms": 150 + s.intn(2800),
+		"elapsed_ms":   elapsed,
 	})
 	s.do(http.MethodPost, "/__guardian/pass", host, uri, ip, ua, payload)
 }

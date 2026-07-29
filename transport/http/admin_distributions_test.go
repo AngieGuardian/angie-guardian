@@ -99,10 +99,12 @@ func TestDistributionsBuckets(t *testing.T) {
 	ts, m := metricsAdminServer(t)
 
 	// Solve-time buckets are {0.05,0.1,0.25,0.5,1,2,5,10,30}. Record one obs in
-	// distinct buckets: 0.2 (→ le=0.25), 0.7 (→ le=1), 3 (→ le=5).
-	m.SolveTime(0.2)
-	m.SolveTime(0.7)
-	m.SolveTime(3)
+	// distinct buckets: 0.2 (→ le=0.25), 0.7 (→ le=1), 3 (→ le=5). Split over
+	// two domains, so the merged view has to sum the family rather than report
+	// one series.
+	m.SolveTime("shop.test", 0.2)
+	m.SolveTime("shop.test", 0.7)
+	m.SolveTime("api.test", 3)
 	// Anomaly scores across two domains, summed into one distribution.
 	m.AnomalyScore("shop.test", 0.15)
 	m.AnomalyScore("shop.test", 0.85)
@@ -140,6 +142,19 @@ func TestDistributionsBuckets(t *testing.T) {
 	}
 	if bucketSum != 3 {
 		t.Errorf("solve_time per-bucket counts sum to %v, want 3 (cumulative not de-cumulated?)", bucketSum)
+	}
+
+	// ...and the same observations split per domain, which is what answers
+	// "whose puzzle is too hard".
+	byDomain := out["solve_time_by_domain"].(map[string]any)
+	if len(byDomain) != 2 {
+		t.Fatalf("solve_time_by_domain = %v, want one entry per domain", byDomain)
+	}
+	if got := byDomain["shop.test"].(map[string]any)["count"].(float64); got != 2 {
+		t.Errorf("solve_time_by_domain[shop.test].count = %v, want 2", got)
+	}
+	if got := byDomain["api.test"].(map[string]any)["count"].(float64); got != 1 {
+		t.Errorf("solve_time_by_domain[api.test].count = %v, want 1", got)
 	}
 
 	// Anomaly: 3 observations summed across the two domains.

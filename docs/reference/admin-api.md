@@ -247,9 +247,27 @@ works immediately.
 
 ### `GET /admin/decisions`
 
-The recent non-allow decision feed, newest first, from an in-process ring buffer
-(per instance, cleared on restart, capacity set by `admin.recent_size`). When
-GeoIP/ASN databases are configured,
+The recent activity feed, newest first, from an in-process ring buffer (per
+instance, cleared on restart, capacity set by `admin.recent_size`). It holds two
+kinds of row: every non-allow decision, and every redeemed proof-of-work
+challenge (action `solve`). Allows are never recorded.
+
+A solve is a separate row rather than an update of the challenge row that caused
+it: the two arrive on different requests minutes apart and share no identifier.
+Its `uri` is the page the client was trying to reach and it has no `method`, the
+redemption itself being a POST to the pass endpoint.
+
+Solve rows carry three extra fields, absent on every other row (absent means
+unknown, not zero):
+
+| Field | Meaning |
+|---|---|
+| `solve_ms` | What the client reported spending on hashing, from a `performance.now()` delta around its workers. **Unauthenticated telemetry.** It is the only measurement of pure hashing cost, which is what `pow.base_difficulty` is tuned against, but a client can under-report it. Absent when nothing was hashed (a no-JS redemption) or when the reported value could not have been true, in which case `guardian_challenges_total{outcome="solve_time_implausible"}` counts it. |
+| `round_trip_ms` | Issue to redeem, measured by the daemon from the challenge's own issued-at. Not forgeable, but not solve time either: it includes page load, both network legs and any time the tab spent backgrounded, so read it as an upper bound. |
+| `bits` | The leading-zero-bit difficulty this challenge actually required after any escalation, so a slow solve reads against what was asked for. |
+
+Neither timing is evidence about a client, and neither should decide anything;
+they are inputs for tuning difficulty. When GeoIP/ASN databases are configured,
 each row may also contain `country`, `city`, `subdivision`,
 `accuracy_radius_km`, `asn`, and `as_org`. These optional fields are looked up
 when the feed is read, once per distinct IP in the response; they do not add
@@ -260,10 +278,10 @@ Query parameters:
 | Parameter | Default | Description |
 |---|---|---|
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
-| `action` | | Filter: `deny`, `challenge` or `refuse`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. |
-| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict. Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
+| `action` | | Filter: `deny`, `challenge`, `refuse` or `solve`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. `solve` returns only redeemed challenges. |
+| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict, which also matches the `pow:solved` and `pow:nojs` rows of solved challenges (filter on `action` to separate them). Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
 | `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
-| `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing. |
+| `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing; solve rows are returned like any other, and the dashboard's charts drop them (a solve is the consequence of a challenge already plotted). |
 
 Both views include retention metadata. `truncated` describes the response limit,
 while `window.full` says whether the ring itself has overwritten older decisions.
@@ -282,7 +300,14 @@ distinguish an empty covered interval from unavailable history.
     "oldest": "2026-07-22T00:18:00Z",
     "newest": "2026-07-22T00:26:00Z"
   },
-  "decisions": []
+  "decisions": [
+    {"time":"2026-07-22T00:26:00Z","host":"shop.example.com","ip":"198.51.100.7",
+     "uri":"/checkout","ua":"Mozilla/5.0 ...","action":"solve","reason":"pow:solved",
+     "solve_ms":1904,"round_trip_ms":2412,"bits":20},
+    {"time":"2026-07-22T00:25:58Z","host":"shop.example.com","ip":"203.0.113.9",
+     "method":"GET","uri":"/.env","ua":"python-requests/2.31",
+     "action":"deny","reason":"waf:dotfile-probe"}
+  ]
 }
 ```
 
@@ -293,6 +318,12 @@ action and reason category, and the PoW lifecycle. `blocks_complete:false`
 means `blocks_active` is a lower bound (or `-1` while the mirror has not seeded),
 never the result of an expensive fallback scan. Long-horizon numbers live in
 `/metrics`.
+
+`recent.total` and `recent.by_reason` count decisions only; `recent.by_action`
+covers everything the ring holds, so it also carries the `solve` count. A solve
+is not a verdict, and every one of them collapses to the `pow` reason category,
+so counting them there would pin the dashboard's top-reason tile to `pow` on any
+healthy proof-of-work site.
 
 It also carries a `health` object: the authenticated companion to `/readyz`,
 with the raw probe error and the supporting numbers behind the dashboard's
@@ -337,9 +368,15 @@ from `decisions_total` (allow-inclusive, since the ring holds no allows). It
 reads metrics that already exist, adds no cardinality, and never touches the hot
 path. Feeds the dashboard's distribution charts and anomaly coverage warning.
 
+`solve_time` is merged across every domain; `solve_time_by_domain` is the same
+observations split by the bounded domain label, which is what answers "whose
+puzzle is too hard for its visitors". Both cover the process lifetime, so they
+outlive the bounded ring behind `/admin/decisions`.
+
 ```json
 {
   "solve_time": {"buckets":[{"le":"0.25","count":140},{"le":"+Inf","count":3}],"sum":41.2,"count":143},
+  "solve_time_by_domain": {"shop.example.com":{"buckets":[{"le":"1","count":90}],"sum":38.4,"count":93}},
   "anomaly":    {"buckets":[{"le":"0.1","count":10}],"sum":3.1,"count":10},
   "anomaly_selection": {"example.com":{"exact":8,"domain":2}},
   "anomaly_misses": {},
@@ -353,7 +390,10 @@ The heaviest sources of non-allow decisions in the recent window: top IPs,
 reason categories and request paths, plus a country rollup when GeoIP is loaded.
 Counts the in-process decision ring exactly (bounded by `admin.recent_size`,
 with no extra hot-path work). The window is the ring, so it covers challenged/denied
-traffic, not allows. Paths are query-stripped; GeoIP/ASN is merged for the top
+traffic, not allows. Solved challenges are in that ring too, and are excluded
+from every rollup here including `window`: this list is read to decide who to
+block, and the clients that paid their proof of work are the last ones that
+belong on it. Paths are query-stripped; GeoIP/ASN is merged for the top
 IPs only, and the country rollup is omitted when no databases are loaded.
 
 `ips`, `reasons` and `paths` are capped at the **top 15** entries, since they

@@ -205,6 +205,12 @@
      failures, peers down). Red is never the only cue: the column header says
      what the number is. */
   td.bad, .sub.bad { color: var(--critical); }
+  /* Solve times worth a second look. The thresholds are the solve-time
+     histogram's own bucket bounds, so the table and the chart agree on what
+     "slow" means. Colour is never the only cue: the column header names the
+     measurement and every cell carries all three numbers in its tooltip. */
+  td.slow { color: var(--warning); }
+  td.veryslow { color: var(--critical); }
 
   /* Action chips: colored dot + text label, never color alone */
   .chip { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
@@ -216,6 +222,14 @@
      client could not have completed a challenge, so it was not given one.
      Muted on purpose, so a favicon poll cannot look like an attack. */
   .chip.refuse::before { background: var(--muted); }
+  /* A redeemed challenge: the one row in this feed that is good news. */
+  .chip.solve::before { background: var(--good); }
+  /* Load shedding is Guardian refusing to decide at all, under saturation, so
+     it is neither a verdict nor a refusal and must not read as either. Blue
+     from the CVD-safe categorical set: identity, not severity. It short-circuits
+     before Evaluate, so it can never reach the decision feed today; the styling
+     exists so it is unmistakable if it ever does. */
+  .chip.shed::before { background: var(--series-1); }
   .chip.on::before { background: var(--good); }
 
   /* Domains carries eight columns against the two of the reason rollup, so it
@@ -367,7 +381,9 @@
       aria-label="Documentation: System health">i</a></h2>
   <div class="tablewrap" id="health-card" hidden>
     <table>
-      <thead><tr><th>Component</th><th>State</th><th>Detail</th></tr></thead>
+      <thead><tr><th title="Subsystem being probed">Component</th>
+                 <th title="Whether it is healthy right now">State</th>
+                 <th title="Supporting numbers, or the raw error">Detail</th></tr></thead>
       <tbody id="health-rows"></tbody>
     </table>
   </div>
@@ -431,6 +447,40 @@
         <div class="canvas-wrap"><canvas id="chart-solvetime"></canvas></div>
       </div>
     </div>
+    <!-- Who is paying how much for the proof of work. Two tables rather than
+         charts: both are short, and the numbers are the point. -->
+    <div class="charts even">
+      <div class="chart-card" id="card-solve-domains" hidden>
+        <div class="label"><span>Solve time by domain</span>
+          <span class="meta">client-reported, since daemon start</span></div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr>
+              <th title="Configured domain, or default">Domain</th>
+              <th title="Solves with a reported time, since start">Solves</th>
+              <th title="Mean reported hashing time">Mean</th>
+              <th title="Bucket 90% of solves fall within">p90</th>
+            </tr></thead>
+            <tbody id="solve-domains"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="chart-card" id="card-solve-clients" hidden>
+        <div class="label"><span>Solve time by client</span>
+          <span class="meta" id="chart-solve-clients-n"></span></div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr>
+              <th title="Class guessed from the User-Agent">Client</th>
+              <th title="Sampled solves; a class needs five">Solves</th>
+              <th title="Median reported hashing time">Median</th>
+              <th title="Slowest solve in the sample">Slowest</th>
+            </tr></thead>
+            <tbody id="solve-clients"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     <!-- Per-domain gets its own full-width row: a deployment can carry many
          domains, and one bar per domain needs the horizontal room. -->
     <div class="charts wide">
@@ -459,8 +509,13 @@
       aria-label="Documentation: anomaly baselines">i</a></h2>
     <div class="tablewrap">
       <table>
-        <thead><tr><th>Scope</th><th>Mode</th><th>Coverage</th><th>Segments</th>
-                   <th>Domains</th><th>Trained</th><th>Model</th></tr></thead>
+        <thead><tr><th title="Configured host, or defaults, plus any path overlay">Scope</th>
+                   <th title="enforce, observe or off">Mode</th>
+                   <th title="Whether a baseline is loaded for this scope">Coverage</th>
+                   <th title="Route and method baselines loaded">Segments</th>
+                   <th title="Domains in the model artifact">Domains</th>
+                   <th title="When the artifact was trained">Trained</th>
+                   <th title="Model artifact path">Model</th></tr></thead>
         <tbody id="anomaly-models"></tbody>
       </table>
     </div>
@@ -502,15 +557,23 @@
     <div class="toolbar" id="lu-dec-totals" style="margin:0.6rem 0 0;" hidden></div>
     <div class="tablewrap scrolly" style="margin-top:0.6rem;">
       <table>
-        <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
-                   <th>Request</th><th>User-Agent</th></tr></thead>
+        <thead><tr>
+          <th title="Local time; hover a cell for the date">Time</th>
+          <th title="What Guardian did">Action</th>
+          <th id="lu-dec-solve" hidden
+              title="Client-reported hashing time; hover a cell for the measured round trip and difficulty">Solve</th>
+          <th title="Which policy decided, as category:detail">Reason</th>
+          <th title="Request Host header">Host</th>
+          <th title="Method and URI requested; a solve row names the page its challenge was for">Request</th>
+          <th title="Client User-Agent; forgeable">User-Agent</th>
+        </tr></thead>
         <tbody id="lu-decisions"></tbody>
       </table>
-      <div class="empty" id="lu-dec-empty" hidden>No recent decisions for this IP on this instance.</div>
+      <div class="empty" id="lu-dec-empty" hidden>No recent activity for this IP on this instance.</div>
     </div>
-    <div class="meta" style="margin-top:0.5rem;">Recent decisions cover only this
-      instance's bounded ring of recent non-allow decisions; an empty list is
-      not proof this IP sent nothing.</div>
+    <div class="meta" style="margin-top:0.5rem;">Covers only this instance's
+      bounded ring of recent non-allow decisions and solved challenges; an empty
+      list is not proof this IP sent nothing.</div>
   </div>
 
   <h2>Active blocks<a class="help"
@@ -535,7 +598,9 @@
   </div>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+      <thead><tr><th title="Blocked address; click to look it up">IP</th>
+                 <th title="What placed the block">Reason</th>
+                 <th title="When the block lifts by itself">Expires</th><th></th></tr></thead>
       <tbody id="blocks"></tbody>
     </table>
     <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
@@ -546,7 +611,7 @@
     </div>
   </div>
 
-  <h2>Recent decisions <span class="meta">(newest first, non-allow only)</span><a class="help"
+  <h2>Recent decisions <span class="meta">(newest first, non-allow decisions and solved challenges)</span><a class="help"
       href="https://angieguardian.org/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked"
       target="_blank" rel="noopener noreferrer"
       title="Docs: what a reason means, and what to do about a false positive"
@@ -557,15 +622,26 @@
       <option value="deny">deny</option>
       <option value="challenge">challenge</option>
       <option value="refuse">refuse</option>
+      <option value="solve">solve</option>
     </select>
     <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
     <span class="meta" id="f-count"></span>
   </div>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Host</th>
-                 <th>IP</th><th id="dec-geo" hidden>Geo</th>
-                 <th>Request</th><th>User-Agent</th></tr></thead>
+      <thead><tr>
+        <th title="Local time; hover a cell for the date">Time</th>
+        <th title="What Guardian did">Action</th>
+        <th id="dec-solve" hidden
+            title="Client-reported hashing time; hover a cell for the measured round trip and difficulty">Solve</th>
+        <th title="Which policy decided, as category:detail">Reason</th>
+        <th title="Request Host header">Host</th>
+        <th title="Client IP; click to look it up">IP</th>
+        <th id="dec-geo" hidden
+            title="Country, city and network of the IP">Geo</th>
+        <th title="Method and URI requested; a solve row names the page its challenge was for">Request</th>
+        <th title="Client User-Agent; forgeable">User-Agent</th>
+      </tr></thead>
       <tbody id="decisions"></tbody>
     </table>
     <!-- Action-neutral: this feed also carries refusals, and the message shows
@@ -599,19 +675,24 @@
   </div>
   <div class="offenders" id="offenders">
     <div class="tablewrap scrolly">
-      <table><thead><tr><th>IP</th><th id="off-ip-geo">Geo</th><th>Hits</th></tr></thead>
+      <table><thead><tr><th title="Client IP; click to look it up">IP</th>
+                                 <th id="off-ip-geo" title="Country, city and network of the IP">Geo</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
         <tbody id="off-ips"></tbody></table>
     </div>
     <div class="tablewrap scrolly">
-      <table><thead><tr><th>Reason</th><th>Hits</th></tr></thead>
+      <table><thead><tr><th title="Reason category, the part before the colon">Reason</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
         <tbody id="off-reasons"></tbody></table>
     </div>
     <div class="tablewrap scrolly">
-      <table><thead><tr><th>Path</th><th>Hits</th></tr></thead>
+      <table><thead><tr><th title="Request path, query stripped">Path</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
         <tbody id="off-paths"></tbody></table>
     </div>
     <div class="tablewrap scrolly" id="off-countries-wrap" hidden>
-      <table><thead><tr><th>Country</th><th>Hits</th></tr></thead>
+      <table><thead><tr><th title="GeoIP country of the client IP">Country</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
         <tbody id="off-countries"></tbody></table>
     </div>
   </div>
@@ -628,8 +709,14 @@
            everything below it off the page: scroll in place, header pinned. -->
       <div class="tablewrap scrolly">
         <table>
-          <thead><tr><th>Domain</th><th>PoW</th><th>Mode</th><th>Signatures</th><th>Anomaly</th>
-                     <th>Behaviour</th><th>Geo</th><th>Feeds</th></tr></thead>
+          <thead><tr><th title="Configured domain, or defaults">Domain</th>
+                     <th title="Proof of work">PoW</th>
+                     <th title="When proof of work applies">Mode</th>
+                     <th title="WAF keyword rules; hover a cell for the rules file">Signatures</th>
+                     <th title="Anomaly scoring: enforce, observe or off">Anomaly</th>
+                     <th title="Per-IP behavioural blocking">Behaviour</th>
+                     <th title="GeoIP country and ASN rules">Geo</th>
+                     <th title="Reputation feeds">Feeds</th></tr></thead>
           <tbody id="domains"></tbody>
         </table>
       </div>
@@ -638,7 +725,8 @@
       <h2>Recent by reason</h2>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Reason category</th><th>Count</th></tr></thead>
+          <thead><tr><th title="The part of a reason before the colon">Reason category</th>
+                     <th title="Decisions in the recent window">Count</th></tr></thead>
           <tbody id="reasons"></tbody>
         </table>
         <div class="empty" id="reasons-empty" hidden>No recent activity.</div>
@@ -653,8 +741,12 @@
       aria-label="Documentation: GeoIP and reputation feeds">i</a></h2>
   <div class="tablewrap">
     <table>
-      <thead><tr><th>Feed</th><th>Action</th><th>Entries</th><th>Refreshed</th>
-                 <th>Loaded from</th><th>Last error</th></tr></thead>
+      <thead><tr><th title="Configured feed name">Feed</th>
+                 <th title="What a hit on this feed does">Action</th>
+                 <th title="Addresses and ranges loaded">Entries</th>
+                 <th title="When the feed last loaded">Refreshed</th>
+                 <th title="Where the current copy came from">Loaded from</th>
+                 <th title="Why the last refresh failed, if it did">Last error</th></tr></thead>
       <tbody id="feeds"></tbody>
     </table>
     <div class="empty" id="intel-empty" hidden>No reputation feeds configured.</div>
@@ -710,10 +802,17 @@
   </div>
   <div class="tablewrap" id="angie-table-wrap" hidden style="margin-top:0.75rem;">
     <table>
-      <thead><tr><th>Zone</th><th>Requests</th><th>Rate</th><th>In&nbsp;flight</th>
-                 <th>Discarded</th><th>2xx</th><th>4xx</th><th>5xx</th>
-                 <th id="angie-tls-th" hidden>TLS&nbsp;fails</th>
-                 <th>Received</th><th>Sent</th></tr></thead>
+      <thead><tr><th title="Angie server zone">Zone</th>
+                 <th title="Requests since Angie started">Requests</th>
+                 <th title="Requests per second, since the last refresh">Rate</th>
+                 <th title="Requests being processed right now">In&nbsp;flight</th>
+                 <th title="Requests that ended with no response sent">Discarded</th>
+                 <th title="Successful responses">2xx</th>
+                 <th title="Client-error responses">4xx</th>
+                 <th title="Server-error responses">5xx</th>
+                 <th id="angie-tls-th" hidden title="Failed TLS handshakes">TLS&nbsp;fails</th>
+                 <th title="Bytes received from clients">Received</th>
+                 <th title="Bytes sent to clients">Sent</th></tr></thead>
       <tbody id="angie-zones"></tbody>
     </table>
   </div>
@@ -722,8 +821,15 @@
     <span class="meta">per-path counters (status_zone inside location blocks)</span></h2>
   <div class="tablewrap" id="angie-loc-wrap" hidden>
     <table>
-      <thead><tr><th>Location</th><th>Requests</th><th>Rate</th><th>Discarded</th>
-                 <th>2xx</th><th>4xx</th><th>5xx</th><th>Received</th><th>Sent</th></tr></thead>
+      <thead><tr><th title="Angie location zone">Location</th>
+                 <th title="Requests since Angie started">Requests</th>
+                 <th title="Requests per second, since the last refresh">Rate</th>
+                 <th title="Requests that ended with no response sent">Discarded</th>
+                 <th title="Successful responses">2xx</th>
+                 <th title="Client-error responses">4xx</th>
+                 <th title="Server-error responses">5xx</th>
+                 <th title="Bytes received from clients">Received</th>
+                 <th title="Bytes sent to clients">Sent</th></tr></thead>
       <tbody id="angie-locations"></tbody>
     </table>
   </div>
@@ -739,9 +845,19 @@
   </div>
   <div class="tablewrap" id="angie-up-wrap" hidden style="margin-top:0.75rem;">
     <table>
-      <thead><tr><th>Upstream</th><th>Peer</th><th>State</th><th>Active</th><th>Requests</th>
-                 <th>Rate</th><th>Fails</th><th>Unavail</th><th>Downtime</th>
-                 <th>Header</th><th>Response</th><th>Sent</th><th>Received</th></tr></thead>
+      <thead><tr><th title="Upstream block name">Upstream</th>
+                 <th title="Backend server address">Peer</th>
+                 <th title="Whether Angie is sending traffic to this peer">State</th>
+                 <th title="Connections open to this peer now">Active</th>
+                 <th title="Requests sent to this peer">Requests</th>
+                 <th title="Requests per second, since the last refresh">Rate</th>
+                 <th title="Failed attempts against this peer">Fails</th>
+                 <th title="Times this peer was taken out of rotation">Unavail</th>
+                 <th title="Total time this peer was out of rotation">Downtime</th>
+                 <th title="Average time to this peer's response header">Header</th>
+                 <th title="Average time to this peer's full response">Response</th>
+                 <th title="Bytes sent to this peer">Sent</th>
+                 <th title="Bytes received from this peer">Received</th></tr></thead>
       <tbody id="angie-upstreams"></tbody>
     </table>
   </div>
@@ -757,9 +873,16 @@
   </div>
   <div class="tablewrap" id="angie-cache-wrap" hidden style="margin-top:0.75rem;">
     <table>
-      <thead><tr><th>Cache</th><th>Used</th><th>Fill</th><th>Hit&nbsp;ratio</th><th>Hit</th>
-                 <th>Stale</th><th>Miss</th><th>Expired</th><th>Bypass</th>
-                 <th>Written</th></tr></thead>
+      <thead><tr><th title="proxy_cache_path zone">Cache</th>
+                 <th title="Bytes of cache in use">Used</th>
+                 <th title="Used against the zone's configured maximum">Fill</th>
+                 <th title="Served from cache, as a share of all lookups">Hit&nbsp;ratio</th>
+                 <th title="Served from a fresh cache entry">Hit</th>
+                 <th title="Served from a stale entry">Stale</th>
+                 <th title="Not in the cache">Miss</th>
+                 <th title="In the cache but too old to serve">Expired</th>
+                 <th title="Caching skipped by configuration">Bypass</th>
+                 <th title="Bytes written to the cache">Written</th></tr></thead>
       <tbody id="angie-caches"></tbody>
     </table>
   </div>
@@ -768,8 +891,13 @@
     <span class="meta">Angie's own limit_req / limit_conn zones</span></h2>
   <div class="tablewrap" id="angie-limit-wrap" hidden>
     <table>
-      <thead><tr><th>Zone</th><th>Type</th><th>Passed</th><th>Delayed</th><th>Rejected</th>
-                 <th>Exhausted</th><th>Skipped</th></tr></thead>
+      <thead><tr><th title="limit_req or limit_conn zone">Zone</th>
+                 <th title="What the zone limits: requests or connections">Type</th>
+                 <th title="Allowed through unchanged">Passed</th>
+                 <th title="Paced to the configured rate; requests only">Delayed</th>
+                 <th title="Refused by the limit">Rejected</th>
+                 <th title="Refused because the zone ran out of memory">Exhausted</th>
+                 <th title="Not counted: the zone was unusable">Skipped</th></tr></thead>
       <tbody id="angie-limits"></tbody>
     </table>
   </div>
@@ -778,8 +906,11 @@
     <span class="meta">slab zones; allocation failures mean the zone is too small</span></h2>
   <div class="tablewrap" id="angie-slab-wrap" hidden>
     <table>
-      <thead><tr><th>Zone</th><th>Pages&nbsp;used</th><th>Pages&nbsp;free</th><th>Used</th>
-                 <th>Alloc&nbsp;fails</th></tr></thead>
+      <thead><tr><th title="Shared memory zone">Zone</th>
+                 <th title="Slab pages in use">Pages&nbsp;used</th>
+                 <th title="Slab pages still available">Pages&nbsp;free</th>
+                 <th title="Used pages as a share of the zone">Used</th>
+                 <th title="Allocations that found no room; the zone is too small">Alloc&nbsp;fails</th></tr></thead>
       <tbody id="angie-slabs"></tbody>
     </table>
   </div>
@@ -857,6 +988,31 @@
     const cell = td("time", clock(iso));
     const d = new Date(iso);
     if (!isNaN(d.getTime())) cell.title = d.toLocaleString();
+    return cell;
+  };
+  // A solve row's request is the URI its challenge was issued for, with no
+  // method to name: the redemption itself is a POST to the pass endpoint, which
+  // is not what an operator is looking at.
+  const requestText = (d) => [d.method, d.uri].filter(Boolean).join(" ");
+  // The Solve cell. Only solve rows have one, and the cell carries all three
+  // numbers in its tooltip so the reported time is never read without the
+  // difficulty it was paid at or the server's own measurement of the round
+  // trip. SLOW/VERY_SLOW are the solve-time histogram's bucket bounds.
+  const SLOW_SOLVE_MS = 2000, VERY_SLOW_SOLVE_MS = 10000;
+  const solveCell = (d) => {
+    if (d.action !== "solve") return td(null, "");
+    const ms = Number(d.solve_ms) || 0;
+    const klass = ms > VERY_SLOW_SOLVE_MS ? "num veryslow"
+      : ms > SLOW_SOLVE_MS ? "num slow" : "num";
+    // millis(0) renders "0", which would read as an instant solve rather than
+    // as a client that never reported one.
+    const cell = td(klass, ms ? millis(ms) : "–");
+    cell.title = [
+      ms ? "client-reported " + millis(ms)
+         : "solve time not reported (no-JS redemption, or a value that could not be true)",
+      d.round_trip_ms ? "issued to redeemed " + millis(d.round_trip_ms) : null,
+      d.bits ? d.bits + " difficulty bits" : null,
+    ].filter(Boolean).join(" · ");
     return cell;
   };
   // A Go zero time ("0001-01-01T00:00:00Z") means "never set", not an instant.
@@ -1244,6 +1400,13 @@
     const now = Date.now();
     const bounds = chartBounds(now);
     const decisions = lastChartDecisions.filter((d) => {
+      // Solves share the ring but are not verdicts, and both charts below would
+      // misreport them. In the stacked-action chart a solve is the consequence
+      // of a challenge already in the stack, so a fourth band would draw one
+      // client journey twice; in the by-reason chart every solve collapses to
+      // "pow" and would swamp the band that exists to show pow failures. The
+      // PoW funnel card already carries issued/solved/failed.
+      if (d.action === "solve") return false;
       const t = new Date(d.time).getTime();
       return Number.isFinite(t) && t >= bounds.lo && t <= bounds.hi;
     });
@@ -1252,6 +1415,7 @@
     // The series list is explicit, so a new action must be added here as well
     // as to the datasets below: bucketize only counts the keys it is given, and
     // a missing one renders as a permanently empty band rather than an error.
+    // "solve" is the deliberate exception, filtered out above.
     const dt = bucketize(decisions, (d) => d.action, ["deny", "challenge", "refuse"], 32, bounds.lo, bounds.hi);
     const coverage = chartCoverageLabel(decisions.length, bounds, now);
     $("chart-decisions-window").textContent = coverage;
@@ -1362,6 +1526,83 @@
     }));
   };
 
+  // Nearest bucket bound at or above a quantile. A Prometheus histogram carries
+  // bucket counts and nothing else, so this reports the bound ("≤ 2 s") instead
+  // of interpolating a precision the data does not have.
+  const bucketQuantile = (hist, q) => {
+    const buckets = hist.buckets || [];
+    if (!hist.count) return "–"; // no observations: a zero target would name the first bucket
+    const target = hist.count * q;
+    let cum = 0;
+    for (let i = 0; i < buckets.length; i++) {
+      cum += buckets[i].count || 0;
+      if (cum < target) continue;
+      if (buckets[i].le !== "+Inf") return "≤ " + millis(Number(buckets[i].le) * 1000);
+      // Past the last finite bound: say so rather than naming infinity.
+      const last = buckets[i - 1];
+      return last ? "> " + millis(Number(last.le) * 1000) : "–";
+    }
+    return "–";
+  };
+
+  // Which domain is asking too much of its visitors. Sourced from the
+  // domain-labelled solve-time histogram, so it covers the whole process
+  // lifetime rather than whatever the bounded ring still holds.
+  const renderSolveDomains = (byDomain) => {
+    const rows = Object.entries(byDomain)
+      .filter(([, h]) => (h.count || 0) > 0)
+      .map(([domain, h]) => ({ domain, hist: h, n: h.count, mean: h.sum / h.count }))
+      .sort((a, b) => b.mean - a.mean || a.domain.localeCompare(b.domain));
+    $("card-solve-domains").hidden = rows.length === 0;
+    $("solve-domains").replaceChildren(...rows.map((r) => row(
+      td("wrap", r.domain), td("num", String(Math.round(r.n))),
+      td("num", millis(r.mean * 1000)), td("num", bucketQuantile(r.hist, 0.9)))));
+  };
+
+  // Coarse client classes for the "is one kind of client struggling?" question.
+  // First match wins, so bots are tested before the browser families they
+  // impersonate, and mobile before desktop (an Android UA also says "Linux").
+  // Deliberately a presentation heuristic and never a metric label: the
+  // taxonomy will keep changing, and a Prometheus label is a one-way door.
+  const UA_CLASSES = [
+    [/bot|crawl|spider|slurp|curl|wget|python-requests|headless/i, "bot"],
+    [/android|iphone|ipad|ipod|mobile/i, "mobile"],
+    [/windows|macintosh|x11|linux|cros/i, "desktop"],
+  ];
+  const uaClass = (ua) => {
+    if (!ua) return "none";
+    for (const [re, name] of UA_CLASSES) if (re.test(ua)) return name;
+    return "other";
+  };
+  // Below this a median is noise, not a finding.
+  const MIN_SOLVE_SAMPLES = 5;
+  const renderSolveClients = () => {
+    const groups = new Map();
+    for (const d of lastDecisions) {
+      if (d.action !== "solve") continue;
+      // A no-JS redemption and a rejected report both measure no hashing.
+      const ms = Number(d.solve_ms) || 0;
+      if (!ms) continue;
+      if (!groups.has(uaClass(d.ua))) groups.set(uaClass(d.ua), []);
+      groups.get(uaClass(d.ua)).push(ms);
+    }
+    const rows = [...groups.entries()]
+      .filter(([, v]) => v.length >= MIN_SOLVE_SAMPLES)
+      .map(([client, v]) => {
+        v.sort((a, b) => a - b);
+        return { client, n: v.length, median: v[Math.floor(v.length / 2)], max: v[v.length - 1] };
+      })
+      .sort((a, b) => b.median - a.median || a.client.localeCompare(b.client));
+    $("card-solve-clients").hidden = rows.length === 0;
+    if (!rows.length) return;
+    // Named a sample on purpose: this reads the page of recent decisions the
+    // table already fetched, not every solve the daemon has seen.
+    $("chart-solve-clients-n").textContent = "sample of recent solves";
+    $("solve-clients").replaceChildren(...rows.map((r) => row(
+      td("wrap", r.client), td("num", String(r.n)),
+      td("num", millis(r.median)), td("num", millis(r.max)))));
+  };
+
   const renderDistributions = () => {
     if (!window.Chart || !lastDist) return;
     const cols = themeColors();
@@ -1375,7 +1616,10 @@
     // find it, so nothing here is capped away.
     const perDomain = lastDist.per_domain || {};
     const actions = ["allow", "challenge", "refuse", "deny", "shed"];
-    const actionColor = { allow: cols.good, challenge: cols.warning, refuse: cols.muted, deny: cols.critical, shed: cols.muted };
+    // shed is deliberately not muted like refuse: a refusal is a decision about
+    // the client, load shedding is Guardian declining to decide at all.
+    const actionColor = { allow: cols.good, challenge: cols.warning, refuse: cols.muted,
+                          deny: cols.critical, shed: cols.series[0], solve: cols.good };
     const domains = Object.keys(perDomain)
       .map((d) => ({ name: d, total: actions.reduce((n, a) => n + (perDomain[d][a] || 0), 0) }))
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
@@ -1437,6 +1681,8 @@
       $("chart-solvetime-n").textContent = Math.round(st.count) + " solves";
       histogramChart("chart-solvetime", st, cols.warning, "solve time (seconds)", "solves");
     }
+    renderSolveDomains(lastDist.solve_time_by_domain || {});
+    renderSolveClients();
 
     // Anomaly-score distribution, shown only when the model has scored anything.
     const an = lastDist.anomaly || {};
@@ -2252,6 +2498,10 @@
     const needle = $("f-text").value.trim().toLowerCase();
     const hasGeo = lastDecisions.some(hasGeoInfo);
     $("dec-geo").hidden = !hasGeo;
+    // Computed over the whole feed rather than the visible page, like Geo, so
+    // the column does not appear and vanish as you page through.
+    const hasSolve = lastDecisions.some((d) => d.action === "solve");
+    $("dec-solve").hidden = !hasSolve;
     const rows = lastDecisions.filter((d) => {
       if (action && d.action !== action) return false;
       if (!needle) return true;
@@ -2268,10 +2518,11 @@
     dt.replaceChildren(...pageRows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
-      const cells = [timeCell(d.time), action, td("wrap", d.reason),
-        td("wrap", d.host), ipCell(d.ip)];
+      const cells = [timeCell(d.time), action];
+      if (hasSolve) cells.push(solveCell(d));
+      cells.push(td("wrap", d.reason), td("wrap", d.host), ipCell(d.ip));
       if (hasGeo) cells.push(geoCell(d));
-      cells.push(td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+      cells.push(td("wrap", requestText(d)), td("wrap", d.ua));
       return row(...cells);
     }));
     $("decisions-empty").hidden = rows.length > 0;
@@ -2400,7 +2651,7 @@
   // rather than passing a partial count off as the total.
   // Ranking only: an action missing from this list still renders, it just sorts
   // last. Ordered by how much operator attention it deserves.
-  const ACTION_ORDER = ["deny", "challenge", "refuse"];
+  const ACTION_ORDER = ["deny", "challenge", "refuse", "solve"];
   const renderLookupTotals = (rows, whole) => {
     const counts = new Map();
     for (const d of rows) counts.set(d.action, (counts.get(d.action) || 0) + 1);
@@ -2411,7 +2662,7 @@
     const actions = [...counts.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     const box = $("lu-dec-totals");
     box.replaceChildren(
-      el("strong", null, rows.length + (rows.length === 1 ? " decision" : " decisions")),
+      el("strong", null, rows.length + (rows.length === 1 ? " entry" : " entries")),
       ...actions.map((a) => el("span", "chip " + a, counts.get(a) + " " + a)),
       ...(whole ? [] : [el("span", "meta", "(from the rows already fetched)")]));
     box.hidden = rows.length === 0;
@@ -2419,11 +2670,16 @@
 
   const renderLookupDecisions = (rows, whole) => {
     renderLookupTotals(rows, whole);
+    const hasSolve = rows.some((d) => d.action === "solve");
+    $("lu-dec-solve").hidden = !hasSolve;
     $("lu-decisions").replaceChildren(...rows.map((d) => {
       const action = td(null, "");
       action.appendChild(el("span", "chip " + d.action, d.action));
-      return row(timeCell(d.time), action, td("wrap", d.reason),
-        td("wrap", d.host), td("wrap", d.method + " " + d.uri), td("wrap", d.ua));
+      const cells = [timeCell(d.time), action];
+      if (hasSolve) cells.push(solveCell(d));
+      cells.push(td("wrap", d.reason), td("wrap", d.host),
+        td("wrap", requestText(d)), td("wrap", d.ua));
+      return row(...cells);
     }));
     $("lu-dec-empty").hidden = rows.length > 0;
   };
