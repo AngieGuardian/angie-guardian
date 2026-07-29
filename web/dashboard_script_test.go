@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -350,6 +351,196 @@ func TestSolveClientsStatesItsCoverage(t *testing.T) {
 	got = renderSolveClientsCard(t, 3, sample)
 	if got.Meta != "sample of recent solves" {
 		t.Errorf("meta = %q, want the plain sample note", got.Meta)
+	}
+}
+
+// solveTimeBuckets mirrors the bounds of guardian_challenge_solve_seconds in
+// core/metrics/metrics.go. Kept here rather than imported because the literal
+// there is inline and unexported; if the two ever drift, the bound strings
+// asserted below stop matching what the dashboard is handed.
+var solveTimeBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30}
+
+// solveHistogram builds the /admin/distributions shape (per-bucket counts, a
+// "+Inf" overflow, sum, count) out of observed seconds, so the tests below
+// start from real solve times rather than hand-tallied buckets and would catch
+// the bucket walk being off by one.
+func solveHistogram(seconds ...float64) map[string]any {
+	counts := make([]float64, len(solveTimeBuckets)+1)
+	var sum float64
+	for _, s := range seconds {
+		sum += s
+		i := len(solveTimeBuckets) // the +Inf slot
+		for j, le := range solveTimeBuckets {
+			if s <= le {
+				i = j
+				break
+			}
+		}
+		counts[i]++
+	}
+	buckets := make([]map[string]any, 0, len(counts))
+	for i, le := range solveTimeBuckets {
+		buckets = append(buckets, map[string]any{"le": strconv.FormatFloat(le, 'g', -1, 64), "count": counts[i]})
+	}
+	buckets = append(buckets, map[string]any{"le": "+Inf", "count": counts[len(solveTimeBuckets)]})
+	return map[string]any{"buckets": buckets, "sum": sum, "count": float64(len(seconds))}
+}
+
+// TestBucketQuantile pins the p90 column on the per-domain card. A Prometheus
+// histogram keeps bucket counts and nothing else, so the card reports the bound
+// a quantile falls in and must never interpolate a precision that is not there.
+func TestBucketQuantile(t *testing.T) {
+	vm := jsRuntime(t, "millis", "bucketQuantile")
+	cases := []struct {
+		name    string
+		seconds []float64
+		want    string
+	}{
+		// The three domains from a live deployment, whose card read
+		// "≤ 1.0 s", "≤ 5.0 s" and "≤ 30.0 s".
+		{"one sub-second solve", []float64{0.878}, "≤ 1.0 s"},
+		{"one solve at 3.8 s", []float64{3.77}, "≤ 5.0 s"},
+		{"four fast and one 27 s", []float64{0.151, 0.614, 27.014, 1.132, 1.800}, "≤ 30.0 s"},
+		// A p90 tracks the bulk and does not chase one outlier: nine of ten
+		// solves finished inside 100 ms, so that is the answer even though one
+		// visitor waited 12 s. Reading the tail is the Slowest column's job on
+		// the client card, and the distribution chart's.
+		{"nine fast, one slow", []float64{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 12}, "≤ 100 ms"},
+		// One more fast solve and the 90th percentile crosses into the tail.
+		{"eight fast, two slow", []float64{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 12, 12}, "≤ 30.0 s"},
+		// Past the last finite bound, naming infinity would be useless.
+		{"beyond the last bucket", []float64{45}, "> 30.0 s"},
+		{"no observations", nil, "–"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			call(t, vm, "bucketQuantile("+mustJSON(t, solveHistogram(c.seconds...))+", 0.9)", &got)
+			if got != c.want {
+				t.Errorf("bucketQuantile = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestRenderSolveDomains reproduces the "Solve time by domain" card from a live
+// deployment, from the raw solve times up: worst mean first, the mean formatted
+// against the same scale as everything else on the page, and a bucket-bound p90.
+func TestRenderSolveDomains(t *testing.T) {
+	vm := jsRuntime(t, "millis", "bucketQuantile", "renderSolveDomains")
+	byDomain := map[string]any{
+		"melroy.org":      solveHistogram(0.151, 0.614, 27.014, 1.132, 1.800),
+		"blog.melroy.org": solveHistogram(3.77),
+		"mail.melroy.org": solveHistogram(0.878),
+		// A configured domain that has never issued a solved challenge must not
+		// take up a row saying "0".
+		"idle.melroy.org": solveHistogram(),
+	}
+	var got struct {
+		Hidden bool       `json:"hidden"`
+		Rows   [][]string `json:"rows"`
+	}
+	call(t, vm, `(function () {
+	  reset();
+	  renderSolveDomains(`+mustJSON(t, byDomain)+`);
+	  return {
+	    hidden: $("card-solve-domains").hidden,
+	    rows: $("solve-domains").children.map(function (r) {
+	      return r.cells.map(function (c) { return c.text; });
+	    }),
+	  };
+	})()`, &got)
+	want := [][]string{
+		{"melroy.org", "5", "6.1 s", "≤ 30.0 s"},
+		{"blog.melroy.org", "1", "3.8 s", "≤ 5.0 s"},
+		{"mail.melroy.org", "1", "878 ms", "≤ 1.0 s"},
+	}
+	if got.Hidden || fmt.Sprint(got.Rows) != fmt.Sprint(want) {
+		t.Errorf("rows = %v (hidden %v), want %v", got.Rows, got.Hidden, want)
+	}
+}
+
+// TestRenderSolveDomainsHidesWhenNothingSolved keeps the card off the page
+// rather than showing an empty table, including when domains are present but
+// have no observations.
+func TestRenderSolveDomainsHidesWhenNothingSolved(t *testing.T) {
+	vm := jsRuntime(t, "millis", "bucketQuantile", "renderSolveDomains")
+	for name, byDomain := range map[string]map[string]any{
+		"no domains":        {},
+		"domain, no solves": {"melroy.org": solveHistogram()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var hidden bool
+			call(t, vm, `(function () {
+			  reset();
+			  renderSolveDomains(`+mustJSON(t, byDomain)+`);
+			  return $("card-solve-domains").hidden;
+			})()`, &hidden)
+			if !hidden {
+				t.Error("card shown with nothing to report")
+			}
+		})
+	}
+}
+
+// TestSolveCell covers the Solve column in the decisions feed and the per-IP
+// lookup: which of the three numbers is displayed, when the row is coloured as
+// slow, and that a client which reported nothing is never rendered as instant.
+func TestSolveCell(t *testing.T) {
+	vm := jsRuntime(t, "millis", "SLOW_SOLVE_MS", "solveCell")
+	type cell struct {
+		Cls   string `json:"cls"`
+		Text  string `json:"text"`
+		Title string `json:"title"`
+	}
+	cases := []struct {
+		name string
+		row  map[string]any
+		want cell
+	}{
+		{
+			// Every non-solve row in the feed gets a blank cell, not a dash:
+			// the question does not apply to a deny.
+			name: "a deny has no solve time",
+			row:  map[string]any{"action": "deny", "reason": "pow:missing", "solve_ms": 0},
+			want: cell{Cls: "", Text: "", Title: ""},
+		},
+		{
+			name: "a fast solve",
+			row:  solve(firefoxLinux, 878),
+			want: cell{Cls: "num", Text: "878 ms",
+				Title: "client-reported 878 ms · issued to redeemed 1.3 s · 18 difficulty bits"},
+		},
+		{
+			// Over the 2 s bucket bound, so the cell is flagged.
+			name: "a slow solve",
+			row:  solve(firefoxLinux, 3770),
+			want: cell{Cls: "num slow", Text: "3.8 s",
+				Title: "client-reported 3.8 s · issued to redeemed 4.2 s · 18 difficulty bits"},
+		},
+		{
+			// The Kindle Fire. Over 10 s, the histogram's next bound.
+			name: "the outlier",
+			row:  solve(kindleSilk, 27014),
+			want: cell{Cls: "num veryslow", Text: "27.0 s",
+				Title: "client-reported 27.0 s · issued to redeemed 27.4 s · 18 difficulty bits"},
+		},
+		{
+			// millis(0) would render "0", which reads as an instant solve.
+			name: "no time reported",
+			row:  solve(firefoxLinux, 0),
+			want: cell{Cls: "num", Text: "–",
+				Title: "solve time not reported (no-JS redemption, or a value that could not be true) · issued to redeemed 400 ms · 18 difficulty bits"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got cell
+			call(t, vm, "solveCell("+mustJSON(t, c.row)+")", &got)
+			if got != c.want {
+				t.Errorf("solveCell =\n  %+v\nwant\n  %+v", got, c.want)
+			}
+		})
 	}
 }
 
