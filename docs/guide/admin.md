@@ -346,10 +346,16 @@ Two cards answer that without reading individual rows:
   fine on a laptop and punishing on a phone is visible. Three things bound what
   it can tell you: it classifies by matching the User-Agent, which is a
   forgeable header and a guess; it reads the page's most recent 512 decisions
-  rather than every solve, which is why it is labelled a sample; and it counts
+  rather than every solve, which is why it is labelled a sample, and why on a
+  busy site its total is lower than the per-domain card's (the header says
+  `5 of 6 solves sampled` whenever they differ, since older solves have already
+  been pushed out of the ring); and it counts
   only solves that reported a time, so no-JS redemptions and rejected reports
-  are absent and its totals are lower than the funnel's `solved`. A class needs
-  five solves before it appears at all. The taxonomy stays client-side and is
+  are absent and its totals are lower than the funnel's `solved`. The card
+  appears with its first timed solve, and a class with fewer than five is
+  flagged as a thin sample when you hover it: below that a median is a hint, not
+  a finding, but withholding the row entirely only made a quiet deployment look
+  broken. The taxonomy stays client-side and is
   deliberately never a metric label: it is a heuristic that will need revising,
   and a Prometheus label is a one-way door.
 

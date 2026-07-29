@@ -472,7 +472,7 @@
           <table>
             <thead><tr>
               <th title="Class guessed from the User-Agent">Client</th>
-              <th title="Sampled solves; a class needs five">Solves</th>
+              <th title="Sampled solves in this class">Solves</th>
               <th title="Median reported hashing time">Median</th>
               <th title="Slowest solve in the sample">Slowest</th>
             </tr></thead>
@@ -1574,8 +1574,13 @@
     for (const [re, name] of UA_CLASSES) if (re.test(ua)) return name;
     return "other";
   };
-  // Below this a median is noise, not a finding.
-  const MIN_SOLVE_SAMPLES = 5;
+  // Below this a median is a hint rather than a finding, so the row says so.
+  // It deliberately does NOT withhold the row: a card that hides itself until
+  // one class reaches five solves is indistinguishable from a broken one on
+  // exactly the quiet deployment where a single 10 s solve matters most, and
+  // the neighbouring per-domain card happily reports its first solve. The
+  // sample size is a column, so a thin one is visible rather than papered over.
+  const THIN_SOLVE_SAMPLE = 5;
   const renderSolveClients = () => {
     const groups = new Map();
     for (const d of lastDecisions) {
@@ -1587,7 +1592,6 @@
       groups.get(uaClass(d.ua)).push(ms);
     }
     const rows = [...groups.entries()]
-      .filter(([, v]) => v.length >= MIN_SOLVE_SAMPLES)
       .map(([client, v]) => {
         v.sort((a, b) => a - b);
         return { client, n: v.length, median: v[Math.floor(v.length / 2)], max: v[v.length - 1] };
@@ -1596,11 +1600,24 @@
     $("card-solve-clients").hidden = rows.length === 0;
     if (!rows.length) return;
     // Named a sample on purpose: this reads the page of recent decisions the
-    // table already fetched, not every solve the daemon has seen.
-    $("chart-solve-clients-n").textContent = "sample of recent solves";
-    $("solve-clients").replaceChildren(...rows.map((r) => row(
-      td("wrap", r.client), td("num", String(r.n)),
-      td("num", millis(r.median)), td("num", millis(r.max)))));
+    // table already fetched, not every solve the daemon has seen. Say how much
+    // of the whole it covers whenever the histogram (which counts every timed
+    // solve since start) knows about more, because the card next door reports
+    // that larger number and two adjacent totals that disagree with nothing
+    // explaining why read as a bug in one of them.
+    const sampled = rows.reduce((n, r) => n + r.n, 0);
+    const timed = Math.round((lastDist && lastDist.solve_time && lastDist.solve_time.count) || 0);
+    $("chart-solve-clients-n").textContent = timed > sampled
+      ? sampled + " of " + timed + " solves sampled"
+      : "sample of recent solves";
+    $("solve-clients").replaceChildren(...rows.map((r) => {
+      const client = td("wrap", r.client);
+      if (r.n < THIN_SOLVE_SAMPLE) {
+        client.title = "thin sample: " + r.n + (r.n === 1 ? " solve" : " solves");
+      }
+      return row(client, td("num", String(r.n)),
+        td("num", millis(r.median)), td("num", millis(r.max)));
+    }));
   };
 
   const renderDistributions = () => {
@@ -1682,7 +1699,6 @@
       histogramChart("chart-solvetime", st, cols.warning, "solve time (seconds)", "solves");
     }
     renderSolveDomains(lastDist.solve_time_by_domain || {});
-    renderSolveClients();
 
     // Anomaly-score distribution, shown only when the model has scored anything.
     const an = lastDist.anomaly || {};
@@ -2537,6 +2553,16 @@
       ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
         " of " + rows.length + " (page " + (decPage + 1) + " of " + pages + ")"
       : "";
+
+    // The per-client solve rollup reads this same feed, so it belongs here and
+    // not with the registry charts: it draws no chart, and rendering it in
+    // renderDistributions meant a page with no Chart.js or one failed
+    // best-effort /admin/distributions fetch showed no card at all, with its
+    // data already sitting in lastDecisions. It reads lastDist only for the
+    // coverage note and does without it. The filters above are deliberately
+    // ignored, because a sample narrowed to one host or one IP no longer
+    // answers "which kind of client is struggling?".
+    renderSolveClients();
   };
 
   // --- Unblock -------------------------------------------------------------
