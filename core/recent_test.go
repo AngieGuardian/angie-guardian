@@ -188,6 +188,38 @@ func TestRecordSolve(t *testing.T) {
 	}
 }
 
+// A failed redemption lands in the same ring, carrying who failed and why:
+// the funnel metric counts these without a reason, and the ring row is what
+// lets an operator tell a garbage-nonce bot from a visitor whose VPN moved
+// them to a new exit IP mid-challenge.
+func TestRecordRedeemFailure(t *testing.T) {
+	e := &Engine{recent: newRecentRing(8)}
+	e.RecordRedeemFailure("shop.test", "198.51.100.7", "Mozilla/5.0", ReasonBindingMismatch)
+	got := e.recent.list(0)
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(got))
+	}
+	d := got[0]
+	if d.Action != ActionRedeemFail || d.Reason != ReasonBindingMismatch {
+		t.Errorf("action/reason = %s/%s, want %s/%s", d.Action, d.Reason, ActionRedeemFail, ReasonBindingMismatch)
+	}
+	if d.Host != "shop.test" || d.IP != "198.51.100.7" || d.UA != "Mozilla/5.0" {
+		t.Errorf("attribution = %s %s %s, want shop.test 198.51.100.7 Mozilla/5.0", d.Host, d.IP, d.UA)
+	}
+	// No verified challenge record exists on the failure path, so the solve
+	// fields must read as "unknown", never as an instant solve at difficulty 0.
+	if d.SolveMS != 0 || d.RoundTripMS != 0 || d.Bits != 0 {
+		t.Errorf("solve fields = %d/%d/%d, want all zero on a failure row",
+			d.SolveMS, d.RoundTripMS, d.Bits)
+	}
+	if d.URI != "" || d.Method != "" {
+		t.Errorf("uri/method = %q/%q, want empty on a failure row", d.URI, d.Method)
+	}
+	if d.Time.IsZero() {
+		t.Error("failure row has no timestamp")
+	}
+}
+
 // A no-JS redemption waited out the meta refresh instead of hashing, so it has
 // no solve time to report and must not be recorded as an instant solve.
 func TestRecordSolveNoJS(t *testing.T) {

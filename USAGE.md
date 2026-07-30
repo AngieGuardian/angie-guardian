@@ -699,13 +699,20 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 # {"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
 #                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
 
-# Every recent non-allow decision and solved challenge, newest first, from an
-# in-process ring buffer (per instance, cleared on restart). Filters: ?limit=
-# (default 50), ?action=deny|challenge|refuse|solve, ?reason=<prefix e.g. waf>.
+# Every recent non-allow decision, solved challenge and failed redemption,
+# newest first, from an in-process ring buffer (per instance, cleared on
+# restart). Filters: ?limit= (default 50),
+# ?action=deny|challenge|refuse|solve|redeem_fail, ?reason=<prefix e.g. waf>.
 # refuse = Guardian withheld the challenge after classifying the request as
 # unable to complete it. Exclude refuse when looking only for puzzles that were
 # really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
+
+# Failed redemption attempts: the per-attempt detail behind the funnel's
+# "failed" count. pow:bad_solution is a wrong nonce, pow:binding_mismatch
+# usually a VPN or mobile handover moving the client to a new IP between issue
+# and redeem, pow:unknown_challenge an expired, replayed or forged challenge ID.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
 # how long the client says it hashed (solve_ms), how long this daemon measured
@@ -793,8 +800,8 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent activity feed of non-allow decisions and solved
-challenges (filterable by action and free text),
+block-an-IP form), the recent activity feed of non-allow decisions, solves and
+failed redemptions (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

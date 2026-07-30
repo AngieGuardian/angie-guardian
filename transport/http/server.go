@@ -598,6 +598,27 @@ func (s *Server) handlePassNoJS(w http.ResponseWriter, r *http.Request) {
 	s.redeem(w, r, &pow.RedeemRequest{ChallengeID: r.URL.Query().Get("cid"), NoJS: true}, 0)
 }
 
+// redeemFailReason maps a Redeem error onto the ring's failure vocabulary,
+// one branch per exported pow error. The catch-all is ReasonRedeemInternal:
+// everything unexported (store, key refresh) is Guardian failing rather than
+// the client, which is exactly the set the handler answers with a 500.
+func redeemFailReason(err error) string {
+	switch {
+	case errors.Is(err, pow.ErrBadSolution):
+		return core.ReasonBadSolution
+	case errors.Is(err, pow.ErrBindingMismatch):
+		return core.ReasonBindingMismatch
+	case errors.Is(err, pow.ErrChallengeUnknown):
+		return core.ReasonChallengeGone
+	case errors.Is(err, pow.ErrTooFast):
+		return core.ReasonTooFast
+	case errors.Is(err, pow.ErrNoJSDisabled):
+		return core.ReasonNoJSDisabled
+	default:
+		return core.ReasonRedeemInternal
+	}
+}
+
 func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemRequest, elapsedMS int64) {
 	host := headerOr(r, hdrHost, r.Host)
 	ip := clientIP(r)
@@ -626,19 +647,26 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	res, err := s.pow.Redeem(r.Context(), req)
 	if err != nil {
 		s.metrics.Challenge("failed")
+		// The ring row keeps what the funnel counter drops: who failed, on
+		// which host, and why. Recorded on the internal-error branch too,
+		// because the counter above already includes it and the two must
+		// agree; a burst of internal_error rows is a store-trouble signal.
+		reason := redeemFailReason(err)
+		s.engine.RecordRedeemFailure(host, ip, req.UserAgent, reason)
 		status := http.StatusForbidden
-		if !errors.Is(err, pow.ErrChallengeUnknown) && !errors.Is(err, pow.ErrBadSolution) &&
-			!errors.Is(err, pow.ErrBindingMismatch) && !errors.Is(err, pow.ErrTooFast) &&
-			!errors.Is(err, pow.ErrNoJSDisabled) {
+		if reason == core.ReasonRedeemInternal {
 			status = http.StatusInternalServerError
 			s.log.Error("redeem failed", "host", host, "ip", ip, "err", err)
 		} else {
 			s.log.Info("redeem rejected", "host", host, "ip", ip, "nojs", req.NoJS, "err", err)
 			// Failed solutions score against the client: repeated bad nonces
-			// or forged/replayed challenge IDs earn a behavioural block.
+			// or forged/replayed challenge IDs earn a behavioural block. A
+			// wrong nonce or a premature no-JS redeem is pow_fail; an unknown
+			// or misbound challenge ID smells of forgery or replay and scores
+			// as the more serious tamper.
 			evtype := core.EventPoWFail
-			if errors.Is(err, pow.ErrChallengeUnknown) || errors.Is(err, pow.ErrBindingMismatch) ||
-				errors.Is(err, pow.ErrNoJSDisabled) {
+			if reason == core.ReasonChallengeGone || reason == core.ReasonBindingMismatch ||
+				reason == core.ReasonNoJSDisabled {
 				evtype = core.EventTamper
 			}
 			s.engine.ReportEvent(r.Context(), host, ip, evtype, err.Error())

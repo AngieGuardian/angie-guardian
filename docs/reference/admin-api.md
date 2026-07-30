@@ -248,14 +248,29 @@ works immediately.
 ### `GET /admin/decisions`
 
 The recent activity feed, newest first, from an in-process ring buffer (per
-instance, cleared on restart, capacity set by `admin.recent_size`). It holds two
-kinds of row: every non-allow decision, and every redeemed proof-of-work
-challenge (action `solve`). Allows are never recorded.
+instance, cleared on restart, capacity set by `admin.recent_size`). It holds
+three kinds of row: every non-allow decision, every redeemed proof-of-work
+challenge (action `solve`), and every failed redemption attempt (action
+`redeem_fail`). Allows are never recorded.
 
 A solve is a separate row rather than an update of the challenge row that caused
 it: the two arrive on different requests minutes apart and share no identifier.
 Its `uri` is the page the client was trying to reach and it has no `method`, the
 redemption itself being a POST to the pass endpoint.
+
+A `redeem_fail` row is the per-attempt detail behind
+`guardian_challenges_total{outcome="failed"}`, which counts without a reason.
+Its reason mirrors the redeem errors one-to-one: `pow:bad_solution` (the nonce
+misses the difficulty), `pow:binding_mismatch` (the challenge was issued to a
+different host or IP, commonly a VPN or mobile handover moving the client
+between issue and redeem), `pow:unknown_challenge` (unknown, expired or already
+spent), `pow:too_fast` and `pow:nojs_disabled` (no-JS redemptions), or
+`pow:internal_error` (Guardian failing, not the client; a burst of these is a
+store-trouble signal). It carries no `uri`, `method` or solve fields: a failed
+attempt usually has no verified challenge record to read them from. Failed
+attempts also score against the IP (`pow_fail` or `tamper`,
+[behaviour thresholds](/reference/configuration#waf-ip-behaviour)), so
+repetition earns a block; a lone row costs the client one page refresh.
 
 Solve rows carry three extra fields, absent on every other row (absent means
 unknown, not zero):
@@ -278,10 +293,10 @@ Query parameters:
 | Parameter | Default | Description |
 |---|---|---|
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
-| `action` | | Filter: `deny`, `challenge`, `refuse` or `solve`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. `solve` returns only redeemed challenges. |
-| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict, which also matches the `pow:solved` and `pow:nojs` rows of solved challenges (filter on `action` to separate them). Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
+| `action` | | Filter: `deny`, `challenge`, `refuse`, `solve` or `redeem_fail`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. `solve` returns only redeemed challenges, `redeem_fail` only failed redemption attempts. |
+| `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict, which also matches the `pow:solved` and `pow:nojs` rows of solved challenges and the `pow:*` rows of failed attempts (filter on `action` to separate them). Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
 | `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
-| `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing; solve rows are returned like any other, and the dashboard's charts drop them (a solve is the consequence of a challenge already plotted). |
+| `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing; `solve` and `redeem_fail` rows are returned like any other, and the dashboard's charts drop them (an outcome is the consequence of a challenge already plotted). |
 
 Both views include retention metadata. `truncated` describes the response limit,
 while `window.full` says whether the ring itself has overwritten older decisions.
@@ -320,10 +335,10 @@ never the result of an expensive fallback scan. Long-horizon numbers live in
 `/metrics`.
 
 `recent.total` and `recent.by_reason` count decisions only; `recent.by_action`
-covers everything the ring holds, so it also carries the `solve` count. A solve
-is not a verdict, and every one of them collapses to the `pow` reason category,
-so counting them there would pin the dashboard's top-reason tile to `pow` on any
-healthy proof-of-work site.
+covers everything the ring holds, so it also carries the `solve` and
+`redeem_fail` counts. An outcome row is not a verdict, and every one of them
+collapses to the `pow` reason category, so counting them there would pin the
+dashboard's top-reason tile to `pow` on any healthy proof-of-work site.
 
 It also carries a `health` object: the authenticated companion to `/readyz`,
 with the raw probe error and the supporting numbers behind the dashboard's
@@ -390,10 +405,13 @@ The heaviest sources of non-allow decisions in the recent window: top IPs,
 reason categories and request paths, plus a country rollup when GeoIP is loaded.
 Counts the in-process decision ring exactly (bounded by `admin.recent_size`,
 with no extra hot-path work). The window is the ring, so it covers challenged/denied
-traffic, not allows. Solved challenges are in that ring too, and are excluded
-from every rollup here including `window`: this list is read to decide who to
-block, and the clients that paid their proof of work are the last ones that
-belong on it. Paths are query-stripped; GeoIP/ASN is merged for the top
+traffic, not allows. Proof-of-work outcomes (`solve`, `redeem_fail`) are in that
+ring too, and are excluded from every rollup here including `window`: this list
+is read to decide who to block, the clients that paid their proof of work are
+the last ones that belong on it, and a failed redemption is as often a VPN
+moving a visitor between exit IPs as it is abuse (the abusive kind arrives here
+on its own once `pow_fail`/`tamper` scoring blocks the IP). Paths are
+query-stripped; GeoIP/ASN is merged for the top
 IPs only, and the country rollup is omitted when no databases are loaded.
 
 `ips`, `reasons` and `paths` are capped at the **top 15** entries, since they

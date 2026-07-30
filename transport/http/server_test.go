@@ -887,6 +887,82 @@ func TestRedeemRecordsSolve(t *testing.T) {
 	}
 }
 
+// A failed redemption is attributable too: the ring says who failed, on which
+// host, and why, which is what tells "failed N" in the funnel apart from an
+// attack. Without it the reason lives only in a log line.
+func TestRedeemFailureRecordsRow(t *testing.T) {
+	ts, h := testServerAndHandler(t, testYAML)
+	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
+
+	failRows := func() []core.RecentDecision {
+		var out []core.RecentDecision
+		for _, d := range h.engine.RecentDecisions(0) {
+			if d.Action == core.ActionRedeemFail {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	// A nonce that misses the difficulty. The challenge is real, so this is
+	// the ErrBadSolution leg, not an unknown ID.
+	do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/original?q=1", ua), nil)
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": failNonce(t, challenge, difficulty)})
+	if resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/original?q=1", ua), body); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("bad nonce: status = %d, want 403", resp.StatusCode)
+	}
+	rows := failRows()
+	if len(rows) != 1 {
+		t.Fatalf("recorded %d redeem_fail rows, want 1", len(rows))
+	}
+	d := rows[0]
+	if d.Reason != core.ReasonBadSolution {
+		t.Errorf("reason = %q, want %q", d.Reason, core.ReasonBadSolution)
+	}
+	if d.Host != "html.test" || d.IP != ip || d.UA != ua {
+		t.Errorf("attribution = %s %s %s, want html.test %s %s", d.Host, d.IP, d.UA, ip, ua)
+	}
+
+	// A challenge ID nothing ever issued.
+	body, _ = json.Marshal(map[string]any{"challenge_id": "nothing-ever-issued", "nonce": "1"})
+	if resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/x", ua), body); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown id: status = %d, want 403", resp.StatusCode)
+	}
+	rows = failRows()
+	if len(rows) != 2 {
+		t.Fatalf("recorded %d redeem_fail rows, want 2", len(rows))
+	}
+	// Newest first, like the ring itself.
+	if rows[0].Reason != core.ReasonChallengeGone {
+		t.Errorf("reason = %q, want %q", rows[0].Reason, core.ReasonChallengeGone)
+	}
+}
+
+// failNonce returns a nonce that does not meet the difficulty, so a test can
+// exercise the ErrBadSolution leg without racing luck.
+func failNonce(t *testing.T, challenge string, difficulty int) string {
+	t.Helper()
+	for n := 0; n < 1_000_000; n++ {
+		nonce := "fail" + strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(challenge + nonce))
+		zeros := 0
+		for _, b := range sum {
+			if b == 0 {
+				zeros += 8
+				continue
+			}
+			zeros += bits.LeadingZeros8(b)
+			break
+		}
+		if zeros < difficulty {
+			return nonce
+		}
+	}
+	t.Fatal("no failing nonce found")
+	return ""
+}
+
 // elapsed_ms is unauthenticated browser telemetry. A client cannot have hashed
 // for longer than its challenge existed, so an impossible value is dropped to
 // "not reported" and counted, rather than being averaged into the histogram
