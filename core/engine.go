@@ -74,7 +74,7 @@ type Engine struct {
 	enforcer *enforce.Manager     // nil = mirror/offload disabled (store-only enforcement)
 	attack   *attackmode.Detector // nil = attack mode disabled (always Normal)
 	health   *health.Checker      // nil = no store probe (readiness reports unavailable)
-	recent   *recentRing          // last non-allow decisions, for the admin API
+	recent   *recentRing          // last non-allow decisions + PoW outcomes, for the admin API
 	stages   []Stage
 	log      *slog.Logger
 	lifeMu   sync.Mutex // serializes Reload and Close
@@ -391,10 +391,10 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	return d
 }
 
-// RecentDecisions returns the last non-allow decisions, newest first, up to
-// limit (<= 0 for all). Backed by a bounded in-process ring: per-instance,
-// lost on restart. A live operator view, not an audit log (that's the
-// structured decision log).
+// RecentDecisions returns the last non-allow decisions and proof-of-work
+// outcomes (solves, failed redemptions), newest first, up to limit (<= 0 for
+// all). Backed by a bounded in-process ring: per-instance, lost on restart. A
+// live operator view, not an audit log (that's the structured decision log).
 func (e *Engine) RecentDecisions(limit int) []RecentDecision {
 	return e.recent.list(limit)
 }
@@ -439,6 +439,24 @@ func (e *Engine) RecordSolve(rec SolveRecord) {
 		Action: ActionSolve, Reason: reason,
 		SolveMS: clampMS(rec.SolveMS), RoundTripMS: clampMS(rec.RoundTripMS),
 		Bits: clampBits(rec.Bits),
+	})
+}
+
+// RecordRedeemFailure puts a failed redemption attempt into the recent ring,
+// reported by the transport alongside the funnel's "failed" count so the two
+// stay in exact agreement while the ring row keeps what the metric drops: who
+// failed, on which host, and why. Like RecordSolve it is deliberately not
+// routed through Evaluate (the pipeline never saw this request) and is one
+// ring append with no store write.
+//
+// URI, solve time and difficulty are absent by design: a failed redemption
+// usually has no verified challenge record to read them from (an unknown ID
+// has nothing at all), and the one case that does is not worth a special
+// shape.
+func (e *Engine) RecordRedeemFailure(host, ip, ua, reason string) {
+	e.recent.add(RecentDecision{
+		Time: time.Now(), Host: host, IP: ip, UA: ua,
+		Action: ActionRedeemFail, Reason: reason,
 	})
 }
 

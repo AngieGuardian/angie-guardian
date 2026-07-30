@@ -351,11 +351,12 @@ func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
 	return view
 }
 
-// handleDecisions returns the engine's recent non-allow decisions, newest
-// first. The default detailed view is enriched with configured GeoIP/ASN data;
-// view=compact returns only time/action/reason for live charts. Query: ?limit=
-// (default 50, or "all" for the bounded ring), ?action=deny|challenge|refuse,
-// ?reason=<prefix>, ?ip=<exact ip>, ?view=compact.
+// handleDecisions returns the engine's recent non-allow decisions and
+// proof-of-work outcomes, newest first. The default detailed view is enriched
+// with configured GeoIP/ASN data; view=compact returns only time/action/reason
+// for live charts. Query: ?limit= (default 50, or "all" for the bounded ring),
+// ?action=deny|challenge|refuse|solve|redeem_fail, ?reason=<prefix>,
+// ?ip=<exact ip>, ?view=compact.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
@@ -551,12 +552,13 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		// by_action counts everything the ring holds, solves included: that is
 		// a true statement about the window and the solve count is useful.
 		byAction[d.Action]++
-		// by_reason and total are decision-only. A solve is not a verdict, and
-		// every one of them collapses to the "pow" category: on a healthy
-		// proof-of-work site solves are a large share of the ring, so folding
-		// them in would pin the dashboard's top-reason tile to "pow" forever,
-		// reading as a proof-of-work incident when it is proof of work working.
-		if d.Action == core.ActionSolve {
+		// by_reason and total are decision-only. An outcome row (a solve or a
+		// failed redemption) is not a verdict, and every one of them collapses
+		// to the "pow" category: on a healthy proof-of-work site solves are a
+		// large share of the ring, so folding them in would pin the
+		// dashboard's top-reason tile to "pow" forever, reading as a
+		// proof-of-work incident when it is proof of work working.
+		if d.Action == core.ActionSolve || d.Action == core.ActionRedeemFail {
 			continue
 		}
 		decisions++
@@ -945,11 +947,14 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	byPath := map[string]int{}
 	window := 0
 	for _, d := range decisions {
-		// A solve is not an offence: ranking it here would put the clients that
-		// paid their proof of work at the top of a list an operator reads to
-		// decide who to block. One guard covers all four rollups, since the
+		// An outcome row is not an offence: ranking a solve here would put the
+		// clients that paid their proof of work at the top of a list an
+		// operator reads to decide who to block, and a failed redemption is as
+		// often a VPN moving a visitor between exit IPs as it is abuse (the
+		// abusive kind reaches this list on its own once pow_fail/tamper
+		// scoring blocks the IP). One guard covers all four rollups, since the
 		// country breakdown below is derived from byIP.
-		if d.Action == core.ActionSolve {
+		if d.Action == core.ActionSolve || d.Action == core.ActionRedeemFail {
 			continue
 		}
 		window++

@@ -107,6 +107,56 @@ The same symptom can also come from a CDN or proxy in front of Angie that
 injects a CSP onto every response passing through it; exempt the interstitial
 there.
 
+## A solved challenge is rejected ("challenge verification failed")
+
+A visitor hashes the puzzle, submits it, and is refused instead of let through.
+Usually a single page refresh fixes it, which is what makes this one easy to
+dismiss as a fluke.
+
+**Diagnosis first.** The proof-of-work funnel counts these as `failed` without
+saying why. The reason is in the recent activity feed:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$A/admin/decisions?action=redeem_fail&limit=20"
+```
+
+or filter the dashboard's decision feed to action `redeem_fail`. Each row names
+the host, IP, User-Agent and one of these reasons:
+
+| Reason | What happened |
+|---|---|
+| `pow:binding_mismatch` | The client's IP changed between being issued the challenge and redeeming it. |
+| `pow:unknown_challenge` | Unknown, expired or already spent: the solve took longer than `pow.challenge_ttl`, a backgrounded tab let it rot, the same challenge was submitted twice, or the ID was forged. |
+| `pow:bad_solution` | The nonce does not meet the required difficulty. A real browser solver does not produce these; a bot posting garbage does. |
+| `pow:too_fast`, `pow:nojs_disabled` | Only reachable on the no-JS meta-refresh path. |
+| `pow:internal_error` | Guardian failing, not the client (store or key-refresh trouble). A burst is worth investigating on its own. |
+
+**The common legitimate cause is `pow:binding_mismatch`.** A challenge is bound
+to the host and the exact client IP, so anything that moves a visitor between
+addresses mid-challenge invalidates it: a VPN reassigning its exit IP, a mobile
+network handover, or a CGNAT pool rebalancing. The visitor sees one failure and
+a refresh works, because the refresh mints a new challenge bound to whatever
+address they now have.
+
+**Fix:** normally nothing. It is self-correcting and costs one refresh. Two
+things are worth knowing anyway:
+
+- A binding mismatch scores the IP as `tamper` (see
+  [`waf.ip_behaviour.thresholds`](/reference/configuration#waf-ip-behaviour),
+  default 10/min), so a client on a network that reassigns addresses
+  aggressively can eventually earn a behavioural block. Check
+  `GET /admin/blocks/{ip}` if a visitor reports being locked out rather than
+  merely delayed, and allowlist the range if it is a network you trust.
+- The binding is deliberately an exact address, not a prefix. Matching a `/24`
+  or `/64` instead would fix the VPN case at the cost of letting every host
+  sharing that prefix redeem each other's challenges, which is a bad trade for
+  a failure that costs a page refresh.
+
+If instead you see a steady stream of `pow:bad_solution` from many IPs, that is
+not a false positive: it is a bot that fetches challenges and posts junk. The
+`pow_fail` threshold blocks those on its own.
+
 ## Legitimate visitors get challenged or blocked
 
 **A shared source IP (office NAT, corporate proxy) gets blocked.** Behavioural

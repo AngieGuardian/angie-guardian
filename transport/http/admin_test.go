@@ -170,6 +170,83 @@ func TestAdminStatsChallenges(t *testing.T) {
 	}
 }
 
+// Outcome rows (solves and failed redemptions) share the ring with verdicts
+// but are not verdicts: stats must keep them out of total/by_reason (every
+// pow:* reason collapses to "pow" and would pin the top-reason tile) while
+// by_action, documented as the ring's full contents, still counts them; and
+// offenders must rank neither a client that paid its proof of work nor one
+// whose VPN flapped mid-challenge.
+func TestAdminStatsAndOffendersSkipOutcomeRows(t *testing.T) {
+	const yaml = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  denylist: { ips: [ "203.0.113.9" ] }
+domains:
+  shop.test:
+    pow: { enabled: true, base_difficulty: 5 }
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "guardian.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	engine, err := core.NewEngine(cfg, st, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+
+	// One of each kind: a real deny verdict through the pipeline, then the two
+	// outcome rows via the same entry points the transport uses.
+	if d := engine.Evaluate(t.Context(), &core.RequestContext{
+		Host: "shop.test", Method: "GET", URI: "/admin.php",
+		RemoteAddr: "203.0.113.9", UserAgent: "curl/8",
+	}); d.Action != core.ActionDeny {
+		t.Fatalf("denylisted IP evaluated to %s, want deny", d.Action)
+	}
+	engine.RecordSolve(core.SolveRecord{Host: "shop.test", IP: "198.51.100.7", URI: "/", UA: "Mozilla/5.0", Bits: 20})
+	engine.RecordRedeemFailure("shop.test", "198.51.100.44", "Mozilla/5.0", core.ReasonBindingMismatch)
+
+	ts := httptest.NewServer(NewAdminServer(engine, cfg, metrics.New("memory"), adminToken, "", "", nil, slog.Default()))
+	t.Cleanup(ts.Close)
+
+	stats := decodeJSON(t, adminReq(t, ts, "GET", "/admin/stats", adminToken, ""))
+	recent, ok := stats["recent"].(map[string]any)
+	if !ok {
+		t.Fatalf("stats has no recent rollup: %v", stats)
+	}
+	if recent["total"] != 1.0 {
+		t.Errorf("recent.total = %v, want 1 (the deny; outcome rows are not verdicts)", recent["total"])
+	}
+	byAction, _ := recent["by_action"].(map[string]any)
+	if byAction["deny"] != 1.0 || byAction[core.ActionSolve] != 1.0 || byAction[core.ActionRedeemFail] != 1.0 {
+		t.Errorf("by_action = %v, want deny/solve/redeem_fail 1 each (the ring's full contents)", byAction)
+	}
+	byReason, _ := recent["by_reason"].(map[string]any)
+	if len(byReason) != 1 || byReason["denylist"] != 1.0 {
+		t.Errorf("by_reason = %v, want only denylist:1", byReason)
+	}
+
+	off := decodeJSON(t, adminReq(t, ts, "GET", "/admin/offenders", adminToken, ""))
+	if off["window"] != 1.0 {
+		t.Errorf("offenders window = %v, want 1", off["window"])
+	}
+	ips, _ := off["ips"].([]any)
+	if len(ips) != 1 {
+		t.Fatalf("offender ips = %v, want exactly the denied IP", off["ips"])
+	}
+	if row, _ := ips[0].(map[string]any); row["ip"] != "203.0.113.9" {
+		t.Errorf("offender = %v, want 203.0.113.9", row)
+	}
+}
+
 func TestAdminAuth(t *testing.T) {
 	ts, _ := adminServer(t)
 

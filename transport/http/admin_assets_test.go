@@ -422,6 +422,8 @@ func TestDashboardSolveSurface(t *testing.T) {
 	for _, needle := range []string{
 		`id="dec-solve"`, `id="lu-dec-solve"`,
 		`<option value="solve">solve</option>`,
+		`<option value="redeem_fail">redeem_fail</option>`,
+		`.chip.redeem_fail::before`,
 		`d.action !== "solve"`,
 		`Number(d.solve_ms)`, `d.round_trip_ms`, `d.bits`,
 		`id="card-solve-domains"`, `id="card-solve-clients"`,
@@ -431,10 +433,11 @@ func TestDashboardSolveSurface(t *testing.T) {
 			t.Errorf("dashboard solve surface missing %q", needle)
 		}
 	}
-	// Solves share the ring with the decisions, so the charts must drop them:
-	// a solve is the consequence of a challenge already in the stacked area,
-	// and its reason would swamp the band that shows pow failures.
-	if !bytes.Contains(page, []byte(`if (d.action === "solve") return false;`)) {
-		t.Error("the chart feed no longer filters solves out; both charts would double-count")
+	// Outcome rows share the ring with the decisions, so the charts must drop
+	// them: an outcome is the consequence of a challenge already in the
+	// stacked area, and its reason would swamp the band that shows pow token
+	// failures.
+	if !bytes.Contains(page, []byte(`if (d.action === "solve" || d.action === "redeem_fail") return false;`)) {
+		t.Error("the chart feed no longer filters outcome rows out; both charts would double-count")
 	}
 }

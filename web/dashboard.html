@@ -224,6 +224,10 @@
   .chip.refuse::before { background: var(--muted); }
   /* A redeemed challenge: the one row in this feed that is good news. */
   .chip.solve::before { background: var(--good); }
+  /* A failed redemption attempt. Challenge-lifecycle colour, and the reason
+     column says why; the text label disambiguates it from challenge per the
+     never-color-alone rule above. */
+  .chip.redeem_fail::before { background: var(--warning); }
   /* Load shedding is Guardian refusing to decide at all, under saturation, so
      it is neither a verdict nor a refusal and must not read as either. Blue
      from the CVD-safe categorical set: identity, not severity. It short-circuits
@@ -617,11 +621,11 @@
       <div class="empty" id="lu-dec-empty" hidden>No recent activity for this IP on this instance.</div>
     </div>
     <div class="meta" style="margin-top:0.5rem;">Covers only this instance's
-      bounded ring of recent non-allow decisions and solved challenges; an empty
-      list is not proof this IP sent nothing.</div>
+      bounded ring of recent non-allow decisions, solves and failed
+      redemptions; an empty list is not proof this IP sent nothing.</div>
   </div>
 
-  <h2>Recent decisions <span class="meta">(newest first, non-allow decisions and solved challenges)</span><a class="help"
+  <h2>Recent decisions <span class="meta">(newest first, non-allow decisions, solves and failed redemptions)</span><a class="help"
       href="https://angieguardian.org/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked"
       target="_blank" rel="noopener noreferrer"
       title="Docs: what a reason means, and what to do about a false positive"
@@ -633,8 +637,9 @@
       <option value="challenge">challenge</option>
       <option value="refuse">refuse</option>
       <option value="solve">solve</option>
+      <option value="redeem_fail">redeem_fail</option>
     </select>
-    <input id="f-text" placeholder="filter host / IP / Geo / URI / reason / UA" size="38">
+    <input id="f-text" placeholder="filter action / host / IP / Geo / URI / reason / UA" size="38">
     <span class="meta" id="f-count"></span>
   </div>
   <div class="tablewrap">
@@ -1423,13 +1428,14 @@
     const now = Date.now();
     const bounds = chartBounds(now);
     const decisions = lastChartDecisions.filter((d) => {
-      // Solves share the ring but are not verdicts, and both charts below would
-      // misreport them. In the stacked-action chart a solve is the consequence
-      // of a challenge already in the stack, so a fourth band would draw one
-      // client journey twice; in the by-reason chart every solve collapses to
-      // "pow" and would swamp the band that exists to show pow failures. The
-      // PoW funnel card already carries issued/solved/failed.
-      if (d.action === "solve") return false;
+      // Outcome rows (solves and failed redemptions) share the ring but are
+      // not verdicts, and both charts below would misreport them. In the
+      // stacked-action chart an outcome is the consequence of a challenge
+      // already in the stack, so another band would draw one client journey
+      // twice; in the by-reason chart every one collapses to "pow" and would
+      // swamp the band that exists to show token-stage pow failures. The PoW
+      // funnel card already carries issued/solved/failed.
+      if (d.action === "solve" || d.action === "redeem_fail") return false;
       const t = new Date(d.time).getTime();
       return Number.isFinite(t) && t >= bounds.lo && t <= bounds.hi;
     });
@@ -2608,7 +2614,11 @@
     return lastDecisions.filter((d) => {
       if (action && d.action !== action) return false;
       if (!needle) return true;
-      return [d.host, d.ip, geoText(d), d.asn, d.uri, d.reason, d.ua, d.method]
+      // d.action is searched too: "solve" already appeared to match as an
+      // accident of the pow:solved reason string, while "redeem_fail" found
+      // nothing (its reasons spell pow:bad_solution etc.), which made the box
+      // look broken for some actions and not others.
+      return [d.action, d.host, d.ip, geoText(d), d.asn, d.uri, d.reason, d.ua, d.method]
         .some((f) => String(f || "").toLowerCase().includes(needle));
     });
   };
@@ -2776,7 +2786,7 @@
   // rather than passing a partial count off as the total.
   // Ranking only: an action missing from this list still renders, it just sorts
   // last. Ordered by how much operator attention it deserves.
-  const ACTION_ORDER = ["deny", "challenge", "refuse", "solve"];
+  const ACTION_ORDER = ["deny", "challenge", "redeem_fail", "refuse", "solve"];
   const renderLookupTotals = (rows, whole) => {
     const counts = new Map();
     for (const d of rows) counts.set(d.action, (counts.get(d.action) || 0) + 1);

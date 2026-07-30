@@ -19,6 +19,7 @@ export default defineConfig({
     logo: '/logo_small.svg',
 
     nav: [
+      { text: 'Home', link: '/' },
       { text: 'Guide', link: '/guide/what-is-guardian', activeMatch: '/guide/' },
       { text: 'Reference', link: '/reference/configuration', activeMatch: '/reference/' },
       { text: 'Examples', link: '/examples', activeMatch: '/examples' },

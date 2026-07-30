@@ -46,12 +46,19 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # is 1000 and the hard maximum is 10000; complete=false means more exist.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
-# Every recent non-allow decision and solved challenge, newest first, from an
+# Every recent non-allow decision, solved challenge and failed redemption, newest first, from an
 # in-process ring buffer (per instance, cleared on restart). ?action= takes deny, challenge,
-# refuse or solve; refuse means Guardian withheld the challenge after
+# refuse, solve or redeem_fail; refuse means Guardian withheld the challenge after
 # classifying the request as unable to complete it. Exclude refuse to see only
 # puzzles that were really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
+
+# Failed redemption attempts: the per-attempt detail behind the funnel's
+# "failed" count. The reason says why: pow:bad_solution is a wrong nonce,
+# pow:binding_mismatch usually a VPN or mobile handover moving the client to a
+# new IP between issue and redeem, pow:unknown_challenge an expired, replayed
+# or forged challenge ID.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
 # how long the client says it hashed (solve_ms), how long this daemon measured
@@ -201,8 +208,8 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent activity feed of non-allow decisions and solved
-challenges (filterable by action and free text),
+block-an-IP form), the recent activity feed of non-allow decisions, solves and
+failed redemptions (filterable by action and free text),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and
@@ -331,11 +338,15 @@ path:
   baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
   and the distribution counters.
 
-Solved challenges are deliberately absent from both time-series charts. A solve
-is the consequence of a challenge already drawn in the stacked area, so its own
-band would draw one client journey twice, and in the by-reason chart every solve
-would collapse to `pow` and swamp the band that exists to show proof-of-work
-*failures*.
+Solved challenges and failed redemption attempts are deliberately absent from
+both time-series charts. An outcome is the consequence of a challenge already
+drawn in the stacked area, so its own band would draw one client journey twice,
+and in the by-reason chart every one would collapse to `pow` and swamp the band
+that exists to show proof-of-work token failures. Both still appear in the
+recent activity feed (actions `solve` and `redeem_fail`), which is where the
+funnel's `failed` count gets its explanation: a `redeem_fail` row names the IP
+and the reason, so a wrong-nonce bot and a visitor whose VPN moved them to a
+new exit IP mid-challenge stop looking alike.
 
 #### Per-domain traffic on a large fleet
 

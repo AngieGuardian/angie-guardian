@@ -13,7 +13,7 @@ import (
 // RecentDecision is one entry in a small in-process ring buffer so the admin
 // API (and the dashboard built on it) can answer "what did the guardian just
 // act on, and what did it cost the client?" without a store write on either
-// path. Two kinds of entry share the ring:
+// path. Three kinds of entry share the ring:
 //
 //   - every terminal non-allow decision. Allows are deliberately not recorded:
 //     they are the overwhelming common case and carry no report value.
@@ -22,9 +22,16 @@ import (
 //     the challenge row: the two carry no shared identifier. Recording it here
 //     is what makes a slow solve attributable to a host, path, IP and UA
 //     instead of vanishing into one process-wide histogram.
+//   - every failed redemption attempt (ActionRedeemFail). The funnel metric
+//     counts these without a reason; this row is what tells an operator
+//     whether "failed 3" was a bot posting garbage nonces or a real visitor
+//     whose VPN moved them to a new exit IP mid-challenge.
 //
-// Consumers that rank or categorise offences must skip ActionSolve; a solve is
-// the opposite of an offence.
+// The last two are outcome rows: they describe what later happened to a
+// challenge whose decision row already exists. Aggregates that count verdicts
+// (offender rankings, decision totals, the decision charts) must skip both,
+// keyed on the action; anything less re-counts a client journey the challenge
+// row already recorded.
 //
 // The buffer is per-instance and cleared on restart: a live operator view,
 // not an audit log (that role belongs to the structured decision log).
@@ -61,17 +68,32 @@ type RecentDecision struct {
 	Bits uint8 `json:"bits,omitempty"`
 }
 
-// The vocabulary for solve rows. ActionSolve is deliberately not a
-// stateless.Action: no rule or stage can produce it and Evaluate never returns
-// it, so the decision vocabulary stays exactly the verdicts the pipeline can
-// reach. Everything that must exclude solves keys on the action, never on the
-// reason string, which would need the same special case in three places and
-// would rot the first time a second solve reason appears.
+// The vocabulary for outcome rows. ActionSolve and ActionRedeemFail are
+// deliberately not stateless.Actions: no rule or stage can produce them and
+// Evaluate never returns them, so the decision vocabulary stays exactly the
+// verdicts the pipeline can reach. Everything that must exclude outcomes keys
+// on the action, never on the reason string, which would need the same special
+// case in three places and would rot the first time a new reason appears.
 const (
-	ActionSolve = "solve"
+	ActionSolve      = "solve"
+	ActionRedeemFail = "redeem_fail"
 
 	ReasonSolved = "pow:solved" // a real proof of work was verified
 	ReasonNoJS   = "pow:nojs"   // the meta-refresh wait was accepted; nothing was hashed
+
+	// Failure reasons, mirroring the pow package's redeem errors one-to-one.
+	// All "pow:" like the token-stage reasons in pipeline.go, and collapsed to
+	// the same "pow" category by reasonCategory, which is one of the reasons
+	// outcome rows stay out of by-reason rollups.
+	ReasonBadSolution     = "pow:bad_solution"      // nonce does not meet the difficulty
+	ReasonBindingMismatch = "pow:binding_mismatch"  // challenge was issued to a different host or IP
+	ReasonChallengeGone   = "pow:unknown_challenge" // unknown, expired or already spent
+	ReasonTooFast         = "pow:too_fast"          // no-JS redemption before the minimum delay
+	ReasonNoJSDisabled    = "pow:nojs_disabled"     // no-JS redemption on a JS-only challenge
+	// ReasonRedeemInternal is Guardian failing, not the client: a store or
+	// key-refresh error. Recorded because the funnel's "failed" count includes
+	// these, and a burst of them is a store-trouble signal in its own right.
+	ReasonRedeemInternal = "pow:internal_error"
 )
 
 // The recent-decision ring is deliberately a bounded, per-instance live view,
