@@ -303,6 +303,13 @@ hashes/s per worker, ~9 MH/s with 8 workers; scale down for weaker devices.
 For comparison, a native (Go) solver does ~7.6 MH/s **per core**, so a bot
 pays the same order of work a real browser does.
 
+The browser matters as much as the hardware. On one 48-thread desktop,
+Firefox 153 measures ~0.55 MH/s per worker (~4.4 MH/s at the 8-worker cap)
+against Chrome 151's ~0.96 MH/s (~7.7 MH/s): the same silicon, 1.75x apart.
+Read the table below by hash rate, not by the device names: a fast desktop
+running Firefox lands between the desktop and laptop columns, so tuning off
+the desktop column alone understates what most visitors actually pay.
+
 Expected (mean) solve times by device class:
 
 | difficulty | bits | expected hashes | desktop (9 MH/s) | laptop (3 MH/s) | phone (1 MH/s) |
