@@ -376,17 +376,9 @@ defaults:
   # Disallow rules (including the ones pointing away from honeypot traps),
   # and cached HTML gets served where a text file was expected. Same story
   # for /favicon.ico, which browsers fetch outside the page context, and for
-  # /sitemap.xml, which is the URL robots.txt itself advertises: exempting
-  # robots.txt while the sitemap it points at still challenges just moves the
-  # dead end one hop further along.
-  #
-  # Keys match exactly (there is no globbing), so "/sitemap.xml" covers a
-  # flat sitemap and nothing else. If yours lives elsewhere (WordPress core
-  # serves /wp-sitemap.xml, Yoast /sitemap_index.xml) or is an index naming
-  # per-type children, add those paths too: otherwise the index resolves and
-  # every child it points at is challenged. Note this hands an anonymous
-  # client your URL list; the pages themselves still cost a solve, and one
-  # solve buys token_ttl of crawling either way.
+  # /sitemap.xml, the URL robots.txt itself advertises. Keys match exactly, so
+  # add your own sitemap paths where they differ (/wp-sitemap.xml,
+  # /sitemap_index.xml, the per-type children an index names).
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
