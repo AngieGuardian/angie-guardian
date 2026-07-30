@@ -558,8 +558,10 @@
     </table>
     <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
     <div class="toolbar pager" id="blk-pager" hidden>
+      <button id="blk-first" type="button">« First</button>
       <button id="blk-prev" type="button">‹ Prev</button>
       <button id="blk-next" type="button">Next ›</button>
+      <button id="blk-last" type="button">Last »</button>
       <span class="meta" id="blk-page"></span>
     </div>
   </div>
@@ -656,8 +658,10 @@
          whenever a filter matches nothing, not only on an empty ring. -->
     <div class="empty" id="decisions-empty" hidden>No matching recent decisions.</div>
     <div class="toolbar pager" id="dec-pager" hidden>
+      <button id="dec-first" type="button">« First</button>
       <button id="dec-prev" type="button">‹ Prev</button>
       <button id="dec-next" type="button">Next ›</button>
+      <button id="dec-last" type="button">Last »</button>
       <span class="meta" id="dec-page"></span>
     </div>
   </div>
@@ -1084,6 +1088,10 @@
   // state persists across ticks and clamps when an unblock shrinks the set.
   const BLK_PAGE_SIZE = 25;
   let blkPage = 0;
+
+  // Highest 0-based page index for a row count, so the Last buttons land where
+  // the renderers' own clamp would put them.
+  const lastPageOf = (count, size) => Math.max(0, Math.ceil(count / size) - 1);
 
   // A GeoLite2 city record describes a circle, and the radius runs from a few
   // km to 1000. At or above this the label is a region-or-larger guess, not a
@@ -2591,6 +2599,20 @@
     }
   };
 
+  // The feed the decisions table pages over. Split out of renderDecisions so
+  // the Last button can size the page count from the same rows without having
+  // to render a page it is about to leave.
+  const filteredDecisions = () => {
+    const action = $("f-action").value;
+    const needle = $("f-text").value.trim().toLowerCase();
+    return lastDecisions.filter((d) => {
+      if (action && d.action !== action) return false;
+      if (!needle) return true;
+      return [d.host, d.ip, geoText(d), d.asn, d.uri, d.reason, d.ua, d.method]
+        .some((f) => String(f || "").toLowerCase().includes(needle));
+    });
+  };
+
   const renderDecisions = () => {
     const action = $("f-action").value;
     const needle = $("f-text").value.trim().toLowerCase();
@@ -2600,12 +2622,7 @@
     // the column does not appear and vanish as you page through.
     const hasSolve = lastDecisions.some((d) => d.action === "solve");
     $("dec-solve").hidden = !hasSolve;
-    const rows = lastDecisions.filter((d) => {
-      if (action && d.action !== action) return false;
-      if (!needle) return true;
-      return [d.host, d.ip, geoText(d), d.asn, d.uri, d.reason, d.ua, d.method]
-        .some((f) => String(f || "").toLowerCase().includes(needle));
-    });
+    const rows = filteredDecisions();
 
     const pages = Math.max(1, Math.ceil(rows.length / DEC_PAGE_SIZE));
     if (decPage >= pages) decPage = pages - 1; // clamp after filtering/refresh shrinks the set
@@ -2629,8 +2646,8 @@
 
     // Pager: hidden when everything fits on one page.
     $("dec-pager").hidden = rows.length <= DEC_PAGE_SIZE;
-    $("dec-prev").disabled = decPage === 0;
-    $("dec-next").disabled = decPage >= pages - 1;
+    $("dec-first").disabled = $("dec-prev").disabled = decPage === 0;
+    $("dec-last").disabled = $("dec-next").disabled = decPage >= pages - 1;
     $("dec-page").textContent = rows.length
       ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
         " of " + rows.length + " (page " + (decPage + 1) + " of " + pages + ")"
@@ -2710,8 +2727,8 @@
     empty.hidden = all.length > 0 && !blocksStale;
 
     $("blk-pager").hidden = all.length <= BLK_PAGE_SIZE;
-    $("blk-prev").disabled = blkPage === 0;
-    $("blk-next").disabled = blkPage >= pages - 1;
+    $("blk-first").disabled = $("blk-prev").disabled = blkPage === 0;
+    $("blk-last").disabled = $("blk-next").disabled = blkPage >= pages - 1;
     $("blk-page").textContent = all.length
       ? "showing " + (start + 1) + "–" + (start + pageRows.length) +
         " of " + all.length + " (page " + (blkPage + 1) + " of " + pages + ")"
@@ -3512,13 +3529,25 @@
   $("f-action").addEventListener("change", refilter);
   $("f-text").addEventListener("input", refilter);
 
-  // Pager: step within the filtered decisions, re-render locally.
+  // Pager: step within the filtered decisions, re-render locally. First and
+  // Last jump to the ends of the feed as it stands at the click; the next tick
+  // may grow it underneath you, which is the same drift Next already has.
+  $("dec-first").addEventListener("click", () => { decPage = 0; renderDecisions(); });
   $("dec-prev").addEventListener("click", () => { if (decPage > 0) { decPage--; renderDecisions(); } });
   $("dec-next").addEventListener("click", () => { decPage++; renderDecisions(); });
+  $("dec-last").addEventListener("click", () => {
+    decPage = lastPageOf(filteredDecisions().length, DEC_PAGE_SIZE);
+    renderDecisions();
+  });
 
   // Active-blocks pager: step within the cached block list, re-render locally.
+  $("blk-first").addEventListener("click", () => { blkPage = 0; renderBlocks(); });
   $("blk-prev").addEventListener("click", () => { if (blkPage > 0) { blkPage--; renderBlocks(); } });
   $("blk-next").addEventListener("click", () => { blkPage++; renderBlocks(); });
+  $("blk-last").addEventListener("click", () => {
+    blkPage = lastPageOf((lastBlocks.blocks || []).length, BLK_PAGE_SIZE);
+    renderBlocks();
+  });
 
   // Theme: auto (follow the OS) → dark → light, persisted per browser. A
   // preference is plain UI state, so localStorage (not the token's
