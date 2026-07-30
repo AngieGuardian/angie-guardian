@@ -486,7 +486,15 @@
     <div class="charts wide">
       <div class="chart-card" id="card-domains" hidden>
         <div class="label"><span>Per-domain traffic</span>
-          <span class="meta" id="chart-domains-n">by action</span></div>
+          <span class="chart-window-tools">
+            <span class="meta" id="chart-domains-n">by action</span>
+            <label class="meta" for="domains-mode">Bars</label>
+            <select id="domains-mode" aria-label="Per-domain bar measure"
+                    title="count: compare domains by volume. share: compare each domain's own action mix, which stays readable when volumes differ by orders of magnitude">
+              <option value="count" selected>count</option>
+              <option value="share">share</option>
+            </select>
+          </span></div>
         <div class="canvas-scroll">
           <div class="canvas-wrap"><canvas id="chart-domains"></canvas></div>
         </div>
@@ -520,6 +528,41 @@
       </table>
     </div>
   </section>
+
+  <h2>Active blocks<a class="help"
+      href="https://angieguardian.org/guide/admin#everyday-operations"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: blocking, unblocking and TTL backoff"
+      aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
+  <form id="block-form" class="toolbar">
+    <input id="block-ip" placeholder="IP to block" required>
+    <input id="block-ttl" placeholder="TTL (24h)" size="8"
+           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h.">
+    <input id="block-reason" placeholder="reason" size="16" maxlength="200">
+    <button type="submit">Block IP</button>
+    <span class="err" id="block-err"></span>
+  </form>
+  <div class="toolbar">
+    <label class="opt reset-backoff-opt"
+           title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused the block are always cleared.">
+      <input type="checkbox" class="reset-backoff" id="blk-reset-backoff" checked>
+      Unblock also resets the repeat-offender backoff
+    </label>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th title="Blocked address; click to look it up">IP</th>
+                 <th title="What placed the block">Reason</th>
+                 <th title="When the block lifts by itself">Expires</th><th></th></tr></thead>
+      <tbody id="blocks"></tbody>
+    </table>
+    <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
+    <div class="toolbar pager" id="blk-pager" hidden>
+      <button id="blk-prev" type="button">‹ Prev</button>
+      <button id="blk-next" type="button">Next ›</button>
+      <span class="meta" id="blk-page"></span>
+    </div>
+  </div>
 
   <!-- IP lookup: one card answering "what does the daemon know about this
        IP?" from endpoints the page is already authenticated for. Every IP
@@ -574,41 +617,6 @@
     <div class="meta" style="margin-top:0.5rem;">Covers only this instance's
       bounded ring of recent non-allow decisions and solved challenges; an empty
       list is not proof this IP sent nothing.</div>
-  </div>
-
-  <h2>Active blocks<a class="help"
-      href="https://angieguardian.org/guide/admin#everyday-operations"
-      target="_blank" rel="noopener noreferrer"
-      title="Docs: blocking, unblocking and TTL backoff"
-      aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
-  <form id="block-form" class="toolbar">
-    <input id="block-ip" placeholder="IP to block" required>
-    <input id="block-ttl" placeholder="TTL (24h)" size="8"
-           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h.">
-    <input id="block-reason" placeholder="reason" size="16" maxlength="200">
-    <button type="submit">Block IP</button>
-    <span class="err" id="block-err"></span>
-  </form>
-  <div class="toolbar">
-    <label class="opt reset-backoff-opt"
-           title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused the block are always cleared.">
-      <input type="checkbox" class="reset-backoff" id="blk-reset-backoff" checked>
-      Unblock also resets the repeat-offender backoff
-    </label>
-  </div>
-  <div class="tablewrap">
-    <table>
-      <thead><tr><th title="Blocked address; click to look it up">IP</th>
-                 <th title="What placed the block">Reason</th>
-                 <th title="When the block lifts by itself">Expires</th><th></th></tr></thead>
-      <tbody id="blocks"></tbody>
-    </table>
-    <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
-    <div class="toolbar pager" id="blk-pager" hidden>
-      <button id="blk-prev" type="button">‹ Prev</button>
-      <button id="blk-next" type="button">Next ›</button>
-      <span class="meta" id="blk-page"></span>
-    </div>
   </div>
 
   <h2>Recent decisions <span class="meta">(newest first, non-allow decisions and solved challenges)</span><a class="help"
@@ -1358,6 +1366,13 @@
   let chartWindow = storedChartWindow === "all" || CHART_WINDOW_MS[storedChartWindow]
     ? storedChartWindow : "all";
 
+  // Which measure the per-domain bars carry. Session-scoped like the window
+  // above and validated on read, so a stale or hand-edited value falls back to
+  // the default rather than rendering an empty chart.
+  const DOMAINS_MODE_KEY = "guardian_dashboard_domains_mode";
+  const storedDomainsMode = sessionStorage.getItem(DOMAINS_MODE_KEY);
+  let domainsMode = storedDomainsMode === "share" ? "share" : "count";
+
   const durationLabel = (ms) => {
     if (ms < 90e3) return Math.max(1, Math.round(ms / 1000)) + "s";
     const minutes = Math.max(1, Math.round(ms / 60e3));
@@ -1620,6 +1635,42 @@
     }));
   };
 
+  // Bar values for the per-domain chart, in whichever measure the card is set
+  // to. Kept out of the renderer so the arithmetic is testable without a canvas.
+  //
+  // Share mode exists because a fleet's busiest domain can outweigh its quietest
+  // by orders of magnitude, which leaves the quiet ones as stubs whose action mix
+  // is unreadable. Measuring each domain against its own traffic makes a
+  // 200-request domain's 19% challenge rate as legible as a 200k-request
+  // domain's 0.5%, while a segment length still means a quantity. Rescaling the
+  // shared axis instead cannot do that here, because these bars are stacked: a
+  // segment spans cumulative s0 to s1, so any non-linear axis turns its length
+  // into a function of the ratio s1/s0 rather than the count.
+  const domainBars = (perDomain, actions, mode) => {
+    const totals = {};
+    for (const d of Object.keys(perDomain)) {
+      totals[d] = actions.reduce((n, a) => n + (perDomain[d][a] || 0), 0);
+    }
+    // Busiest first in both modes, so an operator scanning for their own domain
+    // has one stable place to look. Share mode keeps that order even though the
+    // bars no longer differ in length, and moves the volume to the row label.
+    const domains = Object.keys(perDomain)
+      .sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
+    const share = mode === "share";
+    const series = actions.map((a) => ({
+      action: a,
+      counts: domains.map((d) => perDomain[d][a] || 0),
+      values: domains.map((d) => {
+        const v = perDomain[d][a] || 0;
+        if (!share) return v;
+        // A registry row counted only under an action this chart does not plot
+        // would divide by zero and blank the whole canvas, not just its own bar.
+        return totals[d] ? (v / totals[d]) * 100 : 0;
+      }),
+    }));
+    return { domains, totals, share, series };
+  };
+
   const renderDistributions = () => {
     if (!window.Chart || !lastDist) return;
     const cols = themeColors();
@@ -1637,10 +1688,8 @@
     // the client, load shedding is Guardian declining to decide at all.
     const actionColor = { allow: cols.good, challenge: cols.warning, refuse: cols.muted,
                           deny: cols.critical, shed: cols.series[0], solve: cols.good };
-    const domains = Object.keys(perDomain)
-      .map((d) => ({ name: d, total: actions.reduce((n, a) => n + (perDomain[d][a] || 0), 0) }))
-      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
-      .map((d) => d.name);
+    const bars = domainBars(perDomain, actions, domainsMode);
+    const domains = bars.domains;
     // Each card hides on its own data now that they no longer share a row, so
     // a deployment with traffic but no solved challenges keeps its domain bars.
     const hasDomains = domains.length > 0;
@@ -1654,40 +1703,73 @@
       const rowPx = domains.length > 60 ? 20 : 28;
       $("chart-domains").parentElement.style.height =
         Math.max(160, domains.length * rowPx + 96) + "px";
-      upsertChart("chart-domains", (c) => ({
-        type: "bar",
-        data: {
-          labels: domains,
-          datasets: actions.map((a) => ({
-            label: a, stack: "s", borderWidth: 0,
-            backgroundColor: actionColor[a],
-            data: domains.map((d) => perDomain[d][a] || 0),
-            // Two domains should not draw two rows as thick as the card; past a
-            // handful the row height is already the binding constraint.
-            maxBarThickness: 34,
-          })),
-        },
-        options: {
-          indexAxis: "y",
-          responsive: true, maintainAspectRatio: false, animation: false,
-          // axis: "y" to match indexAxis. Chart.js otherwise resolves the
-          // hovered index along x, so sliding the pointer sideways within one
-          // row reports the neighbouring rows instead of the row it is on.
-          interaction: { intersect: false, mode: "index", axis: "y" },
-          scales: {
-            x: { stacked: true, beginAtZero: true, grid: { color: c.grid },
-                 ticks: { color: c.muted, precision: 0 } },
-            // Every domain gets a tick: Chart.js would otherwise thin them out
-            // on a long axis, leaving unlabelled rows.
-            y: { stacked: true, grid: { display: false },
-                 ticks: { color: c.muted, autoSkip: false } },
+      upsertChart("chart-domains", (c) => {
+        // Both axes keep Chart.js's own tick formatting in count mode, which is
+        // where the thousands separators come from, so share mode adds its
+        // overrides rather than the config replacing the defaults in both.
+        const xTicks = { color: c.muted, precision: 0 };
+        // Every domain gets a tick: Chart.js would otherwise thin them out on a
+        // long axis, leaving unlabelled rows.
+        const yTicks = { color: c.muted, autoSkip: false };
+        const xScale = { stacked: true, beginAtZero: true, grid: { color: c.grid },
+                         ticks: xTicks };
+        if (bars.share) {
+          xScale.max = 100;
+          xTicks.callback = (v) => v + "%";
+          // Full-width bars carry no volume, so the number the bar length used
+          // to convey moves next to the name and "who is busiest" stays
+          // answerable. The index only lines up with the label array while
+          // autoSkip is off, above; falling back to the tick's own value means
+          // changing that thins the labels rather than writing "undefined" down
+          // the axis.
+          yTicks.callback = (v, i) => (domains[i] === undefined ? v
+            : domains[i] + "  (" + count(bars.totals[domains[i]]) + ")");
+        }
+        return {
+          type: "bar",
+          data: {
+            labels: domains,
+            datasets: bars.series.map((s) => ({
+              label: s.action, stack: "s", borderWidth: 0,
+              backgroundColor: actionColor[s.action],
+              data: s.values,
+              // Carried alongside the plotted values so the tooltip can report
+              // the count in share mode. Chart.js keeps unknown dataset keys.
+              counts: s.counts,
+              // Two domains should not draw two rows as thick as the card; past
+              // a handful the row height is already the binding constraint.
+              maxBarThickness: 34,
+            })),
           },
-          plugins: {
-            legend: { labels: { color: c.ink, boxWidth: 12 } },
-            tooltip: { position: useCursorTooltip() },
+          options: {
+            indexAxis: "y",
+            responsive: true, maintainAspectRatio: false, animation: false,
+            // axis: "y" to match indexAxis. Chart.js otherwise resolves the
+            // hovered index along x, so sliding the pointer sideways within one
+            // row reports the neighbouring rows instead of the row it is on.
+            interaction: { intersect: false, mode: "index", axis: "y" },
+            scales: {
+              x: xScale,
+              y: { stacked: true, grid: { display: false }, ticks: yTicks },
+            },
+            plugins: {
+              legend: { labels: { color: c.ink, boxWidth: 12 } },
+              tooltip: { position: useCursorTooltip(), callbacks: {
+                // Both numbers in both modes. A share on its own cannot tell 2
+                // of 10 from 2000 of 10000, and a count on its own is what sent
+                // the reader to share mode in the first place.
+                label: (ctx) => {
+                  const n = (ctx.dataset.counts || [])[ctx.dataIndex] || 0;
+                  const total = bars.totals[domains[ctx.dataIndex]] || 0;
+                  const pct = total ? (n / total) * 100 : 0;
+                  return ctx.dataset.label + ": " + count(n) +
+                    " (" + pct.toFixed(pct > 0 && pct < 10 ? 1 : 0) + "%)";
+                },
+              } },
+            },
           },
-        },
-      }));
+        };
+      });
     }
 
     // Solve times, shown once a challenge has actually been solved.
@@ -3240,6 +3322,16 @@
     chartWindow = e.target.value;
     sessionStorage.setItem(CHART_WINDOW_KEY, chartWindow);
     renderCharts();
+  });
+  $("domains-mode").value = domainsMode;
+  $("domains-mode").addEventListener("change", (e) => {
+    domainsMode = e.target.value;
+    sessionStorage.setItem(DOMAINS_MODE_KEY, domainsMode);
+    // The per-domain bars come from the registry poll, not the decisions ring,
+    // so this redraws from the last payload instead of waiting for the next
+    // tick. Both are guarded on lastDist, so a switch before the first poll is
+    // a no-op that the poll then paints correctly.
+    renderDistributions();
   });
   $("logout").addEventListener("click", () => logout());
 

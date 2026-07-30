@@ -324,7 +324,7 @@ path:
   the group is headed `counted since daemon start` for that reason. Cards hide
   themselves until there is data. Per-domain traffic draws one row per domain,
   busiest first and never truncated, scrolling in place once the list outgrows
-  the card.
+  the card, with a **count / share** control described below.
 - **Anomaly coverage**: loaded training times and artifact domain counts,
   configured scope coverage, route/method segment counts, selected fallback
   levels, and any missing
@@ -336,6 +336,25 @@ is the consequence of a challenge already drawn in the stacked area, so its own
 band would draw one client journey twice, and in the by-reason chart every solve
 would collapse to `pow` and swamp the band that exists to show proof-of-work
 *failures*.
+
+#### Per-domain traffic on a large fleet
+
+The bars are stacked by action, so on a fleet whose busiest domain serves a
+thousand times what its quietest does, the quiet rows are stubs and their action
+mix is unreadable. The **Bars** control on that card switches what the segments
+measure:
+
+- **count** (the default) plots raw decision counts on a shared axis, so bar
+  length compares volume across domains. This is the view for "who is busiest"
+  and "how many denies did that domain actually take".
+- **share** plots each action as a percentage of *that domain's own* traffic, so
+  every bar fills the axis and the mix is equally legible on a domain serving
+  200 requests and one serving 200,000. This is the view for "which domain is
+  challenging or denying an unusual proportion of its visitors". Because the bar
+  length no longer carries volume, the total moves next to the domain name, and
+  the tooltip reports the count alongside the percentage in both modes.
+
+The choice is remembered for the browser session.
 
 #### Is my difficulty too high?
 
