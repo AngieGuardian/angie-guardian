@@ -64,11 +64,11 @@ defaults:
   pow:
     enabled: true
     mode: always
-    # Two quarter-steps above the default (5), i.e. 4x the work, so the
-    # interstitial is actually perceptible on a fast desktop when demoing
-    # (about half a second; 5 solves in ~0.1s there). The e2e suite uses
+    # One quarter-step above the default (5), i.e. 2x the work, so the
+    # interstitial is still perceptible on a fast desktop when demoing
+    # (about a quarter second; 5 solves in ~0.1s there). The e2e suite uses
     # guardian.e2e.yaml with a lower value instead.
-    base_difficulty: 5.5
+    base_difficulty: 5.25
     max_difficulty: 6
     token_ttl: 4h             # 1s minimum, 7d maximum
     challenge_ttl: 30m         # must be positive; 7d maximum

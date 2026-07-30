@@ -61,10 +61,10 @@ domains:
   # HTML site behind PHP/Node: all Guardian layers, PoW + the URI/header
   # WAF (request bodies never reach Guardian; payload validation stays with
   # the backend). Difficulty takes quarter steps: each +0.25 doubles the
-  # work, so 5.5 is 4x the default 5 (see the difficulty table below).
+  # work, so 5.25 is 2x the default 5 (see the difficulty table below).
   # token_ttl inherits the 4h default.
   example.com:
-    pow: { enabled: true, base_difficulty: 5.5 }
+    pow: { enabled: true, base_difficulty: 5.25 }
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:

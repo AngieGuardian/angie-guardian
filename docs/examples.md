@@ -46,10 +46,10 @@ the backend or a full inline WAF.
 ```yaml
 domains:
   # HTML site behind PHP/Node: all Guardian layers, PoW + the URI/header WAF.
-  # Difficulty takes quarter steps: each +0.25 doubles the work (so 5.75 is
-  # 2x the work of 5.5).
+  # Difficulty takes quarter steps: each +0.25 doubles the work (so 5.25 is
+  # 2x the work of 5).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.5 }   # token_ttl inherits 4h
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 4h
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:
@@ -187,7 +187,7 @@ a [trained model](/guide/anomaly) and a top-level signing key. Add
 ```yaml
 domains:
   shop.example.com:
-    pow: { enabled: true, mode: suspicion, base_difficulty: 5.5, max_difficulty: 6 }
+    pow: { enabled: true, mode: suspicion, base_difficulty: 5.25, max_difficulty: 6 }
     waf:
       anomaly: { enabled: true, model: /etc/guardian/model.json,
                  challenge_at: 0.5, deny_at: 0.85 }

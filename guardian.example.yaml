@@ -406,9 +406,9 @@ domains:
     # farming). Attack mode shifts the whole [base, max] window up for
     # everyone, so with attack_mode enabled the ceiling becomes its
     # difficulty_cap (default 7), not this 6. Fractional steps allowed: each
-    # +0.25 doubles the work, so 5.5 is 4x the default 5.
+    # +0.25 doubles the work, so 5.25 is 2x the default 5.
     # token_ttl is omitted, so it inherits the 4h default.
-    pow: { enabled: true, base_difficulty: 5.5, max_difficulty: 6 }
+    pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6 }
     # honeypot: one hit on a trap path denies and, with ip_behaviour on,
     # persistently blocks the source IP, which behind CGNAT is a whole
     # population. NO universal trap path is safe to ship enabled: any URL
