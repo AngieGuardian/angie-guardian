@@ -7,6 +7,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -551,4 +552,182 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// barActions is the action set the per-domain chart plots, in stack order.
+var barActions = []string{"allow", "challenge", "refuse", "deny", "shed"}
+
+type domainBars struct {
+	Domains []string           `json:"domains"`
+	Totals  map[string]float64 `json:"totals"`
+	Share   bool               `json:"share"`
+	Series  []struct {
+		Action string    `json:"action"`
+		Counts []float64 `json:"counts"`
+		Values []float64 `json:"values"`
+	} `json:"series"`
+}
+
+// values returns one action's plotted values keyed by domain, which is what the
+// assertions are actually about; the array order is covered separately.
+func (b domainBars) values(t *testing.T, action string) map[string]float64 {
+	t.Helper()
+	for _, s := range b.Series {
+		if s.Action != action {
+			continue
+		}
+		if len(s.Values) != len(b.Domains) {
+			t.Fatalf("%s: %d values for %d domains", action, len(s.Values), len(b.Domains))
+		}
+		out := map[string]float64{}
+		for i, d := range b.Domains {
+			out[d] = s.Values[i]
+		}
+		return out
+	}
+	t.Fatalf("no %q series; the chart plots %v", action, barActions)
+	return nil
+}
+
+func callDomainBars(t *testing.T, perDomain map[string]map[string]int, mode string) domainBars {
+	t.Helper()
+	vm := jsRuntime(t, "domainBars")
+	var got domainBars
+	call(t, vm, `domainBars(`+mustJSON(t, perDomain)+`, `+
+		mustJSON(t, barActions)+`, `+mustJSON(t, mode)+`)`, &got)
+	return got
+}
+
+// The shape that prompted the mode: one busy domain, one middling, one quiet,
+// spanning nearly two orders of magnitude, which is a small fleet rather than an
+// extreme one.
+var barFleet = map[string]map[string]int{
+	"melroy.org":      {"allow": 5200, "challenge": 25, "refuse": 3, "deny": 22},
+	"mail.melroy.org": {"allow": 490},
+	"blog.melroy.org": {"allow": 140, "challenge": 35, "deny": 8},
+}
+
+func TestDomainBarsCountModePlotsRawCounts(t *testing.T) {
+	got := callDomainBars(t, barFleet, "count")
+	if got.Share {
+		t.Error("count mode reported itself as share mode")
+	}
+	want := map[string]float64{"melroy.org": 25, "mail.melroy.org": 0, "blog.melroy.org": 35}
+	if diff := fmt.Sprint(got.values(t, "challenge")); diff != fmt.Sprint(want) {
+		t.Errorf("challenge counts = %v, want %v", diff, want)
+	}
+	// The stacked total has to stay the domain's real traffic, since the axis is
+	// read as a count in this mode.
+	if got.Totals["melroy.org"] != 5250 {
+		t.Errorf("melroy.org total = %v, want 5250", got.Totals["melroy.org"])
+	}
+}
+
+// TestDomainBarsShareModeMeasuresEachDomainAgainstItself is the point of the
+// mode. blog.melroy.org challenges nearly a fifth of its traffic while
+// melroy.org challenges half a percent of far more; in count mode both are a
+// few pixels wide and indistinguishable, and here they differ by 40x.
+func TestDomainBarsShareModeMeasuresEachDomainAgainstItself(t *testing.T) {
+	got := callDomainBars(t, barFleet, "share")
+	if !got.Share {
+		t.Error("share mode did not report itself as share mode")
+	}
+	ch := got.values(t, "challenge")
+	if d := ch["blog.melroy.org"]; math.Abs(d-19.13) > 0.01 {
+		t.Errorf("blog.melroy.org challenge share = %v%%, want 19.13%%", d)
+	}
+	if d := ch["melroy.org"]; math.Abs(d-0.476) > 0.001 {
+		t.Errorf("melroy.org challenge share = %v%%, want 0.476%%", d)
+	}
+	// Totals stay counts even in share mode: they are what the row label and the
+	// tooltip report, and they are the only remaining carrier of volume once
+	// every bar is the same length.
+	if got.Totals["blog.melroy.org"] != 183 {
+		t.Errorf("blog.melroy.org total = %v, want 183", got.Totals["blog.melroy.org"])
+	}
+}
+
+// TestDomainBarsShareModeFillsEachBar guards the property that makes the bars
+// comparable: each domain's segments span the full axis, so no domain is a stub.
+func TestDomainBarsShareModeFillsEachBar(t *testing.T) {
+	got := callDomainBars(t, barFleet, "share")
+	for i, d := range got.Domains {
+		sum := 0.0
+		for _, s := range got.Series {
+			sum += s.Values[i]
+		}
+		if math.Abs(sum-100) > 1e-9 {
+			t.Errorf("%s segments sum to %v%%, want 100%%", d, sum)
+		}
+	}
+}
+
+// TestDomainBarsShareIsNeverNarrowerThanCount states the property the mode was
+// added for, in the terms an operator sees: switching to share can only ever
+// widen a segment, never narrow one, so the mode is safe to leave on.
+//
+// The assertion overlaps ShareModeFillsEachBar on purpose. That one pins the
+// arithmetic; this one pins the consequence an operator relies on.
+func TestDomainBarsShareIsNeverNarrowerThanCount(t *testing.T) {
+	counts := callDomainBars(t, barFleet, "count")
+	shares := callDomainBars(t, barFleet, "share")
+	busiest := 0.0
+	for _, total := range counts.Totals {
+		busiest = math.Max(busiest, total)
+	}
+	for _, action := range barActions {
+		cv, sv := counts.values(t, action), shares.values(t, action)
+		for _, d := range counts.Domains {
+			if cv[d] == 0 {
+				continue
+			}
+			// What each fraction is worth as a slice of the drawn axis.
+			countFrac, shareFrac := cv[d]/busiest*100, sv[d]
+			if shareFrac < countFrac-1e-9 {
+				t.Errorf("%s %s: share %v%% of the axis is narrower than count mode's %v%%",
+					d, action, shareFrac, countFrac)
+			}
+		}
+	}
+}
+
+func TestDomainBarsRanksBusiestFirst(t *testing.T) {
+	got := callDomainBars(t, barFleet, "count")
+	want := []string{"melroy.org", "mail.melroy.org", "blog.melroy.org"}
+	if fmt.Sprint(got.Domains) != fmt.Sprint(want) {
+		t.Errorf("order = %v, want %v", got.Domains, want)
+	}
+	// Equal traffic falls back to the name, so the rows do not swap places every
+	// five seconds on a fleet of similarly busy domains.
+	tied := callDomainBars(t, map[string]map[string]int{
+		"b.example": {"allow": 10}, "a.example": {"allow": 10}, "c.example": {"allow": 11},
+	}, "share")
+	wantTied := []string{"c.example", "a.example", "b.example"}
+	if fmt.Sprint(tied.Domains) != fmt.Sprint(wantTied) {
+		t.Errorf("tied order = %v, want %v", tied.Domains, wantTied)
+	}
+}
+
+// TestDomainBarsToleratesATrafficlessDomain covers the one division in the
+// helper. A domain counted only under an action this chart does not plot would
+// divide by zero, and NaN in a dataset blanks the entire canvas rather than the
+// one bar, taking every other domain off the page with it.
+func TestDomainBarsToleratesATrafficlessDomain(t *testing.T) {
+	got := callDomainBars(t, map[string]map[string]int{
+		"real.example":  {"allow": 4},
+		"ghost.example": {"solve": 9}, // not a bar segment
+	}, "share")
+	for _, s := range got.Series {
+		for i, v := range s.Values {
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				t.Fatalf("%s value for %s is %v", s.Action, got.Domains[i], v)
+			}
+		}
+	}
+	if got.values(t, "allow")["ghost.example"] != 0 {
+		t.Error("a domain with no plotted traffic drew a bar")
+	}
+	if got.values(t, "allow")["real.example"] != 100 {
+		t.Error("a domain with only allows is not 100% allow")
+	}
 }

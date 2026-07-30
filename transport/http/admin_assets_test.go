@@ -383,6 +383,32 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 	}
 }
 
+// The per-domain bar measure. A fleet's busiest domain can outweigh its
+// quietest by orders of magnitude, so the card offers each domain's own action
+// mix as well as raw counts.
+func TestDashboardPerDomainModeSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, needle := range []string{
+		`id="domains-mode"`, `$("domains-mode")`,
+		`<option value="count" selected>count</option>`,
+		`<option value="share">share</option>`,
+		`sessionStorage.setItem(DOMAINS_MODE_KEY, domainsMode)`,
+		// Covered behaviourally in web/dashboard_script_test.go, pinned here so
+		// the renderer keeps calling the helper those tests exercise.
+		`const domainBars = (perDomain, actions, mode)`,
+		`domainBars(perDomain, actions, domainsMode)`,
+		// Share mode has to keep the count reachable, not replace it.
+		`counts: s.counts`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard per-domain mode surface missing %q", needle)
+		}
+	}
+}
+
 // The solve surface: the column that makes a slow proof of work attributable,
 // the filter that isolates those rows, and the two cards that answer "whose
 // puzzle is too hard" and "which kind of client is struggling". Pinned because
