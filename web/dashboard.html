@@ -529,6 +529,41 @@
     </div>
   </section>
 
+  <h2>Active blocks<a class="help"
+      href="https://angieguardian.org/guide/admin#everyday-operations"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: blocking, unblocking and TTL backoff"
+      aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
+  <form id="block-form" class="toolbar">
+    <input id="block-ip" placeholder="IP to block" required>
+    <input id="block-ttl" placeholder="TTL (24h)" size="8"
+           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h.">
+    <input id="block-reason" placeholder="reason" size="16" maxlength="200">
+    <button type="submit">Block IP</button>
+    <span class="err" id="block-err"></span>
+  </form>
+  <div class="toolbar">
+    <label class="opt reset-backoff-opt"
+           title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused the block are always cleared.">
+      <input type="checkbox" class="reset-backoff" id="blk-reset-backoff" checked>
+      Unblock also resets the repeat-offender backoff
+    </label>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th title="Blocked address; click to look it up">IP</th>
+                 <th title="What placed the block">Reason</th>
+                 <th title="When the block lifts by itself">Expires</th><th></th></tr></thead>
+      <tbody id="blocks"></tbody>
+    </table>
+    <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
+    <div class="toolbar pager" id="blk-pager" hidden>
+      <button id="blk-prev" type="button">‹ Prev</button>
+      <button id="blk-next" type="button">Next ›</button>
+      <span class="meta" id="blk-page"></span>
+    </div>
+  </div>
+
   <!-- IP lookup: one card answering "what does the daemon know about this
        IP?" from endpoints the page is already authenticated for. Every IP
        rendered elsewhere on the page links here (see ipCell). -->
@@ -582,41 +617,6 @@
     <div class="meta" style="margin-top:0.5rem;">Covers only this instance's
       bounded ring of recent non-allow decisions and solved challenges; an empty
       list is not proof this IP sent nothing.</div>
-  </div>
-
-  <h2>Active blocks<a class="help"
-      href="https://angieguardian.org/guide/admin#everyday-operations"
-      target="_blank" rel="noopener noreferrer"
-      title="Docs: blocking, unblocking and TTL backoff"
-      aria-label="Documentation: blocking and unblocking IPs">i</a></h2>
-  <form id="block-form" class="toolbar">
-    <input id="block-ip" placeholder="IP to block" required>
-    <input id="block-ttl" placeholder="TTL (24h)" size="8"
-           title="Accepts s, m, h, d, w, mon, y (e.g. 30m, 12h, 30d, 1y). Default 24h.">
-    <input id="block-reason" placeholder="reason" size="16" maxlength="200">
-    <button type="submit">Block IP</button>
-    <span class="err" id="block-err"></span>
-  </form>
-  <div class="toolbar">
-    <label class="opt reset-backoff-opt"
-           title="Also clear the 24h repeat-offender counter, so a later block starts at the base TTL instead of a doubled one. The counters that caused the block are always cleared.">
-      <input type="checkbox" class="reset-backoff" id="blk-reset-backoff" checked>
-      Unblock also resets the repeat-offender backoff
-    </label>
-  </div>
-  <div class="tablewrap">
-    <table>
-      <thead><tr><th title="Blocked address; click to look it up">IP</th>
-                 <th title="What placed the block">Reason</th>
-                 <th title="When the block lifts by itself">Expires</th><th></th></tr></thead>
-      <tbody id="blocks"></tbody>
-    </table>
-    <div class="empty" id="blocks-empty" hidden>No active blocks.</div>
-    <div class="toolbar pager" id="blk-pager" hidden>
-      <button id="blk-prev" type="button">‹ Prev</button>
-      <button id="blk-next" type="button">Next ›</button>
-      <span class="meta" id="blk-page"></span>
-    </div>
   </div>
 
   <h2>Recent decisions <span class="meta">(newest first, non-allow decisions and solved challenges)</span><a class="help"
