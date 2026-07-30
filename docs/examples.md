@@ -31,6 +31,7 @@ defaults:
                                   # never solve a challenge for
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults
@@ -99,9 +100,11 @@ defaults:
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }   # keys match exactly: add
+                                                  # your own sitemap paths
 
 domains:
-  example.com: {}                 # inherits both entries
+  example.com: {}                 # inherits all three entries
   api.example.com:
     paths:
       "/robots.txt": { pow: { enabled: true } }   # opt this host back in

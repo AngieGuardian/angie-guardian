@@ -211,11 +211,18 @@ defaults:
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }
 ```
 
 Unlike an [`allowlist.paths`](#allowlist-denylist) entry, which ends the
 pipeline at stage 0, this only turns off the layers it names: blocks, GeoIP,
 reputation and the WAF still cover `/robots.txt` here.
+
+Keys match exactly (see the matching rules below), so `"/sitemap.xml"` exempts
+that one file. Sites whose sitemap lives elsewhere (`/wp-sitemap.xml`,
+`/sitemap_index.xml`), or whose index names per-type child sitemaps, need those
+paths listed too: otherwise the index is fetchable and every child it points at
+is challenged.
 
 Each `paths` value is a full domain-config overlay, merged in four levels:
 `defaults`, then the domain's own settings, then the `defaults` overlay for

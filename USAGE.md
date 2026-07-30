@@ -42,10 +42,12 @@ defaults:
     ip_behaviour: { enabled: true }
   # Fleet-wide per-path overlays, inherited by every host: a crawler cannot
   # solve the interstitial, so files meant for machines skip only that layer
-  # (blocks, GeoIP and the WAF still apply, unlike allowlist.paths).
+  # (blocks, GeoIP and the WAF still apply, unlike allowlist.paths). Keys
+  # match exactly, so add your own sitemap paths if they are not this one.
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults

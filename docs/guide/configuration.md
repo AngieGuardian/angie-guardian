@@ -76,14 +76,24 @@ defaults:
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/favicon.ico": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }
 ```
 
 Leaving PoW on at `/robots.txt` means well-behaved crawlers get the
 interstitial instead of your `Disallow` rules, including the ones steering
-them away from [honeypot](/reference/configuration#waf-honeypot) traps. This is
+them away from [honeypot](/reference/configuration#waf-honeypot) traps. That
+file is also where the `Sitemap:` line lives, so exempting it while the URL it
+advertises still challenges just moves the dead end one hop further. This is
 narrower than an `allowlist.paths` entry, which ends the pipeline outright: here
 blocks, GeoIP, reputation and the WAF still apply. A single host overrides an
 inherited entry by naming the same key in its own `paths`.
+
+Keys match exactly, so `"/sitemap.xml"` covers a flat sitemap and nothing else.
+Add the paths yours actually uses when they differ (WordPress core serves
+`/wp-sitemap.xml`, Yoast `/sitemap_index.xml`) or when an index names per-type
+children, or the index resolves and every child it points at is challenged.
+Note that this hands an anonymous client your URL list; the pages themselves
+still cost a solve, and one solve buys `token_ttl` of crawling either way.
 
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.
