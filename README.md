@@ -254,6 +254,12 @@ vulnerability, see [SECURITY.md](SECURITY.md); please do not open a public issue
 Everything below this line is for contributors building, testing, or changing
 Angie Guardian. Operators can stop here and use the documentation linked above.
 
+The [Development guide](https://angieguardian.org/guide/development) is the
+longer form of this section: repository layout, the `curl`-only local loop
+against `/auth`, what each CI job does and the two things it deliberately does
+not check, the conventions a change is expected to follow, and the store,
+packaging and documentation workflows.
+
 ### Testing
 
 The default suite is self-contained; Docker is only needed for end-to-end tests.

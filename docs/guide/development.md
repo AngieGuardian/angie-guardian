@@ -2,9 +2,128 @@
 
 This page is about working on Guardian itself rather than running it.
 Everything here needs a repository checkout and the Go toolchain selected by
-`go.mod`, and none of it is part of a release: the tools live under `test/` and
-are run with `go run`, so they are never installed on a server and never
-compiled into `guardiand`.
+`go.mod`, and the development tools are never installed on a server: they live
+under `test/`, are run with `go run`, and are not compiled into `guardiand`.
+
+```sh
+git clone https://gitlab.melroy.org/melroy/angie-guardian.git
+cd angie-guardian
+make test        # the whole tree under -race
+```
+
+Docker is the only external service any of this needs, and only for the
+end-to-end suite.
+
+## Repository layout
+
+| Path | What lives there |
+|---|---|
+| `cmd/guardiand` | The sidecar daemon. Flags, signal handling, wiring. |
+| `cmd/guardian-train` | Offline anomaly-model trainer and its `compare` gate. |
+| `cmd/guardian-loadtest` | Hot-path load generator. The only tool that measures throughput. |
+| `core` | The decision engine (`engine.go`), the whole config surface (`config.go`), the recent-decisions ring, unblocking. |
+| `core/pow` | Proof of work: challenge issue and redeem, difficulty escalation, stateless challenges, key rotation. |
+| `core/waf` | Signature rules and their hot-reloading cache. |
+| `core/anomaly` | The statistical baseline and scoring. |
+| `core/intel` | GeoIP and IP reputation feeds. |
+| `core/store` | Store backends behind one interface: sharded memory, BuntDB, Pebble, Redis/Valkey. |
+| `core/enforce`, `core/attackmode`, `core/botverify`, `core/health`, `core/metrics`, `core/stateless` | Block offload, attack mode, verified-crawler checks, health probes, Prometheus metrics, the shared decision vocabulary. |
+| `transport/http` | The `/auth` hot path, the challenge and redeem endpoints, and the whole Admin API. |
+| `transport/wasm` | The optional http-wasm guest (`//go:build wasip1`), a stateless subset. |
+| `web` | The served pages: challenge interstitial, denied page, dashboard, plus the vendored chart libraries. |
+| `internal/` | Small shared helpers (duration and rate parsing, jitter, bounded file reads). |
+| `deploy/` | Everything an operator installs: Angie glue configs, systemd units, Prometheus alerts, the Docker stack. |
+| `test/e2e` | The end-to-end suite (`//go:build e2e`). |
+| `test/seed`, `test/dashdev` | Development tools, described below. |
+| `docs/` | This site (VitePress). |
+
+## The local loop
+
+The fastest loop needs neither Angie nor Docker: run the daemon with the seed
+config and talk to `/auth` yourself.
+
+```sh
+go run ./cmd/guardiand -config test/seed/guardian.seed.yaml
+```
+
+That config is memory-only and binds `127.0.0.1:18071` for the hot path and
+`127.0.0.1:18072` for the admin API, with a fixed dev token so the dashboard
+link works.
+
+`/auth` is what Angie's `auth_request` calls, and Angie supplies the request
+context in headers, so a bare `curl` has to do the same:
+
+```sh
+curl -si 127.0.0.1:18071/auth \
+  -H 'X-Guardian-Host: plain.test' \
+  -H 'X-Guardian-Method: GET' \
+  -H 'X-Guardian-URI: /' \
+  -H 'X-Guardian-IP: 198.51.100.7' \
+  -H 'X-Guardian-UA: curl/8'
+# HTTP/1.1 200 OK
+# X-Guardian-Action: allow
+# X-Guardian-Reason: default
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | Allow. Angie proceeds to the backend. |
+| `401` | Challenge or refusal. Angie routes to the challenge location on this status. |
+| `403` | Deny. |
+
+Every response carries `X-Guardian-Action` and `X-Guardian-Reason`, and a
+challenge adds `X-Guardian-Difficulty`, so a single `curl -i` tells you what
+was decided and why without reading a log:
+
+```sh
+# A honeypot path on a PoW host: denied outright.
+curl -si 127.0.0.1:18071/auth -H 'X-Guardian-Host: example.com' \
+  -H 'X-Guardian-URI: /wp-admin-backup/x' -H 'X-Guardian-IP: 198.51.100.9' \
+  -H 'X-Guardian-UA: curl/8'
+# HTTP/1.1 403 Forbidden
+# X-Guardian-Action: deny
+# X-Guardian-Reason: honeypot:path
+```
+
+::: tip A bare curl gets refused, not challenged
+Ask for the root of a proof-of-work host with no `Accept` header and the answer
+is `401` with `X-Guardian-Action: refuse` and
+`X-Guardian-Reason: pow:unchallengeable`: Guardian will not issue a puzzle to
+something that cannot render the interstitial, and a client sending no `Accept`
+at all is exactly that. Add a browser-shaped one and the same request is
+challenged:
+
+```sh
+curl -si 127.0.0.1:18071/auth -H 'X-Guardian-Host: example.com' \
+  -H 'X-Guardian-URI: /' -H 'X-Guardian-IP: 198.51.100.8' \
+  -H 'X-Guardian-UA: Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Firefox/153.0' \
+  -H 'Accept: text/html,application/xhtml+xml'
+# HTTP/1.1 401 Unauthorized
+# X-Guardian-Action: challenge
+# X-Guardian-Difficulty: 16
+# X-Guardian-Reason: pow:no_token
+```
+
+The client's own `Accept` reaches the guard request untouched, which is why this
+works from `curl` at all.
+:::
+
+`X-Guardian-IP` is not strictly required (without it Guardian falls back to the
+socket address), but send it anyway: it is what per-IP counters, blocks and
+token binding key on, and `require_proxied: true` rejects a guard request that
+arrives without it.
+
+Other flags worth knowing while iterating:
+
+```sh
+go run ./cmd/guardiand -config guardian.yaml -t            # validate and exit (0 ok, 1 error)
+go run ./cmd/guardiand -config guardian.yaml -healthcheck  # probe the listeners and exit
+go run ./cmd/guardiand -version
+```
+
+A running daemon reloads its config on `SIGHUP` or
+`POST /admin/reload`, and rejects a config that fails validation while keeping
+the running one active, so a bad edit does not take the daemon down.
 
 ## Test and benchmark targets
 
@@ -13,15 +132,89 @@ compiled into `guardiand`.
 | `make test` | The whole tree under `-race`. Fast, and the one to run constantly. |
 | `make e2e` | Real Angie plus guardiand plus a backend, driven through Angie. Needs Docker. |
 | `make e2e-nft` | The nftables block-offload path. Needs `nf_tables` and `NET_ADMIN`, and skips cleanly without them. |
-| `make fuzz` | Every fuzz target for `FUZZTIME` each: the URI decoder, WAF rules, config, the anomaly model, PoW redeem. |
+| `make fuzz` | Every fuzz target for `FUZZTIME` each (default 30s): the URI decoder, WAF rules, config, the anomaly model, PoW redeem. |
 | `make vet` | `go vet ./...`. |
-| `make bench-regress` | Hot-path `allocs/op` against `allocs-baseline.txt`. Deterministic, so it also runs in CI. |
+| `make fmt` | `gofmt -w` over exactly the directories CI checks. |
+| `make bench-regress` | Hot-path `allocs/op` against `allocs-baseline.txt`. Deterministic, so it also gates CI. |
 | `make bench-report` | A hot-path snapshot of the current tree (`sec/op`, `B/op`, `allocs/op`) with the spread across runs. Manual, gates nothing, wants a quiet machine. |
+| `make bench-store` | The store engines on Guardian's real write workload: single-spend CAS flood, TTL counters, mixed read/write, expiry reclaim. |
 
-The end-to-end suite only runs in CI on `main` and on release tags, never on a
-merge request, so run `make e2e` locally before merging anything that touches
-the request path or the Admin API. For throughput numbers use
-[`guardian-loadtest`](/guide/load-testing), never a benchmark.
+Narrowing down is plain `go test`:
+
+```sh
+go test -race -run TestRedeemRecordsSolve ./transport/http/
+go test -tags e2e -run TestPoWFullSolveThroughAngie ./test/e2e/
+go test -run '^$' -bench BenchmarkEvaluateDeny -benchmem ./core/
+```
+
+`B/op` is worth watching on the request path even when `allocs/op` holds: a
+per-request struct crossing an allocator size class costs every request more
+memory while the allocation count never moves. `make bench-report` is the
+target that shows it.
+
+For throughput, use [`guardian-loadtest`](/guide/load-testing) rather than a
+benchmark. Benchmarks measure a function; the loadtest measures the daemon.
+
+## What CI checks, and what it does not
+
+Pipelines run on branches (merge-request pipelines are disabled, so the branch
+pipeline is the one that matters).
+
+| Job | What it runs | Notes |
+|---|---|---|
+| `format` | `gofmt -l` over `cmd core internal transport web test`, `go vet ./...`, and `go vet -tags e2e ./test/e2e/...` | The e2e vet is the only branch-side proof that the suite still compiles. |
+| `test` | `go test -race -count=1 ./...` | |
+| `bench-allocs` | `make bench-regress` | A new hot-path allocation fails here in seconds. |
+| `govulncheck` | A pinned `govulncheck ./...` | Call-graph aware, so it only flags vulnerabilities the code actually reaches. |
+| `alerts` | `promtool check rules` and `promtool test rules` over `deploy/alerts.yaml` | Those rules ship to operators verbatim, so a typo'd expression has to fail here. |
+| `docs` | The VitePress build, on branches that touch `docs/**` | Dead-link checking is part of the build. |
+| `e2e` | `make e2e` on the shell-executor runner | **Protected refs only.** |
+| `build`, `wasm` | The three binaries plus the WASM guest | Tag pipelines additionally cross-compile, package, checksum, smoke-test and publish. |
+
+Two gaps to plan around:
+
+- **`e2e` never runs on a feature branch.** The shell runners are
+  `ref_protected`, so the job is not even created outside `main` and tags: a
+  job that cannot be assigned a runner would hang the pipeline instead. Run
+  `make e2e` locally before merging anything that touches the request path or
+  the Admin API, because nothing on the branch will catch it.
+- **`make fuzz` is deliberately not a CI job.** A worthwhile sweep costs around
+  18 minutes of runner time and has so far found nothing. Run it locally when
+  you touch a parser, and commit any crasher it produces under `testdata/fuzz/`
+  as a regression seed.
+
+## Conventions
+
+- **Every Go file starts with the three-line AGPL header** (project line,
+  copyright, `SPDX-License-Identifier: AGPL-3.0-or-later`), tests included.
+- **Comments carry the reasoning, not the mechanics.** Most of this codebase is
+  tradeoffs (fail-open versus fail-closed, bounded versus complete, forgeable
+  client input versus server measurement), and the next reader needs to know
+  which way a call went and why, or they will "fix" it.
+- **The hot path does not grow allocations by accident.** `allocs-baseline.txt`
+  gates the auth, challenge and token paths. When a change legitimately needs
+  an allocation, raise the baseline in the same commit and say why in the
+  message. Only benchmarks whose counts are genuinely deterministic belong in
+  that file: anything driving background goroutines swings with `GOMAXPROCS`
+  and is excluded on purpose.
+- **Fail-open is a contract, and it is explicit.** An action the transport does
+  not recognise serves a 200 and logs it, rather than falling through to an
+  accidental allow. Keep new code in that shape.
+- **A config key is never just a struct field.** Adding one touches
+  `core/config.go` (parse, validate, defaults), `guardian.example.yaml`,
+  `core/config_test.go`, and the docs that claim to be complete:
+  [Configuration Options](/reference/configuration), the relevant guide page,
+  and `USAGE.md`. `challenge_farm` is a good worked example to grep for.
+- **A new metric touches `core/metrics` and
+  [the metrics reference](/reference/metrics)**, and needs a label-cardinality
+  answer before it lands: a label must come from a bounded set (a config key,
+  for instance), never from a request header. If it deserves alerting, it also
+  belongs in `deploy/alerts.yaml` with a case in `deploy/alerts.test.yaml`.
+- **An Admin API change updates
+  [the Admin API reference](/reference/admin-api)**, which is written to match
+  the handlers field for field.
+- **A dashboard change gets a behavioural test**, not a new markup needle. See
+  below.
 
 ## Seed the dashboard with traffic
 
@@ -35,9 +228,8 @@ make seed                  # two minutes
 make seed SEEDTIME=5m
 ```
 
-Then open `http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token`. The
-seed configuration is memory-only and meant for local development. This is not
-a load test: it generates variety, not throughput.
+Then open `http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token`. This
+is not a load test: it generates variety, not throughput.
 
 ## Try a dashboard change against a running daemon
 
@@ -109,6 +301,91 @@ call(t, vm, `uaClass("Mozilla/5.0 (Linux; Android 15; Pixel 9) ... Mobile Safari
 ```
 
 Prefer adding a case there over asserting that a line of markup exists.
-`transport/http/admin_assets_test.go` still checks that the served page
-contains the identifiers the code expects, but a needle only proves a line is
-present, never that it does the right thing.
+`transport/http/admin_assets_test.go` still checks that the served page contains
+the identifiers the code expects, but a needle only proves a line is present,
+never that it does the right thing.
+
+## The end-to-end suite
+
+`test/e2e` boots the real stack from `deploy/docker/compose.yaml` with
+[testcontainers-go](https://golang.testcontainers.org/), drives traffic
+**through Angie**, and asserts on decisions, `/metrics` and the Admin API:
+
+```
+Angie (auth_request)  ──►  guardiand  ──►  whoami backend
+```
+
+```sh
+make e2e                                                  # everything
+go test -tags e2e -run TestWAFDeny ./test/e2e/            # one scenario
+```
+
+The suite picks two free host ports, brings the stack up, and tears it (and its
+volumes) down again. The daemon's config for the run is
+`deploy/docker/guardian.e2e.yaml`, with `guardian.e2e-chaos.yaml` and
+`guardian.e2e-nft.yaml` for the store-outage and offload variants.
+
+Two things about it repeatedly surprise people:
+
+- **Every request from the host shares one source IP**, the Docker gateway. So
+  a WAF `block` blocks *the whole test run*, and the harness clears such blocks
+  through the Admin API around block-placing tests. Never hardcode a gateway
+  address; read the blocked IP back from `/admin/blocks`.
+- **The stack is real**, so a test that asserts on a fresh restart has to
+  tolerate a daemon whose first write after recovery can still fail open. That
+  is designed behaviour, not a flake, and the harness retries around it.
+
+For poking at the stack by hand rather than through Go, bring the same compose
+file up yourself; `deploy/docker/README.md` covers the topology and ports.
+
+## Store backends
+
+`store.backend` selects one of four implementations behind one interface:
+`memory` (sharded in-memory, the default), `buntdb` and `pebble` (both need
+`store.path`), and `redis` (Valkey-compatible, needs `store.addr`, and the
+choice for a fleet sharing state). `store.sync` is rejected on `buntdb`,
+whose single writer makes fsync-per-commit orders of magnitude slower; `pebble`
+is the synchronously durable option.
+
+Touching the store means running `make bench-store`, which exercises the
+workload that actually matters (a single-spend CAS flood, TTL counters, mixed
+read/write, expiry reclaim) rather than generic key/value throughput.
+
+## Build and package
+
+```sh
+make build      # the three binaries into dist/
+make wasm       # the optional http-wasm guest
+make all        # both
+make clean
+```
+
+Releases are cut as GitLab Releases, never by pushing a tag by hand: creating
+the release makes the tag, and the tag pipeline is what cross-compiles amd64
+and arm64, bundles `guardian.wasm`, the example config, the rules file and
+`deploy/`, smoke-tests the exact archive it is about to publish (including
+`guardiand -t` against the packaged example config), writes `SHA256SUMS`,
+uploads everything to the package registry, attaches the release asset links,
+mirrors the archives to GitHub, and builds and pushes the container image.
+
+## Documentation
+
+```sh
+make docs-dev   # local site with hot reload
+make docs       # production build, the same one CI runs
+```
+
+The site rebuilds and deploys from `main` whenever `docs/**` changes. Dead-link
+checking is part of the build, so a broken cross-reference fails the branch
+pipeline rather than the deploy.
+
+The reference pages are written to match the code field for field, so
+`/reference/configuration` tracks `core/config.go`, `/reference/admin-api`
+tracks the admin handlers, and `/reference/metrics` tracks `core/metrics`. A
+change to one of those files that leaves its reference page alone is an
+incomplete change.
+
+## Reporting a security issue
+
+Do not open a public issue. `SECURITY.md` has the private reporting process
+(email, or a confidential GitLab issue) and what to expect.

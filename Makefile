@@ -173,8 +173,12 @@ docs:
 docs-dev:
 	cd docs && npm install && npm run dev
 
+# Same directory set the CI `format` job checks with `gofmt -l`, so a file that
+# would fail the pipeline is a file this target fixes. internal/ was missing
+# here while CI checked it, which is exactly the gap that makes a formatting
+# failure surprising.
 fmt:
-	gofmt -w cmd core transport web test
+	gofmt -w cmd core internal transport web test
 
 clean:
 	rm -rf dist/
