@@ -305,7 +305,7 @@ distinguish an empty covered interval from unavailable history.
 
 ```json
 {
-  "count": 512,
+  "count": 1024,
   "truncated": true,
   "window": {
     "available": 4096,
@@ -333,6 +333,12 @@ action and reason category, and the PoW lifecycle. `blocks_complete:false`
 means `blocks_active` is a lower bound (or `-1` while the mirror has not seeded),
 never the result of an expensive fallback scan. Long-horizon numbers live in
 `/metrics`.
+
+The `challenges` object carries the lifecycle counters (`issued`, `solved`,
+`failed`, ...), the mean client-reported solve time, and, once any redemption
+has failed, a `failures` map with the per-reason split behind `failed`
+(`{"bad_solution": 4, "binding_mismatch": 2}`), read from
+`guardian_challenge_failures_total`. Process lifetime, like the funnel itself.
 
 `recent.total` and `recent.by_reason` count decisions only; `recent.by_action`
 covers everything the ring holds, so it also carries the `solve` and
@@ -711,5 +717,5 @@ capped at 1000 rows, cached for one minute, and refreshed immediately after a
 block/unblock action. Incomplete mirror counts are reported as lower bounds
 without a fallback full-store scan. The activity charts share fixed-axis
 `5m / 15m / 30m / 1h / all` controls over a compact full-ring feed; detailed table
-and GeoIP rows remain capped at 512. This is a per-instance live incident view.
+and GeoIP rows remain capped at 1024. This is a per-instance live incident view.
 Use `/metrics` with Prometheus retention and Grafana for historical analysis.

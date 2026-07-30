@@ -26,6 +26,7 @@ type Metrics struct {
 
 	decisions           *prometheus.CounterVec   // by action, reason_category, domain
 	challenge           *prometheus.CounterVec   // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|subresource_refused|accept_heuristic_refused|frame_unscored|solved|failed|spent_cas_failed
+	challengeFail       *prometheus.CounterVec   // failed redemptions by reason (bad_solution|binding_mismatch|unknown_challenge|too_fast|nojs_disabled|internal_error)
 	solveTime           *prometheus.HistogramVec // client-reported solve time in seconds, by domain
 	anomalyScore        *prometheus.HistogramVec
 	anomalyBaselineMiss *prometheus.CounterVec
@@ -80,6 +81,14 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "challenges_total",
 			Help: "Proof-of-work challenge lifecycle events.",
 		}, []string{"outcome"}),
+		// A sibling of challenges_total rather than a reason label on it: a
+		// label added to that family would rewrite the identity of all eleven
+		// outcome series (counter resets in every dashboard and alert reading
+		// them) to attach a reason that only the failed outcome has.
+		challengeFail: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "challenge_failures_total",
+			Help: "Failed proof-of-work redemptions by reason. Sums to guardian_challenges_total{outcome=\"failed\"}.",
+		}, []string{"reason"}),
 		solveTime: f.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "guardian", Name: "challenge_solve_seconds",
 			Help:    "Client-reported proof-of-work solve time, by domain.",
@@ -210,6 +219,16 @@ func (m *Metrics) Challenge(outcome string) {
 		return
 	}
 	m.challenge.WithLabelValues(outcome).Inc()
+}
+
+// ChallengeFailure records why a redemption failed. reason is the bare form
+// (no "pow:" prefix): a closed six-value set, so cardinality stays bounded.
+// Callers pair it with Challenge("failed"), never call it alone.
+func (m *Metrics) ChallengeFailure(reason string) {
+	if m == nil {
+		return
+	}
+	m.challengeFail.WithLabelValues(reason).Inc()
 }
 
 // SolveTime records a client-reported solve time. domain must be the bounded

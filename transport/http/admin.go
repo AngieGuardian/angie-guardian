@@ -628,6 +628,21 @@ func challengeStats(families []*dto.MetricFamily) map[string]any {
 					}
 				}
 			}
+		case "guardian_challenge_failures_total":
+			// The per-reason split behind the "failed" total above; a closed
+			// six-value set. Present only once a failure happened, matching
+			// how the family itself appears.
+			failures := map[string]float64{}
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "reason" {
+						failures[l.GetValue()] = m.GetCounter().GetValue()
+					}
+				}
+			}
+			if len(failures) > 0 {
+				out["failures"] = failures
+			}
 		case "guardian_challenge_solve_seconds":
 			// Labelled by domain, so the family carries one series per
 			// configured domain. Sum first, then divide: dividing inside the

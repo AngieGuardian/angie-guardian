@@ -387,6 +387,41 @@ func solveHistogram(seconds ...float64) map[string]any {
 	return map[string]any{"buckets": buckets, "sum": sum, "count": float64(len(seconds))}
 }
 
+// TestLooksLikeIP pins the gate on the ring-wide search fall-through: only a
+// whole IP address triggers the server-side ?ip= probe behind an empty text
+// search, because ?ip= is an exact match and anything else must stay a plain
+// local miss. Too loose and every typo fires admin API requests; too tight and
+// the exact confusion the probe exists to solve ("0 of N" for an IP that IS in
+// the ring) comes back.
+func TestLooksLikeIP(t *testing.T) {
+	vm := jsRuntime(t, "looksLikeIP")
+	cases := []struct {
+		needle string
+		want   bool
+	}{
+		{"203.0.113.127", true},
+		{"2001:db8::1", true},
+		{"::ffff:198.51.100.7", true},
+		{"2001:0db8:0e2e:0000:0000:0000:0000:0bad", true},
+		// Fragments and everything else search locally only.
+		{"203.0.113.", false},
+		{"1.2.3.4.5", false},
+		{"shop.example.com", false},
+		{"redeem_fail", false},
+		{"pow:bad_solution", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		v, err := vm.RunString(fmt.Sprintf("looksLikeIP(%q)", tc.needle))
+		if err != nil {
+			t.Fatalf("looksLikeIP(%q): %v", tc.needle, err)
+		}
+		if v.ToBoolean() != tc.want {
+			t.Errorf("looksLikeIP(%q) = %v, want %v", tc.needle, v.ToBoolean(), tc.want)
+		}
+	}
+}
+
 // TestBucketQuantile pins the p90 column on the per-domain card. A Prometheus
 // histogram keeps bucket counts and nothing else, so the card reports the bound
 // a quantile falls in and must never interpolate a precision that is not there.

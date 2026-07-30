@@ -2605,6 +2605,34 @@
     }
   };
 
+  // looksLikeIP says whether the free-text needle is a whole IP address, the
+  // one case where an empty local result is worth checking against the full
+  // server-side ring (?ip= is an exact match, so fragments stay local-only).
+  const looksLikeIP = (s) =>
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(s) || (s.includes(":") && /^[0-9a-fA-F:.]{2,}$/.test(s));
+
+  // The ring-wide fall-through behind an empty IP search. The text box greps
+  // only the fetched newest slice of the ring, while ?ip= walks the whole
+  // ring server-side; without this, an IP whose rows have aged past the
+  // fetch window reads as "never seen" while the IP lookup one section up
+  // would find it. One debounced compact query per typed needle, cached so
+  // refresh ticks do not refetch; any error (invalid IP, auth) just leaves
+  // the plain empty-state text.
+  let ipProbe = { needle: "", count: null, timer: 0 };
+  const probeRingForIP = (needle) => {
+    if (ipProbe.needle === needle) return; // cached or in flight
+    clearTimeout(ipProbe.timer);
+    ipProbe = { needle, count: null, timer: setTimeout(async () => {
+      try {
+        const d = await api("/admin/decisions?view=compact&limit=all&ip=" + encodeURIComponent(needle));
+        if (ipProbe.needle === needle) {
+          ipProbe.count = Number(d.count) || 0;
+          renderDecisions();
+        }
+      } catch { /* fall back to the plain message */ }
+    }, 350) };
+  };
+
   // The feed the decisions table pages over. Split out of renderDecisions so
   // the Last button can size the page count from the same rows without having
   // to render a page it is about to leave.
@@ -2650,7 +2678,32 @@
       cells.push(td("wrap", requestText(d)), td("wrap", d.ua));
       return row(...cells);
     }));
-    $("decisions-empty").hidden = rows.length > 0;
+    // An empty result for a whole-IP needle gets the ring-wide fall-through:
+    // say the older rows exist and link to the lookup, instead of a bare "no
+    // matches" that reads as "never seen". Skipped when an action filter is
+    // set, since the probe cannot honour it.
+    const empty = $("decisions-empty");
+    empty.hidden = rows.length > 0;
+    if (!empty.hidden && !action && looksLikeIP(needle)) {
+      probeRingForIP(needle);
+      if (ipProbe.needle === needle && ipProbe.count > 0) {
+        const link = el("a", "ip-link", ipProbe.count +
+          (ipProbe.count === 1 ? " older entry exists" : " older entries exist") +
+          " for " + needle + ": look it up");
+        link.href = "?ip=" + encodeURIComponent(needle);
+        link.addEventListener("click", (e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey) return; // keep open-in-new-tab
+          e.preventDefault();
+          openLookup(needle);
+        });
+        empty.replaceChildren("No matches in the " + lastDecisions.length +
+          " fetched rows. ", link);
+      } else {
+        empty.textContent = "No matching recent decisions.";
+      }
+    } else if (!empty.hidden) {
+      empty.textContent = "No matching recent decisions.";
+    }
     $("f-count").textContent = (action || needle)
       ? rows.length + " of " + lastDecisions.length : "";
 
@@ -3156,7 +3209,7 @@
     // renderBlocks reads); the resolved value itself is not needed here.
     const [stats, , decisions, chartDecisions, config, intel, dist, offenders, angie, anomaly] = await Promise.all([
       api("/admin/stats"), blocksRequest,
-      api("/admin/decisions?limit=512"),
+      api("/admin/decisions?limit=1024"),
       api("/admin/decisions?view=compact&limit=all"),
       api("/admin/config"),
       api("/admin/intel"),
@@ -3189,7 +3242,19 @@
     if (ch) {
       $("t-solved").textContent = Math.round(ch.solved);
       const parts = [];
-      if (ch.failed > 0) parts.push(Math.round(ch.failed) + " failed");
+      if (ch.failed > 0) {
+        let failed = Math.round(ch.failed) + " failed";
+        // The per-reason split (guardian_challenge_failures_total), biggest
+        // first, so "6 failed" reads as "bad_solution 4, binding_mismatch 2"
+        // without leaving the tile. Absent on daemons predating the counter.
+        if (ch.failures) {
+          const split = Object.entries(ch.failures)
+            .sort((a, b) => b[1] - a[1])
+            .map(([reason, n]) => reason + " " + Math.round(n));
+          if (split.length) failed += " (" + split.join(", ") + ")";
+        }
+        parts.push(failed);
+      }
       if (ch.avg_solve_seconds !== undefined) parts.push("avg " + ch.avg_solve_seconds.toFixed(1) + "s");
       $("t-solved-sub").textContent = parts.length ? parts.join(", ") : "since start";
     }

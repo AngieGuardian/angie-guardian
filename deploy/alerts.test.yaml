@@ -338,6 +338,44 @@ tests:
               description: 'Challenge redemption cannot complete its compare-and-swap, so single-spend has degraded to per-replica and a solved challenge can be replayed against another instance. Check GuardianStoreDown and GuardianStoreErrors first; this rarely fires on its own.'
               runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
 
+  # --- GuardianRedeemInternalErrors ----------------------------------------
+  - interval: 1m
+    name: internal redeem errors page after the 10m grace
+    input_series:
+      - series: 'guardian_challenge_failures_total{job="angie-guardian",instance="guardian:9101",reason="internal_error"}'
+        values: '0+6x30'
+    alert_rule_test:
+      # Rising from t=0, but for:10m holds it pending through the grace.
+      - eval_time: 5m
+        alertname: GuardianRedeemInternalErrors
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: GuardianRedeemInternalErrors
+        exp_alerts:
+          - exp_labels:
+              alertname: GuardianRedeemInternalErrors
+              severity: warning
+              job: angie-guardian
+              instance: guardian:9101
+            exp_annotations:
+              summary: 'Guardian redemptions failing with internal errors on guardian:9101'
+              description: 'Solved challenges are being rejected because Guardian itself errored while redeeming them (store or verification-key trouble), so real visitors who paid their proof of work are turned away. Check GuardianStoreDown and GuardianStoreErrors first; the per-attempt detail is /admin/decisions?action=redeem_fail.'
+              runbook_url: https://angieguardian.org/guide/troubleshooting#a-solved-challenge-is-rejected-challenge-verification-failed
+
+  - interval: 1m
+    name: client-caused redemption failures never page, however high they run
+    input_series:
+      # A bot flooding bad nonces at 10/s: scored and blocked by the daemon,
+      # not an operator's 3am problem. The alert filters on internal_error.
+      - series: 'guardian_challenge_failures_total{job="angie-guardian",instance="guardian:9101",reason="bad_solution"}'
+        values: '0+600x30'
+      - series: 'guardian_challenge_failures_total{job="angie-guardian",instance="guardian:9101",reason="binding_mismatch"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: GuardianRedeemInternalErrors
+        exp_alerts: []
+
   - interval: 1m
     name: a healthy instance triggers nothing at all
     input_series:
@@ -386,6 +424,9 @@ tests:
         exp_alerts: []
       - eval_time: 30m
         alertname: GuardianStatelessSpendFallback
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GuardianRedeemInternalErrors
         exp_alerts: []
 
   # --- GuardianAnomalyModelStale -------------------------------------------

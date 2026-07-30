@@ -222,6 +222,26 @@ groups:
             compare gate or a failed promotion only shows up there.
           runbook_url: https://angieguardian.org/guide/production#running-the-anomaly-trainer
 
+      # Redemptions erroring inside Guardian itself (store read, key refresh),
+      # not clients failing puzzles: the client-caused reasons (bad_solution,
+      # binding_mismatch, ...) never page, however high they run, because they
+      # are scored and blocked by the daemon on its own.
+      - alert: GuardianRedeemInternalErrors
+        expr: >-
+          sum by (job, instance) (rate(guardian_challenge_failures_total{job="angie-guardian",reason="internal_error"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Guardian redemptions failing with internal errors on {{ $labels.instance }}'
+          description: >-
+            Solved challenges are being rejected because Guardian itself
+            errored while redeeming them (store or verification-key trouble),
+            so real visitors who paid their proof of work are turned away.
+            Check GuardianStoreDown and GuardianStoreErrors first; the
+            per-attempt detail is /admin/decisions?action=redeem_fail.
+          runbook_url: https://angieguardian.org/guide/troubleshooting#a-solved-challenge-is-rejected-challenge-verification-failed
+
       # Single-spend fell back to per-replica: the challenge CAS is failing, so
       # a solved challenge is no longer guaranteed to be redeemable exactly
       # once fleet-wide. Almost always a symptom of the store being unhappy.
