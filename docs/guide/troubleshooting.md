@@ -3,6 +3,55 @@
 Symptoms you're most likely to hit, and what causes them. Most are
 configuration or environment issues, not bugs.
 
+## Visitors get the stock Angie 401 page instead of the challenge
+
+The browser shows Angie's built-in `401 Unauthorized` page, a bare heading over
+the server signature, where the interstitial should be. Nothing looks wrong on
+the Guardian side: a challenge is decided and logged for every one of those
+requests, and the dashboard's Recent decisions table fills up with them.
+
+```
+level=INFO msg=decision action=challenge reason=pow:no_token host=example.com ...
+```
+
+**Cause:** the `error_page 401 = @guardian_challenge;` mapping is not in effect
+in the location that handled the request, so Angie serves the auth subrequest's
+`401` itself. Almost always this is `error_page` inheritance: Angie merges the
+inherited list into a location only when that location declares none of its own,
+all-or-nothing per level rather than per status code. A `location /` that sets
+`error_page 404 /404.html;` for its own missing pages silently drops the `401`
+and `403` mappings it never mentions. Protection is unaffected; only the styled
+page is lost.
+
+**Fix:** include `angie-guardian-location.conf` again inside that location,
+alongside its own error-page rules, and keep the server-scope include for
+everything else.
+[A location with its own error_page](/guide/angie#a-location-with-its-own-error-page-loses-the-styled-diversion)
+has the full example, the nested-location rule, and the ordering caveat for
+`403`.
+
+**Confirm it from the metrics before touching the vhost.** `issued` is counted
+at the interstitial hop, and Angie fetches that page itself while serving the
+`401`, so a client cannot skip it. Challenge decisions without matching
+issuances mean the diversion is not arriving:
+
+```sh
+curl -s localhost:8072/metrics \
+  | grep -E 'decisions_total.*action="challenge"|challenges_total.*outcome="issued"'
+```
+
+A climbing decision counter beside a flat `issued` counter is this bug (add the
+bearer token if you set `admin.metrics_auth`). Refusals do not muddy the
+comparison: they are recorded with action `refuse`, not `challenge`.
+
+Reproducing it with `curl` needs one header, because a bare `curl` is
+[refused a challenge by design](#legitimate-visitors-get-challenged-or-blocked)
+and answers `403`:
+
+```sh
+curl -si -H 'Accept: text/html' https://example.com/ | head -1   # expect 200
+```
+
 ## The challenge page reloads forever
 
 A browser solves the proof-of-work, gets redirected, and lands right back on

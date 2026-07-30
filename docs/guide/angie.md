@@ -175,11 +175,60 @@ each selected public location instead.
 
 Inheritance can be overridden by a child location. Audit any location that
 already declares `auth_request`/`auth_request off`; it will not inherit the
-server-level Guardian check. Also note that Angie inherits `error_page`
-directives only when the child declares none of its own. A child with a custom
-`error_page` remains denied when Guardian returns 401/403, but it will lose the
-styled challenge/denied diversion unless you place the protection include at
-that location level alongside its error-page rules.
+server-level Guardian check.
+
+## A location with its own error_page loses the styled diversion
+
+Angie merges the inherited `error_page` list into a location only when that
+location declares none of its own, and the merge is all-or-nothing per level
+rather than per status code. One `error_page 404 /404.html;` inside `location /`
+therefore discards the `401` and `403` mappings from
+`angie-guardian-location.conf` that the location never mentions.
+
+Protection is intact throughout: `auth_request` still runs and the request is
+still refused. What is lost is the diversion, so the visitor gets Angie's stock
+`401 Unauthorized` page instead of the interstitial while the decision log
+records a challenge for every one of those requests. See
+[Visitors get the stock Angie 401 page](/guide/troubleshooting#visitors-get-the-stock-angie-401-page-instead-of-the-challenge)
+for the metric that confirms it.
+
+Fix it by including the protection file again at the level that owns the error
+pages. Keep the server-scope include; it still covers every other location.
+
+```nginx
+server {
+    include angie-guardian.conf;
+    include angie-guardian-location.conf;
+
+    location / {
+        try_files $uri $uri.html $uri/ =404;
+
+        error_page 404 /404.html;             # cancels the inherited set here
+        include angie-guardian-location.conf; # so re-arm it here
+
+        location ~* ^/assets/ {               # declares no error_page,
+            expires 1y;                       # inherits from location /
+        }
+    }
+}
+```
+
+Repeating the include rather than copying the two `error_page` lines keeps the
+location in step with the shipped file, and re-declaring `auth_request` at this
+level costs nothing. Nested locations apply the same rule against their parent,
+so the `location ~* ^/assets/` above is covered by whatever `location /` ends up
+with.
+
+Where one status code is declared twice at a single level, the first declaration
+wins and the later one is dead configuration. That matters for `403`: a site rule
+such as `error_page 403 /404.html;` placed above the include keeps
+`@guardian_denied` from ever running. Blocked clients then get the site's own
+page, which is cosmetic, but a shed response under
+[attack mode](/guide/attack-mode) also stops being translated into `503` plus
+`Retry-After` and reaches the client as `403` with that page, which is not. Put
+the include above the site's own `403` rule to get both back, and give any
+index-less directory its own handling if you were relying on that rule to catch
+the index module's `403`.
 
 ## Fail-open without duplicating the site handler
 
