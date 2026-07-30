@@ -83,7 +83,7 @@ func runSuite(m *testing.M) int {
 	}
 	stack = c
 
-	// Pick two free host ports so the published listeners never collide with
+	// Pick three free host ports so the published listeners never collide with
 	// anything else on the box, and hand them to compose via the env-var
 	// defaults in compose.yaml.
 	sitePort, err := freePort()

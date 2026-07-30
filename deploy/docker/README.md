@@ -25,7 +25,7 @@ root (Go and make are required; Docker is the only external service):
 make e2e                              # or: go test -tags e2e ./test/e2e/...
 ```
 
-The suite picks two free host ports, brings the stack up, runs every scenario,
+The suite picks three free host ports, brings the stack up, runs every scenario,
 and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
 PoW challenge issuance, a **full PoW solve through Angie** (challenge → solve →
 cookie → vouched request → spent-challenge replay), the no-JS meta-refresh

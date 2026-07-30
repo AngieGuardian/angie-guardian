@@ -316,12 +316,12 @@ Angie (auth_request)  ──►  guardiand  ──►  whoami backend
 ```
 
 ```sh
-make e2e                                                  # everything
-go test -tags e2e -run TestWAFDeny ./test/e2e/            # one scenario
+make e2e                                                    # everything
+go test -tags e2e -run TestWAFSignatureDeny ./test/e2e/     # one scenario
 ```
 
-The suite picks two free host ports, brings the stack up, and tears it (and its
-volumes) down again. The daemon's config for the run is
+The suite picks three free host ports, brings the stack up, and tears it (and
+its volumes) down again. The daemon's config for the run is
 `deploy/docker/guardian.e2e.yaml`, with `guardian.e2e-chaos.yaml` and
 `guardian.e2e-nft.yaml` for the store-outage and offload variants.
 
