@@ -647,11 +647,13 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	res, err := s.pow.Redeem(r.Context(), req)
 	if err != nil {
 		s.metrics.Challenge("failed")
-		// The ring row keeps what the funnel counter drops: who failed, on
-		// which host, and why. Recorded on the internal-error branch too,
-		// because the counter above already includes it and the two must
-		// agree; a burst of internal_error rows is a store-trouble signal.
+		// The ring row and the per-reason counter keep what the funnel
+		// counter drops: who failed, on which host, and why. Recorded on the
+		// internal-error branch too, because the counter above already
+		// includes it and they must agree; a burst of internal_error is a
+		// store-trouble signal (alerted on as GuardianRedeemInternalErrors).
 		reason := redeemFailReason(err)
+		s.metrics.ChallengeFailure(strings.TrimPrefix(reason, "pow:"))
 		s.engine.RecordRedeemFailure(host, ip, req.UserAgent, reason)
 		status := http.StatusForbidden
 		if reason == core.ReasonRedeemInternal {

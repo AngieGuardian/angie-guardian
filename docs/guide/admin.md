@@ -382,7 +382,7 @@ Two cards answer that without reading individual rows:
   shows the median and slowest in each, slowest first, so a difficulty that is
   fine on a laptop and punishing on a phone is visible. Three things bound what
   it can tell you: it classifies by matching the User-Agent, which is a
-  forgeable header and a guess; it reads the page's most recent 512 decisions
+  forgeable header and a guess; it reads the page's most recent 1024 decisions
   rather than every solve, which is why it is labelled a sample, and why on a
   busy site its total is lower than the per-domain card's (the header says
   `5 of 6 solves sampled` whenever they differ, since older solves have already
@@ -405,7 +405,11 @@ legs and any time the tab spent backgrounded.
 
 The activity charts are a bounded, per-instance incident view. Their compact
 feed can use the full configured ring without repeatedly transferring detailed
-request and GeoIP fields; the decision table and map stay capped at 512 rows.
+request and GeoIP fields; the decision table and map stay capped at 1024 rows.
+The table's free-text box searches only those fetched rows, but a whole IP
+address that matches none of them is checked against the full ring
+server-side: when older entries exist, the empty state says so and links to
+the IP lookup instead of reading as "never seen".
 For hours, days, alerting, or fleet-wide history, scrape `/metrics` with
 Prometheus and use Grafana rather than enlarging this in-memory window.
 

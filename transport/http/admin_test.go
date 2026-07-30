@@ -146,6 +146,7 @@ func TestAdminStatsChallenges(t *testing.T) {
 	m.Challenge("issued")
 	m.Challenge("solved")
 	m.Challenge("failed")
+	m.ChallengeFailure("bad_solution")
 	// Two domains on purpose: solve time is a labelled histogram, so the mean
 	// has to be computed over the whole family. Averaging inside the per-series
 	// loop would report whichever domain the registry yielded last (1 or 3
@@ -167,6 +168,11 @@ func TestAdminStatsChallenges(t *testing.T) {
 	if avg, _ := ch["avg_solve_seconds"].(float64); avg != 2.0 {
 		t.Errorf("avg_solve_seconds = %v, want 2 (the mean across both domains)",
 			ch["avg_solve_seconds"])
+	}
+	// The per-reason split behind "failed", from challenge_failures_total.
+	failures, _ := ch["failures"].(map[string]any)
+	if len(failures) != 1 || failures["bad_solution"] != 1.0 {
+		t.Errorf("failures = %v, want {bad_solution: 1}", ch["failures"])
 	}
 }
 

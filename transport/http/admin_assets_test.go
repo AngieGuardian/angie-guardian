@@ -363,8 +363,12 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 		`id="chart-window"`,
 		`value="5m"`, `value="15m"`, `value="30m"`, `value="1h"`, `value="all"`,
 		`id="chart-decisions-window"`, `id="chart-reasons-window"`,
-		`api("/admin/decisions?limit=512")`,
+		`api("/admin/decisions?limit=1024")`,
 		`api("/admin/decisions?view=compact&limit=all")`,
+		// The ring-wide fall-through behind an empty whole-IP search: without
+		// it, an IP whose rows aged past the fetch window reads as never seen.
+		`const probeRingForIP`,
+		`"/admin/decisions?view=compact&limit=all&ip=" + encodeURIComponent(needle)`,
 		`const bucketize = (records, keyFn, series, nBuckets, lo, hi)`,
 		`const n = nBuckets`,
 		`sessionStorage.setItem(CHART_WINDOW_KEY, chartWindow)`,

@@ -891,7 +891,7 @@ func TestRedeemRecordsSolve(t *testing.T) {
 // host, and why, which is what tells "failed N" in the funnel apart from an
 // attack. Without it the reason lives only in a log line.
 func TestRedeemFailureRecordsRow(t *testing.T) {
-	ts, h := testServerAndHandler(t, testYAML)
+	ts, h, m := testServerWithMetrics(t, testYAML)
 	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
 
 	failRows := func() []core.RecentDecision {
@@ -936,6 +936,41 @@ func TestRedeemFailureRecordsRow(t *testing.T) {
 	// Newest first, like the ring itself.
 	if rows[0].Reason != core.ReasonChallengeGone {
 		t.Errorf("reason = %q, want %q", rows[0].Reason, core.ReasonChallengeGone)
+	}
+
+	// The per-reason counter mirrors the ring, bare-labelled: two failures,
+	// one per reason, summing to challenges_total{outcome="failed"}.
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byReason := map[string]float64{}
+	var failed float64
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "guardian_challenge_failures_total":
+			for _, s := range mf.GetMetric() {
+				for _, l := range s.GetLabel() {
+					if l.GetName() == "reason" {
+						byReason[l.GetValue()] = s.GetCounter().GetValue()
+					}
+				}
+			}
+		case "guardian_challenges_total":
+			for _, s := range mf.GetMetric() {
+				for _, l := range s.GetLabel() {
+					if l.GetName() == "outcome" && l.GetValue() == "failed" {
+						failed = s.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+	}
+	if byReason["bad_solution"] != 1 || byReason["unknown_challenge"] != 1 || len(byReason) != 2 {
+		t.Errorf("challenge_failures_total = %v, want bad_solution 1 + unknown_challenge 1", byReason)
+	}
+	if failed != 2 {
+		t.Errorf("challenges_total{failed} = %v, want 2 (must equal the failures sum)", failed)
 	}
 }
 

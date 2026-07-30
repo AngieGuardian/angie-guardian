@@ -303,6 +303,21 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Failed redemptions by reason",
+      "description": "guardian_challenge_failures_total: the per-reason split behind challenges_total{outcome=\"failed\"}. bad_solution at volume is a bot posting junk (scored and blocked on its own); binding_mismatch is usually VPN or mobile handover moving a client between issue and redeem; internal_error is Guardian's own store/key trouble and has its own alert (GuardianRedeemInternalErrors).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(guardian_challenge_failures_total[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
     }
   ]
 }
