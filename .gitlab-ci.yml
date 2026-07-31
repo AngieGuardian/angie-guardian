@@ -243,7 +243,7 @@ upload_and_release:
         GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-train"    ./cmd/guardian-train
         GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-loadtest" ./cmd/guardian-loadtest
         cp guardian.wasm "$PKG/"
-        cp -r README.md USAGE.md LICENSE guardian.example.yaml deploy "$PKG/"
+        cp -r README.md ARCHITECTURE.md USAGE.md LICENSE guardian.example.yaml deploy "$PKG/"
         tar -czf "${PKG}.tar.gz" "$PKG"
       done
     # Smoke the exact host-install inputs before publishing them. This catches
