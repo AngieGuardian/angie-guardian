@@ -24,13 +24,13 @@ management network. If it must cross a host or network boundary, place it
 behind a TLS/mTLS reverse proxy or service mesh; a bearer token sent over
 plaintext can be captured and replayed.
 
-Angie never fronts this listener, so guardiand sets the dashboard's response
-security headers itself: a page-fitted `Content-Security-Policy` (no CDN, no
-`eval`, only same-origin fetches and the vendored chart libraries),
-`frame-ancestors 'none'` plus `X-Frame-Options: DENY` so a console holding an
-operator's token cannot be framed, `X-Content-Type-Options: nosniff` on every
-response including the JSON ones, and `Referrer-Policy: no-referrer`. If you do
-put a reverse proxy in front, do not strip or replace them.
+Angie never fronts this listener, so guardiand sets the dashboard's security
+headers itself: a page-fitted `Content-Security-Policy` (no CDN, no `eval`,
+same-origin fetches only), `frame-ancestors 'none'` plus `X-Frame-Options:
+DENY` (a console holding an operator's token must not be frameable),
+`X-Content-Type-Options: nosniff` on every response including JSON, and
+`Referrer-Policy: no-referrer`. A reverse proxy in front must not strip or
+replace them.
 
 ## Everyday operations
 
@@ -157,9 +157,9 @@ when it could only cover part of it; see the
 [endpoint reference](/reference/admin-api#delete-admin-blocks-ip).
 
 One consequence worth knowing: for a few seconds after an unblock, that IP
-cannot be *automatically* re-blocked. The reset runs against live traffic that
-is still scoring the IP, and without holding those writers off, a request that
-read a saturated counter before the reset simply writes its block after it. If
+cannot be *automatically* re-blocked, because the reset runs against live
+traffic that is still scoring it (a request that read a saturated counter just
+before the reset would otherwise simply write its block back afterwards). If
 you unblock an IP and immediately change your mind, block it by hand: manual
 blocks are not held off.
 
@@ -206,21 +206,23 @@ in process logs. The page keeps the token only in the tab's sessionStorage.
 
 ![The Guardian admin dashboard](/dashboard.png)
 
-The dashboard shows active blocks (with one-click unblock, a checkbox for
-whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent activity feed of non-allow decisions, solves and
-failed redemptions (filterable by action and free text),
-challenge lifecycle counters with the average solve time, per-domain feature
-status, anomaly baseline coverage and segment health, IP intelligence health
-(loaded GeoIP databases plus each reputation feed's entries, refresh age and
-last error), and headline counters. It
-auto-refreshes on a selectable interval (2s to 60s, or off) chosen in the
-header and remembered per browser. The active-block and recent-decision tables
-paginate at 25 rows. The active-block table is capped at 1000 rows and cached
-for one minute (and refreshed immediately after a block/unblock action). The
-headline count comes from the bounded in-process mirror and is shown as a lower
-bound when that mirror is capacity-incomplete, so leaving the dashboard open
-never triggers an unbounded store scan.
+The page auto-refreshes on a selectable interval (2s to 60s, or off), chosen in
+the header and remembered per browser. On it:
+
+- **Active blocks**, with one-click unblock (plus a checkbox controlling
+  whether the unblock also resets the repeat-offender backoff) and a
+  block-an-IP form. The table paginates at 25 rows, is capped at 1000 and
+  cached for a minute, refreshed immediately after any block/unblock action.
+- The **recent activity feed** of non-allow decisions, solves and failed
+  redemptions, filterable by action and free text, also paginating at 25 rows.
+- **Challenge lifecycle counters** with the average solve time, per-domain
+  feature status, and anomaly baseline coverage and segment health.
+- **IP intelligence health**: loaded GeoIP databases plus each reputation
+  feed's entries, refresh age and last error.
+- **Headline counters**. The active-block headline comes from the bounded
+  in-process mirror and is shown as a lower bound when that mirror is
+  capacity-incomplete, so leaving the dashboard open never triggers an
+  unbounded store scan.
 
 Each section heading carries a small circled **i** linking to the page on this
 site that explains it, opened in a new tab so the live dashboard (and the token
@@ -296,21 +298,17 @@ When any component is degraded, a banner appears above the tiles naming the
 worst one first: red when the store is unreachable (Guardian is silently failing
 open), amber for recoverable degradation that is still protecting traffic.
 
-Everything on this surface comes from the `health` object of
-[`GET /admin/stats`](/reference/admin-api#get-admin-stats), which the dashboard
-already fetches each tick, so it costs no extra request. Some of those numbers
-are process-lifetime counters (shedding, stateless fallback, CAS failures); the
-dashboard compares them against the previous refresh and only calls a component
-degraded when they actually move, re-baselining when a counter drops because the
-process restarted. The first sample of each shows as "observing" rather than a
-verdict. Against an older guardiand that does not send `health`, the banner,
-tile and card hide themselves.
+Some of these numbers are process-lifetime counters (shedding, stateless
+fallback, CAS failures): a component is only called degraded when they move
+between refreshes, re-baselining after a restart, and the first sample shows as
+"observing" rather than a verdict. Against an older guardiand that does not
+send health data, the banner, tile and card hide themselves.
 
 When GeoIP or ASN databases are loaded, Recent decisions gains a **Geo** column
-with the same country, locality, accuracy and network context as Top offenders.
-Geo text participates in the free-text filter. Broad City-database matches are
-dimmed and expose their accuracy radius on hover rather than presenting an
-approximate locality as a precise one.
+with the same country, locality, accuracy and network context as Top offenders,
+and geo text joins the free-text filter. Broad City-database matches are dimmed
+and show their accuracy radius on hover instead of posing as a precise
+locality.
 
 ### Graphs
 
@@ -325,47 +323,43 @@ path:
   daemon started.
 - **Activity / totals**: the proof-of-work funnel (issued, solved, failed),
   per-domain traffic volume, the solve-time histogram, **solve time by domain**
-  and **by client** (see below), and the anomaly-score
-  histogram, read from counters and Prometheus histograms via
+  and **by client** (see below), and the anomaly-score histogram, read from
+  lifetime counters and Prometheus histograms via
   [`GET /admin/stats`](/reference/admin-api#get-admin-stats) and
   [`GET /admin/distributions`](/reference/admin-api#get-admin-distributions).
-  These are lifetime totals, so the window controls above do not apply to them;
-  the group is headed `counted since daemon start` for that reason. Cards hide
-  themselves until there is data. Per-domain traffic draws one row per domain,
-  busiest first and never truncated, scrolling in place once the list outgrows
-  the card, with a **count / share** control described below.
+  The window controls above do not apply here, hence the group heading
+  `counted since daemon start`. Cards hide themselves until there is data.
+  Per-domain traffic draws one row per domain, busiest first and never
+  truncated, scrolling in place once the list outgrows the card, with a
+  **count / share** control described below.
 - **Anomaly coverage**: loaded training times and artifact domain counts,
   configured scope coverage, route/method segment counts, selected fallback
   levels, and any missing
   baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
   and the distribution counters.
 
-Solved challenges and failed redemption attempts are deliberately absent from
-both time-series charts. An outcome is the consequence of a challenge already
-drawn in the stacked area, so its own band would draw one client journey twice,
-and in the by-reason chart every one would collapse to `pow` and swamp the band
-that exists to show proof-of-work token failures. Both still appear in the
-recent activity feed (actions `solve` and `redeem_fail`), which is where the
-funnel's `failed` count gets its explanation: a `redeem_fail` row names the IP
-and the reason, so a wrong-nonce bot and a visitor whose VPN moved them to a
-new exit IP mid-challenge stop looking alike.
+Solves and failed redemptions are deliberately absent from both time-series
+charts: an outcome is the consequence of a challenge already drawn there, so
+its own band would draw one client journey twice (and in the by-reason chart
+every outcome would collapse to `pow`). Both remain in the recent activity feed
+(actions `solve` and `redeem_fail`), which is where the funnel's `failed` count
+gets its explanation: a `redeem_fail` row names the IP and the reason, so a
+wrong-nonce bot and a visitor whose VPN switched exit IPs mid-challenge stop
+looking alike.
 
 #### Per-domain traffic on a large fleet
 
-The bars are stacked by action, so on a fleet whose busiest domain serves a
-thousand times what its quietest does, the quiet rows are stubs and their action
-mix is unreadable. The **Bars** control on that card switches what the segments
-measure:
+Bars are stacked by action, so on a fleet whose busiest domain serves a
+thousand times what its quietest does, the quiet rows become unreadable stubs.
+The **Bars** control on that card switches what the segments measure:
 
-- **count** (the default) plots raw decision counts on a shared axis, so bar
-  length compares volume across domains. This is the view for "who is busiest"
-  and "how many denies did that domain actually take".
-- **share** plots each action as a percentage of *that domain's own* traffic, so
-  every bar fills the axis and the mix is equally legible on a domain serving
-  200 requests and one serving 200,000. This is the view for "which domain is
-  challenging or denying an unusual proportion of its visitors". Because the bar
-  length no longer carries volume, the total moves next to the domain name, and
-  the tooltip reports the count alongside the percentage in both modes.
+- **count** (the default): raw decision counts on a shared axis, for "who is
+  busiest" and "how many denies did that domain actually take".
+- **share**: each action as a percentage of *that domain's own* traffic, so the
+  mix is equally legible at 200 requests and at 200,000, for "which domain is
+  challenging or denying an unusual proportion of its visitors". The total
+  moves next to the domain name (bar length no longer carries volume), and
+  tooltips report the count alongside the percentage in both modes.
 
 The choice is remembered for the browser session.
 
@@ -381,39 +375,33 @@ Two cards answer that without reading individual rows:
   rather than the bounded ring.
 - **Solve time by client** groups solves into coarse classes (`mobile`,
   `desktop`, `bot`, `none` for an empty User-Agent, `other` for the rest) and
-  shows the median and slowest in each, slowest first, so a difficulty that is
-  fine on a laptop and punishing on a phone is visible. Three things bound what
-  it can tell you: it classifies by matching the User-Agent, which is a
-  forgeable header and a guess; it reads the page's most recent 1024 decisions
-  rather than every solve, which is why it is labelled a sample, and why on a
-  busy site its total is lower than the per-domain card's (the header says
-  `5 of 6 solves sampled` whenever they differ, since older solves have already
-  been pushed out of the ring); and it counts
-  only solves that reported a time, so no-JS redemptions and rejected reports
-  are absent and its totals are lower than the funnel's `solved`. The card
-  appears with its first timed solve, and a class with fewer than five is
-  flagged as a thin sample when you hover it: below that a median is a hint, not
-  a finding, but withholding the row entirely only made a quiet deployment look
-  broken. The taxonomy stays client-side and is
-  deliberately never a metric label: it is a heuristic that will need revising,
-  and a Prometheus label is a one-way door.
+  shows each class's median and slowest, slowest first, so a difficulty that is
+  fine on a laptop and punishing on a phone is visible. Three bounds on what it
+  can tell you: the class comes from the forgeable User-Agent header, so it is
+  a guess; it samples the page's most recent 1024 decisions rather than every
+  solve (the header says `5 of 6 solves sampled` whenever older solves have
+  been pushed out of the ring); and it counts only solves that reported a time,
+  so no-JS redemptions and rejected reports are absent and its totals stay
+  below the funnel's `solved`. A class with fewer than five solves is flagged
+  as a thin sample on hover: below that, a median is a hint, not a finding. The
+  taxonomy stays client-side and is deliberately never a metric label: it is a
+  heuristic that will need revising, and a Prometheus label is a one-way door.
 
 For a single visitor, the **Solve** column in the recent activity feed carries
-the client-reported time, and hovering it shows the daemon's own issue-to-redeem
+the client-reported time; hovering it shows the daemon's own issue-to-redeem
 measurement and the difficulty the challenge was paid at. Neither number is
-authenticated evidence about a client: the reported one is browser telemetry a
-client can under-report, and the measured one includes page load, both network
-legs and any time the tab spent backgrounded.
+authenticated evidence: the reported one is browser telemetry a client can
+under-report, and the measured one includes page load, both network legs and
+any time the tab spent backgrounded.
 
-The activity charts are a bounded, per-instance incident view. Their compact
-feed can use the full configured ring without repeatedly transferring detailed
-request and GeoIP fields; the decision table and map stay capped at 1024 rows.
-The table's free-text box searches only those fetched rows, but a whole IP
-address that matches none of them is checked against the full ring
-server-side: when older entries exist, the empty state says so and links to
-the IP lookup instead of reading as "never seen".
-For hours, days, alerting, or fleet-wide history, scrape `/metrics` with
-Prometheus and use Grafana rather than enlarging this in-memory window.
+The activity charts are a bounded, per-instance incident view: the compact feed
+can use the full configured ring, while the decision table and map stay capped
+at 1024 rows. The free-text box searches only those fetched rows, but a whole
+IP address that matches none of them is checked against the full ring
+server-side, so when older entries exist the empty state links to the IP lookup
+instead of reading as "never seen". For hours, days, alerting, or fleet-wide
+history, scrape `/metrics` with Prometheus and use Grafana rather than
+enlarging this in-memory window.
 
 ### Top offenders
 
@@ -440,44 +428,36 @@ chartjs-chart-geo and a bundled TopoJSON atlas (no CDN; the atlas is fetched
 once, and only when there is geo data to draw). It uses an Equal Earth
 projection so relative areas stay honest.
 
-The map can be explored without trapping normal page scrolling. On Linux and
-Windows, hold **Ctrl** while using the mouse wheel to zoom or dragging to pan;
-on macOS use **Cmd**. Touch screens support direct one-finger panning and
-two-finger pinch zoom. **Reset view** returns to the centred world view. The
-zoom plugin and its touch-gesture dependency are bundled with the daemon, so
-these controls also work in air-gapped deployments.
+The map never traps normal page scrolling: hold **Ctrl** (**Cmd** on macOS) to
+zoom with the mouse wheel or drag to pan; touch screens pan with one finger and
+pinch-zoom with two. **Reset view** returns to the centred world view. The zoom
+plugin and its touch-gesture dependency are bundled with the daemon, so the
+controls also work air-gapped.
 
 The atlas has no shape for some countries, mostly city-states and small island
 territories such as Hong Kong, Singapore and Malta. Their traffic is **not**
-dropped: it is listed under the map as `Not on map: HK 4 · SG 3`. The country
-table beside the map remains the complete, exact view.
+dropped: it is listed under the map as `Not on map: HK 4 · SG 3`, and the
+country table beside the map remains the complete, exact view.
 
 ### Server traffic (Angie API)
 
 Guardian never sees allowed traffic on its stateless hot path, so real
 per-domain request counts, live connections, response-code mix, backend health
 and cache behaviour can only come from Angie itself. Point guardiand at Angie's
-HTTP API with `admin.angie_api` and the dashboard grows a **Server traffic**
-section reading it through
-[`GET /admin/angie`](/reference/admin-api#get-admin-angie). See
-[Enabling the Angie API](#enabling-the-angie-api) below. The section hides itself
-when unconfigured and shows "Angie API unreachable" (without breaking the rest of
-the page) when Angie's API is down.
+HTTP API with `admin.angie_api`
+([Enabling the Angie API](#enabling-the-angie-api) below) and the dashboard
+grows a **Server traffic** section reading it through
+[`GET /admin/angie`](/reference/admin-api#get-admin-angie). The section hides
+itself when unconfigured, and shows "Angie API unreachable" without breaking
+the rest of the page when Angie's API is down.
 
 ![Server traffic: live Angie tiles, request-rate and response-code charts, per-zone tables and upstream peer latency](/dashboard-angie.png)
 
-The page is a static shell: it stores no secrets, stays off unless enabled,
-and every data call goes to the token-guarded `/admin/*` endpoints. The shell
-can still be publicly reachable on an external admin bind, so keep this
-listener on loopback or a firewalled management network.
-
 ## Enabling the Angie API
 
-The **Server traffic** dashboard panels read Angie's own [HTTP API][angie-api]:
-statistics Guardian structurally cannot collect, since it deliberately does not
-record the allow path. guardiand fetches the API server-side and relays it
-behind the admin token, so **Angie's API never needs to be exposed**; keep it
-on loopback.
+guardiand fetches Angie's own [HTTP API][angie-api] server-side and relays it
+to the dashboard behind the admin token, so **Angie's API never needs to be
+exposed**; keep it on loopback.
 
 [angie-api]: https://en.angie.software/angie/docs/configuration/modules/http/http_api/
 
@@ -526,17 +506,15 @@ admin:
 
 ::: warning Keep the Angie API on loopback
 The API exposes traffic statistics and, depending on configuration, can expose
-more. guardiand reads it server-side and relays only the traffic zones to the
-dashboard behind the admin token, so there is no reason to bind the API to a
-public interface. In production, keep it on `127.0.0.1` (or a firewalled
-management interface) exactly as shown.
+more. guardiand relays only the traffic zones, so there is no reason to bind
+the API to anything but `127.0.0.1` (or a firewalled management interface)
+exactly as shown.
 :::
 
-The relay is a plain read of another local service; it is never on Guardian's
-request hot path. Only fixed API paths are fetched (no request-controlled
-target), concurrently, each with a short timeout, no redirect following, a capped
-response read, and a ~3-second cache so several open dashboard tabs do not
-multiply load on Angie.
+The relay is a plain read of another local service, never on Guardian's request
+hot path: only fixed API paths are fetched (nothing request-controlled), each
+with a short timeout, no redirect following and a capped response read, plus a
+~3-second cache so several open dashboard tabs do not multiply load on Angie.
 
 ### What each panel needs
 
