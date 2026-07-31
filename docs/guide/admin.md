@@ -428,6 +428,8 @@ locality that GeoLite2 only resolves to a 200 km-or-wider circle is dimmed and
 carries the radius in a tooltip, so a precise hit and a region-sized guess never
 look alike. IPs with no city record show the country alone.
 
+![Top offenders: the world map of attack origins with the ranked IP, reason, path and country tables](/dashboard-map.png)
+
 #### World map
 
 When a `location_db` is loaded, a choropleth above the tables shades countries
@@ -459,6 +461,8 @@ section reading it through
 [Enabling the Angie API](#enabling-the-angie-api) below. The section hides itself
 when unconfigured and shows "Angie API unreachable" (without breaking the rest of
 the page) when Angie's API is down.
+
+![Server traffic: live Angie tiles, request-rate and response-code charts, per-zone tables and upstream peer latency](/dashboard-angie.png)
 
 The page is a static shell: it stores no secrets, stays off unless enabled,
 and every data call goes to the token-guarded `/admin/*` endpoints. The shell
