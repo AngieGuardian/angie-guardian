@@ -214,8 +214,8 @@ a challenge instead of being issued one it will probably drop. The case this
 was built for is the browser's own favicon service: it refreshes a known icon
 URL on a system principal with no cookie (whatever the token's `SameSite`
 policy, so no token-based allowance can ever reach it), no `Sec-Fetch-*` even
-over HTTPS, and `Accept: */*`, and used to escalate the visitor on every page
-render; the only response that stops it re-requesting is the real file. If the
+over HTTPS, and `Accept: */*`, and would otherwise escalate the visitor on
+every page render; the only response that stops it re-requesting is the real file. If the
 request volume is the problem rather than the decision, exempt the path with a
 `pow: { enabled: false }` overlay so the file is served and cached.
 
@@ -244,7 +244,7 @@ any WAF rule targeting `header:accept`.
 **`guardian_challenges_total{outcome="frame_unscored"}` is climbing.** Your
 protected URLs are being loaded in a frame whose Fetch metadata cannot establish
 that the interstitial will render, so those issuances raise difficulty but are
-never reported as `challenge_farm` (before that exemption, a third party could
+never reported as `challenge_farm` (without the exemption, a third party could
 drive arbitrary visitors into a block on your site simply by framing it in a
 loop). The metric does not by itself mean a hostile third party: the metadata
 is ambiguous, which is the whole reason these are issued rather than refused.
@@ -280,7 +280,7 @@ it from
 | `reason` | What it means | Where to look |
 |---|---|---|
 | `pow:no_token` | No `guardian_token` cookie arrived at all. | The client is fetching anonymously, or the cookie never reached Guardian: check that Angie relays it with `proxy_set_header X-Guardian-Cookie $http_cookie`. |
-| `pow:unchallengeable` | No cookie arrived **and** Guardian classified the request as unable to complete a challenge, so none was issued. Recorded with action `refuse`, not `challenge`. Only a token-failure reason is replaced this way: a WAF, anomaly, GeoIP or reputation challenge aimed at the same client is also refused but keeps its own reason. | Expected, and usually benign: an `<img>`, an API client, or the browser's own favicon service. Not a token problem, so do not go looking for one (these used to be reported as `pow:no_token`, true and misleading at once, since no cookie was ever going to arrive). If recurring volume bothers you rather than the decision, give the polled path a [`pow: { enabled: false }` overlay](/reference/configuration#per-path-overrides-domains-host-paths) so the real file is served and cached. |
+| `pow:unchallengeable` | No cookie arrived **and** Guardian classified the request as unable to complete a challenge, so none was issued. Recorded with action `refuse`, not `challenge`. Only a token-failure reason is replaced this way: a WAF, anomaly, GeoIP or reputation challenge aimed at the same client is also refused but keeps its own reason. | Expected, and usually benign: an `<img>`, an API client, or the browser's own favicon service. Not a token problem, so do not go looking for one. If recurring volume bothers you rather than the decision, give the polled path a [`pow: { enabled: false }` overlay](/reference/configuration#per-path-overrides-domains-host-paths) so the real file is served and cached. |
 | `pow:token_expired` | Real work, but past its `exp` or older than this path's `token_ttl`. | Normal once per `token_ttl`. A tight loop means `token_ttl` is shorter than you meant, a [per-path overlay](/reference/configuration#per-domain-options-defaults-and-domains-host) sets a shorter one than the path that issued the token, or the verifier's clock is ahead. |
 | `pow:token_binding` | Correctly signed and in date, but bound to another host or client. | Tokens bind to host + IP + User-Agent. Expect this from a visitor whose egress IP changes (mobile, CGNAT, a VPN toggling) or across two hostnames of the same site. Persistent and site-wide means the client IP Guardian sees is not stable: check `proxy_set_header X-Guardian-IP` and any proxy in front of Angie. |
 | `pow:token_underdifficulty` | Real token, solved at fewer bits than this path demands. | A per-path `base_difficulty` higher than where the visitor earned their token. Expected on entering a stricter path; they solve once more and continue. |

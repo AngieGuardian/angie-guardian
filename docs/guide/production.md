@@ -464,9 +464,9 @@ remote OOM). The client-keyed structures and their caps:
 - **Verified-token cache**: at most 2^17 entries (~5 MiB); wholesale-reset when
   full, entries repopulate cheaply on the next verify.
 - **Counter cache** (issuance rate limit + farming escalation): at most 2^17
-  entries. At capacity a reclaim sweep runs at most once per second (on-demand
-  sweeping ran a full-map scan under the hot-path mutex hundreds of times a
-  second and collapsed challenge issuance) and evicts clean cached totals plus
+  entries. At capacity a reclaim sweep runs at most once per second (an on-demand
+  sweep would run a full-map scan under the hot-path mutex hundreds of times
+  a second and collapse challenge issuance) and evicts clean cached totals plus
   any entry whose window has expired; entries still carrying live unapplied
   store work are retained rather than erasing pending reconciliation state.
   Keys arriving between sweeps are counted in a bounded count-min sketch, so a

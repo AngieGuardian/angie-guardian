@@ -34,7 +34,7 @@ path. The mirror is a bounded in-memory copy of the active block set:
   Redis reads a fixed sorted-set index, so unrelated challenge/counter keys
   never increase tick cost.
 - **Store-outage safe.** A mirror hit denies even while the store is down, so
-  an outage no longer silently drops behavioural blocks.
+  an outage cannot silently drop behavioural blocks.
 
 For the embedded backends (`memory`, `buntdb`, `pebble`) the seeded mirror is
 **authoritative**: after the first scan the per-request store read disappears

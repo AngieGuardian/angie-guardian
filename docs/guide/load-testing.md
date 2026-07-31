@@ -79,14 +79,6 @@ cell is **throughput / p50 / p99** (req/s and per-request latency):
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
-An earlier version of this table used fixed-duration runs, which have no steady
-state on the write path (the store grows for the whole run, so throughput
-depends on how long you measure) and hid a counter-cache sweep storm that
-collapsed loaded-regime issuance about 3x; the [fixed-work mode](#run-it)
-exists because finding that regression required a measurement that could see
-it. With the sweep paced, the loaded steady state now **beats** the old
-cold-heavy averages on every durable backend, with p99 between 3x and 8x lower.
-
 Read paths comfortably clear a 50k req/s budget on every backend: the
 [block mirror](/guide/block-offload) makes the embedded stores authoritative,
 so the per-request store read is gone on allow/token (redis keeps one read for
@@ -103,9 +95,9 @@ counters add no store write *rounds* on the request path: they are counted
 in-process and synced to the shared store in the background. See
 [choosing a store backend](/guide/production#choosing-a-store-backend).
 
-::: tip The block check is now off the store
+::: tip The block check is off the store
 With the [in-process mirror](/guide/block-offload) (always on), the behavioural
-block lookup on the `allow` path no longer reads the store on the embedded
+block lookup on the `allow` path does not read the store on the embedded
 backends. In the `core` micro-benchmarks the seeded authoritative mirror takes
 the full allow path on pebble from ~140 ns (one bloom-filtered store read per
 request) to ~70 ns per `Evaluate`, and a request from an already-blocked IP is

@@ -341,13 +341,12 @@ Which value fires:
   document-like `Sec-Fetch-Dest`, a `Sec-Fetch-Mode: navigate`, an absent
   `Accept`, or an `Accept` that cannot be parsed all keep the ordinary path.
 
-  Like every other refusal it is sent `no-store`. Making it cacheable so the
-  client stops re-asking was tried and measured: on the Firefox favicon path
-  it was aimed at, a `private, max-age=30, must-revalidate` 403 was requested
-  just as often as a `no-store` one, so the header was dropped (a result about
-  that client and that path, not a general rule about error statuses). The
-  refusal ends the escalation, but does not by itself guarantee the client
-  stops repeating the request.
+  Like every other refusal it is sent `no-store`; a cacheable 403 would not
+  help, since the Firefox favicon service it is aimed at requests a
+  `private, max-age=30, must-revalidate` 403 just as often as a `no-store`
+  one (a measured result about that client and that path, not a general rule
+  about error statuses). The refusal ends the escalation, but does not by
+  itself guarantee the client stops repeating the request.
 
   ::: warning A compatibility tradeoff
   On modern HTTPS browsers a recognized document destination protects customized

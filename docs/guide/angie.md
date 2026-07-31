@@ -293,7 +293,7 @@ default) sends the flood straight to your backend; attack mode's optional
 `max_inflight` load-shedding bound turns that into fast `503`s for unvouched
 clients instead.
 
-Blocked clients no longer add to that cost inside the sidecar: an always-on
+Blocked clients add none of that cost inside the sidecar: an always-on
 in-process mirror answers the block lookup with no store read, and the optional
 [kernel offload](/guide/block-offload) can drop a blocked client's packets in
 nftables before Angie ever runs the subrequest. That keeps a flood from
