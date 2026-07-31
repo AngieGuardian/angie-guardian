@@ -386,24 +386,6 @@ captures the auth response and `deploy/angie-guardian.conf` replays it:
 | `$guardian_difficulty` | `X-Guardian-Difficulty` | A WAF or anomaly escalation raised the difficulty above the base, and the challenge hop runs neither. Clamped to the configured window on arrival, so a forged value can only make the client's own puzzle harder. |
 | `$guardian_refusal` | `X-Guardian-Refusal` | Whether the `401` is a real challenge or a [refusal](/guide/configuration#base-difficulty-and-max-difficulty), and which kind. Re-deciding here would let a [hot reload](/guide/configuration#hot-reload) of `pow.refuse_unchallengeable` landing between the two hops serve one thing and log another. |
 
-::: tip Upgrading from 0.12.0 or earlier
-`$guardian_refusal` is new. If you copied the deploy files rather than including
-them, add both lines, or re-copy the two files and reload Angie:
-
-```nginx
-# angie-guardian-location.conf, beside the other auth_request_set lines:
-auth_request_set $guardian_refusal $upstream_http_x_guardian_refusal;
-
-# angie-guardian.conf, in location @guardian_challenge:
-proxy_set_header X-Guardian-Refusal $guardian_refusal;
-```
-
-Nothing breaks without them. Guardian falls back to deciding at the challenge
-hop, which is exactly what it did before. Without the relay, a reload between
-the hops or a header rewritten in only one location can still make the recorded
-decision disagree with the response served.
-:::
-
 Everything else the challenge hop needs (the client's own `Sec-Fetch-*`,
 `Accept` and `Cookie`) arrives untouched, because only the `X-Guardian-*` set is
 overridden on the way in. Do not clear or rewrite those in one location only:
