@@ -6,16 +6,39 @@ description: Recapture the four docs dashboard screenshots (top of page, IP look
 # Dashboard screenshots for the docs
 
 Produces the four images embedded in `docs/guide/admin.md`, saved directly into
-`docs/public/`:
+`docs/public/`. All four share one fixed rendering setup (see "Zoom and
+resolution" below); only the viewport height and scroll anchor differ per shot:
 
-| File | Content | Framing |
-|------|---------|---------|
-| `dashboard.png` | Top of page: tiles, system health, decisions charts, funnel, solve-time cards, per-domain traffic | from y=0 through the end of the Activity section |
-| `dashboard-lookup.png` | IP lookup card for the star offender: blocked chip + Unblock, geo/ASN line, decision history table | from `#lookup-h2` to the bottom of `#lookup-card` (~800px) |
-| `dashboard-map.png` | Top offenders: world map + IP/reason/path/country tables, domains table, IP intelligence | from the "Top offenders" h2 to the end of IP intelligence |
-| `dashboard-angie.png` | Server traffic (Angie API): tiles, request-rate chart, per-zone tables, upstreams | from `#angie-h2` up to (not including) `#angie-cache-h2` |
+| File | Content | Scroll anchor (top at y=8) | Viewport height (CSS px) |
+|------|---------|---------------------------|--------------------------|
+| `dashboard.png` | Top of page: tiles, system health, decisions charts, funnel, solve-time cards, per-domain traffic | y=0 (no scroll) | ~1990, so the shot ends exactly with the Activity section (measure the "Active blocks" h2 top and subtract a few px) |
+| `dashboard-lookup.png` | IP lookup card for the star offender: blocked chip + Unblock, geo/ASN line, decision history table | `#lookup-h2` | ~800 (`#lookup-card` bottom minus `#lookup-h2` top) |
+| `dashboard-map.png` | Top offenders: world map + IP/reason/path/country tables, domains table, IP intelligence | the "Top offenders" h2 | ~1500 (through the end of the IP intelligence table) |
+| `dashboard-angie.png` | Server traffic (Angie API): tiles, request-rate chart, per-zone tables, upstreams | `#angie-h2` | ~1415 (`#angie-cache-h2` top minus `#angie-h2` top; the caches section is NOT included) |
 
 The hero must include charts ("people love charts").
+
+## Zoom and resolution (set in stone)
+
+- Browser zoom stays at **100%**. Never use Chrome page zoom or OS scaling; the
+  "zoomed out" look comes entirely from the narrow emulated viewport below.
+- One `emulate` call fixes the rendering: `colorScheme: "dark"` and viewport
+  string `1280x<H>x2` — **1280 CSS px wide** (the dashboard's grid packs cards
+  side by side at this width, which is what makes the shots read as zoomed
+  out), `<H>` from the table above, **deviceScaleFactor 2** so every PNG comes
+  out 2560 px wide and stays crisp when the docs page scales it down.
+- Each screenshot is exactly one viewport: set `<H>` for the shot, scroll the
+  anchor to 8 px from the top, then `take_screenshot` with a `filePath`
+  straight into `docs/public/` (plain viewport shot: no `fullPage`, no element
+  `uid`).
+- The heights above are the values actually shipped (July 31 2026) but seeded
+  data shifts layout by a few px per run, so re-measure instead of trusting
+  them blindly: `getBoundingClientRect().top + window.scrollY` on the anchor
+  and on the element that must NOT be in frame, height = the difference. A shot
+  must never cut a card mid-way; end it on a section boundary.
+- Scroll with `window.scrollTo(0, anchorTop - 8)` inside `evaluate_script`.
+  Expect PNGs of roughly 0.5-0.7 MB each; there is no PNG optimizer on this
+  machine, that size is fine.
 
 For the lookup shot, submit `203.0.113.66` (the staged star offender) in the
 `#lookup-form` and wait for the card: it should read "blocked" with a
@@ -49,16 +72,24 @@ make seed                                                              # 2 minut
 Wait for the admin API (`curl -H "Authorization: Bearer seed-demo-token"
 http://127.0.0.1:18072/admin/stats`) before seeding.
 
-## 2. Browser setup (Chrome DevTools MCP)
+## 2. Capture procedure (Chrome DevTools MCP), per shot
 
-- `new_page` → `http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token`
-- `emulate` with `colorScheme: dark` and viewport `1280x<H>x2` (DPR 2 gives crisp
-  2560px-wide PNGs). Set `<H>` per shot to the measured section height so each
-  screenshot is exactly one viewport, then scroll the section top to y=8.
-- Inject `::-webkit-scrollbar{display:none} html{scrollbar-width:none}` via
-  `evaluate_script` (re-inject after any reload).
-- Measure section offsets with `getBoundingClientRect().top + scrollY` on the
-  h2 / `#angie-h2` elements; do not hardcode pixel offsets.
+1. `new_page` → `http://127.0.0.1:18072/admin/dashboard#token=seed-demo-token`
+   (once; the `#token=` fragment logs in without touching the gate form).
+2. Inject the scrollbar killer via `evaluate_script`, guarded by an element id
+   so it can be re-run safely; the lookup form submit navigates to `?ip=`, and
+   any navigation drops injected styles, so re-inject before every shot:
+   ```js
+   ::-webkit-scrollbar{display:none} html{scrollbar-width:none}
+   ```
+3. `emulate` with `colorScheme: "dark"` and viewport `1280x<H>x2` for this
+   shot's `<H>` (see the table and "Zoom and resolution").
+4. For the hero: confirm the page auto-refreshed after the seeder exited (wait
+   ~5 s, one 5 s refresh tick) so the tiles show the final counts. For the
+   lookup: submit the star offender and wait for the card. Others: no prep.
+5. Clear Chart.js tooltips (section 4), scroll the anchor to `anchorTop - 8`,
+   and `take_screenshot` with `filePath` directly to `docs/public/<name>.png`.
+6. Read the PNG back and inspect before moving on (section 5 checklist).
 
 ## 3. Timing is everything
 
