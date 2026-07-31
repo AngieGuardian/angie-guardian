@@ -4,6 +4,14 @@ default:
   # release lands, especially when govulncheck flags a std vuln fixed in it.
   image: golang:1.26.5-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43
 
+  # Every job is cancellable by default, so pushing again to a branch (or main)
+  # frees the runners instead of finishing a pipeline for a commit nobody cares
+  # about any more. GitLab's own default is `interruptible: false`, hence the
+  # blanket true here. Jobs that publish something the world can see override it
+  # back to false individually below: cancelling those halfway leaves a partial
+  # release or a partly-deployed site.
+  interruptible: true
+
   cache:
     key:
       files:
@@ -30,6 +38,15 @@ variables:
 # GitLab also attempt a (job-less, thus failed) merge-request pipeline for
 # every MR next to the branch pipeline that does the real work.
 workflow:
+  # Superseded pipelines get out of the way: a new commit on the same ref
+  # cancels the running pipeline's interruptible jobs. `interruptible` (rather
+  # than the stock `conservative`) is what makes this work on main, where the
+  # long e2e job is usually still running when the next commit lands —
+  # `conservative` would refuse to cancel anything as soon as one
+  # non-interruptible job had started. Jobs opt out individually with
+  # `interruptible: false`.
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       when: never
@@ -204,6 +221,11 @@ wasm:
 # the release you created. The tag is stamped in as the binary version.
 upload_and_release:
   stage: deploy
+  # Never cancel a publish in progress. Recutting a tag (delete + push the same
+  # name) starts a second pipeline on the same ref, and killing the first one
+  # mid-upload would leave a half-populated package registry and a release with
+  # some asset links attached and others missing.
+  interruptible: false
   rules:
     - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_TAG
   script:
@@ -342,6 +364,9 @@ docker-release:
   # The shell executor ignores the default golang image; drop the Go module
   # cache too, this job only drives docker.
   cache: []
+  # Same reasoning as upload_and_release: a cancelled push can leave the
+  # registry with `:latest` pointing at a different build than `:<tag>`.
+  interruptible: false
   rules:
     - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_TAG
   before_script:
@@ -377,6 +402,10 @@ docker-release:
 docs-deploy:
   stage: deploy
   image: node:24@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
+  # A deployment job: cancelling it once the artifact webhook has fired would
+  # leave angieguardian.org mid-publish. Two docs commits in quick succession
+  # both deploy, in order, rather than the first being killed.
+  interruptible: false
   cache:
     key: vitepress
     paths:
