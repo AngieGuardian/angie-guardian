@@ -269,6 +269,8 @@ brackets) and one card collects everything this instance knows about it:
   window, so an empty list means "nothing retained here", not "this IP sent
   nothing".
 
+![IP lookup: one card with the block status and unblock button, geo and ASN intel, and the IP's recent decision history](/dashboard-lookup.png)
+
 Every IP shown anywhere on the dashboard (recent decisions, active blocks, top
 offenders) is a link that opens the lookup for it. The active lookup is
 mirrored into the URL as `?ip=`, so a lookup can be shared or bookmarked; an

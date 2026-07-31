@@ -1,21 +1,28 @@
 ---
 name: dashboard-screenshots
-description: Recapture the three docs dashboard screenshots (top of page, top offenders + world map, Angie server traffic) with a freshly seeded guardiand and the Chrome DevTools MCP. Use when dashboard sections change, docs screenshots look stale, or the user asks to update/redo the dashboard screenshots.
+description: Recapture the four docs dashboard screenshots (top of page, IP lookup, top offenders + world map, Angie server traffic) with a freshly seeded guardiand and the Chrome DevTools MCP. Use when dashboard sections change, docs screenshots look stale, or the user asks to update/redo the dashboard screenshots.
 ---
 
 # Dashboard screenshots for the docs
 
-Produces the three images embedded in `docs/guide/admin.md`, saved directly into
+Produces the four images embedded in `docs/guide/admin.md`, saved directly into
 `docs/public/`:
 
 | File | Content | Framing |
 |------|---------|---------|
 | `dashboard.png` | Top of page: tiles, system health, decisions charts, funnel, solve-time cards, per-domain traffic | from y=0 through the end of the Activity section |
+| `dashboard-lookup.png` | IP lookup card for the star offender: blocked chip + Unblock, geo/ASN line, decision history table | from `#lookup-h2` to the bottom of `#lookup-card` (~800px) |
 | `dashboard-map.png` | Top offenders: world map + IP/reason/path/country tables, domains table, IP intelligence | from the "Top offenders" h2 to the end of IP intelligence |
 | `dashboard-angie.png` | Server traffic (Angie API): tiles, request-rate chart, per-zone tables, upstreams | from `#angie-h2` up to (not including) `#angie-cache-h2` |
 
-Do NOT screenshot the IP lookup panel (user finds it uninteresting). The hero must
-include charts ("people love charts").
+The hero must include charts ("people love charts").
+
+For the lookup shot, submit `203.0.113.66` (the staged star offender) in the
+`#lookup-form` and wait for the card: it should read "blocked" with a
+`waf:dotfile-probe`-style reason, the Moscow / Bulletproof Hosting Ltd geo line
+and a deny table full of scanner user agents. Capture while the behavioural
+block (30m TTL) is still active. The ring is count-bounded, so the decision
+rows survive after the seeder stops as long as no new traffic overwrites them.
 
 ## 1. Fresh instance, always re-seed first
 
