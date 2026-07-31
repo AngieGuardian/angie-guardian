@@ -358,7 +358,7 @@ The **Bars** control on that card switches what the segments measure:
 - **share**: each action as a percentage of *that domain's own* traffic, so the
   mix is equally legible at 200 requests and at 200,000, for "which domain is
   challenging or denying an unusual proportion of its visitors". The total
-  moves next to the domain name (bar length no longer carries volume), and
+  moves next to the domain name (bar length carries no volume in this mode), and
   tooltips report the count alongside the percentage in both modes.
 
 The choice is remembered for the browser session.

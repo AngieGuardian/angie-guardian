@@ -21,10 +21,9 @@ Label values are bounded by construction:
 - `action` is `allow`, `challenge`, `refuse` or `deny`. `refuse` means Guardian
   withheld a challenge after classifying the request as unable to complete it
   (typically an anonymous favicon fetch, an `<img>`, or an API client), so it is
-  neither a block nor a puzzle anyone was asked to solve. Those requests used to
-  count as `challenge` with reason `pow:no_token`, which made an unsatisfiable
-  refusal read as a challenge storm; alerts that count challenges should
-  exclude it.
+  neither a block nor a puzzle anyone was asked to solve; alerts that count
+  challenges should exclude it, or an unsatisfiable refusal reads as a
+  challenge storm.
 
   The `reason` still names the policy that asked for the challenge. Only a
   token-failure reason is replaced (by `pow:unchallengeable`), so a WAF rule,
