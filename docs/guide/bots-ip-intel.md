@@ -54,23 +54,22 @@ so a scoring mishap or a feed false positive can never knock a search crawler
 offline. Static `allowlist`/`denylist` entries still run first: an explicit
 denylist entry is the one thing that outranks a verified bot.
 
-A client that claims a listed UA but **definitively** fails verification,
-meaning its IP has no PTR record or its rDNS belongs to someone else, is an
-impostor: with `spoof_action: deny` (the default) it is rejected and emits
-a `bot_spoof` event. When `waf.ip_behaviour.enabled`, 5/min blocks the IP
-(tune under `waf.ip_behaviour.thresholds`); with `continue` it is simply not allowlisted
+A client that claims a listed UA but **definitively** fails verification (no
+PTR record, or rDNS belonging to someone else) is an impostor: with
+`spoof_action: deny` (the default) it is rejected and emits a `bot_spoof`
+event, and when `waf.ip_behaviour.enabled`, 5/min blocks the IP (tune under
+`waf.ip_behaviour.thresholds`). With `continue` it is simply not allowlisted
 and the normal WAF/PoW pipeline applies. Transient DNS failures prove nothing
-and just fall through unverified, so a flaky resolver can neither block
-Googlebot nor admit a scraper.
+and fall through unverified, so a flaky resolver can neither block Googlebot
+nor admit a scraper.
 
 Verification costs two DNS lookups (budget: `dns_timeout`, default 1s) the
-first time an IP claims a bot UA. The result is cached in the shared store
-(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors; both
-accept at most one year / `8760h`), so
-the hot path stays DNS-free; in-flight lookups are deduplicated per IP and
-capped process-wide, degrading to "unverified" under a spoof flood rather
-than amplifying it into a DNS storm. Watch it via the
-`guardian_bot_verifications_total{bot,result}` metric.
+first time an IP claims a bot UA; the result is cached in the shared store
+(`cache_ttl` 12h for confirmed crawlers, `negative_ttl` 1h for impostors, both
+capped at one year / `8760h`), so the hot path stays DNS-free. In-flight
+lookups are deduplicated per IP and capped process-wide, degrading to
+"unverified" under a spoof flood rather than amplifying it into a DNS storm.
+Watch it via `guardian_bot_verifications_total{bot,result}`.
 
 DuckDuckBot publishes a static IP list instead of rDNS domains; allowlist it
 with `allowlist.ips`.
@@ -117,21 +116,20 @@ That is Country (8.8 MB) plus ASN (12 MB); swap Country for `GeoLite2-City.mmdb`
 if you want city and region labels, as the next section explains.
 
 Guardian polls both files once a minute and reloads on any size or timestamp
-change, so updates need no restart, and a failed reload keeps the previously
-loaded data. Downloading to `.new` and `mv`-ing it into place matters for that
-reason: the rename is atomic, so the poll never catches a half-written database.
-Re-run the snippet from a weekly cron to stay current, or use
-[`geoipupdate`](https://github.com/maxmind/geoipupdate) with a free MaxMind
-licence key, which replaces files the same way. The data is MaxMind's, under the
-[GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula).
+change; a failed reload keeps the previously loaded data. Downloading to
+`.new` and `mv`-ing into place matters: the rename is atomic, so the poll
+never catches a half-written database. Re-run the snippet from a weekly cron,
+or use [`geoipupdate`](https://github.com/maxmind/geoipupdate) with a free
+MaxMind licence key, which replaces files the same way. The data is MaxMind's,
+under the [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula).
 
 ### Country or City: both go in `location_db`
 
-GeoLite2 ships three files, and two of them belong in `location_db`. That one
-key takes either because **City is a superset of Country**: it carries the same
-`country.iso_code`, plus city, region and postal detail on top. Country rules
-behave identically whichever you load, which is why the key is not named after
-either product. GeoIP2-Enterprise and DB-IP files work here too.
+`location_db` takes either Country or City because **City is a superset of
+Country**: it carries the same `country.iso_code` plus city, region and postal
+detail, so country rules behave identically whichever you load (hence the key
+is not named after either product). GeoIP2-Enterprise and DB-IP files work
+here too.
 
 | | `GeoLite2-Country.mmdb` | `GeoLite2-City.mmdb` |
 |---|---|---|
@@ -225,27 +223,29 @@ reputation:
       file: /etc/guardian/badnets.txt   # hot-reloaded local list
 ```
 
-URL feeds are fetched in the background: startup never blocks on a remote, a
-failed refresh keeps the last good list (and retries within 5 minutes), and
-`cache_dir` seeds the list at boot so a restart doesn't open a window. A
-hot config reload also carries the in-memory last-good state forward when a
-URL feed keeps the same name and URL, before the replacement provider starts
-its asynchronous refresh. This avoids a temporary enforcement gap even when
-`cache_dir` is unset and the remote is down during reload. A local `file:`
-feed must exist at startup (fail-fast, like the WAF rules files) and is
-hot-reloaded on change. URL responses, local files, and persisted caches are
-limited to 64 MiB; an oversized update keeps the last-good list. Matching is a
-binary search over merged ranges, so
-six-figure feeds are fine on the hot path.
+Feed handling in short:
 
-An update that parses to **no entries at all** is refused rather than applied:
-an origin serving an empty file during maintenance, a truncated `cache_dir`
-copy, or a half-written local edit would otherwise swap a live deny list for one
-that matches nothing, silently and with no error anywhere. The last good list
-keeps enforcing and the failure shows up in
-`guardian_feed_refresh_total{status="error"}` and `GET /admin/intel`. The one
-exception is a local `file:` feed on its very first load: an empty file you
-maintain yourself is a legitimate "nothing listed yet".
+- **URL feeds** are fetched in the background: startup never blocks on a
+  remote, a failed refresh keeps the last good list (retrying within 5
+  minutes), and `cache_dir` seeds the list at boot so a restart opens no
+  window. A hot config reload carries the in-memory last-good state forward
+  when a URL feed keeps the same name and URL, so there is no enforcement gap
+  even with `cache_dir` unset and the remote down during reload.
+- **Local `file:` feeds** must exist at startup (fail-fast, like the WAF rules
+  files) and are hot-reloaded on change.
+- URL responses, local files and persisted caches are limited to 64 MiB; an
+  oversized update keeps the last-good list.
+- Matching is a binary search over merged ranges, so six-figure feeds are fine
+  on the hot path.
+
+An update that parses to **no entries at all** is refused rather than applied
+(an origin serving an empty file during maintenance, a truncated `cache_dir`
+copy, or a half-written local edit would otherwise silently swap a live deny
+list for one that matches nothing). The last good list keeps enforcing and the
+failure shows up in `guardian_feed_refresh_total{status="error"}` and
+`GET /admin/intel`. The one exception: a local `file:` feed on its very first
+load, where an empty file you maintain yourself is a legitimate "nothing
+listed yet".
 
 An `action: deny` feed rejects matching IPs outright; `action: challenge`
 makes them prove work first, one full difficulty step (+4 bits = 16x) above

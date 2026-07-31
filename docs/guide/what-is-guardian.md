@@ -123,16 +123,16 @@ cell is **throughput / p50 / p99** (req/s and per-request latency):
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
-The read paths clear the 50k req/s budget comfortably on every backend. On the
-embedded backends the block mirror serves the reads (no store I/O after the seed
-scan), which is why `allow`/`token` cluster at ~154–182k; `redis`/`valkey` stays
-read-through for cross-replica correctness, so its reads land lower. The one
-write-heavy path (issuing a fresh challenge) is where the backends differ; under
-[attack mode](/guide/attack-mode) issuance goes stateless and skips that write
-entirely. See
-[choosing a store backend](/guide/production#choosing-a-store-backend)
-for how to pick, and [Load Testing](/guide/load-testing) to reproduce the
-numbers on your own hardware.
+The read paths clear the 50k req/s budget comfortably on every backend: the
+embedded backends serve reads from the block mirror (no store I/O after the
+seed scan), which is why `allow`/`token` cluster at ~154–182k, while
+`redis`/`valkey` stays read-through for cross-replica correctness and lands
+lower. The backends only differ on the one write-heavy path, issuing a fresh
+challenge; under [attack mode](/guide/attack-mode) issuance goes stateless and
+skips that write entirely. See
+[choosing a store backend](/guide/production#choosing-a-store-backend) for how
+to pick, and [Load Testing](/guide/load-testing) to reproduce the numbers on
+your own hardware.
 
 ## License
 

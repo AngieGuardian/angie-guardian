@@ -66,11 +66,10 @@ single node, loopback, 64 connections, load generator sharing the same CPU
 (AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17; Go 1.26.5; Valkey 9 for the
 redis backend; fresh daemon and wiped store per run; median of 3 runs per
 cell). Reads use `-warmup 50000 -n 500000`; **challenge uses
-`-warmup 150000 -n 150000`**, so its warmup pushes both 131k-entry counter
-caches past capacity and the measured window is the loaded steady state a
-sustained flood of new clients actually produces, not the fast cold start an
-empty store serves. Each cell is **throughput / p50 / p99** (req/s and
-per-request latency):
+`-warmup 150000 -n 150000`**, pushing both 131k-entry counter caches past
+capacity so the measured window is the loaded steady state a sustained flood of
+new clients actually produces, not the fast cold start of an empty store. Each
+cell is **throughput / p50 / p99** (req/s and per-request latency):
 
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
@@ -80,29 +79,27 @@ per-request latency):
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
-An earlier version of this table was measured with fixed-duration runs. For
-the write path that method has no steady state (the store grows for the whole
-run, so throughput depends on how long you measure), and it also hid a
-counter-cache sweep storm that collapsed loaded-regime issuance about 3x; the
-[fixed-work mode](#run-it) exists because finding that regression required a
-measurement that could see it. With the sweep paced, the loaded steady state
-now **beats** the old cold-heavy averages on every durable backend, with p99
-between 3x and 8x lower.
+An earlier version of this table used fixed-duration runs, which have no steady
+state on the write path (the store grows for the whole run, so throughput
+depends on how long you measure) and hid a counter-cache sweep storm that
+collapsed loaded-regime issuance about 3x; the [fixed-work mode](#run-it)
+exists because finding that regression required a measurement that could see
+it. With the sweep paced, the loaded steady state now **beats** the old
+cold-heavy averages on every durable backend, with p99 between 3x and 8x lower.
 
 Read paths comfortably clear a 50k req/s budget on every backend: the
-[block mirror](/guide/block-offload) makes the embedded stores authoritative, so
-the per-request store read is gone on allow/token (redis keeps one read for
+[block mirror](/guide/block-offload) makes the embedded stores authoritative,
+so the per-request store read is gone on allow/token (redis keeps one read for
 cross-replica correctness, so its reads land lower). The takeaway is the
-**write** path: each issued
-challenge writes one CAS record. The durable LSM/append-only backends absorb
-this far better than a synchronously-fsync'd single writer (`pebble` ~61k/s
-async, ~34k/s fully durable; `buntdb` ~56k/s async), and
-[attack mode](/guide/attack-mode)'s stateless issuance lifts it further by
-deferring the only write to redemption. (`buntdb` + `sync: true` is rejected at
-startup: its single writer makes fsync-per-commit ~100x slower, so use `pebble`
-for synchronous durability.) The per-IP rate-limit and
+**write** path, one CAS record per issued challenge. The durable
+LSM/append-only backends absorb it far better than a synchronously-fsync'd
+single writer (`pebble` ~61k/s async, ~34k/s fully durable; `buntdb` ~56k/s
+async; `buntdb` + `sync: true` is rejected at startup, since its single writer
+makes fsync-per-commit ~100x slower, so use `pebble` for synchronous
+durability), and [attack mode](/guide/attack-mode)'s stateless issuance lifts
+it further by deferring the only write to redemption. The per-IP rate-limit and
 [farming-escalation](/guide/configuration#base-difficulty-and-max-difficulty)
-counters do not add store write *rounds* on the request path: they are counted
+counters add no store write *rounds* on the request path: they are counted
 in-process and synced to the shared store in the background. See
 [choosing a store backend](/guide/production#choosing-a-store-backend).
 
@@ -148,7 +145,7 @@ Guardian. So a change that makes the decision path several times cheaper moves
 the end-to-end request rate by only a few percent.
 
 Measure it as CPU per request rather than req/s when you want to see the
-difference — on a loopback test the load generator shares the CPU with the
+difference: on a loopback test the load generator shares the CPU with the
 daemon, so freed cycles show up partly as generator headroom. In a real
 deployment they go to Angie and your backend instead.
 
@@ -156,7 +153,7 @@ deployment they go to Angie and your backend instead.
 
 Three tiers, cheapest and most reliable first:
 
-1. **`make bench-regress`** — the hot-path benchmarks at a fixed iteration
+1. **`make bench-regress`**: the hot-path benchmarks at a fixed iteration
    count, compared against the committed baselines in `allocs-baseline.txt`.
    This runs as a CI job, so a commit that adds an allocation to the auth or
    challenge hot path fails its pipeline in seconds. When a change legitimately
@@ -174,14 +171,14 @@ Three tiers, cheapest and most reliable first:
    a per-request struct past an allocator size class costs every request more
    memory while the allocation *count* never moves. `make bench-report` shows
    the `B/op` column the gate does not, summarized across several runs
-   (`296.0 ± 0%`). It is manual and machine-specific: at the fixed iteration
-   count the gate uses, `B/op` still carries per-P setup cost that varies with
-   core count, which is why it is reported rather than gated.
-2. **CPU per request** — run one `guardian-loadtest` scenario against each
+   (`296.0 ± 0%`); it stays reported rather than gated because at the gate's
+   fixed iteration count `B/op` still carries per-P setup cost that varies
+   with core count, making it manual and machine-specific.
+2. **CPU per request**: run one `guardian-loadtest` scenario against each
    build and divide the daemon's `utime+stime` by the completed requests. A few
    percent of noise on a pinned machine; measures the whole daemon, not just
    the decision.
-3. **Throughput** — only with fixed work (`-n`, plus `-warmup` for the
+3. **Throughput**: only with fixed work (`-n`, plus `-warmup` for the
    challenge scenario), only comparing runs with identical flags, and only
    after checking the `per-second:` line was flat. A duration-mode average of
    the write path is not comparable across anything.

@@ -28,13 +28,12 @@ sound protection and a false sense of one. This page is the honest map.
   reputation feeds can deny or challenge selected countries, networks or
   known-bad address ranges.
 - **Tampering and replay** of Guardian's own tokens and IDs: tokens are EdDSA
-  JWTs bound to `{host, client fingerprint}` with a short expiry; challenges are
-  single-spend (an atomic compare-and-swap marks them redeemed) and the stored
-  record binds each challenge to the host and client it was issued to. A
-  redemption that presents an unknown, already-spent, or wrong-client challenge
-  ID fails verification and emits a tamper event against the source IP. It feeds
-  the behavioural scoreboard when `waf.ip_behaviour.enabled` is on; that scoring
-  toggle is off by default.
+  JWTs bound to `{host, client fingerprint}` with a short expiry; challenges
+  are single-spend (an atomic compare-and-swap marks them redeemed) and bound
+  to the host and client they were issued to. A redemption presenting an
+  unknown, already-spent, or wrong-client challenge ID fails verification and
+  emits a tamper event against the source IP, feeding the behavioural
+  scoreboard when `waf.ip_behaviour.enabled` is on (off by default).
 
 ## What Guardian does NOT defend against
 
@@ -72,19 +71,17 @@ Two configuration facts are load-bearing for Guardian's security. Get them
 wrong and the protections above weaken or invert:
 
 - **The `X-Guardian-*` headers are trusted.** Guardian reads the client IP,
-  host and cookie from headers Angie sets on the subrequest. If a client can
-  reach the sidecar's listener directly, it can forge those headers: spoof
-  another IP, frame it into a block, or ride an allowlisted identity. Guardian
-  **refuses to start** on a non-loopback `listen` unless you set
-  `trusted_proxy: true` to assert you have isolated the listener to Angie. Keep
-  that promise (loopback, private network, firewall, or mTLS). As a tripwire,
-  `require_proxied: true` makes the guard endpoints reject any request that
-  arrives without the `X-Guardian-*` headers instead of falling back to the
-  socket address, and counts the rejects in
-  `guardian_unproxied_rejects_total`, so bypass traffic surfaces instead of
-  being processed under its own socket identity. It is not a spoofing
-  defense: a direct client that forges the headers still passes it, so the
-  isolation promise above stays load-bearing.
+  host and cookie from headers Angie sets on the subrequest; a client that can
+  reach the sidecar's listener directly can forge them to spoof another IP,
+  frame it into a block, or ride an allowlisted identity. Guardian **refuses
+  to start** on a non-loopback `listen` unless `trusted_proxy: true` asserts
+  you have isolated the listener to Angie. Keep that promise (loopback,
+  private network, firewall, or mTLS). As a tripwire, `require_proxied: true`
+  makes the guard endpoints reject requests arriving without the headers
+  (counted in `guardian_unproxied_rejects_total`) instead of processing them
+  under their own socket identity, so bypass traffic surfaces. It is not a
+  spoofing defense: a direct client that forges the headers still passes it,
+  so the isolation promise stays load-bearing.
 - **The admin API is bearer-token protected and should stay off the public
   internet.** Bind `admin.listen` to loopback or a management interface.
   Guardian refuses a non-loopback admin bind without a token. The listener is
@@ -104,39 +101,37 @@ exactly what that page uses, plus `X-Content-Type-Options: nosniff`,
 | Admin dashboard | inline script and style, same-origin vendored chart libraries, `data:` favicon, same-origin `fetch`; framing refused outright |
 
 The Angie glue (`deploy/angie-guardian.conf`) also adds the interstitial and
-denied policies with `add_header`, for a reason unrelated to duplication: in
-Angie a location that sets any `add_header` stops inheriting the server-level
-ones, which is what keeps a vhost's own site CSP (typically lacking
-`worker-src blob:`) from breaking the solver. Keep both. A browser enforces
-every policy it receives, and the two are written to intersect to exactly the
-policy in the table, so nothing is loosened or tightened by having both.
-
-Guardian sending them itself is what makes the pages self-protecting when Angie
-is not in the path at all: a direct probe, a development setup, a hand-written
-vhost whose `add_header` lines were never copied, and the admin listener, which
-Angie never fronts.
+denied policies with `add_header`, not as duplication: an Angie location that
+sets any `add_header` stops inheriting the server-level ones, which is what
+keeps a vhost's own site CSP (typically lacking `worker-src blob:`) from
+breaking the solver. Keep both; a browser enforces every policy it receives,
+and the two intersect to exactly the policy in the table. Guardian sending
+them itself keeps the pages self-protecting when Angie is not in the path at
+all: a direct probe, a development setup, a hand-written vhost whose
+`add_header` lines were never copied, and the admin listener, which Angie
+never fronts.
 
 ## Fail-open by design
 
-If Guardian is unreachable, its internal Angie auth location converts that
-upstream failure to `204`; `auth_request` treats it as allow and resumes the
-vhost's original static, FastCGI, or proxy handler. If one internal Guardian
-stage errors, that stage abstains and later stages still run; only when none
-returns a terminal decision does the request default to allow. This
-availability choice avoids making the WAF a single point of failure. A full
-Guardian outage is a *protection* outage: the site keeps serving, but
-unfiltered. Monitor for it: the systemd unit is `Type=notify` with a watchdog,
-`/metrics` exposes store health, and "up but degraded to fail-open" is exactly
-the condition to alert on. See [Run it in Production](/guide/production).
+If Guardian is unreachable, its internal Angie auth location converts the
+upstream failure to `204`, which `auth_request` treats as allow, and the
+vhost's original static, FastCGI, or proxy handler resumes. If one internal
+stage errors, it abstains and later stages still run; only when none returns a
+terminal decision does the request default to allow. This keeps the WAF from
+becoming a single point of failure: a full Guardian outage is a *protection*
+outage, the site keeps serving unfiltered. Monitor for it (the systemd unit is
+`Type=notify` with a watchdog, `/metrics` exposes store health): "up but
+degraded to fail-open" is exactly the condition to alert on. See
+[Run it in Production](/guide/production).
 
-Fail-open is the behaviour when Guardian is *down or erroring*, not the only
-answer to overload. When the daemon itself is saturated,
-[attack mode](/guide/attack-mode)'s optional load-shedding bound
-(`attack_mode.effects.max_inflight`) is the middle ground: clients holding a
-valid token pass only after the store-free deny, WAF, honeypot and spoof checks
-clear and a complete authoritative mirror can prove there is no behavioural
-block. Everyone else gets a fast `503` with `Retry-After` (or the terminal
-deny), so overload never turns a token into a policy or shared-block bypass.
+Fail-open covers Guardian being *down or erroring*, not overload. When the
+daemon itself is saturated, [attack mode](/guide/attack-mode)'s optional
+load-shedding bound (`attack_mode.effects.max_inflight`) is the middle ground:
+token holders pass only after the store-free deny, WAF, honeypot and spoof
+checks clear and a complete authoritative mirror can prove there is no
+behavioural block; everyone else gets a fast `503` with `Retry-After` (or the
+terminal deny). Overload never turns a token into a policy or shared-block
+bypass.
 
 ## Reporting a vulnerability
 

@@ -26,9 +26,10 @@ files, FastCGI, `try_files`, or a mixture of them.
 
 The two per-vhost files are separate for **scope**, not because the protection
 directives require a `location` block. `angie-guardian.conf` always belongs at
-`server {}` scope because it declares Guardian's internal and named locations.
-`angie-guardian-location.conf` only activates the authorization check, and its
-directives are valid at either `server` or `location` scope:
+`server {}` scope because it declares Guardian's internal and named locations;
+`angie-guardian-location.conf` only activates the authorization check and is
+valid at either `server` or `location` scope. (Merged into one file, including
+the server endpoints would force Guardian on for the entire vhost.)
 
 - Include both files at `server {}` scope to protect the whole vhost. This is
   the normal and safest setup: exact paths, asset regexes, and other sibling
@@ -37,11 +38,6 @@ directives are valid at either `server` or `location` scope:
   server scope, but include `angie-guardian-location.conf` only inside the
   public locations Guardian should check. Other locations then incur no
   Guardian subrequest at all.
-
-If these were merged, including the server endpoints would necessarily enable
-Guardian for the entire vhost; selective deployments would have to disable it
-again in every other location. Keeping activation separate supports both
-models without duplicating the challenge/fail-open plumbing.
 
 ```nginx
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
@@ -100,16 +96,15 @@ server {
 ```
 
 An existing file or directory is served only after Guardian allows the
-request; a missing path remains the site's normal `404`. If your vhost defines
-additional public `location` blocks, directly or through another included
-file, they are siblings of `location /`, not children of it. Because the
-protection include is at server scope, those locations inherit Guardian
-automatically; there is no need to repeat the include in every asset location.
-An `allow all` in an exact `robots.txt` location affects Angie's address-access
-module; it does not cancel the separately inherited `auth_request`. Likewise,
-`expires`, `add_header`, and `access_log off` in asset locations do not disable
-Guardian. A hidden-file location that immediately `return 404`s remains an
-intentional early rejection rather than a protection bypass.
+request; a missing path remains the site's normal `404`. Additional public
+`location` blocks, direct or included, are siblings of `location /`, not
+children of it, and with the protection include at server scope they inherit
+Guardian automatically; no need to repeat the include per asset location.
+Directives inside them do not cancel it either: an `allow all` in an exact
+`robots.txt` location affects only Angie's address-access module, `expires`,
+`add_header` and `access_log off` do not disable Guardian, and a hidden-file
+location that immediately `return 404`s remains an intentional early rejection
+rather than a protection bypass.
 
 The PHP front-controller form follows the same rule:
 
@@ -169,31 +164,28 @@ server {
 
 Use `auth_request off` only for deliberate exceptions: public health/ACME
 endpoints you truly want unprotected, or a non-public internal target reached
-only after an already-authorized location. If you want Guardian on only part
-of a vhost, omit the server-scope protection include and place it directly in
-each selected public location instead.
-
-Inheritance can be overridden by a child location. Audit any location that
-already declares `auth_request`/`auth_request off`; it will not inherit the
-server-level Guardian check.
+only after an already-authorized location. For Guardian on only part of a
+vhost, omit the server-scope protection include and place it directly in each
+selected public location instead. Inheritance can be overridden by a child
+location, so audit any location that already declares
+`auth_request`/`auth_request off`: it will not inherit the server-level check.
 
 ## A location with its own error_page loses the styled diversion
 
 Angie merges the inherited `error_page` list into a location only when that
 location declares none of its own, and the merge is all-or-nothing per level
-rather than per status code. One `error_page 404 /404.html;` inside `location /`
-therefore discards the `401` and `403` mappings from
-`angie-guardian-location.conf` that the location never mentions.
+rather than per status code: one `error_page 404 /404.html;` inside `location /`
+discards the `401` and `403` mappings from `angie-guardian-location.conf` that
+the location never mentions.
 
-Protection is intact throughout: `auth_request` still runs and the request is
-still refused. What is lost is the diversion, so the visitor gets Angie's stock
+Protection stays intact (`auth_request` still runs and the request is still
+refused); what is lost is the diversion, so the visitor gets Angie's stock
 `401 Unauthorized` page instead of the interstitial while the decision log
-records a challenge for every one of those requests. See
+records a challenge for each of those requests. See
 [Visitors get the stock Angie 401 page](/guide/troubleshooting#visitors-get-the-stock-angie-401-page-instead-of-the-challenge)
-for the metric that confirms it.
-
-Fix it by including the protection file again at the level that owns the error
-pages. Keep the server-scope include; it still covers every other location.
+for the metric that confirms it. Fix it by including the protection file again
+at the level that owns the error pages, keeping the server-scope include for
+every other location.
 
 ```nginx
 server {
@@ -219,16 +211,15 @@ level costs nothing. Nested locations apply the same rule against their parent,
 so the `location ~* ^/assets/` above is covered by whatever `location /` ends up
 with.
 
-Where one status code is declared twice at a single level, the first declaration
-wins and the later one is dead configuration. That matters for `403`: a site rule
-such as `error_page 403 /404.html;` placed above the include keeps
-`@guardian_denied` from ever running. Blocked clients then get the site's own
-page, which is cosmetic, but a shed response under
+Where one status code is declared twice at a single level, the first
+declaration wins and the later one is dead configuration. That matters for
+`403`: a site rule such as `error_page 403 /404.html;` placed above the include
+keeps `@guardian_denied` from ever running. Blocked clients then get the site's
+own page (cosmetic), but a shed response under
 [attack mode](/guide/attack-mode) also stops being translated into `503` plus
-`Retry-After` and reaches the client as `403` with that page, which is not. Put
-the include above the site's own `403` rule to get both back, and give any
-index-less directory its own handling if you were relying on that rule to catch
-the index module's `403`.
+`Retry-After` and reaches the client as `403` with that page (not cosmetic).
+Put the include above the site's own `403` rule, and give any index-less
+directory its own handling if that rule was catching the index module's `403`.
 
 ## Fail-open without duplicating the site handler
 
@@ -238,14 +229,14 @@ turns it into `204`. `auth_request` treats that as allow and resumes the
 original location, whether it uses static files, `try_files`, FastCGI, or
 `proxy_pass`.
 
-This is intentionally not a generic `@guardian_bypass` content location: such
-a location would have to repeat the site's `proxy_pass` or FastCGI/static
-logic, would drift from the real handler, and could not be shared by different
-domains. Errors returned later by the application or PHP-FPM are not
-intercepted by Guardian's fail-open rule. To fail closed, comment out the 5xx
-`error_page` line inside `/__guardian/auth`; the now-unused
-`@guardian_fail_open` location may then also be commented out. Removing only
-the named location while it is still referenced is an invalid Angie config.
+This is intentionally not a generic `@guardian_bypass` content location: that
+would have to repeat the site's `proxy_pass` or FastCGI/static logic, drift
+from the real handler, and could not be shared by different domains. Errors
+returned later by the application or PHP-FPM are not intercepted by the
+fail-open rule. To fail closed, comment out the 5xx `error_page` line inside
+`/__guardian/auth`; the now-unused `@guardian_fail_open` location may then also
+be commented out, but removing only the named location while it is still
+referenced is an invalid Angie config.
 
 Fail-open preserves availability, not protection. Keep Angie's `limit_req`
 and `limit_conn` in front of Guardian; they still apply while the daemon is
@@ -294,25 +285,23 @@ See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 ## Rate limiting (volumetric DDoS)
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
-raw flood. Every request still costs an `auth_request` subrequest. A client that
-follows the challenge redirect also makes the sidecar issue a challenge (and
-persist it, unless [attack mode](/guide/attack-mode)'s stateless issuance has
-kicked in). Under enough load the sidecar saturates and fail-open (the default)
-sends the flood straight to your backend; attack mode's optional
+raw flood. Every request still costs an `auth_request` subrequest, and a client
+that follows the challenge redirect also makes the sidecar issue a challenge
+(and persist it, unless [attack mode](/guide/attack-mode)'s stateless issuance
+has kicked in). Under enough load the sidecar saturates and fail-open (the
+default) sends the flood straight to your backend; attack mode's optional
 `max_inflight` load-shedding bound turns that into fast `503`s for unvouched
 clients instead.
 
 Blocked clients no longer add to that cost inside the sidecar: an always-on
-in-process mirror answers the block lookup with no store read, and the
-optional [kernel offload](/guide/block-offload) can drop a blocked client's
-packets in nftables before Angie ever runs the subrequest. That keeps a flood
-from *already-known-bad* IPs cheap, but it does not help against a first-time
-flood from fresh IPs, which is what the rate limits below are for.
-
-Volumetric DDoS is Angie's job, in front of the `auth_request`, so a flood is
-dropped before it reaches the sidecar at all. The two layers are
-complementary: rate limits absorb volume, PoW taxes the bots that get through.
-Tune the rates to your real traffic before enabling.
+in-process mirror answers the block lookup with no store read, and the optional
+[kernel offload](/guide/block-offload) can drop a blocked client's packets in
+nftables before Angie ever runs the subrequest. That keeps a flood from
+*already-known-bad* IPs cheap, but not a first-time flood from fresh IPs, which
+is what the rate limits below are for: volumetric DDoS is Angie's job, in front
+of the `auth_request`, so a flood is dropped before it reaches the sidecar at
+all. Rate limits absorb volume, PoW taxes the bots that get through. Tune the
+rates to your real traffic before enabling.
 
 ```nginx
 # http {} context: one shared zone per limiter.
@@ -329,13 +318,12 @@ limit_conn_status 429;
 
 ## Site security headers and the challenge page
 
-Many vhosts set site-wide security headers with `add_header`: a
-Content-Security-Policy, Strict-Transport-Security, X-Frame-Options and so
-on. In Angie (as in nginx), `add_header` directives are inherited from
-`server {}` scope into a location only when that location defines no
-`add_header` of its own. Without countermeasures, those site headers would
-therefore also be attached to the responses Angie proxies from Guardian,
-including the challenge interstitial.
+Many vhosts set site-wide security headers with `add_header`
+(Content-Security-Policy, Strict-Transport-Security, X-Frame-Options and so
+on). In Angie, as in nginx, `add_header` is inherited from `server {}` scope
+into a location only when that location defines no `add_header` of its own, so
+without countermeasures those site headers would also be attached to the
+responses Angie proxies from Guardian, including the challenge interstitial.
 
 For most headers that is harmless. For a site CSP it is not: browsers enforce
 every `Content-Security-Policy` header on a response, and the interstitial
@@ -358,17 +346,17 @@ and `@guardian_denied` their own `add_header Content-Security-Policy`, fitted
 to exactly what each page uses and nothing more. That one directive does two
 jobs: Guardian's pages carry a strict policy of their own, and, by the
 inheritance rule above, the vhost's server-level `add_header` set (site CSP
-included) stops applying to them. Loosening the site-wide CSP instead, by
-adding `worker-src blob:` to it, would weaken the whole site to fix one
-internal page; don't do that.
+included) stops applying to them. Do not loosen the site-wide CSP with
+`worker-src blob:` instead; that weakens the whole site to fix one internal
+page.
 
-The flip side of that cancellation is that it covers **all** inherited
-`add_header` directives, not just the CSP. If the vhost sets other
-server-wide headers on every response, re-add them explicitly inside both
-locations; this is one of the deliberate snippet edits, like the fail-mode
-choice. `Strict-Transport-Security` is the case worth caring about: for a
-fresh visitor the interstitial is typically the *first* response the browser
-receives, so if you rely on HSTS, mirror the vhost's exact value there:
+The flip side: the cancellation covers **all** inherited `add_header`
+directives, not just the CSP. If the vhost sets other server-wide headers on
+every response, re-add them explicitly inside both locations (a deliberate
+snippet edit, like the fail-mode choice). `Strict-Transport-Security` is the
+case worth caring about: the interstitial is typically the *first* response a
+fresh visitor's browser receives, so if you rely on HSTS, mirror the vhost's
+exact value there:
 
 ```nginx
 location @guardian_challenge {
@@ -384,12 +372,11 @@ any of this: Guardian's pages never pass through the backend, and
 ## What the two hops relay
 
 A challenged request reaches Guardian **twice**: once as the `auth_request`
-subrequest that decides, and again through `@guardian_challenge` that serves the
-interstitial. They are separate HTTP requests, so anything the second hop works
-out for itself can contradict what the first one already recorded in the
-decision log, in `/admin/decisions` and in `guardian_decisions_total`.
-
-`auth_request_set` is what stops that. `deploy/angie-guardian-location.conf`
+subrequest that decides, and again through `@guardian_challenge` that serves
+the interstitial. They are separate HTTP requests, so anything the second hop
+works out for itself can contradict what the first already recorded in the
+decision log, `/admin/decisions` and `guardian_decisions_total`.
+`auth_request_set` is what stops that: `deploy/angie-guardian-location.conf`
 captures the auth response and `deploy/angie-guardian.conf` replays it:
 
 | Variable | Relayed as | Why the second hop cannot work it out itself |

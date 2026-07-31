@@ -30,13 +30,13 @@ runtime:
   `pow.mode: suspicion` the catch-all interstitial is off, so only requests the
   scorer (or an explicit WAF, GeoIP, or reputation rule) flags get challenged.
 
-An enabled anomaly stage always requires a configured, readable, valid model:
-`guardiand -t` and startup fail otherwise. Every explicitly configured domain
-that enables anomaly scoring must also have a baseline in that artifact. This
-prevents a misspelled or under-trained domain from silently starting without
-protection. A defaults-only policy can still receive previously unseen hosts;
-those requests are marked as missing a baseline, the anomaly stage has no
-opinion, and the other pipeline stages continue to apply.
+An enabled anomaly stage requires a configured, readable, valid model:
+`guardiand -t` and startup fail otherwise, and every explicitly configured
+domain that enables scoring must have a baseline in the artifact (so a
+misspelled or under-trained domain cannot silently start unprotected). A
+defaults-only policy can still receive unseen hosts: those requests are marked
+as missing a baseline, the anomaly stage has no opinion, and the other
+pipeline stages continue to apply.
 
 ## 1. Collect JSON access logs
 
@@ -69,10 +69,9 @@ sudo cp deploy/angie-json-log.conf /etc/angie/
 sudo angie -t && sudo systemctl reload angie
 ```
 
-Why a per-vhost log file rather than one shared log: the baseline is per domain,
-and separate files make it obvious which traffic trained which baseline. One
-combined file also works, since every record carries its own `host` field, and
-you can pass either shape to `guardian-train`.
+Per-vhost files make it obvious which traffic trained which baseline, but one
+combined log also works: every record carries its own `host` field, and
+`guardian-train` accepts either shape.
 
 ::: warning `$guardian_action` needs the Guardian protection include
 The format logs `$guardian_action`, which is set by
@@ -109,17 +108,17 @@ guardian-train train \
 ```
 
 Plain and gzip-compressed files are accepted directly. The trainer makes a
-bounded discovery pass for busy method/route segments and a second exact pass
-over the selected segments. Each pass validates its input independently, so an
-active log that grows between them cannot introduce unchecked records; the
-training report describes the aggregation pass that produced the artifact.
-Responses with status 400 or higher and requests Guardian challenged, denied,
-or shed are intentionally excluded; all malformed or schema-invalid lines
-count against `-max-invalid`. Domains below
-`-min-requests`, and segments below `-min-segment-requests`, are omitted because
-a thin sample does not provide a trustworthy baseline. Repeat
-`-require-domain` for every protected named domain so omission rejects the
-candidate.
+bounded discovery pass for busy method/route segments, then a second exact pass
+over the selected segments; each pass validates its input independently, so an
+active log growing between them cannot introduce unchecked records, and the
+training report describes the pass that produced the artifact. Filtering rules:
+
+- Responses with status 400+ and requests Guardian challenged, denied or shed
+  are excluded; malformed or schema-invalid lines count against `-max-invalid`.
+- Domains below `-min-requests` and segments below `-min-segment-requests` are
+  omitted (a thin sample is not a trustworthy baseline).
+- Repeat `-require-domain` for every protected named domain so an omission
+  rejects the candidate.
 
 Before replacing an existing artifact, score a separate representative window
 against both artifacts and reject surprising drift:
@@ -135,25 +134,23 @@ guardian-train compare \
   /var/log/angie/validation/*.access.json.gz
 ```
 
-For domains present in both artifacts, comparison fails on too little observed
-validation data or mean/p95 drift beyond the configured limits. A retained but
-quiet domain is reported as skipped instead of blocking every other domain; a
-new candidate domain is reported as added because there is no live score to
-compare. Removing a live domain or observing traffic covered by neither
-artifact still rejects the candidate. The reports make input filtering, domain
-coverage, segment selection, and score drift reviewable by automation and
-operators.
+For domains present in both artifacts, comparison fails on too little
+validation data or mean/p95 drift beyond the limits. A retained but quiet
+domain is reported as skipped rather than blocking the rest; a new candidate
+domain is reported as added (there is no live score to compare). Removing a
+live domain, or validation traffic covered by neither artifact, still rejects
+the candidate. The reports make filtering, coverage, segment selection and
+drift reviewable by automation and operators.
 
 For production automation, prefer the shipped
 [`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
 and
 [`guardian-train.timer`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.timer)
-setup over a bare cron entry. It trains weekly from your retained plain/gzip
-log window, verifies strict input and expected domains, compares the candidate
-with the active artifact, keeps the last-good artifact, and promotes atomically.
-See
+over a bare cron entry: weekly training from your retained log window, strict
+input and expected-domain verification, candidate comparison, a kept last-good
+artifact, and atomic promotion. See
 [Running the anomaly trainer](/guide/production#running-the-anomaly-trainer)
-for installation, configuration and the pause mechanism for incident windows.
+for installation and the pause mechanism for incident windows.
 
 ## 3. Enable scoring
 
@@ -227,14 +224,13 @@ a `challenge_at` of `0.5` without any help from path shape. Reaching a
 `deny_at` of `0.85` effectively requires the path to be misshapen as well, so
 denial stays reserved for requests that are wrong in several ways at once.
 
-On the training side, a bounded heavy-hitter pass chooses no more than the
-configured number of automatic segments per domain, then Welford keeps each
-segment's numeric aggregates at constant size. UA- and path-prefix frequency
-maps grow with the distinct values in the selected baselines and are pruned to
-the top 1000 when training finishes. The set of observed domains is also input
-dependent. A hostile, very high-cardinality log window can therefore still
-increase trainer memory; run the job under the shipped memory-capped systemd
-sandbox and train only from controlled Angie logs.
+On the training side, a bounded heavy-hitter pass caps automatic segments per
+domain and Welford keeps each segment's numeric aggregates at constant size,
+but the frequency maps (pruned to the top 1000 only when training finishes)
+and the set of observed domains grow with the input. A hostile,
+high-cardinality log window can therefore still increase trainer memory: run
+the job under the shipped memory-capped systemd sandbox and train only from
+controlled Angie logs.
 
 ## Tune the thresholds
 
@@ -249,17 +245,20 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # {"host":"shop.example.com","method":"GET","route":"/cgi-bin","baseline":"exact","scored":true,"score":0.72}
 ```
 
-The `guardian_anomaly_score` histogram in `/metrics` shows the live score
-distribution per domain for requests that reach the anomaly stage. Requests
-terminated earlier in the pipeline, including those with a valid PoW token, are
-not represented. With suspicion mode and `observe_only`, it provides the score
-distribution of the remaining traffic without anomaly enforcement.
-`guardian_anomaly_baseline_selections_total` shows how often exact, route,
-method, and domain fallbacks are selected;
-`guardian_anomaly_baseline_misses_total` makes uncovered hosts visible. The
-admin dashboard and `GET /admin/anomaly` expose configured coverage, segment
-counts, training time, and active artifact path without returning baseline
-contents.
+In `/metrics`:
+
+- `guardian_anomaly_score` is the live per-domain score distribution for
+  requests that reach the anomaly stage (requests terminated earlier,
+  including valid PoW tokens, are not represented). With suspicion mode and
+  `observe_only` it shows the remaining traffic's distribution without
+  enforcing anything.
+- `guardian_anomaly_baseline_selections_total` shows how often the exact,
+  route, method and domain fallbacks are selected;
+  `guardian_anomaly_baseline_misses_total` makes uncovered hosts visible.
+
+The admin dashboard and `GET /admin/anomaly` expose configured coverage,
+segment counts, training time and active artifact path without returning
+baseline contents.
 
 ## Best practices
 
@@ -267,31 +266,30 @@ The detector is only as good as the traffic you train it on. A handful of habits
 make the difference between a baseline that catches scanners and one that
 annoys customers.
 
-**Train on traffic that represents normal.** Sufficiently frequent shapes in the
-training window influence what the model considers ordinary; a single unusual
-record does not automatically become ordinary. Train on a window that includes
-quiet hours as well as peaks, and avoid windows dominated by a one-off event, a
-migration, or a load test. If you have just survived a large bot campaign, note
-that the campaign's successful (sub-400) requests are in those logs too.
+**Train on traffic that represents normal.** Frequent shapes in the window
+become what the model considers ordinary (a single unusual record does not).
+Include quiet hours as well as peaks, and avoid windows dominated by a one-off
+event, a migration or a load test. After a large bot campaign, remember its
+successful (sub-400) requests are in those logs too.
 
-**Keep `-min-requests` honest.** The 5000 default is a floor, not a target. A
-small or unrepresentative sample can produce a baseline that is too narrow, too
-wide, or biased toward one traffic shape. Raising the floor for a busy site (the
-guide's example uses 5000) is usually better than trusting a thin sample. A
-domain dropped for insufficient data makes `-require-domain` fail the training
-job. Guardiand also refuses startup or reload when an explicitly configured
-domain has no baseline. Defaults-only traffic to an unknown host remains
-fail-open for this stage, but increments the missing-baseline counter.
+**Keep `-min-requests` honest.** The 5000 default is a floor, not a target: a
+thin or unrepresentative sample produces a baseline that is too narrow, too
+wide, or biased toward one traffic shape, so raising the floor on a busy site
+beats trusting it. A domain dropped for insufficient data makes
+`-require-domain` fail the job, and guardiand refuses startup or reload when
+an explicitly configured domain has no baseline. Defaults-only traffic to an
+unknown host stays fail-open for this stage but increments the
+missing-baseline counter.
 
-**Treat the artifact as perishable, but retrain deliberately.** Sites change:
-new sections, a new mobile app UA, a redesign that shifts every path prefix.
-Guardian hot-swaps the file within seconds of it changing but never expires a
-model on its own, so a stale artifact stays trusted indefinitely and slowly
-turns legitimate new traffic into anomalies. That argues for revisiting the
-model, not for regenerating it on a tight timer: each retrain replaces the
-distribution you tuned your thresholds against. Retrain when something changed
-that should change the baseline, and recheck the score histogram afterwards.
-See [Running the anomaly trainer](/guide/production#running-the-anomaly-trainer)
+**Treat the artifact as perishable, but retrain deliberately.** Sites change
+(new sections, a new mobile app UA, a redesign shifting every path prefix),
+and Guardian hot-swaps the file within seconds but never expires a model on
+its own, so a stale artifact slowly turns legitimate new traffic into
+anomalies. That argues for revisiting the model, not regenerating it on a
+tight timer: each retrain replaces the distribution you tuned your thresholds
+against. Retrain when something changed that should change the baseline, and
+recheck the score histogram afterwards. See
+[Running the anomaly trainer](/guide/production#running-the-anomaly-trainer)
 for the operational side, including why retraining over an attack window can
 teach the baseline that the attack is normal.
 
@@ -306,18 +304,18 @@ legitimate visitor a few seconds of PoW; a deny that misfires costs you the
 visitor. Keep a comfortable gap between the two, and only tighten `deny_at`
 after the score histogram shows a clean separation.
 
-**Spot-check with `/admin/score` before changing a threshold.** Score the request
-shapes you actually care about: a real browser request, your monitoring
-probe, a partner's API client, and confirm each lands where you expect. Health
-checks and uptime monitors are the classic false positive: they often use an
-unusual UA against a path that appears nowhere else in your traffic, which is
+**Spot-check with `/admin/score` before changing a threshold.** Score the
+request shapes you actually care about (a real browser request, your
+monitoring probe, a partner's API client) and confirm each lands where you
+expect. Health checks and uptime monitors are the classic false positive: an
+unusual UA against a path that appears nowhere else in your traffic is
 precisely the 0.55 combination described above.
 
-**Give the trainer the whole picture.** Include all retained rotated logs for a
-domain rather than only today's file. The CLI reads plain and `.gz` files
-directly. A combined multi-host stream is fine because every record carries its
-own `host`, but reserve a representative validation window for candidate
-comparison rather than evaluating only on the exact training sample.
+**Give the trainer the whole picture.** Include all retained rotated logs
+(plain and `.gz`) rather than only today's file; a combined multi-host stream
+is fine since every record carries its own `host`. But reserve a
+representative validation window for candidate comparison rather than
+evaluating on the exact training sample.
 
 ::: tip A broken model fails startup, but not a reload
 `guardiand` refuses to start on a missing or invalid artifact, on the grounds

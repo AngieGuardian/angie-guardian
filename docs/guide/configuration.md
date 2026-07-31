@@ -81,19 +81,20 @@ defaults:
 
 Leaving PoW on at `/robots.txt` means well-behaved crawlers get the
 interstitial instead of your `Disallow` rules, including the ones steering
-them away from [honeypot](/reference/configuration#waf-honeypot) traps. That
-file is also where the `Sitemap:` line lives, so exempting it while the URL it
+them away from [honeypot](/reference/configuration#waf-honeypot) traps; the
+file also carries the `Sitemap:` line, so exempting it while the URL it
 advertises still challenges just moves the dead end one hop further. This is
-narrower than an `allowlist.paths` entry, which ends the pipeline outright: here
-blocks, GeoIP, reputation and the WAF still apply. A single host overrides an
-inherited entry by naming the same key in its own `paths`.
+narrower than an `allowlist.paths` entry, which ends the pipeline outright:
+here blocks, GeoIP, reputation and the WAF still apply. A single host
+overrides an inherited entry by naming the same key in its own `paths`.
 
-Keys match exactly, so `"/sitemap.xml"` covers a flat sitemap and nothing else.
-Add the paths yours actually uses when they differ (WordPress core serves
-`/wp-sitemap.xml`, Yoast `/sitemap_index.xml`) or when an index names per-type
-children, or the index resolves and every child it points at is challenged.
-Note that this hands an anonymous client your URL list; the pages themselves
-still cost a solve, and one solve buys `token_ttl` of crawling either way.
+Keys match exactly, so `"/sitemap.xml"` covers a flat sitemap and nothing
+else: add the paths yours actually uses when they differ (WordPress core
+serves `/wp-sitemap.xml`, Yoast `/sitemap_index.xml`), including per-type
+children named by an index, or the index resolves while every child it points
+at is challenged. This hands an anonymous client your URL list; the pages
+themselves still cost a solve, and one solve buys `token_ttl` of crawling
+either way.
 
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.
@@ -168,12 +169,12 @@ domains:
 ```
 
 A disabled rule is removed from evaluation for that resolved scope only; the
-remaining rules keep their file order, so the next matching rule still decides
-the request. Like every list in the overlay model, the field replaces
-wholesale: an omitted `disabled_rule_ids` inherits the parent's resolved list,
-an explicit `[]` clears inherited exclusions, and a non-empty list replaces
-the inherited one (re-list inherited IDs to keep them). The effective sets are
-precompiled at startup/reload, so exclusions add no per-request work.
+remaining rules keep their file order, so the next matching rule still
+decides. Like every list in the overlay model, the field replaces wholesale:
+omitted inherits the parent's resolved list, an explicit `[]` clears inherited
+exclusions, and a non-empty list replaces the inherited one (re-list inherited
+IDs to keep them). Effective sets are precompiled at startup/reload, so
+exclusions add no per-request work.
 
 Validation is deliberately strict, so a typo can never silently leave a
 dangerous rule enabled: empty, whitespace-only or duplicate entries, an
@@ -191,23 +192,22 @@ scope's effective `rules_file` and exclusions together.
 Rules files hot-reload two ways: they are watched on disk (edits apply within
 seconds, no signal needed), and a SIGHUP/`/admin/reload` re-reads
 `guardian.yaml` including any changed `rules_file` paths. A file that fails to
-parse, or exceeds the 8 MiB bound, keeps the previous rules active; only a
-cold start hard-fails on a bad file. A watched update that removes or renames
-a rule ID some scope still excludes is rejected the same way, so a renamed
-formerly-disabled rule can never become active silently. To intentionally
-delete a disabled rule, first remove its ID from `guardian.yaml` and reload
+parse or exceeds the 8 MiB bound keeps the previous rules active; only a cold
+start hard-fails. A watched update that removes or renames a rule ID some
+scope still excludes is rejected the same way, so a renamed formerly-disabled
+rule can never become active silently: to delete a disabled rule
+intentionally, first remove its ID from `guardian.yaml` and reload
 successfully, then remove the rule from the watched file.
 
 ## Validating a config
 
-Validate a config without starting the daemon with `-t` (like `angie -t`). It
-loads and validates the file (YAML syntax, unknown fields, and semantic
-checks) plus every startup-required local artifact: WAF rules, anomaly models,
-GeoIP databases, and file-based reputation feeds. Listener `host:port` syntax
-and the non-loopback admin-token requirement are checked here too, so a config
-cannot pass preflight and then fail that policy during restart. It then exits:
-`0` and `ok`
-when valid, `1` and the reason when not. Remote URL feeds remain non-blocking.
+`-t` validates a config without starting the daemon (like `angie -t`): YAML
+syntax, unknown fields and semantic checks, plus every startup-required local
+artifact (WAF rules, anomaly models, GeoIP databases, file-based reputation
+feeds). Listener `host:port` syntax and the non-loopback admin-token
+requirement are checked here too, so a config cannot pass preflight and then
+fail that policy during restart. It exits `0` and `ok` when valid, `1` and the
+reason when not; remote URL feeds remain non-blocking.
 
 ```sh
 ./guardiand -config guardian.yaml -t
@@ -306,12 +306,12 @@ Which value fires:
 
   Three things are true of these at once, and all three are needed:
 
-  - They **are issued** a challenge, unlike subresources. `Sec-Fetch-Site` is
-    not proof the frame is foreign: it is computed over the request's whole
+  - They **are issued** a challenge, unlike subresources: `Sec-Fetch-Site` is
+    not proof the frame is foreign. It is computed over the request's whole
     redirect chain against the initiator's origin and says nothing about the
     frame ancestor, so a same-origin iframe reached through a cross-site
     redirect (an SSO callback) arrives tagged `cross-site` while
-    `frame-ancestors 'self'` renders it perfectly well. Refusing would break
+    `frame-ancestors 'self'` renders it perfectly well; refusing would break
     those logins. This is also why the metric alone does not prove a hostile
     third party: your own embedded login callback appears here too.
   - They **are escalated**, on a separate counter, so difficulty still ramps.
@@ -337,17 +337,17 @@ Which value fires:
   browsers *should* send the document `Accept` value for a navigation, so the
   claim is behavioural rather than semantic: mainstream browsers do include an
   explicit `text/html` range on a navigation, and something that does not is
-  very unlikely to be one. It therefore never overrides a stronger signal. A
+  very unlikely to be one. It never overrides a stronger signal: a
   document-like `Sec-Fetch-Dest`, a `Sec-Fetch-Mode: navigate`, an absent
   `Accept`, or an `Accept` that cannot be parsed all keep the ordinary path.
 
   Like every other refusal it is sent `no-store`. Making it cacheable so the
-  client stops re-asking was tried and measured: on the Firefox favicon path it
-  was aimed at, a `private, max-age=30, must-revalidate` 403 was requested just
-  as often as a `no-store` one, so the header was dropped. That is a result
-  about that client and that path, not a general rule about error statuses. The
-  refusal therefore ends the escalation, and does not by itself guarantee the
-  client stops repeating the request.
+  client stops re-asking was tried and measured: on the Firefox favicon path
+  it was aimed at, a `private, max-age=30, must-revalidate` 403 was requested
+  just as often as a `no-store` one, so the header was dropped (a result about
+  that client and that path, not a general rule about error statuses). The
+  refusal ends the escalation, but does not by itself guarantee the client
+  stops repeating the request.
 
   ::: warning A compatibility tradeoff
   On modern HTTPS browsers a recognized document destination protects customized
@@ -381,12 +381,12 @@ hashes/s per worker, ~9 MH/s with 8 workers; scale down for weaker devices.
 For comparison, a native (Go) solver does ~7.6 MH/s **per core**, so a bot
 pays the same order of work a real browser does.
 
-The browser matters as much as the hardware. On one 48-thread desktop,
+The browser matters as much as the hardware: on one 48-thread desktop,
 Firefox 153 measures ~0.55 MH/s per worker (~4.4 MH/s at the 8-worker cap)
-against Chrome 151's ~0.96 MH/s (~7.7 MH/s): the same silicon, 1.75x apart.
-Read the table below by hash rate, not by the device names: a fast desktop
-running Firefox lands between the desktop and laptop columns, so tuning off
-the desktop column alone understates what most visitors actually pay.
+against Chrome 151's ~0.96 MH/s (~7.7 MH/s), the same silicon 1.75x apart.
+Read the table below by hash rate, not device name: a fast desktop running
+Firefox lands between the desktop and laptop columns, so tuning off the
+desktop column alone understates what most visitors actually pay.
 
 Expected (mean) solve times by device class:
 
@@ -418,16 +418,15 @@ Recommendations:
 - **`max_difficulty: 6`** (the default) for all escalation. `6.5` and up
   is effectively a soft deny: a minute of hashing on a phone. Values above 7
   mostly punish real visitors on slow devices.
-- Watch `guardian_challenge_solve_seconds` in Prometheus (or the average on
-  the dashboard) after changing values: it is the real-world solve time of
-  *your* visitors' devices. The metric now carries a `domain` label, which the
-  dashboard's "Solve time by domain" card reads, so a difficulty that only hurts
-  one site stands out. Its neighbour, "Solve time by client", answers the same
-  question per class of device from a sample of the recent decisions feed rather
-  than from the metric, since a User-Agent taxonomy is a guess and has no
-  business being a Prometheus label. For a single slow visitor,
-  `GET /admin/decisions?action=solve` names the host, path, IP and User-Agent
-  behind each solve.
+- Watch `guardian_challenge_solve_seconds` in Prometheus (or the dashboard
+  average) after changing values: it is the real-world solve time of *your*
+  visitors' devices. The metric carries a `domain` label, read by the
+  dashboard's "Solve time by domain" card, so a difficulty that only hurts one
+  site stands out; its neighbour "Solve time by client" answers the same
+  question per device class from a sample of the recent decisions feed (a
+  User-Agent taxonomy is a guess and has no business being a Prometheus
+  label). For a single slow visitor, `GET /admin/decisions?action=solve` names
+  the host, path, IP and User-Agent behind each solve.
 
 ::: tip PoW is not a flood defense
 PoW only taxes clients that solve the puzzle. A client that farms challenges
@@ -448,16 +447,15 @@ set `trusted_proxy: true`, otherwise `guardiand` refuses to start.
 
 ## The signing key
 
-`signing_key_file` holds the persistent Ed25519 key that signs PoW JWTs. It is
+`signing_key_file` holds the persistent Ed25519 key that signs PoW JWTs:
 generated on first run if missing and **never** regenerated on restart, so
 restarts don't log clients out and replicas can share it. Retired keys (from
-`POST /admin/rotate-key`) are archived in `previous_key_dir` and still
-accepted only for bounded, pre-rotation token lifetimes (at most seven days).
-Expired archives may remain on disk, but they are omitted from the active
-verification set after that horizon.
-Rotation requires a non-empty `previous_key_dir`; replicas must share both
-paths and automatically refresh their verification set when another replica
-rotates.
+`POST /admin/rotate-key`) are archived in `previous_key_dir` and accepted only
+for bounded, pre-rotation token lifetimes (at most seven days); expired
+archives may remain on disk but drop out of the active verification set after
+that horizon. Rotation requires a non-empty `previous_key_dir`; replicas must
+share both paths and automatically refresh their verification set when
+another replica rotates.
 
 ## Hot reload
 
@@ -476,11 +474,11 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8072/admin/reloa
 
 Domains, allow/denylists, thresholds, PoW difficulty and TTLs, WAF rules and
 model file sets, GeoIP databases, reputation feeds and `log_level` all apply
-immediately. Behavioural state survives the reload: active blocks, counters,
-issued/spent challenge records, and bot verdicts live in the store; signed
-tokens remain client cookies. A config that fails
-validation is rejected and the running config stays active, so a bad edit
-cannot take the daemon down.
+immediately. Behavioural state survives the reload (active blocks, counters,
+issued/spent challenge records and bot verdicts live in the store; signed
+tokens remain client cookies), and a config that fails validation is rejected
+while the running config stays active, so a bad edit cannot take the daemon
+down.
 
 Not reloadable (fixed at startup; a reload that changes one is rejected):
 `listen`, `admin.listen`, `trusted_proxy`, the `store` block,
@@ -489,11 +487,11 @@ token/dashboard setup.
 
 WAF rules files, anomaly model artifacts, `.mmdb` databases and file-based
 reputation feeds are also watched on disk and reload on change by themselves;
-you only need SIGHUP/`/admin/reload` for edits to `guardian.yaml` itself. Reads
-are bounded to prevent an accidental or compromised artifact publisher from
-exhausting daemon memory: `guardian.yaml` 4 MiB, WAF rules 8 MiB, and anomaly
-models plus reputation feeds/caches 64 MiB each. An oversized hot update is
-rejected while the last-good artifact remains active.
+SIGHUP/`/admin/reload` is only needed for edits to `guardian.yaml` itself.
+Reads are bounded so an accidental or compromised artifact publisher cannot
+exhaust daemon memory (`guardian.yaml` 4 MiB, WAF rules 8 MiB, anomaly models
+and reputation feeds/caches 64 MiB each); an oversized hot update is rejected
+while the last-good artifact remains active.
 
 ## Next steps
 

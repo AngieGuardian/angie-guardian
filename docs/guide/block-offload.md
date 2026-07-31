@@ -45,25 +45,25 @@ block is cached back so the flood's next request is free. `mode: auto`
 (the default) picks the right one from your store backend.
 
 That read-through consult is one store round-trip per request, and on a
-networked store it is the dominant cost of the allow/token path: it is why
-a single-instance embedded backend (authoritative, zero reads) measures roughly
+networked store it dominates the allow/token path: it is why a
+single-instance embedded backend (authoritative, zero reads) measures roughly
 twice the read throughput of redis (see the
 [performance numbers](/guide/load-testing#benchmark-results)). The trade is
-deliberate: paying that read is what makes a block placed on one replica apply
-on the others within microseconds instead of up to one `reconcile_interval`.
-If you would rather have the speed and can accept that cross-replica lag, set
-`enforcement.mirror.mode: authoritative` explicitly on redis; blocks placed by
-other replicas then apply only after the next indexed reconcile (measured ~183k
-vs ~94k req/s on the allow path). A shorter `reconcile_interval` narrows that
-lag at the cost of more frequent bounded active-block reads.
+deliberate: that read is what makes a block placed on one replica apply on the
+others within microseconds instead of up to one `reconcile_interval`. If you
+prefer the speed and can accept the cross-replica lag, set
+`enforcement.mirror.mode: authoritative` explicitly on redis (measured ~183k
+vs ~94k req/s on the allow path); blocks from other replicas then apply only
+after the next indexed reconcile, and a shorter `reconcile_interval` narrows
+that lag at the cost of more frequent bounded active-block reads.
 
 If the mirror fills past `max_entries` (default ~1M), its status becomes
-`complete: false` and misses fall back to the store read path, even when the
-configured mode is `authoritative`. Reconciliation itself stops retaining
-results at that same bound. Enforcement is never lost, only the optimization,
-and each dropped insertion is counted in
+`complete: false` and misses fall back to the store read path even in
+`authoritative` mode; reconciliation stops retaining results at the same
+bound. Enforcement is never lost, only the optimization, and each dropped
+insertion counts in
 `guardian_offload_ops_total{sink="mirror",status="dropped"}`. Size the mirror
-above the expected active-block high-water mark; sustained incompleteness
+above the expected active-block high-water mark: sustained incompleteness
 turns clean requests back into store traffic by design.
 
 The mirror has no on/off switch: it is strictly cheaper than the store lookup
@@ -106,20 +106,23 @@ its own; there is no stuck-forever rule.
 ### The never_block safety filter
 
 Before any address is sent to the kernel, the sink drops it from the batch if
-it is loopback, link-local, private or special-purpose (RFC1918, the
-`100.64.0.0/10` CGNAT range, IPv6 ULA, unspecified, multicast), in a
-`never_block` CIDR, or in **any** configured
-[`allowlist`](/reference/configuration#allowlist-denylist) (across defaults,
-domains and path overlays; the kernel sees neither Host nor path, so allowlist
-entries must win globally at this layer).
+it is:
+
+- loopback, link-local, private or special-purpose (RFC1918, the
+  `100.64.0.0/10` CGNAT range, IPv6 ULA, unspecified, multicast);
+- in a `never_block` CIDR;
+- in **any** configured
+  [`allowlist`](/reference/configuration#allowlist-denylist), across defaults,
+  domains and path overlays (the kernel sees neither Host nor path, so
+  allowlist entries must win globally at this layer).
 
 Private and special-purpose ranges are withheld by default because a
-misconfigured trusted proxy that surfaces an internal hop (a bridge gateway, an
-LB backend) as the client IP would otherwise kernel-drop your own
-infrastructure, and in `managed` mode that block outlives a daemon restart via
-its kernel timeout. If Guardian genuinely serves routable private space, set
-`enforcement.nftables.allow_private: true` to offload those ranges too;
-loopback and link-local stay excluded regardless.
+misconfigured trusted proxy surfacing an internal hop (a bridge gateway, an LB
+backend) as the client IP would otherwise kernel-drop your own infrastructure,
+and in `managed` mode that block outlives a daemon restart via its kernel
+timeout. If Guardian genuinely serves routable private space, set
+`enforcement.nftables.allow_private: true`; loopback and link-local stay
+excluded regardless.
 
 ::: danger Put your load balancer and CDN ranges in never_block
 The drop is at layer 3. If a request from behind a load balancer or CDN
@@ -165,8 +168,8 @@ built-in [API module](https://en.angie.software/angie/docs/configuration/modules
 is read-only (the writable `/config` API is Angie PRO only), the
 [keyval module](https://en.angie.software/angie/docs/installation/external-modules/keyval/)
 is a third-party add-on without TTL support, and a `deny`-include plus reload
-would cause a reload storm as blocks churn under attack. So Guardian enforces
-in its own memory and, when asked, in the kernel, rather than in Angie's
+would storm reloads as blocks churn under attack. So Guardian enforces in its
+own memory and, when asked, in the kernel rather than in Angie's
 configuration.
 
 ## Observability

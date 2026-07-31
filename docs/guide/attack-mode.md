@@ -83,14 +83,13 @@ challenge instead of a `503`. The fallback is counted as both
 `issued_stateless` and `issued_stateless_fallback`, so an unexpected store
 outage remains visible even though challenge service stays available.
 
-Redemption accepts both the stateless and the classic formats forever, so a
-challenge issued moments before or after a posture flip still redeems, and a
-rolling fleet restart is safe. Instances that share the signing key verify
-each other's stateless challenges. File-backed issuers refresh the shared key
-set periodically before signing, while current and still-live retired secrets
-keep challenges redeemable during a rolling rotation. JWT verification also
-refreshes before accepting cached or signature-valid tokens, so learning that
-a peer retired a key cannot be suppressed by an old-key cache hit.
+Redemption accepts both formats forever, so a challenge issued moments before
+or after a posture flip still redeems and a rolling fleet restart is safe.
+Instances sharing the signing key verify each other's stateless challenges:
+file-backed issuers refresh the shared key set before signing, still-live
+retired secrets keep challenges redeemable during a rolling rotation, and JWT
+verification also refreshes before accepting cached or signature-valid tokens,
+so a peer's retired key cannot be kept alive by an old-key cache hit.
 
 The shared store CAS is the fleet-wide single-spend authority. If that write
 fails, Guardian mints the token fail-open and records the challenge in a
@@ -115,26 +114,26 @@ checks clear and the in-process block mirror can prove the client is not
 blocked without consulting the store. Otherwise the request gets a fast `503`
 with `Retry-After`; WAF/deny hits keep their deny response.
 
-That mirror qualification matters operationally. A seeded, complete
-authoritative mirror can fast-pass a clean token. An unseeded or
-capacity-incomplete mirror, and a `read_through` mirror such as Redis in
-`auto` mode, cannot prove a miss without a store read, so Guardian sheds the
-request rather than risk letting a token bypass a block held only in the
-store. This is the middle ground between fail-open (continue into the vhost's
-original handler) and silently weakening policy under pressure. Set the bound
-to a few times your core count and test it with your chosen mirror mode.
+The mirror qualification matters operationally: a seeded, complete
+authoritative mirror can fast-pass a clean token, but an unseeded or
+capacity-incomplete mirror (or a `read_through` mirror such as Redis in `auto`
+mode) cannot prove a miss without a store read, so Guardian sheds instead of
+risking a token bypassing a block held only in the store. That is the middle
+ground between fail-open (continuing into the vhost's original handler) and
+silently weakening policy under pressure. Set the bound to a few times your
+core count and test it with your chosen mirror mode.
 
 ## Fleet coordination
 
 The detector is per-instance: each replica measures its own share of traffic.
 With `share_posture: true` (default) each instance publishes its level as an
 expiring per-replica vote once per tick and adopts the maximum of its local
-level and every live peer vote, so replicas move together. One quiet replica
-cannot overwrite a higher vote from an attacking peer. The built-in stores
-keep these votes in a dedicated map/embedded key range or two fixed Redis sorted
-sets; a tick never scans challenge, counter, bot-verification, or block keys.
-The bounded coordination runs off the hot path; if the store is down it
-degrades to local-only (and the store failure is itself a trigger).
+level and every live peer vote, so replicas move together and one quiet
+replica cannot overwrite a higher vote from an attacking peer. Votes live in a
+dedicated map, embedded key range or two fixed Redis sorted sets (a tick never
+scans challenge, counter, bot-verification or block keys), the bounded
+coordination runs off the hot path, and a store outage degrades it to
+local-only (the store failure is itself a trigger).
 
 Thresholds are therefore **per instance**. With N replicas behind a balancer,
 each sees roughly 1/N of the traffic; size `challenge_rate` and

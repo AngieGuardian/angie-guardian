@@ -16,9 +16,8 @@ level=INFO msg=decision action=challenge reason=pow:no_token host=example.com ..
 
 **Cause:** the `error_page 401 = @guardian_challenge;` mapping is not in effect
 in the location that handled the request, so Angie serves the auth subrequest's
-`401` itself. Almost always this is `error_page` inheritance: Angie merges the
-inherited list into a location only when that location declares none of its own,
-all-or-nothing per level rather than per status code. A `location /` that sets
+`401` itself. Almost always this is `error_page` inheritance, which is
+all-or-nothing per level rather than per status code: a `location /` that sets
 `error_page 404 /404.html;` for its own missing pages silently drops the `401`
 and `403` mappings it never mentions. Protection is unaffected; only the styled
 page is lost.
@@ -92,20 +91,19 @@ headers itself. This happens with a `deploy/angie-guardian.conf` copied before
 the snippet set a location CSP, or with hand-written glue.
 
 **Fix:** update `/etc/angie/angie-guardian.conf` to the current shipped
-snippet (it is versioned with the release archive) and reload Angie. It gives
+snippet (versioned with the release archive) and reload Angie: it gives
 `@guardian_challenge` and `@guardian_denied` their own page-fitted
 `Content-Security-Policy`, which also stops the vhost's server-level headers
-from being inherited there; the site-wide CSP itself needs no change. With
-hand-written glue, add the same `add_header` line from the shipped snippet to
-your challenge location. Do **not** fix it by adding `worker-src blob:` to the
-site-wide policy: that weakens the whole site for one internal page.
+from being inherited there. The site-wide CSP needs no change; with
+hand-written glue, add the same `add_header` line to your challenge location.
+Do **not** fix it by adding `worker-src blob:` to the site-wide policy: that
+weakens the whole site for one internal page.
 
-If the vhost sets other server-wide headers (`Strict-Transport-Security` is
-the one that matters), re-add them in those two locations; see
+If the vhost sets other server-wide headers (`Strict-Transport-Security` is the
+one that matters), re-add them in those two locations; see
 [Site security headers and the challenge page](/guide/angie#site-security-headers-and-the-challenge-page).
-The same symptom can also come from a CDN or proxy in front of Angie that
-injects a CSP onto every response passing through it; exempt the interstitial
-there.
+A CDN or proxy in front of Angie that injects a CSP onto every response causes
+the same symptom; exempt the interstitial there.
 
 ## A solved challenge is rejected ("challenge verification failed")
 
@@ -187,89 +185,84 @@ defaults:
 
 **A stylesheet, image or `fetch()` gets a bare `403` instead of the page.** A
 request that cannot execute the interstitial is refused a challenge rather than
-issued one, because scoring it for abandoning a page it cannot run is how an
-ordinary browser talks itself into a `challenge_farm` block. Counted as
-`guardian_challenges_total{outcome="subresource_refused"}`; usually a favicon or
-a stale SPA `fetch()`, and benign. The decision is recorded as `refuse`, so it
-does not inflate challenge counts and is filtered out of
-`GET /admin/decisions?action=challenge`. A token-failure refusal has reason
-`pow:unchallengeable`; one selected by another policy keeps that policy's
-reason. A subresource carrying a valid token is never affected, since the token
-stage allows it long before the challenge handler is reached. If a top-level
-*navigation* is being refused, an intermediate proxy is
-rewriting `Sec-Fetch-Dest`; stop it doing that. To turn the refusal off, set
-`pow: { refuse_unchallengeable: false }` (fleet-wide, per domain, or per path)
-and Guardian is back to challenging everything. Do not clear the header in
-`location @guardian_challenge` to achieve it: the decision is recorded at the
-auth subrequest, which still sees the client's real header, so clearing it in
-one location only would leave the log saying a challenge was withheld from a
-client that was handed one.
+issued one (scoring it for abandoning a page it cannot run is how an ordinary
+browser talks itself into a `challenge_farm` block). Usually a favicon or a
+stale SPA `fetch()`, and benign. The details:
+
+- Counted as `guardian_challenges_total{outcome="subresource_refused"}` and
+  recorded with action `refuse`, so it neither inflates challenge counts nor
+  appears in `GET /admin/decisions?action=challenge`. A token-failure refusal
+  has reason `pow:unchallengeable`; one selected by another policy keeps that
+  policy's reason.
+- A subresource carrying a valid token is never affected: the token stage
+  allows it long before the challenge handler is reached.
+- If a top-level *navigation* is being refused, an intermediate proxy is
+  rewriting `Sec-Fetch-Dest`; stop it doing that.
+- The off switch is `pow: { refuse_unchallengeable: false }` (fleet-wide, per
+  domain, or per path). Do not clear the header in
+  `location @guardian_challenge` instead: the decision is recorded at the auth
+  subrequest, which still sees the client's real header, so the log would say
+  a challenge was withheld from a client that was handed one.
 
 **`curl`, an API client or a feed reader gets a bare `403` instead of the
 interstitial.** Counted as
 `guardian_challenges_total{outcome="accept_heuristic_refused"}`. When a request
-carries no Fetch metadata at all, its `Accept` header is the only heuristic left
-for distinguishing a page navigation from a request unlikely to render one, so
-a request whose `Accept` is present and names neither `text/html` nor `text/*`
-is refused a challenge instead of being issued one it will probably drop. The
-request this was built for is the browser's own favicon service, which refreshes
-a known icon URL on a system principal with no cookie, no `Sec-Fetch-*` even
+carries no Fetch metadata at all, its `Accept` header is the only heuristic
+left for telling a page navigation from a request unlikely to render one, so an
+`Accept` that is present and names neither `text/html` nor `text/*` is refused
+a challenge instead of being issued one it will probably drop. The case this
+was built for is the browser's own favicon service: it refreshes a known icon
+URL on a system principal with no cookie (whatever the token's `SameSite`
+policy, so no token-based allowance can ever reach it), no `Sec-Fetch-*` even
 over HTTPS, and `Accept: */*`, and used to escalate the visitor on every page
-render. That channel is anonymous by construction: it sends no cookie whatever
-the token's `SameSite` policy, so no token-based allowance can ever reach it and
-the only response that stops it re-requesting is the real file. If the request
-volume is the problem rather than the decision, exempt the path with a
+render; the only response that stops it re-requesting is the real file. If the
+request volume is the problem rather than the decision, exempt the path with a
 `pow: { enabled: false }` overlay so the file is served and cached.
 
 `Accept` is a heuristic, not proof: `*/*` formally accepts HTML, and the Fetch
 standard only says browsers *should* send the document `Accept` value for a
 navigation. So it is consulted last, and never against a stronger signal:
-`Sec-Fetch-Dest` naming any document-like destination, or
-`Sec-Fetch-Mode: navigate`, exempts the request whatever it asks for. So does an
-absent `Accept`, and so does one that is not a well-formed media range, since
-refusing on input that cannot be read is deciding from noise.
+`Sec-Fetch-Dest` naming any document-like destination or
+`Sec-Fetch-Mode: navigate` exempts the request whatever it asks for, as does an
+absent `Accept` or one that is not a well-formed media range (refusing on input
+that cannot be read is deciding from noise). The 403 body names what would
+change the outcome, so it is worth reading rather than just counting:
+`proof-of-work challenge requires a document navigation: Accept must list
+text/html or text/*`.
 
-The 403 body names what would change the outcome, so it is worth reading rather
-than just counting: `proof-of-work challenge requires a document navigation:
-Accept must list text/html or text/*`.
-
-**The tradeoff, stated plainly.** On modern HTTPS browsers a recognized document
-destination protects customized `Accept` values. Where Fetch metadata is
-unavailable, meaning plain HTTP, older clients, or a proxy that strips the
-headers, this can refuse an unusual real navigation whose `Accept` lacks
-`text/html`. That is deliberate, and it is the case to watch if you serve a
-plain-HTTP vhost to unusual clients. The off switch is the same as the one
-above, `pow: { refuse_unchallengeable: false }`, and it can be scoped to the one
-site or path that needs it. Clearing `Accept` in `location @guardian_challenge`
-is not an equivalent: besides the mismatch described above, it would hide the
-header from any WAF rule targeting `header:accept`.
+**The tradeoff, stated plainly.** On modern HTTPS browsers a recognized
+document destination protects customized `Accept` values. Where Fetch metadata
+is unavailable (plain HTTP, older clients, a proxy that strips the headers),
+this can refuse an unusual real navigation whose `Accept` lacks `text/html`.
+That is deliberate, and the case to watch if you serve a plain-HTTP vhost to
+unusual clients; the off switch is the same
+`pow: { refuse_unchallengeable: false }`, scopable to the one site or path that
+needs it. Clearing `Accept` in `location @guardian_challenge` is not an
+equivalent: besides the mismatch described above, it would hide the header from
+any WAF rule targeting `header:accept`.
 
 **`guardian_challenges_total{outcome="frame_unscored"}` is climbing.** Your
 protected URLs are being loaded in a frame whose Fetch metadata cannot establish
 that the interstitial will render, so those issuances raise difficulty but are
-never reported as `challenge_farm`. Before that exemption, a third party could
+never reported as `challenge_farm` (before that exemption, a third party could
 drive arbitrary visitors into a block on your site simply by framing it in a
-loop.
-
-**This metric does not by itself mean a hostile third party.** The metadata is
-ambiguous, which is the whole reason these are issued rather than refused.
+loop). The metric does not by itself mean a hostile third party: the metadata
+is ambiguous, which is the whole reason these are issued rather than refused.
 `Sec-Fetch-Site` accumulates across the redirect chain, so your own embedded
 login callback (`A -> IdP -> A` inside a same-origin iframe) reports
 `cross-site` and lands here too, as does any `fencedframe` navigation. Before
 concluding you are being framed, check whether the URIs involved are your own
-SSO or embed callbacks. A steady rate against ordinary page URLs you never frame
-yourself is the signal worth chasing.
+SSO or embed callbacks; a steady rate against ordinary page URLs you never
+frame yourself is the signal worth chasing.
 
 **The `Sec-Fetch-*` protections above do not apply on a plain-HTTP site.**
 Browsers send those headers only to potentially-trustworthy origins (HTTPS and
 localhost), so over plain HTTP every destination reads as unknown and the
 pre-existing challenge-everything behaviour applies to subresources and frames
-alike.
-
-The `Accept` refusal is the exception, and the only one: it needs no Fetch
-metadata, so it is the sole protection that works over plain HTTP. It is also
-the only one whose false-positive risk is higher there, for exactly the same
-reason, since nothing stronger is available to exempt an unusual navigation.
+alike. The `Accept` refusal is the one exception: it needs no Fetch metadata,
+so it is the sole protection that works over plain HTTP, and for the same
+reason the only one whose false-positive risk is higher there, since nothing
+stronger is available to exempt an unusual navigation.
 
 **Everyone is challenged too aggressively.** If `pow.mode: always`, every
 unvouched request is challenged once per `token_ttl`. Lower `base_difficulty`
@@ -287,7 +280,7 @@ it from
 | `reason` | What it means | Where to look |
 |---|---|---|
 | `pow:no_token` | No `guardian_token` cookie arrived at all. | The client is fetching anonymously, or the cookie never reached Guardian: check that Angie relays it with `proxy_set_header X-Guardian-Cookie $http_cookie`. |
-| `pow:unchallengeable` | No cookie arrived **and** Guardian classified the request as unable to complete a challenge, so none was issued. Recorded with action `refuse`, not `challenge`. Only a token-failure reason is replaced this way: a WAF rule, anomaly, GeoIP or reputation challenge aimed at the same client is also refused but keeps its own reason, so you still see which policy fired. | Expected, and usually benign: an `<img>`, an API client, or the browser's own favicon service. Not a token problem, so do not go looking for one. These are the requests that used to be reported as `pow:no_token`, which was true and misleading at once, since no cookie was ever going to arrive. If recurring volume bothers you rather than the decision and the client is polling a path it cannot authenticate, give that path a [`pow: { enabled: false }` overlay](/reference/configuration#per-path-overrides-domains-host-paths) so the real file is served and cached. |
+| `pow:unchallengeable` | No cookie arrived **and** Guardian classified the request as unable to complete a challenge, so none was issued. Recorded with action `refuse`, not `challenge`. Only a token-failure reason is replaced this way: a WAF, anomaly, GeoIP or reputation challenge aimed at the same client is also refused but keeps its own reason. | Expected, and usually benign: an `<img>`, an API client, or the browser's own favicon service. Not a token problem, so do not go looking for one (these used to be reported as `pow:no_token`, true and misleading at once, since no cookie was ever going to arrive). If recurring volume bothers you rather than the decision, give the polled path a [`pow: { enabled: false }` overlay](/reference/configuration#per-path-overrides-domains-host-paths) so the real file is served and cached. |
 | `pow:token_expired` | Real work, but past its `exp` or older than this path's `token_ttl`. | Normal once per `token_ttl`. A tight loop means `token_ttl` is shorter than you meant, a [per-path overlay](/reference/configuration#per-domain-options-defaults-and-domains-host) sets a shorter one than the path that issued the token, or the verifier's clock is ahead. |
 | `pow:token_binding` | Correctly signed and in date, but bound to another host or client. | Tokens bind to host + IP + User-Agent. Expect this from a visitor whose egress IP changes (mobile, CGNAT, a VPN toggling) or across two hostnames of the same site. Persistent and site-wide means the client IP Guardian sees is not stable: check `proxy_set_header X-Guardian-IP` and any proxy in front of Angie. |
 | `pow:token_underdifficulty` | Real token, solved at fewer bits than this path demands. | A per-path `base_difficulty` higher than where the visitor earned their token. Expected on entering a stricter path; they solve once more and continue. |
@@ -381,25 +374,24 @@ Most of `guardian.yaml` hot-reloads on `SIGHUP` / `POST /admin/reload`
 (domains, lists, thresholds, difficulty, rules/model/geoip/feed sources,
 `log_level`). A handful of fields are fixed at startup (`listen`,
 `admin.listen`, `trusted_proxy`, the `store` block, signing key paths, and the
-admin token/token-file/dashboard setup), and a
-reload that changes one is rejected. If you changed one of those, restart the
-daemon. The running config stays active after any rejected reload and the error
-is logged (or returned `422` from the admin endpoint). Validate the config and
-its startup-required local artifacts before reloading with `guardiand -t`,
-and ask the running daemon whether the edit is reloadable at all with
-[`GET /admin/reload/preflight`](/reference/admin-api#get-admin-reload-preflight):
-it lists exactly which changed fields would require a restart.
+admin token/token-file/dashboard setup); a reload that changes one is rejected,
+so restart instead. The running config stays active after any rejected reload
+and the error is logged (or returned `422` from the admin endpoint).
+`guardiand -t` validates the config and its startup-required local artifacts
+before reloading, and
+[`GET /admin/reload/preflight`](/reference/admin-api#get-admin-reload-preflight)
+lists exactly which changed fields would require a restart.
 
 ## Challenge issuance is slow / the store can't keep up
 
 Under a very high rate of *new* clients (each triggering a challenge write),
 the embedded writer becomes the ceiling: ~61k issuances/s on `pebble` async,
 ~56k/s on `buntdb` async, and ~34k/s on `pebble` with `sync: true`
-(fsync-per-write) on the reference machine. Symptoms: rising challenge
-latency, `guardian_store_op` latency climbing. Set `store.sync: false` (the
-default) if you had turned fsync on, move to the `redis`/`valkey` backend to
-share the write across replicas, set `pow.mode: suspicion` so most requests do
-no write, or enable [attack mode](/guide/attack-mode), whose stateless issuance
+(fsync-per-write) on the reference machine. Symptoms: rising challenge latency,
+`guardian_store_op` latency climbing. Remedies: set `store.sync: false` (the
+default) if you had turned fsync on; move to the `redis`/`valkey` backend to
+share the write across replicas; set `pow.mode: suspicion` so most requests do
+no write; or enable [attack mode](/guide/attack-mode), whose stateless issuance
 removes the write at issue time entirely when a flood trips the posture. See
 [Choosing a store backend](/guide/production#choosing-a-store-backend).
 
@@ -413,13 +405,13 @@ not-yet-valid `nbf` and reports `pow:token_invalid`, while a verifier far enough
 ahead sees an elapsed `exp` and reports `pow:token_expired`.
 
 Multi-instance replicas must share the signing key (`signing_key_file`) and
-`previous_key_dir`, or one instance won't verify another's tokens. Across a
-restart, the key is never regenerated, so restarts don't log clients out,
-unless the key file moved or its directory isn't persisted (check a container's
-volume mounts). Clock skew between replicas larger than a token's validity
-window can also reject otherwise-valid tokens; keep them NTP-synced. Live
-replicas refresh shared key files automatically after rotation. If rejection
-continues, verify both paths really refer to the same shared filesystem and
-that every replica can read the archive and acquire the key's rotation lock.
-Retired archives stop participating in verification after the seven-day token
-horizon even if the files are retained on disk.
+`previous_key_dir`, or one instance won't verify another's tokens. The key is
+never regenerated across a restart, so restarts don't log clients out unless
+the key file moved or its directory isn't persisted (check a container's
+volume mounts). Keep replicas NTP-synced: skew larger than a token's validity
+window also rejects otherwise-valid tokens. Live replicas refresh shared key
+files automatically after rotation; if rejection continues, verify both paths
+really refer to the same shared filesystem and that every replica can read the
+archive and acquire the key's rotation lock. Retired archives stop
+participating in verification after the seven-day token horizon even if the
+files are retained on disk.
