@@ -344,9 +344,11 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	// recorded as what it actually is. Wire behaviour is unchanged: the
 	// transport answers a refusal exactly as it answers a challenge, so Angie
 	// still routes to @guardian_challenge, which serves the terse 403 it
-	// already served. Nothing
-	// is scored either way, because escalation is bumped by the challenge
-	// handler, which refuses before reaching it. What changes is that
+	// already served. The conversion itself scores nothing, and neither does
+	// the refusal: escalation is bumped by the challenge handler, which
+	// refuses before reaching it, so challenge_farm cannot follow. Events a
+	// stage already emitted are a separate matter and stand, as recordEvents
+	// above has by now recorded them; see the note below. What changes is that
 	// /admin/decisions, the decision log and guardian_decisions_total stop
 	// reporting an unsatisfiable refusal as an issued challenge, which is what
 	// made a favicon poll read as a challenge storm. See
@@ -947,10 +949,20 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	if stateless.CheckAllowlist(req, &dcfg.Allowlist) != nil {
 		return ShedPass
 	}
-	// Stage 1: static denylist. An unparseable IP fails open in the pipeline
-	// (stage error), so here it is not a cheap deny; fall through to shed it.
-	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil {
-		if dcfg.Denylist.MatchIP(addr) {
+	// Stage 1: static denylist, through the stage's own implementation so the
+	// two cannot drift. Matching only IPs here was exactly that drift: the
+	// denylist grew uas and paths, CheckDenylist gained them, and this copy did
+	// not, so a token holder reaching a denylisted path or sending a denylisted
+	// User-Agent was fast-passed the moment the daemon saturated. A static
+	// denylist that stops applying under load is the opposite of what an
+	// operator adding one during an attack expects.
+	//
+	// The parse guard stays. An unparseable IP makes denylistStage return a
+	// stage error before CheckDenylist runs at all, and Evaluate fails open on
+	// that, so judging one here would make the shed stricter than the pipeline
+	// it stands in for rather than merely faster.
+	if _, err := netip.ParseAddr(req.RemoteAddr); err == nil {
+		if stateless.CheckDenylist(req, &dcfg.Denylist) != nil {
 			return ShedDeny
 		}
 	}

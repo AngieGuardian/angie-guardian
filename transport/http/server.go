@@ -656,8 +656,19 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		s.metrics.ChallengeFailure(strings.TrimPrefix(reason, "pow:"))
 		s.engine.RecordRedeemFailure(host, ip, req.UserAgent, reason)
 		status := http.StatusForbidden
+		// What the client is told, which is not what the log is told. A
+		// rejection names the pow sentinel it hit: static text about the
+		// client's own request, and the whole point of telling it apart from a
+		// bare failure. An internal error is Guardian failing, and its text
+		// carries store addresses and key file paths, so the client gets a
+		// fixed string and the detail goes to the log alone. This endpoint is
+		// public (the Angie glue serves /__guardian/pass with auth_request
+		// off), so whatever is returned here is world readable, which is the
+		// same reason /readyz reports coarse reasons instead of probe errors.
+		clientErr := err.Error()
 		if reason == core.ReasonRedeemInternal {
 			status = http.StatusInternalServerError
+			clientErr = "challenge verification unavailable"
 			s.log.Error("redeem failed", "host", host, "ip", ip, "err", err)
 		} else {
 			s.log.Info("redeem rejected", "host", host, "ip", ip, "nojs", req.NoJS, "err", err)
@@ -676,7 +687,7 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		if req.NoJS {
 			http.Error(w, "challenge verification failed", status)
 		} else {
-			writeJSON(w, status, map[string]any{"ok": false, "error": err.Error()})
+			writeJSON(w, status, map[string]any{"ok": false, "error": clientErr})
 		}
 		return
 	}
@@ -767,8 +778,23 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // safeRedirect confines post-challenge redirects to same-site paths.
+//
+// The leading "//" and "/\" forms are the well-known scheme-relative spellings.
+// The control characters are the less obvious half: the WHATWG URL parser
+// strips every ASCII tab, CR and LF from a URL BEFORE parsing it, so
+// "/<TAB>/host" reaches the parser as "//host" and is scheme-relative after
+// all. Rejecting them here, rather than after the prefix checks, is what keeps
+// the two rules from being separable.
+//
+// CR and LF are already neutralised downstream by Go's header writer, which
+// rewrites them as spaces, and Angie rejects all three in the request line long
+// before that, so tab via a direct probe is the only one that could reach a
+// client today. All three are refused anyway: this function is the one whose
+// job is confining the redirect, and it should not depend on two other layers
+// being correct.
 func safeRedirect(uri string) string {
-	if uri == "" || uri[0] != '/' || strings.HasPrefix(uri, "//") || strings.HasPrefix(uri, "/\\") {
+	if uri == "" || uri[0] != '/' || strings.HasPrefix(uri, "//") || strings.HasPrefix(uri, "/\\") ||
+		strings.ContainsAny(uri, "\t\r\n") {
 		return "/"
 	}
 	return uri

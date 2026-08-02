@@ -6,8 +6,11 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -154,5 +157,107 @@ func TestRefuseUnchallengeableCanBeDisabled(t *testing.T) {
 func TestUnchallengeableRefusalStaysInThePowMetricSeries(t *testing.T) {
 	if got := reasonCategory(reasonUnchallengeable); got != "pow" {
 		t.Errorf("reasonCategory(%q) = %q, want %q", reasonUnchallengeable, got, "pow")
+	}
+}
+
+const refusalScoringYAML = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: true, base_difficulty: 1, max_difficulty: 6 }
+  waf:
+    ip_behaviour:
+      enabled: true
+      block_ttl: 15m
+      thresholds: { signature: 2/h }
+    keywords: { enabled: true, rules_file: %s }
+`
+
+const refusalScoringRules = `
+rules:
+  - id: sqli
+    action: challenge
+    targets: [ path ]
+    keywords: [ "union all select" ]
+`
+
+// TestRefusedChallengeStillScoresItsEvent pins the half of the refusal
+// contract that reads backwards until you look at it.
+//
+// A refusal scores nothing OF ITS OWN: no challenge is issued, so nothing
+// bumps the unsolved-issuance escalation and challenge_farm cannot follow.
+// That is the favicon case, and it arrives here carrying no events at all.
+//
+// It does NOT exonerate the request. A client that trips a WAF signature and
+// happens to be unable to run an interstitial has still tripped the signature,
+// and the event the stage emitted is recorded before the action is converted
+// (see Engine.Evaluate). Withholding it would hand any scanner a one-header
+// amnesty: claim Sec-Fetch-Dest: image and probe for SQL injection forever
+// without ever scoring toward a block.
+//
+// Both halves are asserted together because the docs previously claimed the
+// first as if it were the whole of it.
+func TestRefusedChallengeStillScoresItsEvent(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	rules := filepath.Join(dir, "rules.yaml")
+	if err := os.WriteFile(rules, []byte(refusalScoringRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadTestConfig(t, fmt.Sprintf(refusalScoringYAML, rules))
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	key, err := pow.LoadOrCreateKey(filepath.Join(dir, "ed25519.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEngine(cfg, st, pow.NewManager(key, st), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	ua := "Mozilla/5.0 (X11; Linux x86_64)"
+
+	// A signature hit that cannot be challenged: refused, but still scored, so
+	// the threshold of 2 is crossed on the second request and the third is
+	// denied by the block the first two placed.
+	scanner := "198.51.100.31"
+	for i := range 2 {
+		r := req("shop.test", scanner, "/union all select", ua)
+		r.Unchallengeable = true
+		if d := e.Evaluate(ctx, r); d.Action != ActionRefuse || d.Reason != "waf:sqli" {
+			t.Fatalf("request %d: got %s/%s, want %s/waf:sqli", i+1, d.Action, d.Reason, ActionRefuse)
+		}
+	}
+	if _, blocked, err := e.BlockStatus(ctx, scanner); err != nil || !blocked {
+		t.Errorf("scanner blocked = %v (err %v), want true: a refused signature hit must still score", blocked, err)
+	}
+
+	// The favicon case, on the same config: no stage emitted an event, so
+	// nothing is scored however many times it repeats.
+	visitor := "198.51.100.32"
+	for i := range 5 {
+		r := req("shop.test", visitor, "/favicon.ico", ua)
+		r.Unchallengeable = true
+		if d := e.Evaluate(ctx, r); d.Action != ActionRefuse || d.Reason != reasonUnchallengeable {
+			t.Fatalf("request %d: got %s/%s, want %s/%s",
+				i+1, d.Action, d.Reason, ActionRefuse, reasonUnchallengeable)
+		}
+	}
+	if _, blocked, err := e.BlockStatus(ctx, visitor); err != nil || blocked {
+		t.Errorf("visitor blocked = %v (err %v), want false: an eventless refusal must score nothing", blocked, err)
+	}
+	// Not blocked is too weak on its own: only the signature threshold is
+	// tightened here, so a regression that emitted some OTHER event type would
+	// stay under its default rate for five requests and pass anyway. Assert
+	// what is actually claimed, which is that nothing was scored at all.
+	kvs, err := st.Scan(ctx, "ev:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range kvs {
+		if strings.Contains(kv.Key, visitor) {
+			t.Errorf("eventless refusal wrote behaviour counter %s = %s, want none", kv.Key, kv.Value)
+		}
 	}
 }

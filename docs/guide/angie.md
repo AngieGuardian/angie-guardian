@@ -221,6 +221,20 @@ own page (cosmetic), but a shed response under
 Put the include above the site's own `403` rule, and give any index-less
 directory its own handling if that rule was catching the index module's `403`.
 
+The `401` side of the same coin is handled for you. `error_page` matches on
+status, not on who produced it, so a `401` Angie itself raises reaches
+`@guardian_challenge` too. The commonest source is `auth_basic`: it runs before
+`auth_request` and short-circuits, so Guardian never evaluates the request at
+all. `@guardian_challenge` tests `$guardian_action` and passes any `401` that is
+not Guardian's own straight through, keeping the `WWW-Authenticate` header and
+the `401` status intact so the browser prompts for credentials. Without that
+test the visitor would get the interstitial with a `200` instead, solve it,
+reload, be `401`'d again, and loop until the issuance rate limit stopped them.
+
+`auth_basic` and Guardian therefore compose, with Basic auth in front: a
+credential-less request never reaches Guardian, and one with valid credentials
+is evaluated normally.
+
 ## Fail-open without duplicating the site handler
 
 Fail-open remains the shipped default. The internal `/__guardian/auth`

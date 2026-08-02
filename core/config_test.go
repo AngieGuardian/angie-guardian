@@ -1196,3 +1196,140 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+// TestSilentlyInertConfigIsRejected covers the class of mistake that is worst
+// in a security product: a configuration that loads clean, reads as protective
+// in every admin view, and protects nothing. Each case here was accepted before
+// and its effect was only observable in production traffic.
+func TestSilentlyInertConfigIsRejected(t *testing.T) {
+	cases := []struct {
+		name, yaml, want string
+	}{
+		{
+			"allowlist path / turns the whole product off",
+			"defaults:\n  allowlist:\n    paths: [ \"/\" ]\n",
+			"prefix-matches every URL",
+		},
+		{
+			"denylist path / denies the whole site",
+			"defaults:\n  denylist:\n    paths: [ \"/\" ]\n",
+			"prefix-matches every URL",
+		},
+		{
+			"an empty allowlist path entry matches nothing",
+			"defaults:\n  allowlist:\n    paths: [ \"  \" ]\n",
+			"empty or whitespace-only entry",
+		},
+		{
+			"a relative denylist path entry can never match",
+			"defaults:\n  denylist:\n    paths: [ \"admin\" ]\n",
+			"is not absolute",
+		},
+		{
+			"an allowlist path with a doubled slash half-matches at best",
+			"defaults:\n  allowlist:\n    paths: [ \"/admin//\" ]\n",
+			"not in normalized form",
+		},
+		{
+			"a denylist path with dot segments can never match",
+			"defaults:\n  denylist:\n    paths: [ \"/a/../admin\" ]\n",
+			"not in normalized form",
+		},
+		{
+			"a percent-encoded allowlist path can never match the decoded request",
+			"defaults:\n  allowlist:\n    paths: [ \"/%61dmin\" ]\n",
+			"not in normalized form",
+		},
+		{
+			"an allowlist path carrying a query can never match",
+			"defaults:\n  allowlist:\n    paths: [ \"/admin?debug=1\" ]\n",
+			"must not contain ? or #",
+		},
+		{
+			"a denylist path carrying a fragment can never match",
+			"defaults:\n  denylist:\n    paths: [ \"/admin#section\" ]\n",
+			"must not contain ? or #",
+		},
+		{
+			"a honeypot trap carrying a query can never fire",
+			"defaults:\n  waf:\n    honeypot: { enabled: true, paths: [ \"/trap?x=1\" ] }\n",
+			"must not contain ? or #",
+		},
+		{
+			"a honeypot trap that can never fire",
+			"defaults:\n  waf:\n    honeypot: { enabled: true, paths: [ \"/a/../trap\" ] }\n",
+			"not in normalized form",
+		},
+		{
+			"a paths overlay key with a doubled slash is dead",
+			"defaults:\n  paths:\n    \"/api//v1/\": { pow: { enabled: false } }\n",
+			"must be written in normalized form",
+		},
+		{
+			"a paths overlay key with a dot segment is dead",
+			"defaults:\n  paths:\n    \"/a/./b\": { pow: { enabled: false } }\n",
+			"must be written in normalized form",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadConfigErr(t, "store: { backend: memory }\n"+tc.yaml)
+			if err == nil {
+				t.Fatalf("config loaded clean, but it protects nothing:\n%s", tc.yaml)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The normalized-key rule must not reject the forms operators actually write,
+// including the shipped defaults.
+func TestNormalizedPathKeysAreAccepted(t *testing.T) {
+	for _, key := range []string{"/robots.txt", "/favicon.ico", "/sitemap.xml", "/api/v1/", "/a", "/"} {
+		yaml := "store: { backend: memory }\ndefaults:\n  paths:\n    \"" + key + "\": { pow: { enabled: false } }\n"
+		if _, err := loadConfigErr(t, yaml); err != nil {
+			t.Errorf("paths key %q was rejected: %v", key, err)
+		}
+	}
+}
+
+// TestInertPoWIsWarnedAbout: suspicion hands every challenge decision to the
+// anomaly stage and observe_only stops that stage deciding, so together they
+// leave nothing able to challenge while PoW still reads as enabled.
+func TestInertPoWIsWarnedAbout(t *testing.T) {
+	yaml := `store: { backend: memory }
+signing_key_file: k.key
+defaults:
+  pow: { enabled: true, mode: suspicion }
+  waf:
+    anomaly: { enabled: true, model: m.json, challenge_at: 0.5, deny_at: 0.85, observe_only: true }
+`
+	cfg, err := loadConfigErr(t, yaml)
+	if err != nil {
+		t.Fatalf("this is a legitimate rollout waypoint and must still load: %v", err)
+	}
+	var found bool
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "inert") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no warning that proof of work cannot fire; got %v", cfg.Warnings())
+	}
+
+	// The control: the same config without observe_only can challenge, so it
+	// must not warn.
+	ok := strings.Replace(yaml, ", observe_only: true", "", 1)
+	cfg2, err := loadConfigErr(t, ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range cfg2.Warnings() {
+		if strings.Contains(w, "inert") {
+			t.Errorf("warned about a config that can challenge: %q", w)
+		}
+	}
+}

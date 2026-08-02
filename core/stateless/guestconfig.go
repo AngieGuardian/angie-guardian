@@ -141,6 +141,11 @@ func (gd *GuestDomain) resolve(host string) (*DomainRules, error) {
 	if err := gd.Denylist.Compile(); err != nil {
 		return nil, fmt.Errorf("domain %s denylist: %w", host, err)
 	}
+	// The guest carries a honeypot as well, and validated none of it: a trap
+	// path that can never match is a trap that never fires.
+	if err := gd.Honeypot.Validate(); err != nil {
+		return nil, fmt.Errorf("domain %s: %w", host, err)
+	}
 	dr := &DomainRules{
 		Allowlist: gd.Allowlist,
 		Denylist:  gd.Denylist,

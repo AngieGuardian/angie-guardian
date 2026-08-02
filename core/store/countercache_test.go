@@ -1072,3 +1072,37 @@ func TestCounterCacheRoomSweepIsPaced(t *testing.T) {
 		t.Fatal("paced sweep did not run after its window elapsed")
 	}
 }
+
+// TestCounterCacheNonPositiveTTLStillCounts pins the backstop for a caller bug
+// that used to disable the counter silently.
+//
+// With ttl <= 0 the entry's expiry landed on now, so every bump saw an expired
+// window and opened a fresh one: the running total answered 1 forever and
+// flushKey discarded every delta as belonging to a closed window. Nothing could
+// ever cross a limit and nothing ever reached the store, which for a counter
+// whose only job is enforcing a limit is the worst available failure.
+func TestCounterCacheNonPositiveTTLStillCounts(t *testing.T) {
+	ctx := context.Background()
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		st := NewMemory()
+		c := NewCounterCache(st)
+		var last int64
+		for range 5 {
+			last = c.Incr("k", ttl)
+		}
+		if last != 5 {
+			t.Errorf("ttl=%v: Incr returned %d after 5 bumps, want 5 (a counter stuck at 1 enforces nothing)", ttl, last)
+		}
+		if err := c.Flush(ctx); err != nil {
+			t.Fatalf("ttl=%v: flush: %v", ttl, err)
+		}
+		v, ok, err := st.Get(ctx, "k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || string(v) != "5" {
+			t.Errorf("ttl=%v: store holds %q (present=%v), want 5: the shared counter never received the deltas", ttl, v, ok)
+		}
+		st.Close()
+	}
+}

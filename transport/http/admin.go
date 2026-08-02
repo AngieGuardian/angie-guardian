@@ -53,18 +53,35 @@ type AdminServer struct {
 	mux       *http.ServeMux
 	angie     *angieClient // nil = admin.angie_api not configured
 
-	// assetETags holds a strong ETag per vendored dashboard asset, keyed by
-	// embedded path and computed once at startup. It lets each asset revalidate
-	// cheaply (304 on match) so a guardiand upgrade that changes a blob is
-	// picked up immediately instead of a returning browser pairing a stale
-	// library with new dashboard JavaScript.
-	assetETags map[string]string
+	// assets holds each vendored dashboard file's bytes and its strong ETag,
+	// keyed by embedded path and read once at startup. The ETag lets an asset
+	// revalidate cheaply (304 on match) so a guardiand upgrade that changes a
+	// blob is picked up immediately instead of a returning browser pairing a
+	// stale library with new dashboard JavaScript.
+	//
+	// The bytes are held rather than re-read per request because embed.FS
+	// hands out a fresh copy every time: the chart library is 208 KiB and the
+	// world atlas 108 KiB, on routes that are deliberately unauthenticated, so
+	// re-reading turned every anonymous GET into six figures of garbage. The
+	// auth listener's deniedHTML already works this way.
+	assets map[string]dashboardAsset
+
+	// dashboardPage is the reporting page's own bytes, read once for the same
+	// reason. Nil when the embedded file could not be read, which the handler
+	// reports rather than serving an empty page.
+	dashboardPage []byte
 }
 
 // dashboardAssets are the vendored files the dashboard loads, mapping the
 // served URL to its embedded path and content type. All are static libraries
 // or map data holding no request data, which is why they are served
 // unauthenticated (see handleAsset).
+// dashboardAsset is one vendored file as served: its bytes and strong ETag.
+type dashboardAsset struct {
+	blob []byte
+	etag string
+}
+
 var dashboardAssets = map[string]struct{ path, contentType string }{
 	"/admin/chart.umd.min.js":           {"vendor/chart.umd.min.js", "text/javascript; charset=utf-8"},
 	"/admin/chart-geo.umd.min.js":       {"vendor/chart-geo.umd.min.js", "text/javascript; charset=utf-8"},
@@ -139,11 +156,15 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 		// same-origin, unauthenticated for the same reason as the dashboard
 		// shell: a <script src> fetch carries no bearer token, and the assets
 		// hold no data. No CDN, works air-gapped.
-		s.assetETags = make(map[string]string, len(dashboardAssets))
+		s.dashboardPage, _ = web.FS.ReadFile("dashboard.html")
+		s.assets = make(map[string]dashboardAsset, len(dashboardAssets))
 		for route, a := range dashboardAssets {
 			if blob, err := web.FS.ReadFile(a.path); err == nil {
 				sum := sha256.Sum256(blob)
-				s.assetETags[a.path] = `"` + hex.EncodeToString(sum[:16]) + `"`
+				s.assets[a.path] = dashboardAsset{
+					blob: blob,
+					etag: `"` + hex.EncodeToString(sum[:16]) + `"`,
+				}
 			}
 			s.mux.HandleFunc("GET "+route, s.handleAsset)
 		}
@@ -1384,8 +1405,7 @@ func (s *AdminServer) handleIntelLookup(w http.ResponseWriter, r *http.Request) 
 // no data: everything it shows comes from the token-guarded endpoints, called
 // with a token the operator provides in-page (kept in sessionStorage).
 func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	page, err := web.FS.ReadFile("dashboard.html")
-	if err != nil {
+	if s.dashboardPage == nil {
 		http.Error(w, "dashboard page missing", http.StatusInternalServerError)
 		return
 	}
@@ -1395,7 +1415,7 @@ func (s *AdminServer) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	// the page's own fitted CSP (no CDN, no eval), plus clickjacking and
 	// content-sniffing protection for a page that holds an operator's token.
 	securityHeaders(w, cspDashboard, frameDeny)
-	_, _ = w.Write(page)
+	_, _ = w.Write(s.dashboardPage)
 }
 
 // handleAsset serves a vendored dashboard asset (the chart libraries and the
@@ -1415,8 +1435,8 @@ func (s *AdminServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	asset, err := web.FS.ReadFile(a.path)
-	if err != nil {
+	asset, ok := s.assets[a.path]
+	if !ok {
 		http.Error(w, "dashboard asset missing", http.StatusInternalServerError)
 		return
 	}
@@ -1424,16 +1444,16 @@ func (s *AdminServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	// The dashboard's CSP pins these to script-src 'self'; nosniff keeps the
 	// declared type binding even if a proxy strips or rewrites it.
 	securityHeaders(w, "", "")
-	if etag := s.assetETags[a.path]; etag != "" {
-		w.Header().Set("ETag", etag)
+	if asset.etag != "" {
+		w.Header().Set("ETag", asset.etag)
 		// Must revalidate every time; a stale cached copy is never served blind.
 		w.Header().Set("Cache-Control", "no-cache")
-		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+		if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, asset.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
-	_, _ = w.Write(asset)
+	_, _ = w.Write(asset.blob)
 }
 
 // etagMatches reports whether the client's If-None-Match header lists our ETag.

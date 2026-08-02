@@ -245,12 +245,20 @@ func isForeignSite(site string) bool {
 // denylist of the document-like ones, and the direction is load-bearing:
 //
 //   - Absent (old clients, most non-browsers, an intermediate that strips the
-//     header) reads as unknown and keeps the ordinary challenge path. Reading
-//     absence as "not a navigation" would hand every challenge farmer a
-//     one-header bypass.
+//     header) reads as unknown and is not refused by this predicate. Reading
+//     absence as "not a navigation" here would hand every challenge farmer a
+//     one-header bypass. Not refused by this one is not the same as challenged:
+//     the request falls through to the remaining signals in refusalKind, so a
+//     client sending no Fetch metadata and an Accept naming no HTML is still
+//     refused there. Only this predicate declines to judge it.
 //   - A destination added to the Fetch standard after this list was written
-//     also reads as unknown, so a future document-like destination is never
-//     silently refused a challenge it could have solved.
+//     also reads as unknown, so this predicate never refuses a future
+//     document-like destination on the strength of a list written before it
+//     existed. Same caveat as above: it still meets the remaining signals, and
+//     a new destination arriving with an Accept naming no HTML and no
+//     Sec-Fetch-Mode: navigate is refused there. What the allowlist direction
+//     buys is that the unknown case is judged by the weaker, correctable
+//     signal rather than condemned outright by this one.
 //
 // The list is every destination the Fetch standard currently defines that is
 // processed as data, script or media, which is all of them except "document",

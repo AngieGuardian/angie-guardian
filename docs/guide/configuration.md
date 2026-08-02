@@ -288,10 +288,17 @@ Which value fires:
   this an ordinary browser polling `/favicon.ico` escalates itself into a
   `challenge_farm` block within the hour, having abandoned nothing.
 
-  A missing or unrecognized `Sec-Fetch-Dest` keeps the ordinary challenge path,
-  so old clients and non-browsers are unaffected, and stripping the header is
-  not a way around escalation. Claiming a subresource destination is not one
-  either: that client is refused the challenge, so it has nothing to farm.
+  A missing or unrecognized `Sec-Fetch-Dest` is not refused by this rule, so a
+  destination the Fetch standard adds later is never condemned by a list
+  written before it existed, and stripping the header is not a way around
+  escalation. That is not the same as being challenged: such a request falls
+  through to the `Accept` heuristic below, which then judges it on its own
+  terms, so an unrecognized destination or none at all, arriving with
+  `Accept: */*` and no `Sec-Fetch-Mode: navigate`, is refused there. What the
+  allowlist direction buys is that the unknown case is decided by the weaker
+  signal an operator can turn off, not by this one. Claiming a subresource
+  destination is no way out either: that client is refused the challenge, so
+  it has nothing to farm.
 
   **Framed navigations that may not render are never blocked for it.** A framed
   destination (`iframe`, `frame`, `embed`, `object`) whose `Sec-Fetch-Site` is
