@@ -132,7 +132,8 @@ return deleted
 `)
 
 // incrByDeadlineScript: INCRBY delta against an absolute deadline (ARGV[2],
-// unix milliseconds; 0 = no expiry), enforced atomically on the server clock in
+// unix milliseconds; exactly 0 = no expiry, negative = already passed),
+// enforced atomically on the server clock in
 // a single script. It returns {value, applied} where applied is 1 when the
 // write happened and 0 when it was skipped. If the deadline has passed the op
 // is skipped and the current value is returned (0 if absent), so a flush
@@ -143,7 +144,7 @@ return deleted
 // pre-existing value cannot be mistaken for a fresh key. ARGV[1] is the delta.
 var incrByDeadlineScript = redis.NewScript(`
 local deadline = tonumber(ARGV[2])
-if deadline > 0 then
+if deadline ~= 0 then
   local t = redis.call('TIME')
   local nowms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
   if nowms >= deadline then
@@ -195,9 +196,21 @@ func (s *Redis) IncrByDeadline(ctx context.Context, key string, delta, deadline 
 // millisecond: redis expiry is millisecond-granular, so truncating a deadline
 // down could land it in the current (or a past) millisecond and expire the key
 // immediately, while a positive TTL must always yield a genuine future expiry.
+//
+// Only exactly 0 is the no-expiry sentinel. A negative deadline is a unix
+// timestamp before 1970, i.e. unambiguously passed, and the interface says a
+// passed deadline writes nothing; folding it into the sentinel made redis
+// create a PERMANENT key where the three embedded backends correctly refuse.
+// It is passed through so the script's own clock comparison rejects it, rather
+// than special-cased here, because the script is where rule 2 lives.
 func deadlineMillis(deadline int64) int64 {
-	if deadline <= 0 {
+	if deadline == 0 {
 		return 0
+	}
+	if deadline < 0 {
+		// Any negative millis value is in the past; -1 keeps it small and
+		// obviously so. Not 0, which would mean "never expire".
+		return -1
 	}
 	ms := (deadline + int64(time.Millisecond) - 1) / int64(time.Millisecond) // ceil
 	if ms > 0 {

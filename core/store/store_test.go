@@ -279,6 +279,18 @@ func assertStoreConformance(t *testing.T, s Store, advance func(time.Duration), 
 			if v, _, _ := s.Get(ctx, "dllive"); string(v) != "4" {
 				t.Fatalf("past-deadline mutated a live key: value = %q, want 4", v)
 			}
+			// (2) with a NEGATIVE deadline, which is a unix timestamp before 1970
+			// and so unambiguously passed. Only exactly 0 is the no-expiry
+			// sentinel. Redis used to fold every deadline <= 0 into that sentinel
+			// and so applied the write, creating a PERMANENT key where the
+			// embedded backends refused: a divergence no caller could reach, but
+			// one waiting for the first that could.
+			if n, applied, err := s.IncrByDeadline(ctx, "dlneg", 7, -1); err != nil || applied || n != 0 {
+				t.Fatalf("negative-deadline IncrByDeadline = %d applied=%v err=%v, want 0 false nil", n, applied, err)
+			}
+			if _, ok, _ := s.Get(ctx, "dlneg"); ok {
+				t.Fatal("negative-deadline IncrByDeadline wrote a key; a passed deadline must skip entirely")
+			}
 
 			// CAS create-only (old == nil).
 			ok, err = s.CompareAndSwap(ctx, "cas", nil, []byte("a"), 0)

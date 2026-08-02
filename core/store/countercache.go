@@ -164,11 +164,33 @@ func NewCounterCache(st Store) *CounterCache {
 	return c
 }
 
+// minCounterWindow is the floor applied to a non-positive ttl in Incr. Any
+// live window at all beats the alternative; see Incr.
+const minCounterWindow = time.Second
+
 // Incr counts one event under key and returns the running total, without
-// blocking on the store. TTL semantics match Store.Incr: the first bump of a
-// missing or expired key starts at 1 with the given ttl, later bumps keep
-// the original expiry.
+// blocking on the store. ttl is the window length and must be positive: the
+// first bump of a missing or expired key starts at 1 and sets the window,
+// later bumps keep the original expiry.
+//
+// A non-positive ttl is a caller bug, and it used to be a silent one that
+// disabled the counter outright: expires landed on now, so every bump opened a
+// fresh window, the running total answered 1 forever, and flushKey discarded
+// every delta as belonging to an already-closed window. Nothing would ever
+// cross a limit and nothing would ever reach the store. For a counter whose
+// only job is enforcing a limit that is the worst available failure, so a
+// non-positive ttl is floored to a real window instead.
+//
+// This is deliberately NOT Store.Incr's reading of ttl <= 0 as "no expiry",
+// which the doc used to claim. This type is built on per-window deltas flushed
+// against an absolute deadline, so a window that never closes has no meaning
+// here. Every in-tree caller passes a config-validated positive duration
+// (pow.challenge_ttl), so the floor is a backstop, not a behaviour anyone
+// should rely on.
 func (c *CounterCache) Incr(key string, ttl time.Duration) int64 {
+	if ttl <= 0 {
+		ttl = minCounterWindow
+	}
 	now := c.now().UnixNano()
 
 	c.mu.Lock()

@@ -887,6 +887,65 @@ func TestRedeemRecordsSolve(t *testing.T) {
 	}
 }
 
+// redeemStoreErrDetail stands in for what an internal redeem failure really
+// carries: a backend address here, a key file path when the signing key cannot
+// be read.
+const redeemStoreErrDetail = "dial tcp 10.9.9.9:6379: connect: connection refused"
+
+// redeemErrStore fails only the challenge record read, so the rest of the
+// harness keeps working and the failure lands on the internal-error branch.
+type redeemErrStore struct{ store.Store }
+
+func (s redeemErrStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	if strings.HasPrefix(key, "challenge:") {
+		return nil, false, errors.New(redeemStoreErrDetail)
+	}
+	return s.Store.Get(ctx, key)
+}
+
+// TestRedeemInternalErrorDoesNotLeakDetail pins the client-facing half of the
+// redeem failure split. The Angie glue serves /__guardian/pass with
+// auth_request off, so this endpoint answers unauthenticated internet clients
+// directly, and an internal failure must not hand one the raw error: that text
+// is where store addresses and key file paths live. The client-fault
+// rejections keep naming their sentinel (TestRedeemFailureRecordsRow covers
+// those); only Guardian's own failures collapse to a fixed string, with the
+// detail going to the log alone.
+func TestRedeemInternalErrorDoesNotLeakDetail(t *testing.T) {
+	base := store.NewMemory()
+	t.Cleanup(func() { base.Close() })
+	ts, _ := testServerAndHandlerWithStore(t, testYAML, redeemErrStore{Store: base}, nil)
+	ip, ua := "198.51.100.9", "Mozilla/5.0 (X11; Linux x86_64)"
+
+	// A well-formed 32-hex id, so Redeem reaches the record read rather than
+	// rejecting the shape first.
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": strings.Repeat("a", 32),
+		"nonce":        "1",
+	})
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/x", ua), body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), redeemStoreErrDetail) {
+		t.Errorf("the 500 body hands an unauthenticated client the internal error:\n%s", raw)
+	}
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if out.OK || out.Error == "" {
+		t.Errorf("body = %+v, want ok=false carrying a fixed explanation", out)
+	}
+}
+
 // A failed redemption is attributable too: the ring says who failed, on which
 // host, and why, which is what tells "failed N" in the funnel apart from an
 // attack. Without it the reason lives only in a log line.
@@ -1117,5 +1176,39 @@ domains:
 	}
 	if labels["default"] != 3 {
 		t.Errorf("default observed %d solves, want all 3 unconfigured hosts", labels["default"])
+	}
+}
+
+// TestSafeRedirect covers the guard that confines the post-challenge redirect.
+// The no-JS path sends the client wherever the challenge record says it was
+// going, and that URI travelled from the request line, so an off-site value
+// there would turn the interstitial into an open redirect.
+//
+// The control characters are the subtle half. The WHATWG URL parser strips
+// ASCII tab, CR and LF from a URL BEFORE parsing, so "/\t/evil.example/"
+// reaches it as "//evil.example/" and is scheme-relative after all. Angie
+// rejects those bytes in a request line and Go's header writer rewrites CR and
+// LF, so the tab case was the only one that could reach a client, and only via
+// a direct probe. Pinned here regardless: this function is what confines the
+// redirect, and it must hold without relying on the two layers around it.
+func TestSafeRedirect(t *testing.T) {
+	cases := []struct{ in, want, why string }{
+		{"/account", "/account", "an ordinary same-site path is preserved"},
+		{"/a/b?c=d#e", "/a/b?c=d#e", "query and fragment ride along untouched"},
+		{"/", "/", "the root is fine"},
+		{"", "/", "empty is not a path"},
+		{"account", "/", "relative, so not obviously same-site"},
+		{"https://evil.example/", "/", "absolute off-site"},
+		{"//evil.example/", "/", "scheme-relative"},
+		{"/\\evil.example/", "/", "backslash spelling of scheme-relative"},
+		{"/\t/evil.example/", "/", "tab is stripped by the URL parser, leaving //evil.example/"},
+		{"/\r/evil.example/", "/", "CR likewise"},
+		{"/\n/evil.example/", "/", "LF likewise"},
+		{"/ok\tpath", "/", "a tab anywhere makes the result unpredictable, so refuse it"},
+	}
+	for _, tc := range cases {
+		if got := safeRedirect(tc.in); got != tc.want {
+			t.Errorf("safeRedirect(%q) = %q, want %q: %s", tc.in, got, tc.want, tc.why)
+		}
 	}
 }

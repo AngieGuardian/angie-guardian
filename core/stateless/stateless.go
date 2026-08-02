@@ -114,10 +114,20 @@ const (
 	ActionDeny      Action = "deny"
 	// ActionRefuse is a challenge withheld from a request classified as unable
 	// to complete it (RequestContext.Unchallengeable). It is deliberately not
-	// ActionDeny: the client is not blocked, nothing is scored against it, and
-	// the transport answers exactly as it would have for ActionChallenge, so
-	// the wire behaviour and the Angie routing are unchanged. Only the recorded
-	// outcome differs, which is the entire point.
+	// ActionDeny: the refusal is not itself a block, it scores nothing of its own,
+	// and the transport answers exactly as it would have for ActionChallenge,
+	// so the wire behaviour and the Angie routing are unchanged. Only the
+	// recorded outcome differs, which is the entire point.
+	//
+	// "The refusal itself" is the whole of the claim, and the distinction is
+	// worth stating because the obvious reading is wrong. No challenge is
+	// issued, so nothing bumps the unsolved-issuance escalation and no
+	// challenge_farm event can follow it. What a stage already emitted still
+	// stands: a request refused the challenge a WAF signature or the anomaly
+	// scorer asked for is still scored for that signature or that score,
+	// because it really did trip one, and being unable to solve a puzzle is no
+	// evidence otherwise. The favicon case this exists for reaches the refusal
+	// carrying no events at all, which is why it scores nothing end to end.
 	ActionRefuse Action = "refuse"
 )
 
@@ -166,8 +176,16 @@ type ListConfig struct {
 	uasLower []string
 }
 
-// Compile precomputes the CIDR prefixes and lowered UAs. Must be called once
-// after loading before Match* is used.
+// Compile precomputes the CIDR prefixes and lowered UAs, and rejects entries
+// that could never mean what they say. Must be called once after loading
+// before Match* is used.
+//
+// Validating here rather than in each loader's own checks is the point of this
+// package: the sidecar and the WASM guest both arrive through this function
+// (core.DomainConfig.validate and GuestDomain.resolve), so a rule added here
+// cannot silently fail to apply on one side. The path rules below were added
+// to the sidecar's own validate() first and did exactly that, leaving a guest
+// config free to carry the entry that switches the guest off entirely.
 func (l *ListConfig) Compile() error {
 	l.prefixes = l.prefixes[:0]
 	for _, s := range l.IPs {
@@ -192,6 +210,14 @@ func (l *ListConfig) Compile() error {
 			return fmt.Errorf("empty user-agent entry")
 		}
 		l.uasLower = append(l.uasLower, strings.ToLower(ua))
+	}
+	// Paths are compared against a normalized request path, so an entry that is
+	// not itself normalized, or that is empty, relative or a bare "/", either
+	// never matches or matches everything. See ValidateMatchPath.
+	for _, p := range l.Paths {
+		if err := ValidateMatchPath("paths", p, rootHarmList); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -228,6 +254,65 @@ func (l *ListConfig) MatchUALower(lower string) bool {
 }
 
 func (l *ListConfig) MatchPath(path string) bool { return MatchPathList(l.Paths, path) }
+
+// ValidateMatchPath checks one configured entry that will be compared against a
+// request path by MatchPathList. field names the setting for the error message,
+// and rootHarm says what a bare "/" would do there, which differs by list.
+//
+// Every caller matches against RequestContext.NormalizedPath, i.e. percent
+// decoded with dot segments and duplicate slashes resolved, so an entry that is
+// not itself in that form can never equal it and can never be a prefix of it.
+// "/a/../admin" and "/%61dmin" are simply dead rules, and "/admin//" is worse
+// than dead: TrimSuffix strips one slash, so it still matches the bare
+// "/admin/" while silently failing to cover the subtree the trailing slash was
+// asking for. All of them read as policy and enforce nothing, which is the
+// failure this whole family of checks exists to prevent. The paths: overlay
+// keys have carried the same fixed-point rule since they were added.
+func ValidateMatchPath(field, entry, rootHarm string) error {
+	switch {
+	case strings.TrimSpace(entry) == "":
+		return fmt.Errorf("%s: empty or whitespace-only entry; every entry must be an absolute path like /health", field)
+	case !strings.HasPrefix(entry, "/"):
+		return fmt.Errorf("%s entry %q is not absolute: request paths always start with /, so it could never match", field, entry)
+	case entry == "/":
+		return fmt.Errorf("%s entry \"/\" %s", field, rootHarm)
+	}
+	// Only the path is ever matched. RequestPath cuts the URI at the first "?"
+	// before normalization, so a query in an entry cannot match the request it
+	// was plainly written for, and a fragment never reaches the server at all.
+	//
+	// Neither is literally unmatchable, which is why this is its own rule rather
+	// than a corollary of the fixed-point check below: both survive
+	// NormalizePath untouched, and a request spelled /admin%3Fdebug=1 or
+	// /admin%23x decodes to exactly them. That is the only thing such an entry
+	// can match, nobody targets it deliberately, and an operator who wrote
+	// /admin?debug=1 meant the query. Refuse the ambiguity, as the paths:
+	// overlay keys already do (validatePathKey).
+	if strings.ContainsAny(entry, "?#") {
+		return fmt.Errorf("%s entry %q must not contain ? or #: only the path is matched, since the query is cut before matching and a fragment never reaches the server", field, entry)
+	}
+	if norm := NormalizePath(entry); norm != entry {
+		return fmt.Errorf("%s entry %q is not in normalized form, so it could never match; write %q", field, entry, norm)
+	}
+	return nil
+}
+
+// ValidateHoneypotPaths checks every trap path. Shared by the sidecar and the
+// guest: the guest carries a honeypot too and validated none of it.
+func (hp *HoneypotConfig) Validate() error {
+	for _, p := range hp.Paths {
+		if err := ValidateMatchPath("waf.honeypot.paths", p, rootHarmHoneypot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// The "/" harm differs by list, so each names its own.
+const (
+	rootHarmList     = `prefix-matches every URL, so this list would match every request; name the specific paths instead`
+	rootHarmHoneypot = `would match every request: the first visitor would be denied (and blocked when ip_behaviour is on); use a specific trap path`
+)
 
 // MatchPathList: exact match, or prefix match when the entry ends with "/".
 func MatchPathList(entries []string, path string) bool {

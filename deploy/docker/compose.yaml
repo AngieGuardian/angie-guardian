@@ -79,6 +79,7 @@ services:
       - ./angie.docker.conf:/etc/angie/angie.conf:ro
       - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
       - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
+      - ./basic.htpasswd:/etc/angie/basic.htpasswd:ro
     ports:
       # The protected site, on the host loopback. Host port overridable via
       # GUARDIAN_SITE_PORT so the e2e harness can pick a free port.

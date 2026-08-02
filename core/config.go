@@ -974,7 +974,8 @@ type PoWConfig struct {
 	NoScriptFallback  bool `yaml:"noscript_fallback"`
 	// RefuseUnchallengeable withholds a challenge from a request classified as
 	// unable to complete one (a declared subresource, which provably cannot run
-	// the interstitial, or a request carrying no Fetch metadata whose Accept
+	// the interstitial, or a request whose destination is unrecognized or
+	// absent, is not a navigation by Sec-Fetch-Mode either, and whose Accept
 	// names no HTML, which is a behavioural heuristic), answering a terse 403
 	// instead of an interstitial it would only drop. Default true; set false to
 	// restore the older challenge-everything path.
@@ -1455,6 +1456,16 @@ func validatePathKey(key string) error {
 	if decoded := stateless.DecodePath(key); decoded != key {
 		return fmt.Errorf("must be written percent-decoded (matching uses the decoded request path, write %q)", decoded)
 	}
+	// ForPath matches against NormalizePath output, so a key that is not itself
+	// a fixed point of it can never be equal to, or a prefix of, anything it is
+	// compared with: "/api//v1/" and "/a/./b" are silently dead overlays. That
+	// is worst for an overlay written to TIGHTEN policy, which then simply does
+	// not apply, so it is an error rather than a warning. Same reasoning as the
+	// percent-decoding rule above, and it has to be a separate check: Clean
+	// leaves an already-decoded key alone.
+	if norm := stateless.NormalizePath(key); norm != key {
+		return fmt.Errorf("must be written in normalized form, or it can never match (write %q)", norm)
+	}
 	return nil
 }
 
@@ -1652,23 +1663,13 @@ func (dc *DomainConfig) validate() error {
 	if b.BlockTTL.Std() > MaxStateTTL || b.MaxBlockTTL.Std() > MaxStateTTL {
 		return fmt.Errorf("waf.ip_behaviour: block_ttl and max_block_ttl must be <= %v", MaxStateTTL)
 	}
-	// Honeypot trap paths must be absolute and non-trivial. CheckHoneypot
-	// matches them (MatchPathList semantics) against the percent-decoded
-	// request path, which always starts with "/": an empty, whitespace-only or
-	// relative entry can never match anything (a silently inert trap), while a
-	// bare "/" prefix-matches every URL, so the first request would deny and,
-	// with ip_behaviour on, persistently block that visitor. All are
-	// copied-config mistakes; reject them at load, enabled or not, so a parked
-	// honeypot block cannot go live with a broken trap list.
-	for _, hpPath := range dc.WAF.Honeypot.Paths {
-		switch {
-		case strings.TrimSpace(hpPath) == "":
-			return fmt.Errorf("waf.honeypot.paths: empty or whitespace-only entry; every trap must be an absolute path like /old-admin/")
-		case !strings.HasPrefix(hpPath, "/"):
-			return fmt.Errorf("waf.honeypot.paths entry %q is not absolute: request paths always start with /, so it could never match", hpPath)
-		case hpPath == "/":
-			return fmt.Errorf("waf.honeypot.paths entry \"/\" would match every request: the first visitor would be denied (and blocked when ip_behaviour is on); use a specific trap path")
-		}
+	// Honeypot trap paths go through the shared validator, so the sidecar and
+	// the WASM guest (which carries a honeypot too and validated none of it)
+	// cannot disagree about what a usable trap path is. Checked whether or not
+	// the honeypot is enabled, so a parked block cannot go live with a broken
+	// trap list.
+	if err := dc.WAF.Honeypot.Validate(); err != nil {
+		return err
 	}
 	g := &dc.Geo
 	switch g.DefaultAction {
@@ -2019,6 +2020,21 @@ func (c *Config) Warnings() []string {
 	check := func(scope string, dc *DomainConfig) {
 		if hp := dc.WAF.Honeypot; hp.Enabled && len(hp.Paths) == 0 {
 			out = append(out, "waf.honeypot enabled but no paths configured for "+scope+": it has no effect (add paths, or set enabled: false)")
+		}
+		// pow.mode suspicion hands every challenge decision to the anomaly
+		// stage, and observe_only stops that stage from reaching one, so the two
+		// together leave nothing able to issue a challenge: PoW reads as enabled
+		// everywhere (admin views, /admin/config) while being wholly inert.
+		// validate() already requires anomaly to be enabled for suspicion; this
+		// is the same requirement one level down.
+		//
+		// A warning and not an error, because it is a legitimate waypoint: the
+		// documented rollout is to run observe_only, tune the thresholds from
+		// guardian_anomaly_score, then turn it off. What is not legitimate is
+		// arriving there by accident and believing PoW is on.
+		if a := dc.WAF.Anomaly; dc.PoW.Enabled && dc.PoW.Mode == "suspicion" && a.Enabled && a.ObserveOnly {
+			out = append(out, "pow.mode suspicion with waf.anomaly.observe_only for "+scope+
+				": no challenge can be issued in this scope (the anomaly stage owns every challenge decision under suspicion, and observe_only stops it deciding), so proof of work is inert while reading as enabled")
 		}
 	}
 	// eachScope sorts hosts, so the warning order is stable across runs (map

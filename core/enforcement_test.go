@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
@@ -302,5 +303,109 @@ domains:
 	union := cfg.AllowlistUnion()
 	if len(union) != 1 || union[0] != netip.MustParsePrefix("10.0.0.0/8") {
 		t.Fatalf("union = %v, want exactly one 10.0.0.0/8", union)
+	}
+}
+
+const shedParityYAML = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: true, base_difficulty: 1, max_difficulty: 2 }
+  waf:
+    ip_behaviour: { enabled: true }
+    honeypot: { enabled: true, paths: [ "/trap" ] }
+  allowlist:
+    ips: [ "192.0.2.10" ]
+  denylist:
+    ips: [ "203.0.113.66" ]
+    uas: [ "BadCrawler" ]
+    paths: [ "/forbidden", "/private/" ]
+`
+
+// TestShedDecisionMatchesPipelineTerminals is the anti-drift check for the
+// load-shedding fast path.
+//
+// ShedDecision reimplements the pipeline's cheap terminal stages so a saturated
+// daemon can answer without a full evaluation. Reimplementing is the hazard: a
+// stage that grows a new dimension leaves the copy behind, and the gap opens
+// only under load, which is when it is least likely to be noticed and most
+// likely to matter. That is not hypothetical. The static denylist grew uas and
+// paths, CheckDenylist gained them, and the shed copy kept matching IPs alone,
+// so a client holding one honestly solved token was fast-passed to a denylisted
+// path for as long as the daemon stayed saturated.
+//
+// Every row here is a request the FULL pipeline terminates on. The shed is
+// allowed to be less specific (ShedReject where the pipeline denies is a safe
+// answer: the client gets a 503, not the resource) but never more permissive:
+// ShedPass on anything the pipeline denies is a bypass. Each row carries a
+// valid token, because a token is what makes the difference between the two
+// verdicts reachable at all.
+func TestShedDecisionMatchesPipelineTerminals(t *testing.T) {
+	ctx := context.Background()
+	cfg := loadTestConfig(t, shedParityYAML)
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := pow.NewManager(key, st)
+	e, err := NewEngine(cfg, st, mgr, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+
+	const (
+		cleanIP = "198.51.100.5"
+		cleanUA = "Mozilla/5.0 (X11; Linux x86_64)"
+	)
+	// Two tokens, so each row can vary exactly one dimension: a token binds
+	// host + IP + User-Agent, never a path.
+	cleanToken := mintTestToken(t, mgr, "x.test", cleanIP, cleanUA, 4)
+	crawlerToken := mintTestToken(t, mgr, "x.test", cleanIP, "BadCrawler/1.0", 4)
+
+	cases := []struct {
+		name               string
+		ip, uri, ua, token string
+	}{
+		{"denylist ip", "203.0.113.66", "/", cleanUA, mintTestToken(t, mgr, "x.test", "203.0.113.66", cleanUA, 4)},
+		{"denylist ua", cleanIP, "/", "BadCrawler/1.0", crawlerToken},
+		{"denylist path, exact", cleanIP, "/forbidden", cleanUA, cleanToken},
+		{"denylist path, prefix", cleanIP, "/private/secret", cleanUA, cleanToken},
+		{"denylist path, prefix bare", cleanIP, "/private", cleanUA, cleanToken},
+		{"denylist path, dot segments resolve onto it", cleanIP, "/a/../forbidden", cleanUA, cleanToken},
+		{"denylist path, percent-encoded", cleanIP, "/%66orbidden", cleanUA, cleanToken},
+		{"honeypot", cleanIP, "/trap", cleanUA, cleanToken},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mk := func() *RequestContext {
+				r := req("x.test", tc.ip, tc.uri, tc.ua)
+				r.Cookie = pow.CookieName + "=" + tc.token
+				return r
+			}
+			full := e.Evaluate(ctx, mk())
+			if full.Action != ActionDeny {
+				t.Fatalf("the pipeline itself did not deny this: got %s/%s. "+
+					"The row no longer tests what it claims to.", full.Action, full.Reason)
+			}
+			if shed := e.ShedDecision(mk()); shed == ShedPass {
+				t.Errorf("pipeline denies (%s) but the shed fast-passes it: "+
+					"a saturated daemon serves what a healthy one refuses", full.Reason)
+			}
+		})
+	}
+
+	// The control: the shed must still fast-pass an ordinary token holder, or
+	// the check above could be satisfied by refusing everything.
+	ok := req("x.test", cleanIP, "/normal", cleanUA)
+	ok.Cookie = pow.CookieName + "=" + cleanToken
+	if shed := e.ShedDecision(ok); shed != ShedPass {
+		t.Errorf("clean token holder: shed = %v, want ShedPass", shed)
+	}
+	// And an allowlisted client, which the shed answers before any denylist.
+	if shed := e.ShedDecision(req("x.test", "192.0.2.10", "/", cleanUA)); shed != ShedPass {
+		t.Errorf("allowlisted client: shed = %v, want ShedPass", shed)
 	}
 }

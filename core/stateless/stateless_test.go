@@ -436,3 +436,119 @@ func TestDenylistIPv6TextualForms(t *testing.T) {
 		t.Errorf("2001:db8:cafe::1 should not match 2001:db8:bad::/48, got %s/%s", d.Action, d.Reason)
 	}
 }
+
+// TestGuestConfigRejectsInertPathLists is the guest half of the list-path
+// rules, and it exists because the sidecar got them first and the guest did
+// not.
+//
+// This package is where the two are supposed to be unable to drift: both
+// loaders reach ListConfig.Compile (core.DomainConfig.validate and
+// GuestDomain.resolve), so a rule that lives there applies to both by
+// construction. Adding it to the sidecar's own validate() instead left a guest
+// config free to carry allowlist.paths: ["/"], which prefix-matches every URL
+// and terminally allows every request: the WASM guest switched wholly off,
+// silently, by the exact entry the sidecar had just learned to reject.
+//
+// Every case below loads clean if the check is moved back out of Compile.
+func TestGuestConfigRejectsInertPathLists(t *testing.T) {
+	cases := []struct{ name, yaml, want string }{
+		{
+			"allowlist / allows every request",
+			`domains: { a.test: { allowlist: { paths: [ "/" ] } } }`,
+			"every request",
+		},
+		{
+			"denylist / denies the whole site",
+			`domains: { a.test: { denylist: { paths: [ "/" ] } } }`,
+			"every request",
+		},
+		{
+			"defaults are compiled too, so the same entry there is caught",
+			`defaults: { allowlist: { paths: [ "/" ] } }
+domains: { a.test: {} }`,
+			"every request",
+		},
+		{
+			"an empty entry matches nothing while reading as policy",
+			`domains: { a.test: { allowlist: { paths: [ "  " ] } } }`,
+			"empty or whitespace-only",
+		},
+		{
+			"a relative entry can never match a request path",
+			`domains: { a.test: { denylist: { paths: [ "admin" ] } } }`,
+			"is not absolute",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseGuestConfig([]byte(tc.yaml))
+			if err == nil {
+				t.Fatalf("guest config loaded clean, but it protects nothing:\n%s", tc.yaml)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+
+	// The forms that are not empty, not relative and not "/", yet still cannot
+	// match, because the request side is normalized and the entry is not. These
+	// are the quietest of the family: each reads as a perfectly ordinary rule.
+	for _, tc := range []struct{ entry, why string }{
+		{"/admin//", "a doubled slash never appears in a normalized path, and TrimSuffix strips only one, so this half-matches: it covers /admin/ but not the subtree the trailing slash asked for"},
+		{"/a/../admin", "dot segments are resolved out of the request path before matching"},
+		{"/%61dmin", "the request path is percent-decoded before matching, so an encoded entry never equals it"},
+		{"/a/./b", "a single dot segment is resolved away too"},
+	} {
+		yaml := `domains: { a.test: { denylist: { paths: [ "` + tc.entry + `" ] } } }`
+		_, err := ParseGuestConfig([]byte(yaml))
+		if err == nil {
+			t.Errorf("denylist path %q loaded clean but can never match: %s", tc.entry, tc.why)
+			continue
+		}
+		if !strings.Contains(err.Error(), "normalized form") {
+			t.Errorf("denylist path %q: error = %q, want it to name the normalization problem", tc.entry, err)
+		}
+	}
+
+	// Query and fragment delimiters. Both survive NormalizePath untouched, so
+	// the fixed-point rule above passes them, yet the query is cut from the
+	// request before matching and a fragment never reaches the server: an entry
+	// carrying either cannot match what it was written for.
+	for _, tc := range []struct{ entry, why string }{
+		{"/admin?debug=1", "the query is cut at the first ? before the path is normalized"},
+		{"/admin?", "a bare ? is the same mistake with nothing after it"},
+		{"/admin#section", "a fragment is never sent to the server"},
+	} {
+		yaml := `domains: { a.test: { allowlist: { paths: [ "` + tc.entry + `" ] } } }`
+		_, err := ParseGuestConfig([]byte(yaml))
+		if err == nil {
+			t.Errorf("allowlist path %q loaded clean: %s", tc.entry, tc.why)
+			continue
+		}
+		if !strings.Contains(err.Error(), "must not contain ? or #") {
+			t.Errorf("allowlist path %q: error = %q, want it to name the ?/# rule", tc.entry, err)
+		}
+	}
+
+	// The guest carries a honeypot too, and validated none of it: a trap path
+	// that can never match is a trap that never fires.
+	for _, entry := range []string{"/admin//", "/a/../trap", "/%74rap", "  ", "trap", "/", "/trap?x=1", "/trap#f"} {
+		yaml := `domains: { a.test: { honeypot: { enabled: true, paths: [ "` + entry + `" ] } } }`
+		if _, err := ParseGuestConfig([]byte(yaml)); err == nil {
+			t.Errorf("guest honeypot path %q loaded clean; it can never fire", entry)
+		}
+	}
+	if _, err := ParseGuestConfig([]byte(
+		`domains: { a.test: { honeypot: { enabled: true, paths: [ "/old-admin/", "/wp-login.php" ] } } }`,
+	)); err != nil {
+		t.Errorf("ordinary honeypot traps were rejected: %v", err)
+	}
+
+	// The control: ordinary path entries still load on both list kinds.
+	if _, err := ParseGuestConfig([]byte(
+		`domains: { a.test: { allowlist: { paths: [ "/robots.txt", "/assets/" ] }, denylist: { paths: [ "/admin" ] } } }`,
+	)); err != nil {
+		t.Errorf("ordinary path entries were rejected: %v", err)
+	}
+}

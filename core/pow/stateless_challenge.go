@@ -242,9 +242,20 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		}
 	}
 
-	// Single-spend: create-only marker keyed by the challenge. The remaining
-	// TTL matches how long the challenge could still be replayed.
-	remaining := challengeTTL - now.Sub(issued)
+	// Single-spend: create-only marker keyed by the challenge. It has to outlive
+	// every window in which SOME instance would still accept this challenge,
+	// which is not the same as the lifetime left on this instance's clock.
+	//
+	// The freshness check above tolerates statelessSkew of clock difference in
+	// either direction, so a replica running that far behind still calls the
+	// challenge fresh well after this one has stopped doing so. Sizing the
+	// marker off the local clock alone let it lapse while such a peer would
+	// still redeem, and a solver holding a solution until late in challenge_ttl
+	// could then spend it twice: redeem on the instance whose clock is ahead,
+	// wait out the short marker, redeem again on the one behind. The store TTL
+	// bounds the guarantee, so it gets the same allowance the freshness check
+	// grants, not a subset of it.
+	remaining := challengeTTL - now.Sub(issued) + statelessSkew
 	if remaining <= 0 {
 		remaining = time.Minute
 	}

@@ -3654,9 +3654,21 @@
   });
   applyTheme(localStorage.getItem(THEME_KEY));
 
-  // One-click login: guardiand logs a dashboard URL carrying the token in the
-  // fragment (#token=...), which browsers never send over the network. Move it
-  // into sessionStorage and scrub it from the address bar / history.
+  // One-click login: a #token=... fragment logs in without touching the gate
+  // form, which is how the development harnesses (make seed, make dashboard-dev,
+  // the Docker compose stack) open the dashboard on their own well-known
+  // tokens. A fragment is never sent over the network, and it is moved into
+  // sessionStorage and scrubbed from the address bar and history immediately.
+  //
+  // guardiand logs the dashboard URL itself WITHOUT a token in it (see
+  // cmd/guardiand adminDashboardURL): a configured or persistent bearer token
+  // is never embedded there, and an operator enters it in the gate once.
+  //
+  // That is a statement about this URL, not about the log as a whole. An
+  // ephemeral token, which guardiand mints only for a loopback admin bind with
+  // no admin.token and no admin.token_file, IS logged on its own line, because
+  // it exists for one process lifetime and the log is its only delivery
+  // channel. Set admin.token_file to get a token that is never printed.
   const frag = location.hash.match(/[#&]token=([^&]+)/);
   if (frag) {
     sessionStorage.setItem(KEY, decodeURIComponent(frag[1]));

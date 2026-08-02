@@ -6,7 +6,10 @@ package pow
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -239,4 +242,86 @@ func flipChar(s string) string {
 		b[0] = 'A'
 	}
 	return string(b)
+}
+
+// TestStatelessSpentMarkerOutlivesTheSkewAllowance pins the single-spend
+// guarantee against the clock tolerance the same function grants.
+//
+// redeemStateless decides freshness by comparing the challenge's authenticated
+// timestamp against THIS instance's clock, with statelessSkew of slack in
+// either direction so replicas sharing a key can redeem each other's
+// challenges. The spent marker is what stops a second redemption, and it lives
+// in the store under a TTL. If that TTL is measured on the local clock alone it
+// can lapse while a replica running statelessSkew behind still considers the
+// challenge fresh, and one solve mints two tokens: redeem on the instance whose
+// clock is ahead, wait out the short marker, redeem again on the one behind.
+// Reproduced end to end with two managers on one store before this was fixed.
+//
+// The invariant is asserted directly rather than by racing a real store expiry:
+// whatever is left of challenge_ttl, the marker must still cover the full skew
+// window on top of it. The clock is driven to the last instant of the challenge
+// window, which is where the margin is thinnest and the bug appeared.
+func TestStatelessSpentMarkerOutlivesTheSkewAllowance(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	key, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(key, st)
+
+	const host, ip, ua = "x.test", "198.51.100.9", "Mozilla"
+	const challengeTTL = 30 * time.Minute
+
+	issuedAt := time.Now()
+	m.now = func() time.Time { return issuedAt }
+	ch, err := m.IssueStateless(host, ip, "/", 4, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := solveStatelessNonce(t, ch.Challenge, 4)
+
+	// Redeem in the final moment of the challenge's life, so the residual
+	// window is as small as it can be while still being accepted.
+	m.now = func() time.Time { return issuedAt.Add(challengeTTL - time.Millisecond) }
+	if _, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: nonce, Host: host, IP: ip, UserAgent: ua,
+		TokenTTL: time.Hour, ChallengeTTL: challengeTTL,
+	}); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+
+	kvs, err := st.Scan(ctx, "spent1:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kvs) != 1 {
+		t.Fatalf("found %d spent markers, want exactly 1", len(kvs))
+	}
+	// Against the real clock, which is what the store expires on. The manager's
+	// clock is driven, but the store's is not, so the wall time this test spends
+	// between the redeem and this read comes off the measured remainder: allow a
+	// second of it. Without the fix the marker lasts a millisecond, so the
+	// tolerance cannot mask the defect.
+	got := time.Until(kvs[0].ExpiresAt)
+	if got < statelessSkew-time.Second {
+		t.Errorf("spent marker expires in %v, less than the %v of clock skew redemption tolerates: "+
+			"a replica that far behind still accepts this challenge, so the same solve mints a second token",
+			got.Round(time.Millisecond), statelessSkew)
+	}
+}
+
+// solveStatelessNonce finds a nonce meeting difficulty, the honest client's job.
+func solveStatelessNonce(t *testing.T, challenge string, difficulty int) string {
+	t.Helper()
+	for n := range 1_000_000 {
+		nonce := strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(challenge + nonce))
+		if leadingZeroBits(sum[:]) >= difficulty {
+			return nonce
+		}
+	}
+	t.Fatal("no solution found")
+	return ""
 }

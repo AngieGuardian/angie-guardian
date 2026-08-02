@@ -283,12 +283,16 @@ defaults:
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
     # Default true: a request that cannot run the interstitial gets a terse 403
-    # instead of a challenge it would only drop, recorded as action "refuse"
-    # and never scored, so an anonymous /favicon.ico poll cannot walk a real
-    # visitor into a challenge_farm block. Covers declared subresources and,
-    # when no Fetch metadata arrives, an Accept naming neither text/html nor
-    # text/*. Set false to challenge them anyway: that Accept test is a
-    # heuristic, and over plain HTTP it can refuse an unusual real navigation.
+    # instead of a challenge it would only drop, recorded as action "refuse".
+    # No challenge is issued, so nothing escalates and no challenge_farm event
+    # can follow: an anonymous /favicon.ico poll cannot walk a real visitor
+    # into a block. A WAF or anomaly challenge refused this way is still scored
+    # for the signature or score that asked for it, which the request did trip.
+    # Covers declared subresources and, where the destination is unrecognized
+    # or absent and Sec-Fetch-Mode is not navigate, an Accept naming neither
+    # text/html nor text/*. Set false to challenge them
+    # anyway: that Accept test is a heuristic, and over plain HTTP it can
+    # refuse an unusual real navigation.
     # Scoped per domain and per path; sidecar only (inert in the WASM guest).
     refuse_unchallengeable: true
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
