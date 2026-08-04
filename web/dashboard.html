@@ -165,9 +165,12 @@
   #geomap-unmapped { margin-top: 0.6rem; padding-top: 0.55rem;
                      border-top: 1px solid var(--border); }
 
-  /* Top-offenders: a row of compact ranked-list tables. */
-  .offenders { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  /* Top-offenders: two rows of three compact ranked-list tables on desktop,
+     collapsing for narrower operator screens. */
+  .offenders { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
                gap: 0.75rem; }
+  @media (max-width: 64rem) { .offenders { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 42rem) { .offenders { grid-template-columns: minmax(0, 1fr); } }
   .offenders td.hits { text-align: right; font-variant-numeric: tabular-nums; }
   /* A locality resolved only to a 200km+ circle: shown, but not as fact. */
   td.coarse { color: var(--ink-2); font-style: italic; }
@@ -177,7 +180,7 @@
                border-radius: 10px; overflow-x: auto; }
   /* Any table that can outgrow its neighbours scrolls in place rather than
      stretching the section. The country rollup is uncapped (every country in
-     the window) and the top-15 lists still vary in height, so all four share
+     the window) and the top-15 lists still vary in height, so all six share
      one bound and the grid renders them as equal-height columns. */
   .tablewrap.scrolly { max-height: 34.5rem; overflow-y: auto; align-self: stretch; }
   .tablewrap.scrolly th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
@@ -711,6 +714,16 @@
       <table><thead><tr><th title="GeoIP country of the client IP">Country</th>
                                  <th title="Non-allow decisions in the window">Hits</th></tr></thead>
         <tbody id="off-countries"></tbody></table>
+    </div>
+    <div class="tablewrap scrolly">
+      <table><thead><tr><th title="Exact client User-Agent string; forgeable">User-Agent</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
+        <tbody id="off-user-agents"></tbody></table>
+    </div>
+    <div class="tablewrap scrolly">
+      <table><thead><tr><th title="Normalized request Host header">Host</th>
+                                 <th title="Non-allow decisions in the window">Hits</th></tr></thead>
+        <tbody id="off-hosts"></tbody></table>
     </div>
   </div>
   <div class="empty" id="offenders-empty" hidden>No non-allow decisions recorded yet.</div>
@@ -1892,8 +1905,18 @@
     return cell;
   };
 
-  // Top offenders: four ranked-list tables from /admin/offenders. Text only
-  // (attacker-controlled IPs/paths), so every cell lands via td()'s textContent.
+  // GeoIP reports ISO alpha-2 codes. Spell them out in the operator-facing
+  // table just like the map tooltips do, while retaining the code as a
+  // fallback for an older browser or an unknown/private region code.
+  const regionNames = typeof Intl.DisplayNames === "function"
+    ? new Intl.DisplayNames(["en"], { type: "region" }) : null;
+  const countryName = (code) => {
+    try { return regionNames?.of(code) || code; } catch (_) { return code; }
+  };
+
+  // Top offenders: six ranked-list tables from /admin/offenders. Text only
+  // (attacker-controlled IPs/paths/UAs/hosts), so every cell lands via
+  // td()'s textContent.
   const renderOffenders = (data) => {
     if (!data) return; // fetch failed; leave the last render in place
     const fill = (tbodyId, rows, cells) => {
@@ -1909,12 +1932,16 @@
       [td("wrap", r.key), td("hits", String(r.count))]);
     fill("off-paths", data.paths || [], (r) =>
       [td("wrap", r.key), td("hits", String(r.count))]);
+    fill("off-user-agents", data.user_agents || [], (r) =>
+      [td("wrap", r.key || "(empty)"), td("hits", String(r.count))]);
+    fill("off-hosts", data.hosts || [], (r) =>
+      [td("wrap", r.key || "(empty)"), td("hits", String(r.count))]);
 
     const countries = data.countries || [];
     $("off-countries-wrap").hidden = countries.length === 0;
     if (countries.length) {
       fill("off-countries", countries, (r) =>
-        [td("wrap", r.key), td("hits", String(r.count))]);
+        [td("wrap", countryName(r.key)), td("hits", String(r.count))]);
     }
     // Collapse the Geo column header when no GeoIP data is present anywhere.
     $("off-ip-geo").textContent = hasGeo ? "Geo" : "";

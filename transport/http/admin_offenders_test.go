@@ -112,6 +112,104 @@ func TestOffendersTopK(t *testing.T) {
 	}
 }
 
+// TestOffendersUserAgentsAndHosts verifies that the two textual offender
+// dimensions use the same verdict-only window as the existing lists. UAs are
+// deliberately exact and case-sensitive; hosts use the same normalization as
+// config lookup so spelling, case, a port and a trailing dot do not split one
+// virtual host into several rows.
+func TestOffendersUserAgentsAndHosts(t *testing.T) {
+	ts, engine := reportServer(t, reportYAML)
+	ctx := context.Background()
+	nextIP := 1
+	hit := func(host, ua string) {
+		ip := fmt.Sprintf("203.0.113.%d", nextIP)
+		nextIP++
+		d := engine.Evaluate(ctx, &core.RequestContext{
+			Host: host, Method: "GET", URI: "/probe", RemoteAddr: ip, UserAgent: ua,
+		})
+		if d.Action != core.ActionDeny {
+			t.Fatalf("setup: expected deny for %s, got %s", ip, d.Action)
+		}
+	}
+	for range 4 {
+		hit("Shop.TEST.:443", "Scanner/1")
+	}
+	for range 2 {
+		hit("shop.test", "scanner/1")
+	}
+	for range 3 {
+		hit("api.test", "")
+	}
+
+	// Outcome rows carry both fields in the ring but must not outrank clients
+	// that actually received a verdict.
+	for range 20 {
+		engine.RecordSolve(core.SolveRecord{Host: "solve.test", IP: "198.51.100.2", UA: "Solver/1"})
+		engine.RecordRedeemFailure("fail.test", "198.51.100.3", "Failed/1", core.ReasonBindingMismatch)
+	}
+
+	out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/offenders", adminToken, ""))
+	counts := func(field string) map[string]int {
+		t.Helper()
+		got := map[string]int{}
+		for _, item := range out[field].([]any) {
+			entry := item.(map[string]any)
+			got[entry["key"].(string)] = int(entry["count"].(float64))
+		}
+		return got
+	}
+
+	uas := counts("user_agents")
+	if uas["Scanner/1"] != 4 || uas["scanner/1"] != 2 || uas[""] != 3 {
+		t.Errorf("user_agents = %v, want exact Scanner/1:4, scanner/1:2 and empty:3", uas)
+	}
+	if _, present := uas["Solver/1"]; present {
+		t.Errorf("user_agents ranks a solving client: %v", uas)
+	}
+	if _, present := uas["Failed/1"]; present {
+		t.Errorf("user_agents ranks a failed redemption: %v", uas)
+	}
+
+	hosts := counts("hosts")
+	if hosts["shop.test"] != 6 || hosts["api.test"] != 3 {
+		t.Errorf("hosts = %v, want normalized shop.test:6 and api.test:3", hosts)
+	}
+	for _, excluded := range []string{"solve.test", "fail.test"} {
+		if _, present := hosts[excluded]; present {
+			t.Errorf("hosts ranks outcome-only host %q: %v", excluded, hosts)
+		}
+	}
+}
+
+// TestOffendersUserAgentsAndHostsTopK keeps both new attacker-controlled
+// dimensions bounded and confirms equal-count rows use lexical key order.
+func TestOffendersUserAgentsAndHostsTopK(t *testing.T) {
+	ts, engine := reportServer(t, reportYAML)
+	ctx := context.Background()
+	for i := range offenderTopK + 5 {
+		engine.Evaluate(ctx, &core.RequestContext{
+			Host: fmt.Sprintf("h%02d.test", i), Method: "GET", URI: "/probe",
+			RemoteAddr: fmt.Sprintf("203.0.113.%d", i+1), UserAgent: fmt.Sprintf("UA/%02d", i),
+		})
+	}
+
+	out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/offenders", adminToken, ""))
+	for _, field := range []string{"user_agents", "hosts"} {
+		entries := out[field].([]any)
+		if len(entries) != offenderTopK {
+			t.Fatalf("%s = %d entries, want top %d", field, len(entries), offenderTopK)
+		}
+		first := entries[0].(map[string]any)["key"].(string)
+		want := "UA/00"
+		if field == "hosts" {
+			want = "h00.test"
+		}
+		if first != want {
+			t.Errorf("%s first equal-count key = %q, want lexical first %q", field, first, want)
+		}
+	}
+}
+
 // TestOffendersCityDetail: with a City-class location_db, offender rows carry
 // the locality detail. The second IP has only a country record (~20% of real
 // networks), which must omit the city keys rather than emit empty strings, so
@@ -304,7 +402,7 @@ func TestOffendersAllCountriesReturned(t *testing.T) {
 		t.Errorf("country counts sum to %d but the window holds %d decisions", total, window)
 	}
 	// The unbounded, attacker-controlled dimensions keep their cap.
-	for _, dim := range []string{"ips", "reasons", "paths"} {
+	for _, dim := range []string{"ips", "reasons", "paths", "user_agents", "hosts"} {
 		if n := len(out[dim].([]any)); n > offenderTopK {
 			t.Errorf("%s = %d rows, want at most the top-K %d", dim, n, offenderTopK)
 		}
@@ -318,7 +416,7 @@ func TestOffendersEmpty(t *testing.T) {
 	if out["window"].(float64) != 0 {
 		t.Errorf("window = %v, want 0", out["window"])
 	}
-	for _, k := range []string{"ips", "reasons", "paths"} {
+	for _, k := range []string{"ips", "reasons", "paths", "user_agents", "hosts"} {
 		if _, ok := out[k].([]any); !ok {
 			t.Errorf("%s is not an array: %v", k, out[k])
 		}

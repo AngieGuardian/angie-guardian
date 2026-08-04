@@ -406,8 +406,8 @@ enlarging this in-memory window.
 ### Top offenders
 
 A ranked view of the heaviest sources of non-allow decisions in the recent
-window (top IPs, reason categories and request paths, plus a country rollup
-when GeoIP is loaded) from
+window (top IPs, reason categories, request paths, exact User-Agent strings and
+normalized hosts, plus a country rollup when GeoIP is loaded) from
 [`GET /admin/offenders`](/reference/admin-api#get-admin-offenders). It counts
 the in-process decision ring exactly, so it reflects challenged/denied traffic
 (not allows) and adds nothing to the hot path.
@@ -418,7 +418,7 @@ locality that GeoLite2 only resolves to a 200 km-or-wider circle is dimmed and
 carries the radius in a tooltip, so a precise hit and a region-sized guess never
 look alike. IPs with no city record show the country alone.
 
-![Top offenders: the world map of attack origins with the ranked IP, reason, path and country tables](/dashboard-map.png)
+![Top offenders: the world map of attack origins with ranked IP, reason, path, country, User-Agent and host tables](/dashboard-map.png)
 
 #### World map
 

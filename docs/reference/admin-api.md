@@ -408,7 +408,8 @@ outlive the bounded ring behind `/admin/decisions`.
 ### `GET /admin/offenders`
 
 The heaviest sources of non-allow decisions in the recent window: top IPs,
-reason categories and request paths, plus a country rollup when GeoIP is loaded.
+reason categories, request paths, exact User-Agent strings and normalized hosts,
+plus a country rollup when GeoIP is loaded.
 Counts the in-process decision ring exactly (bounded by `admin.recent_size`,
 with no extra hot-path work). The window is the ring, so it covers challenged/denied
 traffic, not allows. Proof-of-work outcomes (`solve`, `redeem_fail`) are in that
@@ -420,12 +421,16 @@ on its own once `pow_fail`/`tamper` scoring blocks the IP). Paths are
 query-stripped; GeoIP/ASN is merged for the top
 IPs only, and the country rollup is omitted when no databases are loaded.
 
-`ips`, `reasons` and `paths` are capped at the **top 15** entries, since they
-are unbounded and partly attacker-controlled. `countries` is **not capped**: it
+`ips`, `reasons`, `paths`, `user_agents` and `hosts` are capped at the **top
+15** entries, since they are unbounded and partly attacker-controlled. An empty
+User-Agent remains the empty `key` in the API so it is counted rather than
+silently discarded. Host keys are lowercased with ports, IPv6 brackets and a
+trailing dot removed. `countries` is **not capped**: it
 covers every distinct IP in the window, sorted by count descending, so a botnet
 spread thin across many addresses is reported at its true weight rather than
 ranked below one noisy IP from elsewhere. It is bounded by the ring in the worst
-case, and in practice by the number of countries with traffic.
+case, and in practice by the number of countries with traffic. Country keys are
+ISO 3166-1 alpha-2 codes; the dashboard expands them to English country names.
 
 ```json
 {
@@ -435,6 +440,8 @@ case, and in practice by the number of countries with traffic.
            "subdivision":"NH","accuracy_radius_km":10,"asn":1136,"as_org":"KPN B.V."}],
   "reasons": [{"key":"denylist","count":50}],
   "paths": [{"key":"/wp-login.php","count":30}],
+  "user_agents": [{"key":"sqlmap/1.7#stable","count":28}],
+  "hosts": [{"key":"shop.example.com","count":45}],
   "countries": [{"key":"RU","count":30}]
 }
 ```

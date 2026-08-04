@@ -24,6 +24,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
+	"github.com/melroy89/angie-guardian/core/stateless"
 	"github.com/melroy89/angie-guardian/internal/duration"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -970,8 +971,9 @@ type offenderIP struct {
 }
 
 // handleOffenders reports the heaviest sources of non-allow decisions in the
-// recent window: top IPs, reason categories, and request paths, plus a country
-// rollup when GeoIP is loaded. It counts the in-process RecentDecisions ring
+// recent window: top IPs, reason categories, request paths, User-Agent strings,
+// and hosts, plus a country rollup when GeoIP is loaded. It counts the
+// in-process RecentDecisions ring
 // exactly (bounded to the configured admin.recent_size); no Count-Min Sketch
 // and nothing extra on the hot path. The window is the ring, so it covers
 // challenged/denied traffic, not allows (which are never recorded).
@@ -981,6 +983,8 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	byIP := map[string]int{}
 	byReason := map[string]int{}
 	byPath := map[string]int{}
+	byUA := map[string]int{}
+	byHost := map[string]int{}
 	window := 0
 	for _, d := range decisions {
 		// An outcome row is not an offence: ranking a solve here would put the
@@ -988,7 +992,7 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 		// operator reads to decide who to block, and a failed redemption is as
 		// often a VPN moving a visitor between exit IPs as it is abuse (the
 		// abusive kind reaches this list on its own once pow_fail/tamper
-		// scoring blocks the IP). One guard covers all four rollups, since the
+		// scoring blocks the IP). One guard covers all six rollups, since the
 		// country breakdown below is derived from byIP.
 		if d.Action == core.ActionSolve || d.Action == core.ActionRedeemFail {
 			continue
@@ -997,6 +1001,8 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 		byIP[d.IP]++
 		byReason[reasonCat(d.Reason)]++
 		byPath[normalizePath(d.URI)]++
+		byUA[d.UA]++
+		byHost[stateless.NormalizeHost(d.Host)]++
 	}
 
 	// GeoIP/ASN merge. nil Provider is lookup-safe, so this degrades to IP-only
@@ -1037,10 +1043,12 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	out := map[string]any{
-		"window":  window, // non-allow decisions considered; solves excluded
-		"ips":     ips,
-		"reasons": topKEntries(byReason, offenderTopK),
-		"paths":   topKEntries(byPath, offenderTopK),
+		"window":      window, // non-allow decisions considered; solves excluded
+		"ips":         ips,
+		"reasons":     topKEntries(byReason, offenderTopK),
+		"paths":       topKEntries(byPath, offenderTopK),
+		"user_agents": topKEntries(byUA, offenderTopK),
+		"hosts":       topKEntries(byHost, offenderTopK),
 	}
 	if len(byCountry) > 0 {
 		// Every country, not a top-K slice. Countries are the one bounded
