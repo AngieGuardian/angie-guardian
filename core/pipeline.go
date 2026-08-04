@@ -299,7 +299,7 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	if !rules.Enabled || env.rules == nil {
 		return nil, nil
 	}
-	// ruleKey resolves this scope's precompiled (file, disabled_ids)
+	// ruleKey resolves this scope's precompiled (files, disabled_ids)
 	// variant; exclusions cost nothing here.
 	rs := env.rules.Get(rules.ruleKey)
 	if rs == nil {
@@ -312,6 +312,12 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	}
 	reason := "waf:" + rule.ID
 	switch rule.Action {
+	case waf.ActionAllow:
+		// An allow rule is a policy exception, not a bad-event observation. It
+		// terminates at this stage without feeding the behavioural scoreboard.
+		// Earlier hard-deny stages have already run; later challenge/anomaly/PoW
+		// stages are deliberately skipped.
+		return &Decision{Action: ActionAllow, Reason: reason}, nil
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
 			// A challenge-only WAF rule asks the client to prove work; a valid
@@ -338,12 +344,14 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 			Reason: reason,
 			Events: []Event{{Type: EventRuleMatch, Detail: rule.ID}},
 		}, nil
-	default: // waf.ActionBlock
+	case waf.ActionBlock:
 		return &Decision{
 			Action: ActionDeny,
 			Reason: reason,
 			Events: []Event{{Type: EventInstantBlock, Detail: reason}},
 		}, nil
+	default:
+		return nil, fmt.Errorf("WAF rule %q has unsupported action %q", rule.ID, rule.Action)
 	}
 }
 

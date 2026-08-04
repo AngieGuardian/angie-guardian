@@ -243,17 +243,20 @@ defaults:
                               # when farmers are a problem.
     rules:
       enabled: true           # requires the rules file to exist (fail-fast);
-      file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
-      # disabled_ids removes selected rules from the file for a scope by
-      # their exact, case-sensitive id, without copying the file. Like every
+      files:                    # inherited files stay first; narrower scopes append
+        - /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
+      # Narrower scopes append their files after these defaults, preserving
+      # common protection. disabled_ids removes selected rules from the
+      # combined set by exact, case-sensitive id, without copying files. Like every
       # list, an overlay replaces it wholesale: omitted inherits, [] clears,
       # a non-empty list replaces the inherited one. Unknown/empty/duplicate
-      # ids fail -t, startup and reload. Typical use: the starter set's
-      # wp-probe rule is wrong on a real WordPress site, so under domains:
+      # ids fail -t, startup and reload; file paths and rule ids must be unique
+      # across the combined set. Typical use: the starter set's
+      # wp-cms-probe rule is wrong on a real WordPress site, so under domains:
       #   wordpress.example.com:
       #     waf:
       #       rules:
-      #         disabled_ids: [ wp-probe ]
+      #         disabled_ids: [ wp-cms-probe ]
     anomaly:
       enabled: false          # requires a model trained from your own logs:
       model: /etc/guardian/model.json   #   guardian-train train -out model.json /var/log/angie/*.access.json*
@@ -489,9 +492,9 @@ domains:
 
   # API host: WAF only, no PoW interstitial a machine client can't solve.
   # NOTE: with PoW off, WAF rules whose action is `challenge` (like the
-  # starter sqli-basic heuristic) degrade to deny: there is no challenge to
-  # send. Give APIs their own rules file if hard denies on challenge-grade
-  # heuristics are not acceptable there.
+  # starter sqli-tautology heuristic) degrade to deny: there is no challenge to
+  # send. Append an API-specific rules file and disable selected shared rule
+  # IDs if hard denies on challenge-grade heuristics are not acceptable there.
   # NOTE: Guardian sees the request line and headers ONLY. Angie's
   # auth_request never forwards a body, so JSON/form payloads (where most API
   # injection lives) are invisible here by design; body validation belongs to
@@ -500,8 +503,8 @@ domains:
     pow: { enabled: false }
 
   # Static assets host: no PoW interstitial, no behavioural scoring. The
-  # WAF rules still apply from defaults; override waf.rules too if
-  # you want a truly minimal policy here.
+  # WAF rules still apply from defaults; set waf.rules.enabled: false or use
+  # disabled_ids if you want a minimal policy here.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }

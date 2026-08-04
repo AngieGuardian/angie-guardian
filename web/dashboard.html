@@ -3332,11 +3332,12 @@
       const pow = td(null, "");
       pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
       // Rules cell: flag rule-ID exclusions and expose the effective
-      // rules file + excluded IDs in the tooltip.
+      // ordered rules files + excluded IDs in the tooltip.
       const excluded = dc.waf_rules_disabled_ids || [];
       const rulesCell = td(null, dc.waf_rules ? (excluded.length ? "on (" + excluded.length + " excluded)" : "on") : "off");
-      if (dc.waf_rules_file) {
-        rulesCell.title = dc.waf_rules_file + (excluded.length ? " minus: " + excluded.join(", ") : "");
+      const ruleFiles = dc.waf_rules_files || [];
+      if (ruleFiles.length) {
+        rulesCell.title = ruleFiles.join(" → ") + (excluded.length ? " minus: " + excluded.join(", ") : "");
       }
       const anomalyMode = dc.waf_anomaly
         ? (dc.waf_anomaly_observe_only ? "observe" : "enforce") : "off";

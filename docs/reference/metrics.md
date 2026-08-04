@@ -13,7 +13,7 @@ series.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_decisions_total` | counter | `action`, `reason`, `domain` | Every pipeline decision. |
+| `guardian_decisions_total` | counter | `action`, `reason`, `domain` | Every pipeline decision. A WAF allow rule increments `action="allow", reason="waf"`; its rule ID does not enter the bounded label. |
 | `guardian_evaluate_seconds` | histogram | | End-to-end `Evaluate()` latency, i.e. the auth hot path minus HTTP overhead. |
 
 Label values are bounded by construction:

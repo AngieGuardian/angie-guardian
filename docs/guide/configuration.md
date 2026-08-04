@@ -25,12 +25,12 @@ domains:
 
   # API host: WAF only, no interstitial a machine client can't solve. With
   # PoW off, challenge-action rules degrade to deny (nothing to challenge
-  # with); give APIs their own rules file if that is too blunt.
+  # with); append API rules and disable selected shared IDs if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
   # Static assets: no PoW, no behavioural scoring. WAF rules still
-  # apply from defaults; override waf.rules too for a minimal policy.
+  # apply from defaults; disable matching or selected IDs for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -105,7 +105,7 @@ The `waf.rules` layer matches literal and regex rules against the request line a
 headers. Getting from the shipped starter file to a running configuration
 takes three explicit steps; none of them happen automatically:
 
-1. **Install a rules file.** The release archive (and the repo) ships
+1. **Install the starter rules file.** The release archive (and the repo) ships
    `deploy/rules-common.yaml`, a commented starter set (dotfile probes,
    path traversal, SQLi heuristics, scanner UAs). The
    [production install recipe](/guide/production#systemd) copies it to
@@ -118,39 +118,56 @@ takes three explicit steps; none of them happen automatically:
      waf:
        rules:
          enabled: true
-         file: /etc/guardian/rules.d/common.yaml
+         files: [ /etc/guardian/rules.d/common.yaml ]
    ```
-3. **Validate**: `guardiand -config guardian.yaml -t`. A `file` that
+3. **Validate**: `guardiand -config guardian.yaml -t`. A configured file that
    does not exist while `enabled: true` fails fast, at preflight and at
    startup, rather than silently matching nothing.
 
 Inside a rules file, each rule has an `id`, an `action`
-(`deny` | `challenge` | `block`), optional `targets` (`path`, `query`, `ua`,
+(`allow` | `deny` | `challenge` | `block`), optional `targets` (`path`, `query`, `ua`,
 `header:<name>`; default `[path, query]`), optional `methods`, and `keywords`
 (case-insensitive literals) and/or `regexes` (Go RE2, linear-time). Rules are
-evaluated **in file order and the first match wins**, so put narrow or
-terminal rules before broad challenge rules. The `id` does double duty: a hit
-is logged and counted as `waf:<id>`, and it is the exact, case-sensitive
-selector for per-scope exclusions (below). The starter file documents
+evaluated **in effective file order, then file order, and the first match
+wins**, so put narrow allow
+exceptions before the broader deny, challenge or block rules they override.
+An allow match is terminal at the WAF stage and does not feed the
+`rule_match` behaviour counter. Earlier denylist, deny-intel, active-block and
+honeypot stages still win; later PoW, challenge-intel and anomaly stages are
+skipped. The decision is still counted as `action="allow", reason="waf"` in
+Prometheus, with full reason `waf:<id>` in structured decision logs. Like every
+allow, it is omitted from the bounded recent-decisions ring. The `id` does
+double duty: a matching decision carries `waf:<id>` in response headers and
+logs, and the ID is the exact, case-sensitive selector for per-scope exclusions
+(below). The starter file documents
 every field; the [reference](/reference/configuration#waf-rules) lists the
 exact matching semantics.
 
-Like every `waf` setting, `defaults.waf.rules` is inherited by **every
-domain and path overlay** that does not override it, so the file above applies
-to your whole estate, including unknown Hosts that fall back to `defaults`.
-Scoping works three ways:
+Like every `waf` setting, `defaults.waf.rules` is inherited by **every domain
+and path overlay**, so the file above applies to your whole estate, including
+unknown Hosts that fall back to `defaults`. `files` has intentionally
+cumulative inheritance: files named by a domain are appended after the
+defaults, and files named by a matching path are appended after those. Common
+protection therefore cannot disappear merely because a narrower scope adds its
+own policy. Scoping works three ways:
 
-- Point a domain (or path overlay) at a **different file** with its own
-  `file`, e.g. an API set without challenge-action heuristics (which
-  degrade to deny where PoW is off).
+- Extend a domain (or path overlay) with additional `files`. The combined
+  order is defaults, domain, path; within each file, document order is kept.
 - Turn matching off for a scope with `enabled: false`.
 - Disable **individual rules** for a scope with `disabled_ids`, without
   copying the file.
 
+Because inherited rules run first, a shared deny/block cannot be bypassed by a
+later domain allow. When that exception is intentional, disable the shared
+rule's ID for that scope; evaluation then falls through to the domain rules.
+Duplicate paths and duplicate rule IDs across an effective file set are
+rejected so file order, exclusions, logs, and decision reasons stay
+unambiguous.
+
 ### Per-scope rule exclusions (`disabled_ids`)
 
 A shared rules file rarely fits every host exactly: the starter set's
-`wp-probe` rule is right on non-WordPress hosts and wrong on a real WordPress
+`wp-cms-probe` rule is right on non-WordPress hosts and wrong on a real WordPress
 domain. Instead of maintaining a diverging copy of the file for one exception,
 list the rule's exact `id` in that scope's `disabled_ids`:
 
@@ -159,17 +176,17 @@ defaults:
   waf:
     rules:
       enabled: true
-      file: /etc/guardian/rules.d/common.yaml
+      files: [ /etc/guardian/rules.d/common.yaml ]
 
 domains:
   wordpress.example.com:
     waf:
       rules:
-        disabled_ids: [ wp-probe ]
+        disabled_ids: [ wp-cms-probe ]
 ```
 
 A disabled rule is removed from evaluation for that resolved scope only; the
-remaining rules keep their file order, so the next matching rule still
+remaining rules keep their effective file and document order, so the next matching rule still
 decides. Like every list in the overlay model, the field replaces wholesale:
 omitted inherits the parent's resolved list, an explicit `[]` clears inherited
 exclusions, and a non-empty list replaces the inherited one (re-list inherited
@@ -178,20 +195,21 @@ exclusions add no per-request work.
 
 Validation is deliberately strict, so a typo can never silently leave a
 dangerous rule enabled: empty, whitespace-only or duplicate entries, an
-exclusion list with no effective `file` (even while `enabled: false`),
-and any ID absent from the scope's effective rules file are all rejected at
-`guardiand -t`, startup and reload, with the error naming the scope, the file
-and the unknown ID.
+exclusion list with no effective `files` (even while `enabled: false`),
+and any ID absent from the scope's combined rules are all rejected at
+`guardiand -t`, startup and reload, with the error naming the scope, files and
+unknown ID.
 
-The [examples page](/examples#waf-rules-one-starter-file-scoped-per-domain)
+The [examples page](/examples#waf-rules-shared-protection-with-domain-additions)
 has a complete copyable config combining a shared file, per-domain exclusions,
-a domain-specific file and a fully disabled scope, and
+domain additions and a fully disabled scope. It also includes the full
+contents of the referenced `api.yaml`, including an allow rule.
 [`GET /admin/config`](/reference/admin-api#get-admin-config) shows every
-scope's effective `file` and exclusions together.
+scope's ordered effective `files` and exclusions together.
 
 Rules files hot-reload two ways: they are watched on disk (edits apply within
 seconds, no signal needed), and a SIGHUP/`/admin/reload` re-reads
-`guardian.yaml` including any changed `file` paths. A file that fails to
+`guardian.yaml` including any changed `files` paths. A file that fails to
 parse or exceeds the 8 MiB bound keeps the previous rules active; only a cold
 start hard-fails. A watched update that removes or renames a rule ID some
 scope still excludes is rejected the same way, so a renamed formerly-disabled

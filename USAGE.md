@@ -72,12 +72,12 @@ domains:
 
   # API host: WAF only, no interstitial a machine client can't solve. With
   # PoW off, challenge-action rules degrade to deny (nothing to challenge
-  # with); give APIs their own rules file if that is too blunt.
+  # with); append API rules and disable selected shared IDs if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
   # Static assets: no PoW, no behavioural scoring. WAF rules still
-  # apply from defaults; override waf.rules too for a minimal policy.
+  # apply from defaults; disable matching or selected IDs for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -110,14 +110,20 @@ GeoIP, and file-feed artifact. Remote URL feeds are not fetched. It then exits:
 
 ### WAF rules
 
-`waf.rules.file` points at a YAML rules file (start from
+`waf.rules.files` lists YAML rules files (start from
 `deploy/rules-common.yaml`, which documents every field). Rules contain literal
-keywords and/or RE2 regexes, with an `action` of `deny`, `challenge` or `block`,
+keywords and/or RE2 regexes, with an `action` of `allow`, `deny`, `challenge`
+or `block`,
 hot-reloaded on change. Empty keyword/regex entries and trailing YAML documents
-are rejected. The first matching rule in file order wins. With PoW enabled, a
-valid bound token satisfies `challenge`; without PoW, `challenge` denies.
-`deny` remains terminal, while `block` persists an IP block only when
-`waf.ip_behaviour.enabled`. A rule matches against the targets it names:
+are rejected. The first match in effective file order then document order wins,
+so put a narrow
+`allow` exception before the broader rules it should override. An allow match
+is terminal at the WAF stage and emits no bad-event score: denylist, deny-intel,
+active blocks and honeypots have already run, while later PoW, challenge-intel
+and anomaly policy is skipped. With PoW enabled, a valid bound token satisfies
+`challenge`; without PoW, `challenge` denies. `deny` remains terminal, while
+`block` persists an IP block only when `waf.ip_behaviour.enabled`. A rule
+matches against the targets it names:
 
 - `path`, `query` (the default pair) and `ua`, all lowercased; paths and queries
   are URL-decoded, while the User-Agent is not percent-decoded;
@@ -128,17 +134,18 @@ valid bound token satisfies `challenge`; without PoW, `challenge` denies.
 - `methods: [ TRACE, TRACK ]` restricts a rule to those HTTP methods, and a
   rule with only `methods` fires on the method alone.
 
-The file must be installed and named explicitly (the systemd recipe in step 3
+Each file must be installed and named explicitly (the systemd recipe in step 3
 does both): nothing under `/etc/guardian/rules.d/` is auto-discovered, and a
-configured `file` that is missing fails `-t` and startup rather than
-silently matching nothing. `defaults.waf.rules` is inherited by every
-domain and path overlay unless overridden there; a scope can point at a
-different `file`, set `enabled: false`, or disable selected rules from
-its effective file by exact, case-sensitive `id` with `disabled_ids`
+configured file that is missing fails `-t` and startup rather than silently
+matching nothing. `defaults.waf.rules` is inherited by every domain and path
+overlay. A narrower scope's `files` append after inherited files, preserving
+the shared policy; a scope can set `enabled: false`, or disable selected rules
+from its combined files by exact, case-sensitive `id` with `disabled_ids`
 (the `id` is also the log/reason label, `waf:<id>`). A disabled rule falls
-through to the next matching rule in file order. The list overlays wholesale
+through to the next matching rule in effective order. The exclusion list overlays wholesale
 (omitted inherits, `[]` clears, non-empty replaces); unknown, empty or
-duplicate ids fail `-t`, startup and reload naming the scope, file and id,
+duplicate IDs fail `-t`, startup and reload naming the scope, files and ID;
+duplicate file paths and duplicate rule IDs across a combined set also fail,
 and a watched rules-file update that removes a still-excluded id is rejected
 with the last-good rules kept active. To delete a disabled rule on purpose,
 drop its id from `guardian.yaml` and reload first, then edit the rules file.
@@ -645,8 +652,8 @@ sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
 sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
 # The starter WAF rules the example config enables; without this file the
 # unit's ExecStartPre `-t` preflight fails on the missing file.
-# Per-host exceptions to this shared file belong in guardian.yaml
-# (waf.rules.disabled_ids), not in diverging copies of the file.
+# Domain files append to this shared baseline via waf.rules.files. Per-host
+# exceptions belong in guardian.yaml (waf.rules.disabled_ids), not copies.
 sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
 
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
@@ -982,7 +989,9 @@ store-free checks only (allowlist, denylist, honeypot, literal/regex WAF
 rules); proof-of-work and behavioural IP blocking need sidecar state,
 while anomaly scoring also remains sidecar-only. Use it when you want the WASM
 integration and the stateless WAF subset is enough, or alongside a backend
-that handles the rest.
+that handles the rest. An `allow` rule continues to the backend in both paths;
+the stateless guest returns a plain deny for matching `deny`, `challenge` and
+`block` rules because it cannot issue challenges or persist blocks.
 
 Build the module (architecture-independent):
 

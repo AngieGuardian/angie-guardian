@@ -215,6 +215,10 @@ the header and remembered per browser. On it:
   cached for a minute, refreshed immediately after any block/unblock action.
 - The **recent activity feed** of non-allow decisions, solves and failed
   redemptions, filterable by action and free text, also paginating at 25 rows.
+- Explicit WAF allow rules follow the same retention policy as every other
+  allow: they stay out of the recent ring, while their aggregate volume appears
+  in the per-domain traffic chart and `guardian_decisions_total` under reason
+  `waf`.
 - **Challenge lifecycle counters** with the average solve time, per-domain
   feature status, and anomaly baseline coverage and segment health.
 - **IP intelligence health**: loaded GeoIP databases plus each reputation

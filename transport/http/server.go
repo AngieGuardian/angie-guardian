@@ -230,6 +230,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Guardian-Reason", d.Reason)
 	switch d.Action {
 	case core.ActionAllow:
+		// Routine/default allows stay silent, but an explicit WAF allow is a
+		// policy match operators need to audit by rule ID. Keep it out of the
+		// bounded recent ring while preserving the structured decision log.
+		if strings.HasPrefix(d.Reason, "waf:") {
+			s.logDecision(req, d)
+		}
 		w.WriteHeader(http.StatusOK)
 	case core.ActionChallenge:
 		w.Header().Set(hdrDifficulty, strconv.Itoa(d.Difficulty))

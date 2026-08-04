@@ -1,6 +1,6 @@
 # Starter WAF rules for Angie Guardian.
-# Copy to /etc/guardian/rules.d/common.yaml (or wherever waf.rules.file
-# points) and tune per site. The file is hot-reloaded: edits apply within
+# Copy to /etc/guardian/rules.d/common.yaml (or another path listed under
+# waf.rules.files) and tune per site. The file is hot-reloaded: edits apply within
 # seconds, and a file that fails to parse keeps the previous rules active. An
 # update that removes or renames a rule id still listed in some scope's
 # waf.rules.disabled_ids is rejected the same way (last-good rules
@@ -12,7 +12,8 @@
 #                case-sensitive selector for waf.rules.disabled_ids in
 #                guardian.yaml, which disables the rule for one domain or path
 #                scope instead of copying this file.
-#   action:      deny (default) | challenge (a valid bound token satisfies it;
+#   action:      allow (terminal at the WAF stage, no bad-event score) | deny
+#                (default) | challenge (a valid bound token satisfies it;
 #                without PoW it denies) | block (deny + persist the IP only
 #                when waf.ip_behaviour is enabled)
 #   targets:     any of [path, query, ua, "header:<name>"]; default [path, query]
@@ -24,8 +25,9 @@
 #                duplicate header value is inspected.
 #   regexes:     non-empty Go RE2 syntax — linear-time, no ReDoS risk. Inputs
 #                are lowercased; use lowercase patterns or an explicit (?i).
-# Rules are evaluated in file order and the first match wins. Put narrow or
-# terminal rules before broad challenge rules.
+# Effective files run in defaults/domain/path order; within each file, the first
+# matching rule wins. Put narrow allow exceptions before broader rules in the
+# same file. To override an earlier shared rule, disable its id for that scope.
 #
 # Request bodies are never inspected: Angie's auth_request subrequest carries
 # only the request line and headers, by design. Body-borne payloads are the

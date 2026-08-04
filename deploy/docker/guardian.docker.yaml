@@ -57,7 +57,7 @@ defaults:
         bot_spoof: 5/min
     rules:
       enabled: true
-      file: /etc/guardian/rules.d/common.yaml
+      files: [ /etc/guardian/rules.d/common.yaml ]
     honeypot:
       enabled: false
       paths: []

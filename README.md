@@ -98,8 +98,9 @@ Guardian offers two ways to run, sharing one decision core:
   anomaly scoring and verified-bot DNS checks need the sidecar. Build it with `make wasm`; see the
   "WASM module" section of [USAGE.md](USAGE.md).
 
-Both paths share the same store-free matching logic. Their stateful outcomes
-differ: in the sidecar, `challenge` can be satisfied by a bound PoW token and
+Both paths share the same store-free matching logic and continue to the backend
+for an `allow` rule. Their stateful outcomes differ: in the sidecar, `challenge`
+can be satisfied by a bound PoW token and
 `block`/honeypot hits persist an IP block; the stateless WASM guest returns a
 plain deny for any of those matches. A vouched PoW token never exempts a
 sidecar client from `deny` or `block` WAF rule checks, so a stolen token can't

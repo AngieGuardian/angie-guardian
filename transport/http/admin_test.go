@@ -60,7 +60,7 @@ func adminServer(t *testing.T) (*httptest.Server, string) {
 	// adminYAML users construct their engines without a rules file on disk).
 	cfgYAML := adminYAML + fmt.Sprintf(`  waf.test:
     waf:
-      rules: { enabled: true, file: %q, disabled_ids: [ probe ] }
+      rules: { enabled: true, files: [ %q ], disabled_ids: [ probe ] }
 `, rulesPath)
 	cfgPath := filepath.Join(dir, "guardian.yaml")
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
@@ -680,7 +680,7 @@ func TestAdminConfigView(t *testing.T) {
 		t.Error("path overlay view must not carry a nested paths field")
 	}
 
-	// The effective rules file and its exclusions are inspectable together.
+	// The effective rules files and their exclusions are inspectable together.
 	waf, ok := m["domains"].(map[string]any)["waf.test"].(map[string]any)
 	if !ok {
 		t.Fatalf("config view missing waf.test: %v", m["domains"])
@@ -688,8 +688,13 @@ func TestAdminConfigView(t *testing.T) {
 	if waf["waf_rules"] != true {
 		t.Errorf("waf.test waf_rules = %v, want true", waf["waf_rules"])
 	}
-	if file, _ := waf["waf_rules_file"].(string); !strings.HasSuffix(file, "rules.yaml") {
-		t.Errorf("waf.test waf_rules_file = %v, want the configured rules file", waf["waf_rules_file"])
+	files, ok := waf["waf_rules_files"].([]any)
+	var file string
+	if ok && len(files) == 1 {
+		file, _ = files[0].(string)
+	}
+	if !ok || len(files) != 1 || !strings.HasSuffix(file, "rules.yaml") {
+		t.Errorf("waf.test waf_rules_files = %v, want the configured rules file", waf["waf_rules_files"])
 	}
 	ids, ok := waf["waf_rules_disabled_ids"].([]any)
 	if !ok || len(ids) != 1 || ids[0] != "probe" {

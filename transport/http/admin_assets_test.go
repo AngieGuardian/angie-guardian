@@ -81,7 +81,7 @@ func TestDashboardUsesWAFRulesConfigFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dashboard.html not embedded: %v", err)
 	}
-	for _, field := range []string{"waf_rules", "waf_rules_file", "waf_rules_disabled_ids"} {
+	for _, field := range []string{"waf_rules", "waf_rules_files", "waf_rules_disabled_ids"} {
 		if !bytes.Contains(page, []byte(field)) {
 			t.Errorf("dashboard does not consume /admin/config field %q", field)
 		}

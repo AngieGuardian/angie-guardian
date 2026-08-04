@@ -1,0 +1,15 @@
+# E2E-only domain additions. guardian.e2e.yaml appends this after common.yaml
+# for api.localhost, proving that a domain can add allow/fallback policy while
+# retaining the shared protection that evaluates first.
+rules:
+  - id: api-json-allow
+    description: Exercise named-header allow rules through real Angie
+    action: allow
+    targets: [ "header:accept" ]
+    regexes: [ 'application/vnd\.guardian\.e2e\+json' ]
+
+  - id: api-client-fallback
+    description: Reject API requests that did not match the allow rule
+    action: deny
+    targets: [ path ]
+    regexes: [ '^/' ]

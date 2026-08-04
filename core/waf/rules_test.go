@@ -16,6 +16,10 @@ import (
 
 const rulesYAML = `
 rules:
+  - id: api-json
+    action: allow
+    targets: [ "header:Accept" ]
+    regexes: [ 'application/(json|problem\+json)' ]
   - id: dotfile-probe
     action: block
     targets: [ path ]
@@ -65,6 +69,7 @@ func TestRuleMatching(t *testing.T) {
 		rule   string
 		action Action
 	}{
+		{"allow regex in Accept header", MatchInput{Headers: map[string][]string{"accept": {"text/html, application/problem+json; charset=utf-8"}}}, "api-json", ActionAllow},
 		{"keyword in path", MatchInput{Path: "/backup/.env"}, "dotfile-probe", ActionBlock},
 		{"keyword is case-insensitive via lowered input", MatchInput{Path: "/.git/config"}, "dotfile-probe", ActionBlock},
 		{"regex in query", MatchInput{Path: "/search", Query: "q=1 union select password"}, "sqli-union", ActionChallenge},
@@ -98,12 +103,43 @@ func TestRuleMatching(t *testing.T) {
 	}
 }
 
+func TestAllowRuleRespectsFileOrder(t *testing.T) {
+	in := MatchInput{
+		Path:    "/private/data",
+		Headers: map[string][]string{"accept": {"application/json"}},
+	}
+	for name, body := range map[string]string{
+		"allow first": `rules:
+  - { id: json-client, action: allow, targets: [ "header:accept" ], keywords: [ "application/json" ] }
+  - { id: private-path, action: deny, targets: [ path ], keywords: [ "/private/" ] }
+`,
+		"deny first": `rules:
+  - { id: private-path, action: deny, targets: [ path ], keywords: [ "/private/" ] }
+  - { id: json-client, action: allow, targets: [ "header:accept" ], keywords: [ "application/json" ] }
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rs, err := compileRules([]byte(body), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := rs.Match(&in)
+			if name == "allow first" && (got == nil || got.Action != ActionAllow) {
+				t.Fatalf("first match = %+v, want allow", got)
+			}
+			if name == "deny first" && (got == nil || got.Action != ActionDeny) {
+				t.Fatalf("first match = %+v, want deny", got)
+			}
+		})
+	}
+}
+
 func TestRuleSetPrecomputation(t *testing.T) {
 	rs, err := compileRules([]byte(rulesYAML), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"referer", "x-forwarded-for"}; !slices.Equal(rs.HeaderTargets(), want) {
+	if want := []string{"accept", "referer", "x-forwarded-for"}; !slices.Equal(rs.HeaderTargets(), want) {
 		t.Errorf("HeaderTargets() = %v, want %v", rs.HeaderTargets(), want)
 	}
 	if !rs.NeedsMethod() {
@@ -241,29 +277,32 @@ func TestHotReload(t *testing.T) {
 }
 
 func TestVariantKey(t *testing.T) {
-	if got := VariantKey("/r.yaml", nil); got != "/r.yaml" {
+	if got := VariantKey([]string{"/r.yaml"}, nil); got != "/r.yaml" {
 		t.Errorf("no exclusions must key on the bare path, got %q", got)
 	}
-	if VariantKey("/r.yaml", []string{"b", "a"}) != VariantKey("/r.yaml", []string{"a", "b"}) {
+	if VariantKey([]string{"/r.yaml"}, []string{"b", "a"}) != VariantKey([]string{"/r.yaml"}, []string{"a", "b"}) {
 		t.Error("exclusion order must not change the key")
 	}
-	if VariantKey("/r.yaml", []string{"a"}) == VariantKey("/r.yaml", nil) {
+	if VariantKey([]string{"/r.yaml"}, []string{"a"}) == VariantKey([]string{"/r.yaml"}, nil) {
 		t.Error("exclusions must produce a distinct key")
 	}
-	if VariantKey("/r.yaml", []string{"a"}) == VariantKey("/other.yaml", []string{"a"}) {
+	if VariantKey([]string{"/r.yaml"}, []string{"a"}) == VariantKey([]string{"/other.yaml"}, []string{"a"}) {
 		t.Error("different files must produce distinct keys")
+	}
+	if VariantKey([]string{"/a.yaml", "/b.yaml"}, nil) == VariantKey([]string{"/b.yaml", "/a.yaml"}, nil) {
+		t.Error("file order must change the key")
 	}
 	// The encoding is length-prefixed, so an ID containing a separator-ish
 	// byte can never collide with a differently split set: two such scopes
 	// must get distinct variants, not silently share one.
-	if VariantKey("/r.yaml", []string{"a\x00b"}) == VariantKey("/r.yaml", []string{"a", "b"}) {
+	if VariantKey([]string{"/r.yaml"}, []string{"a\x00b"}) == VariantKey([]string{"/r.yaml"}, []string{"a", "b"}) {
 		t.Error(`["a\x00b"] and ["a", "b"] must produce distinct keys`)
 	}
 	// The key is the path plus a fixed-size digest: the request-time map
 	// lookup hashes the key bytes, so key length must not scale with the
 	// number or size of the excluded IDs.
-	small := VariantKey("/r.yaml", []string{"a"})
-	big := VariantKey("/r.yaml", []string{strings.Repeat("x", 4096), "b", "c", "d", "e", "f"})
+	small := VariantKey([]string{"/r.yaml"}, []string{"a"})
+	big := VariantKey([]string{"/r.yaml"}, []string{strings.Repeat("x", 4096), "b", "c", "d", "e", "f"})
 	if len(small) != len(big) {
 		t.Errorf("key length must be independent of the exclusion list: %d vs %d", len(small), len(big))
 	}
@@ -275,10 +314,10 @@ func TestVariantKey(t *testing.T) {
 // the full variant is untouched.
 func TestDisabledRuleVariants(t *testing.T) {
 	path := writeRules(t, rulesYAML)
-	disabled := []string{"dotfile-probe", "log4shell-header", "trace-method", "put-script"}
+	disabled := []string{"api-json", "dotfile-probe", "log4shell-header", "trace-method", "put-script"}
 	cache, err := NewRuleCacheVariants([]VariantSpec{
-		{Path: path, Scopes: []string{"defaults"}},
-		{Path: path, DisabledIDs: disabled, Scopes: []string{"domain a.test"}},
+		{Paths: []string{path}, Scopes: []string{"defaults"}},
+		{Paths: []string{path}, DisabledIDs: disabled, Scopes: []string{"domain a.test"}},
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -286,12 +325,12 @@ func TestDisabledRuleVariants(t *testing.T) {
 	defer cache.Close()
 
 	full := cache.Get(path)
-	filtered := cache.Get(VariantKey(path, disabled))
+	filtered := cache.Get(VariantKey([]string{path}, disabled))
 	if full == nil || filtered == nil {
 		t.Fatal("both variants must be loaded")
 	}
-	if len(full.Rules) != 7 || len(filtered.Rules) != 3 {
-		t.Fatalf("rule counts = %d/%d, want 7 full, 3 filtered", len(full.Rules), len(filtered.Rules))
+	if len(full.Rules) != 8 || len(filtered.Rules) != 3 {
+		t.Fatalf("rule counts = %d/%d, want 8 full, 3 filtered", len(full.Rules), len(filtered.Rules))
 	}
 
 	// A request matching both the excluded first rule and a later rule falls
@@ -313,8 +352,115 @@ func TestDisabledRuleVariants(t *testing.T) {
 		t.Errorf("filtered hints = %v/%v, want none/false after excluding header+method rules",
 			filtered.HeaderTargets(), filtered.NeedsMethod())
 	}
-	if len(full.HeaderTargets()) != 2 || !full.NeedsMethod() {
-		t.Errorf("full hints = %v/%v, want 2 headers and true", full.HeaderTargets(), full.NeedsMethod())
+	if len(full.HeaderTargets()) != 3 || !full.NeedsMethod() {
+		t.Errorf("full hints = %v/%v, want 3 headers and true", full.HeaderTargets(), full.NeedsMethod())
+	}
+}
+
+func TestCombinedRuleFilesPreserveBaseOrderAndScopeExclusions(t *testing.T) {
+	common := writeRules(t, `
+rules:
+  - id: secret-path
+    action: deny
+    targets: [ path ]
+    keywords: [ "/.env" ]
+`)
+	api := writeRules(t, `
+rules:
+  - id: json-client
+    action: allow
+    targets: [ "header:accept" ]
+    keywords: [ "application/json" ]
+  - id: api-fallback
+    action: deny
+    targets: [ path ]
+    regexes: [ "^/" ]
+`)
+	paths := []string{common, api}
+	cache, err := NewRuleCacheVariants([]VariantSpec{
+		{Paths: paths, Scopes: []string{"domain api.test"}},
+		{Paths: paths, DisabledIDs: []string{"secret-path"}, Scopes: []string{"domain exception.test"}},
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+
+	full := cache.Get(VariantKey(paths, nil))
+	if rule := full.Match(&MatchInput{Path: "/.env", Headers: map[string][]string{"accept": {"application/json"}}}); rule == nil || rule.ID != "secret-path" {
+		t.Fatalf("common rules must run before domain additions, got %v", rule)
+	}
+	if rule := full.Match(&MatchInput{Path: "/v1/items", Headers: map[string][]string{"accept": {"application/json"}}}); rule == nil || rule.ID != "json-client" || rule.Action != ActionAllow {
+		t.Fatalf("clean JSON request must reach the domain allow, got %v", rule)
+	}
+	filtered := cache.Get(VariantKey(paths, []string{"secret-path"}))
+	if rule := filtered.Match(&MatchInput{Path: "/.env", Headers: map[string][]string{"accept": {"application/json"}}}); rule == nil || rule.ID != "json-client" {
+		t.Fatalf("disabled common rule must fall through to the domain file, got %v", rule)
+	}
+}
+
+func TestCombinedRuleFilesRejectDuplicateIDs(t *testing.T) {
+	a := writeRules(t, `rules: [ { id: shared, keywords: [ one ] } ]`)
+	b := writeRules(t, `rules: [ { id: shared, keywords: [ two ] } ]`)
+	_, err := NewRuleCacheVariants([]VariantSpec{{Paths: []string{a, b}, Scopes: []string{"domain api.test"}}}, slog.Default())
+	if err == nil {
+		t.Fatal("duplicate ids across effective files must fail startup")
+	}
+	for _, want := range []string{"shared", a, b, "domain api.test"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must mention %q", err, want)
+		}
+	}
+}
+
+func TestCombinedRuleFilesHotReloadRebuildsEffectiveSet(t *testing.T) {
+	common := writeRules(t, `rules: [ { id: common, keywords: [ common-old ] } ]`)
+	api := writeRules(t, `rules: [ { id: api, action: allow, keywords: [ api-old ] } ]`)
+	paths := []string{common, api}
+	cache, err := NewRuleCacheVariants([]VariantSpec{{Paths: paths, Scopes: []string{"domain api.test"}}}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	cache.Start(10 * time.Millisecond)
+	key := VariantKey(paths, nil)
+
+	if err := os.WriteFile(api, []byte(`rules: [ { id: api, action: allow, keywords: [ api-new ] } ]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rs := cache.Get(key)
+		if rs.Match(&MatchInput{Path: "/api-new"}) != nil {
+			if rs.Match(&MatchInput{Path: "/common-old"}) == nil {
+				t.Fatal("reloading one source dropped the unchanged common source")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("combined API source never reloaded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A cross-file duplicate is rejected and leaves the last-good combined set.
+	if err := os.WriteFile(common, []byte(`rules: [ { id: api, keywords: [ collision ] } ]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	rs := cache.Get(key)
+	if rs.Match(&MatchInput{Path: "/common-old"}) == nil || rs.Match(&MatchInput{Path: "/api-new"}) == nil {
+		t.Fatal("rejected cross-file duplicate replaced the last-good combined set")
+	}
+	if err := os.WriteFile(common, []byte(`rules: [ { id: common, keywords: [ common-new ] } ]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for cache.Get(key).Match(&MatchInput{Path: "/common-new"}) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("valid common source after rejected duplicate never loaded")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -324,11 +470,11 @@ func TestDisabledRuleVariants(t *testing.T) {
 func TestUnknownDisabledRuleIDFailsFast(t *testing.T) {
 	path := writeRules(t, rulesYAML)
 	for name, ids := range map[string][]string{
-		"unknown id":    {"wp-probe"},
+		"unknown id":    {"wp-cms-probe"},
 		"case mismatch": {"Dotfile-Probe"},
 	} {
 		_, err := NewRuleCacheVariants([]VariantSpec{
-			{Path: path, DisabledIDs: ids, Scopes: []string{"domain a.test"}},
+			{Paths: []string{path}, DisabledIDs: ids, Scopes: []string{"domain a.test"}},
 		}, slog.Default())
 		if err == nil {
 			t.Fatalf("%s: expected error, got nil", name)
@@ -348,15 +494,15 @@ func TestUnknownDisabledRuleIDFailsFast(t *testing.T) {
 func TestHotReloadRejectsRemovedExcludedID(t *testing.T) {
 	path := writeRules(t, "rules: [ { id: keep, keywords: [ keepkw ] }, { id: banned, keywords: [ badkw ] } ]")
 	cache, err := NewRuleCacheVariants([]VariantSpec{
-		{Path: path, Scopes: []string{"defaults"}},
-		{Path: path, DisabledIDs: []string{"banned"}, Scopes: []string{"domain a.test"}},
+		{Paths: []string{path}, Scopes: []string{"defaults"}},
+		{Paths: []string{path}, DisabledIDs: []string{"banned"}, Scopes: []string{"domain a.test"}},
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cache.Close()
 	cache.Start(10 * time.Millisecond)
-	fkey := VariantKey(path, []string{"banned"})
+	fkey := VariantKey([]string{path}, []string{"banned"})
 
 	if cache.Get(fkey).Match(&MatchInput{Path: "/badkw"}) != nil {
 		t.Fatal("excluded rule must not match in the filtered variant")

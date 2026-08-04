@@ -12,10 +12,14 @@ import (
 	"testing"
 )
 
-// The WAF rules under test are defined in deploy/docker/rules-common.yaml:
-//   wp-probe      deny   /wp-login.php ...
+// The shared WAF rules under test are defined in
+// deploy/docker/rules-common.yaml, while api.localhost appends
+// deploy/docker/rules-api.yaml:
+//   api-json-allow allow  application/vnd.guardian.e2e+json in Accept (API)
+//   api-client-fallback deny all other API requests                       (API)
+//   wp-cms-probe      deny   /wp-login.php ...
 //   dotfile-probe block  /.env /.git/ ...
-//   sqli-basic    challenge  UNION SELECT / ' or 1=1 ...
+//   sqli-tautology    challenge  UNION SELECT / ' or 1=1 ...
 //   scanner-ua    block  sqlmap nikto ...
 //   log4shell     block  ${jndi: in query/ua/referer/x-forwarded-for
 //   trace-method  deny   methods TRACE, TRACK
@@ -25,7 +29,34 @@ import (
 // block clear it afterwards (t.Cleanup → clearGatewayBlocks) so they don't
 // poison later assertions.
 
-// TestWAFRuleDeny confirms a `deny` rule (wp-probe) returns Angie's 403
+// TestWAFAllowAction confirms common rules run before domain additions, while
+// an API allow matched through a named Accept header still wins over the later
+// API fallback deny and reaches the backend directly.
+func TestWAFAllowAction(t *testing.T) {
+	t.Cleanup(clearGatewayBlocks)
+	clearGatewayBlocks()
+
+	// common.yaml runs first, so the API allow cannot bypass its dotfile rule.
+	resp := get(t, "/.env", apiRulesHost, "api-client/1.0", map[string]string{
+		"Accept": "text/plain, Application/Vnd.Guardian.E2E+JSON; Charset=UTF-8",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("common rule before API allow: status %d, want 403", resp.StatusCode)
+	}
+	clearGatewayBlocks()
+
+	resp = get(t, "/v1/items", apiRulesHost, "api-client/1.0", map[string]string{
+		"Accept": "text/plain, Application/Vnd.Guardian.E2E+JSON; Charset=UTF-8",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("API allow before fallback: status %d, want 200", resp.StatusCode)
+	}
+	if r := get(t, "/v1/items", apiRulesHost, "api-client/1.0", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("API fallback without allowed Accept: status %d, want 403", r.StatusCode)
+	}
+}
+
+// TestWAFRuleDeny confirms a `deny` rule (wp-cms-probe) returns Angie's 403
 // denied page and does NOT place a behavioural block (deny != block).
 func TestWAFRuleDeny(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks) // defensive; a deny shouldn't block, but be safe
@@ -134,7 +165,7 @@ func TestWAFMethodRule(t *testing.T) {
 	}
 }
 
-// TestWAFChallengeAction confirms a `challenge` rule (sqli-basic) forces a PoW
+// TestWAFChallengeAction confirms a `challenge` rule (sqli-tautology) forces a PoW
 // challenge rather than an outright deny on a PoW-enabled host: a softer
 // response that spares false positives. It also proves the difficulty relay
 // works through real Angie: the escalated difficulty from the auth decision
@@ -143,7 +174,7 @@ func TestWAFMethodRule(t *testing.T) {
 func TestWAFChallengeAction(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
 
-	// A SQLi-shaped query on the PoW host. The sqli-basic rule's action is
+	// A SQLi-shaped query on the PoW host. The sqli-tautology rule's action is
 	// `challenge`, so the browser is diverted to the interstitial (200 HTML),
 	// not denied.
 	ch := fetchChallenge(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA)
@@ -177,16 +208,16 @@ func TestPerDomainPolicy(t *testing.T) {
 }
 
 // TestWAFDisabledRuleID: wp.localhost shares the common rules file but
-// disables wp-probe by exact id (guardian.e2e.yaml, issue #27). The probe
+// disables wp-cms-probe by exact id (guardian.e2e.yaml, issue #27). The probe
 // path reaches the backend there, the rest of the shared file still applies
-// on the same host, and wp-probe keeps firing on hosts that do not exclude
+// on the same host, and wp-cms-probe keeps firing on hosts that do not exclude
 // it: one file on disk, different effective rule sets per scope.
 func TestWAFDisabledRuleID(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
 	clearGatewayBlocks() // start clean
 
 	if r := get(t, "/wp-login.php", wpHost, "curl/8.0", nil); r.StatusCode != http.StatusOK {
-		t.Fatalf("/wp-login.php on %s: status %d, want 200 (wp-probe disabled by id)", wpHost, r.StatusCode)
+		t.Fatalf("/wp-login.php on %s: status %d, want 200 (wp-cms-probe disabled by id)", wpHost, r.StatusCode)
 	}
 	// The rest of the shared file still applies on the excluding host.
 	if r := get(t, "/.env", wpHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
@@ -195,7 +226,7 @@ func TestWAFDisabledRuleID(t *testing.T) {
 	clearGatewayBlocks() // dotfile-probe is a block action; unpoison the gateway IP
 	// And the excluded rule still fires on a host without the exclusion.
 	if r := get(t, "/wp-login.php", wafOnlyHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
-		t.Fatalf("/wp-login.php on %s: status %d, want 403 (wp-probe active)", wafOnlyHost, r.StatusCode)
+		t.Fatalf("/wp-login.php on %s: status %d, want 403 (wp-cms-probe active)", wafOnlyHost, r.StatusCode)
 	}
 }
 

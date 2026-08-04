@@ -251,7 +251,10 @@ The recent activity feed, newest first, from an in-process ring buffer (per
 instance, cleared on restart, capacity set by `admin.recent_size`). It holds
 three kinds of row: every non-allow decision, every redeemed proof-of-work
 challenge (action `solve`), and every failed redemption attempt (action
-`redeem_fail`). Allows are never recorded.
+`redeem_fail`). Allows—including explicit WAF allow rules—are never recorded;
+their aggregate volume remains available through
+`guardian_decisions_total{action="allow"}` and the dashboard's per-domain
+traffic chart.
 
 A solve is a separate row rather than an update of the challenge row that caused
 it: the two arrive on different requests minutes apart and share no identifier.
@@ -644,7 +647,7 @@ not automatically deleted from disk).
 
 The active per-domain configuration: which features are enabled where,
 including PoW base/max difficulty, each scope's effective WAF rule
-selection (`waf_rules_file` plus `waf_rules_disabled_ids`, both omitted when
+selection (`waf_rules_files` plus `waf_rules_disabled_ids`, both omitted when
 empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a scope defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
 a `paths` object with the same view per overlay. `defaults` carries its own
@@ -663,8 +666,11 @@ its effective overlays, inherited entries included:
       "waf_rules": true,
       "waf_anomaly": true,
       "waf_anomaly_observe_only": true,
-      "waf_rules_file": "/etc/guardian/rules.d/common.yaml",
-      "waf_rules_disabled_ids": ["wp-probe"],
+      "waf_rules_files": [
+        "/etc/guardian/rules.d/common.yaml",
+        "/etc/guardian/rules.d/api.yaml"
+      ],
+      "waf_rules_disabled_ids": ["wp-cms-probe"],
       "paths": {
         "/api/v1/": { "pow_enabled": false, "...": "..." }
       }

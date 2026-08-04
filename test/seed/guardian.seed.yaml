@@ -61,7 +61,7 @@ defaults:
       enabled: true
       # The shipped starter rules: the seeder's scanner traffic is built to
       # match these, so denies and blocks appear without extra setup.
-      file: deploy/rules-common.yaml
+      files: [ deploy/rules-common.yaml ]
     ip_behaviour:
       enabled: true
       block_ttl: 30m

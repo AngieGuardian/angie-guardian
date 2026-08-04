@@ -216,8 +216,8 @@ func TestDecisionLogsAreStructured(t *testing.T) {
 		t.Fatalf("/xmlrpc.php: status %d, want 403", r.StatusCode)
 	}
 	logs := guardiandLogs(t)
-	if !strings.Contains(logs, "decision") || !strings.Contains(logs, "waf:wp-probe") {
-		t.Errorf("expected a structured decision log line mentioning waf:wp-probe; recent logs:\n%s",
+	if !strings.Contains(logs, "decision") || !strings.Contains(logs, "waf:wp-cms-probe") {
+		t.Errorf("expected a structured decision log line mentioning waf:wp-cms-probe; recent logs:\n%s",
 			tail(logs, 2000))
 	}
 }

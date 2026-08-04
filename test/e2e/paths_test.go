@@ -50,7 +50,7 @@ func TestPathOverridePoWDisabled(t *testing.T) {
 // TestPathOverrideWAFStillActive: disabling PoW for /api/ must not soften the
 // WAF there; a rule probe under the PoW-free prefix is still denied.
 func TestPathOverrideWAFStillActive(t *testing.T) {
-	// wp-probe is a deny rule (no behavioural block), so this leaves no state.
+	// wp-cms-probe is a deny rule (no behavioural block), so this leaves no state.
 	resp := get(t, "/api/wp-login.php", powHost, "machine-client/1.0", nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("/api/wp-login.php: status %d, want 403 (WAF must stay active on the PoW-free path)", resp.StatusCode)

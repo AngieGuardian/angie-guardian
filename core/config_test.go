@@ -405,9 +405,10 @@ func TestConfigValidation(t *testing.T) {
 		"bad difficulty inside path overlay":     "domains: { a.test: { paths: { \"/api/\": { pow: { base_difficulty: 9 } } } } }",
 		"path pow without signing key":           "domains: { a.test: { paths: { \"/app/\": { pow: { enabled: true, token_ttl: 1h, challenge_ttl: 5m } } } } }",
 		"path rules without file":                "domains: { a.test: { paths: { \"/api/\": { waf: { rules: { enabled: true } } } } } }",
-		"empty disabled rule id":                 "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ \"\" ] } } }",
-		"whitespace disabled rule id":            "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ \"  \" ] } } }",
-		"duplicate disabled rule id":             "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ a, a ] } } }",
+		"empty disabled rule id":                 "defaults: { waf: { rules: { enabled: true, files: [ r.yaml ], disabled_ids: [ \"\" ] } } }",
+		"whitespace disabled rule id":            "defaults: { waf: { rules: { enabled: true, files: [ r.yaml ], disabled_ids: [ \"  \" ] } } }",
+		"duplicate disabled rule id":             "defaults: { waf: { rules: { enabled: true, files: [ r.yaml ], disabled_ids: [ a, a ] } } }",
+		"duplicate cumulative rules file":        "defaults: { waf: { rules: { files: [ common.yaml ] } } }\ndomains: { a.test: { waf: { rules: { files: [ common.yaml ] } } } }",
 		"exclusions without file":                "defaults: { waf: { rules: { disabled_ids: [ a ] } } }",
 		"parked exclusions without file":         "domains: { a.test: { waf: { rules: { enabled: false, disabled_ids: [ a ] } } } }",
 		"path exclusions without file":           "domains: { a.test: { paths: { \"/api/\": { waf: { rules: { disabled_ids: [ a ] } } } } } }",
@@ -454,7 +455,7 @@ defaults:
   waf:
     rules:
       enabled: true
-      file: /definitely/missing/rules.yaml
+      files: [ /definitely/missing/rules.yaml ]
 `)
 	if err := ValidateConfigArtifacts(cfg, slog.Default()); err == nil {
 		t.Fatal("missing rules artifact must fail preflight validation")
@@ -849,7 +850,7 @@ defaults:
     "/robots.txt":
       allowlist: { ips: [ "192.0.2.0/24" ] }
       waf:
-        rules: { enabled: true, file: rules.yaml }
+        rules: { enabled: true, files: [ rules.yaml ] }
         ip_behaviour: { enabled: true, thresholds: { rule_match: 3/h } }
 domains:
   a.test: {}
@@ -940,7 +941,7 @@ domains:
     paths:
       "/api/":
         waf:
-          rules: { enabled: true, file: path-rules.yaml }
+          rules: { enabled: true, files: [ path-rules.yaml ] }
           anomaly: { enabled: true, model: path-model.json, challenge_at: 0.8, deny_at: 0.9 }
 `)
 	rules := cfg.RuleFiles()
@@ -961,44 +962,44 @@ domains:
 // waf.rules.disabled_ids: omitted inherits, a non-empty list replaces
 // wholesale, an explicit [] clears, and a path overlay replaces the domain's
 // resolved list. RuleVariants must collect one spec per distinct
-// (file, exclusions) pair with the scope labels that use it, including a
+// (files, exclusions) pair with the scope labels that use it, including a
 // parked (enabled: false) scope that still carries exclusions.
 func TestDisabledIDsOverlay(t *testing.T) {
 	cfg := loadTestConfig(t, `
 store: { backend: memory }
 defaults:
   waf:
-    rules: { enabled: true, file: common.yaml, disabled_ids: [ wp-probe ] }
+    rules: { enabled: true, files: [ common.yaml ], disabled_ids: [ wp-cms-probe ] }
 domains:
   inherit.test:
   replace.test:
-    waf: { rules: { disabled_ids: [ scanner-ua, sqli-basic ] } }
+    waf: { rules: { disabled_ids: [ scanner-ua, sqli-tautology ] } }
   clear.test:
     waf: { rules: { disabled_ids: [] } }
   otherfile.test:
-    waf: { rules: { file: api.yaml, disabled_ids: [ scanner-ua ] } }
+    waf: { rules: { files: [ api.yaml ], disabled_ids: [ scanner-ua ] } }
   parked.test:
-    waf: { rules: { enabled: false, disabled_ids: [ sqli-basic ] } }
+    waf: { rules: { enabled: false, disabled_ids: [ sqli-tautology ] } }
   pathed.test:
     paths:
       "/legacy/":
-        waf: { rules: { disabled_ids: [ sqli-basic ] } }
+        waf: { rules: { disabled_ids: [ sqli-tautology ] } }
 `)
 	ids := func(dc *DomainConfig) []string { return dc.WAF.Rules.DisabledIDs }
-	if got := ids(cfg.DomainFor("inherit.test")); !slices.Equal(got, []string{"wp-probe"}) {
-		t.Errorf("inherit.test = %v, want inherited [wp-probe]", got)
+	if got := ids(cfg.DomainFor("inherit.test")); !slices.Equal(got, []string{"wp-cms-probe"}) {
+		t.Errorf("inherit.test = %v, want inherited [wp-cms-probe]", got)
 	}
-	if got := ids(cfg.DomainFor("replace.test")); !slices.Equal(got, []string{"scanner-ua", "sqli-basic"}) {
-		t.Errorf("replace.test = %v, want replacement [scanner-ua sqli-basic]", got)
+	if got := ids(cfg.DomainFor("replace.test")); !slices.Equal(got, []string{"scanner-ua", "sqli-tautology"}) {
+		t.Errorf("replace.test = %v, want replacement [scanner-ua sqli-tautology]", got)
 	}
 	if got := ids(cfg.DomainFor("clear.test")); len(got) != 0 {
 		t.Errorf("clear.test = %v, want [] to clear the inherited list", got)
 	}
-	if got := ids(cfg.DomainFor("pathed.test")); !slices.Equal(got, []string{"wp-probe"}) {
-		t.Errorf("pathed.test domain = %v, want inherited [wp-probe]", got)
+	if got := ids(cfg.DomainFor("pathed.test")); !slices.Equal(got, []string{"wp-cms-probe"}) {
+		t.Errorf("pathed.test domain = %v, want inherited [wp-cms-probe]", got)
 	}
-	if got := ids(cfg.DomainFor("pathed.test").ForPath("/legacy/x")); !slices.Equal(got, []string{"sqli-basic"}) {
-		t.Errorf("pathed.test /legacy/ = %v, want overlay [sqli-basic]", got)
+	if got := ids(cfg.DomainFor("pathed.test").ForPath("/legacy/x")); !slices.Equal(got, []string{"sqli-tautology"}) {
+		t.Errorf("pathed.test /legacy/ = %v, want overlay [sqli-tautology]", got)
 	}
 
 	specs := cfg.RuleVariants()
@@ -1007,25 +1008,25 @@ domains:
 		sorted := slices.Clone(s.DisabledIDs)
 		slices.Sort(sorted)
 		for _, scope := range s.Scopes {
-			byScope[scope] = s.Path + "|" + strings.Join(sorted, ",")
+			byScope[scope] = strings.Join(s.Paths, "+") + "|" + strings.Join(sorted, ",")
 		}
 	}
 	want := map[string]string{
-		"defaults":                         "common.yaml|wp-probe",
-		"domain inherit.test":              "common.yaml|wp-probe",
-		"domain replace.test":              "common.yaml|scanner-ua,sqli-basic",
+		"defaults":                         "common.yaml|wp-cms-probe",
+		"domain inherit.test":              "common.yaml|wp-cms-probe",
+		"domain replace.test":              "common.yaml|scanner-ua,sqli-tautology",
 		"domain clear.test":                "common.yaml|",
-		"domain otherfile.test":            "api.yaml|scanner-ua",
-		"domain parked.test":               "common.yaml|sqli-basic",
-		"domain pathed.test":               "common.yaml|wp-probe",
-		"domain pathed.test path /legacy/": "common.yaml|sqli-basic",
+		"domain otherfile.test":            "common.yaml+api.yaml|scanner-ua",
+		"domain parked.test":               "common.yaml|sqli-tautology",
+		"domain pathed.test":               "common.yaml|wp-cms-probe",
+		"domain pathed.test path /legacy/": "common.yaml|sqli-tautology",
 	}
 	for scope, wantVariant := range want {
 		if got, ok := byScope[scope]; !ok || got != wantVariant {
 			t.Errorf("scope %q resolved to %q (present=%v), want %q", scope, got, ok, wantVariant)
 		}
 	}
-	// One spec per distinct (file, exclusions) pair: defaults, inherit.test and
+	// One spec per distinct (files, exclusions) pair: defaults, inherit.test and
 	// pathed.test share one; parked.test and the /legacy/ overlay share another.
 	if len(specs) != 5 {
 		t.Errorf("RuleVariants returned %d specs, want 5 distinct variants: %+v", len(specs), specs)
@@ -1034,6 +1035,36 @@ domains:
 	slices.Sort(files)
 	if !slices.Equal(files, []string{"api.yaml", "common.yaml"}) {
 		t.Errorf("RuleFiles = %v, want [api.yaml common.yaml]", files)
+	}
+}
+
+func TestRuleFilesAccumulateAcrossScopes(t *testing.T) {
+	cfg := loadTestConfig(t, `
+store: { backend: memory }
+defaults:
+  waf:
+    rules: { enabled: true, files: [ common.yaml ] }
+domains:
+  inherit.test:
+  api.test:
+    waf: { rules: { files: [ api.yaml ], disabled_ids: [ common-exception ] } }
+    paths:
+      "/private/":
+        waf: { rules: { files: [ private.yaml ] } }
+`)
+
+	if got := cfg.DomainFor("inherit.test").WAF.Rules.Files; !slices.Equal(got, []string{"common.yaml"}) {
+		t.Fatalf("inherited files = %v, want [common.yaml]", got)
+	}
+	api := cfg.DomainFor("api.test")
+	if got := api.WAF.Rules.Files; !slices.Equal(got, []string{"common.yaml", "api.yaml"}) {
+		t.Fatalf("domain files = %v, want common then api", got)
+	}
+	if got := api.ForPath("/private/item").WAF.Rules.Files; !slices.Equal(got, []string{"common.yaml", "api.yaml", "private.yaml"}) {
+		t.Fatalf("path files = %v, want common then api then private", got)
+	}
+	if got := api.WAF.Rules.DisabledIDs; !slices.Equal(got, []string{"common-exception"}) {
+		t.Fatalf("domain exclusions = %v, want combined-set exclusion", got)
 	}
 }
 

@@ -55,9 +55,9 @@ sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
 # The starter WAF rules the example config enables; without this file,
 # `guardiand -t` (and so the unit's ExecStartPre) fails with
 # "open /etc/guardian/rules.d/common.yaml: no such file or directory".
-# Keep this one shared file: per-host exceptions belong in guardian.yaml via
-# waf.rules.disabled_ids (see the configuration guide), not in
-# diverging copies.
+# Keep this shared baseline: domain files append via waf.rules.files, while
+# exceptions belong in guardian.yaml via waf.rules.disabled_ids (see the
+# configuration guide), not in diverging copies.
 sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
 
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service

@@ -924,18 +924,21 @@ type IPBehaviourConfig struct {
 type HoneypotConfig = stateless.HoneypotConfig
 
 type RulesConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	File    string `yaml:"file"`
-	// DisabledIDs removes rules from the effective file for this
-	// scope by their exact, case-sensitive id, without copying the file. Like
+	Enabled bool `yaml:"enabled"`
+	// Files is the ordered effective rule policy for this scope. Files named by
+	// narrower domain and path overlays are appended to the inherited list, so
+	// the shared defaults remain active and run first.
+	Files []string `yaml:"files"`
+	// DisabledIDs removes rules from the effective files for this
+	// scope by their exact, case-sensitive id, without copying the files. Like
 	// every list field it overlays wholesale: omitted inherits the parent's
 	// list, [] clears it, a non-empty list replaces it (re-list inherited IDs
-	// to keep them). Every ID must exist in the effective file; typos
+	// to keep them). Every ID must exist in the effective files; typos
 	// are load/reload errors, never silently-enabled rules.
 	DisabledIDs []string `yaml:"disabled_ids"`
 
 	// ruleKey is the precomputed RuleCache variant key for this scope's
-	// (file, disabled_ids) pair, set in validate() so the request
+	// (files, disabled_ids) pair, set in validate() so the request
 	// hot path stays a single map lookup with no per-request filtering.
 	ruleKey string
 }
@@ -1104,6 +1107,46 @@ func decodeStrict(node *yaml.Node, v any) error {
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	return dec.Decode(v)
+}
+
+// appendLocalRuleFiles restores cumulative rules-file inheritance after a
+// normal YAML overlay decode. YAML lists otherwise replace the inherited
+// value wholesale; rules.files deliberately differs because a domain or path
+// policy extends the shared defaults instead of silently dropping them.
+func appendLocalRuleFiles(node *yaml.Node, inherited []string, dc *DomainConfig) error {
+	filesNode, ok := nestedMappingValue(node, "waf", "rules", "files")
+	if !ok {
+		return nil
+	}
+	var local []string
+	if filesNode.Kind != 0 && filesNode.Tag != "!!null" {
+		if err := filesNode.Decode(&local); err != nil {
+			return fmt.Errorf("waf.rules.files: %w", err)
+		}
+	}
+	dc.WAF.Rules.Files = append(append([]string(nil), inherited...), local...)
+	return nil
+}
+
+func nestedMappingValue(node *yaml.Node, keys ...string) (*yaml.Node, bool) {
+	cur := node
+	for _, key := range keys {
+		if cur == nil || cur.Kind != yaml.MappingNode {
+			return nil, false
+		}
+		found := false
+		for i := 0; i+1 < len(cur.Content); i += 2 {
+			if cur.Content[i].Value == key {
+				cur = cur.Content[i+1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 func (c *Config) finalize() error {
@@ -1319,7 +1362,11 @@ func (c *Config) finalize() error {
 		var pathsNode *yaml.Node
 		if node.Kind != 0 && node.Tag != "!!null" {
 			pathsNode = splitPathsNode(&node)
+			inheritedRuleFiles := append([]string(nil), dc.WAF.Rules.Files...)
 			if err := decodeStrict(&node, dc); err != nil {
+				return fmt.Errorf("domain %s: %w", host, err)
+			}
+			if err := appendLocalRuleFiles(&node, inheritedRuleFiles, dc); err != nil {
 				return fmt.Errorf("domain %s: %w", host, err)
 			}
 		}
@@ -1529,7 +1576,11 @@ func (c *Config) resolvePaths(label string, dc *DomainConfig, inherited, own map
 			if !ok || node.Kind == 0 || node.Tag == "!!null" {
 				continue
 			}
+			inheritedRuleFiles := append([]string(nil), pc.WAF.Rules.Files...)
 			if err := decodeStrict(&node, pc); err != nil {
+				return fmt.Errorf("%s path %s: %w", label, key, err)
+			}
+			if err := appendLocalRuleFiles(&node, inheritedRuleFiles, pc); err != nil {
 				return fmt.Errorf("%s path %s: %w", label, key, err)
 			}
 		}
@@ -1571,8 +1622,8 @@ func (c *Config) validateFeatureDependencies() error {
 		if dc.WAF.Anomaly.Enabled && strings.TrimSpace(dc.WAF.Anomaly.Model) == "" {
 			return fmt.Errorf("%s: waf.anomaly is enabled but model is not configured", label)
 		}
-		if dc.WAF.Rules.Enabled && strings.TrimSpace(dc.WAF.Rules.File) == "" {
-			return fmt.Errorf("%s: waf.rules is enabled but file is not configured", label)
+		if dc.WAF.Rules.Enabled && len(dc.WAF.Rules.Files) == 0 {
+			return fmt.Errorf("%s: waf.rules is enabled but files is not configured", label)
 		}
 		if dc.Reputation.Enabled && len(c.Reputation.Feeds) == 0 {
 			return fmt.Errorf("%s: reputation is enabled but no reputation.feeds are configured", label)
@@ -1630,6 +1681,16 @@ func (dc *DomainConfig) validate() error {
 		}
 	}
 	rules := &dc.WAF.Rules
+	seenFiles := make(map[string]bool, len(rules.Files))
+	for _, file := range rules.Files {
+		if strings.TrimSpace(file) == "" {
+			return fmt.Errorf("waf.rules.files: empty or whitespace-only entry")
+		}
+		if seenFiles[file] {
+			return fmt.Errorf("waf.rules.files: duplicate entry %q", file)
+		}
+		seenFiles[file] = true
+	}
 	seenIDs := make(map[string]bool, len(rules.DisabledIDs))
 	for _, id := range rules.DisabledIDs {
 		if strings.TrimSpace(id) == "" {
@@ -1643,10 +1704,10 @@ func (dc *DomainConfig) validate() error {
 	// Checked whether or not rules are enabled: a parked exclusion list with
 	// no file to select from would activate broken policy the day the
 	// layer is switched on.
-	if len(rules.DisabledIDs) > 0 && strings.TrimSpace(rules.File) == "" {
-		return fmt.Errorf("waf.rules.disabled_ids is set but file is not configured; exclusions select ids from the effective file")
+	if len(rules.DisabledIDs) > 0 && len(rules.Files) == 0 {
+		return fmt.Errorf("waf.rules.disabled_ids is set but files is not configured; exclusions select ids from the effective files")
 	}
-	rules.ruleKey = waf.VariantKey(rules.File, rules.DisabledIDs)
+	rules.ruleKey = waf.VariantKey(rules.Files, rules.DisabledIDs)
 	a := &dc.WAF.Anomaly
 	if a.Enabled && (math.IsNaN(a.ChallengeAt) || math.IsInf(a.ChallengeAt, 0) ||
 		math.IsNaN(a.DenyAt) || math.IsInf(a.DenyAt, 0) ||
@@ -1907,7 +1968,7 @@ func (c *Config) AllowlistUnion() []netip.Prefix {
 	return out
 }
 
-// RuleVariants returns every distinct (rules file, disabled_ids) pair
+// RuleVariants returns every distinct (rules files, disabled_ids) pair
 // referenced by a resolved scope, for the rule cache to load, watch and
 // precompile. A scope contributes when rules are enabled, or when they are
 // disabled but carry exclusions: parked exclusions are still validated
@@ -1919,12 +1980,12 @@ func (c *Config) RuleVariants() []waf.VariantSpec {
 	byKey := make(map[string]*waf.VariantSpec)
 	_ = c.eachScope(func(label, _ string, dc *DomainConfig) error {
 		rules := &dc.WAF.Rules
-		if rules.File == "" || (!rules.Enabled && len(rules.DisabledIDs) == 0) {
+		if len(rules.Files) == 0 || (!rules.Enabled && len(rules.DisabledIDs) == 0) {
 			return nil
 		}
 		spec, ok := byKey[rules.ruleKey]
 		if !ok {
-			spec = &waf.VariantSpec{Path: rules.File, DisabledIDs: rules.DisabledIDs}
+			spec = &waf.VariantSpec{Paths: rules.Files, DisabledIDs: rules.DisabledIDs}
 			byKey[rules.ruleKey] = spec
 			order = append(order, rules.ruleKey)
 		}
@@ -1944,9 +2005,11 @@ func (c *Config) RuleFiles() []string {
 	seen := make(map[string]bool)
 	var files []string
 	for _, spec := range c.RuleVariants() {
-		if !seen[spec.Path] {
-			seen[spec.Path] = true
-			files = append(files, spec.Path)
+		for _, path := range spec.Paths {
+			if !seen[path] {
+				seen[path] = true
+				files = append(files, path)
+			}
 		}
 	}
 	return files

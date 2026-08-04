@@ -32,6 +32,7 @@ services:
       # GUARDIAN_CONFIG (see test/e2e/harness_test.go).
       - ${GUARDIAN_CONFIG:-./guardian.docker.yaml}:/etc/guardian/guardian.yaml:ro
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
+      - ./rules-api.yaml:/etc/guardian/rules.d/api.yaml:ro
       - guardian-data:/var/lib/guardian
       - guardian-keys:/etc/guardian/keys
     # Hot path (8071) is internal only — Angie reaches it as http://guardiand:8071.

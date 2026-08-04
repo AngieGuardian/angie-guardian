@@ -29,7 +29,7 @@ The suite picks three free host ports, brings the stack up, runs every scenario,
 and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
 PoW challenge issuance, a **full PoW solve through Angie** (challenge → solve →
 cookie → vouched request → spent-challenge replay), the no-JS meta-refresh
-fallback, WAF `deny`/`block`/`challenge` actions, scanner-UA blocking, per-domain
+fallback, WAF `allow`/`deny`/`block`/`challenge` actions, scanner-UA blocking, per-domain
 policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped, and
 the `/metrics` + `/admin/*` report surface.
 
@@ -87,8 +87,13 @@ docker compose down -v     # tear down + drop volumes
   difficulty (4), because the suite brute-forces every challenge in Go and
   asserts exact escalation values (16 bits + 4 = 20).
 
-Keep the two structurally in sync (hosts, thresholds, admin token); the e2e
-assertions depend on those exact values.
+Keep their shared hosts, thresholds, and admin token in sync; the E2E config
+also carries test-only hosts whose assertions depend on their exact values.
+
+`rules-common.yaml` is kept byte-for-byte in sync with the shipped
+`deploy/rules-common.yaml` starter. `rules-api.yaml` is an E2E-only domain
+addition used by `rules.localhost` to exercise cumulative rule files and an
+Accept-header allow without weakening the shared starter policy.
 
 ## Reproducing review findings
 
