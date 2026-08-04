@@ -29,8 +29,8 @@ domains:
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: no PoW, no behavioural scoring. Signature rules still
-  # apply from defaults; override waf.keywords too for a minimal policy.
+  # Static assets: no PoW, no behavioural scoring. WAF rules still
+  # apply from defaults; override waf.rules too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -99,9 +99,9 @@ either way.
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.
 
-## Signature rules (waf.keywords)
+## WAF rules
 
-The signature WAF matches keyword and regex rules against the request line and
+The `waf.rules` layer matches literal and regex rules against the request line and
 headers. Getting from the shipped starter file to a running configuration
 takes three explicit steps; none of them happen automatically:
 
@@ -116,11 +116,11 @@ takes three explicit steps; none of them happen automatically:
    ```yaml
    defaults:
      waf:
-       keywords:
+       rules:
          enabled: true
-         rules_file: /etc/guardian/rules.d/common.yaml
+         file: /etc/guardian/rules.d/common.yaml
    ```
-3. **Validate**: `guardiand -config guardian.yaml -t`. A `rules_file` that
+3. **Validate**: `guardiand -config guardian.yaml -t`. A `file` that
    does not exist while `enabled: true` fails fast, at preflight and at
    startup, rather than silently matching nothing.
 
@@ -132,40 +132,40 @@ evaluated **in file order and the first match wins**, so put narrow or
 terminal rules before broad challenge rules. The `id` does double duty: a hit
 is logged and counted as `waf:<id>`, and it is the exact, case-sensitive
 selector for per-scope exclusions (below). The starter file documents
-every field; the [reference](/reference/configuration#waf-keywords) lists the
+every field; the [reference](/reference/configuration#waf-rules) lists the
 exact matching semantics.
 
-Like every `waf` setting, `defaults.waf.keywords` is inherited by **every
+Like every `waf` setting, `defaults.waf.rules` is inherited by **every
 domain and path overlay** that does not override it, so the file above applies
 to your whole estate, including unknown Hosts that fall back to `defaults`.
 Scoping works three ways:
 
 - Point a domain (or path overlay) at a **different file** with its own
-  `rules_file`, e.g. an API set without challenge-action heuristics (which
+  `file`, e.g. an API set without challenge-action heuristics (which
   degrade to deny where PoW is off).
 - Turn matching off for a scope with `enabled: false`.
-- Disable **individual rules** for a scope with `disabled_rule_ids`, without
+- Disable **individual rules** for a scope with `disabled_ids`, without
   copying the file.
 
-### Per-scope rule exclusions (`disabled_rule_ids`)
+### Per-scope rule exclusions (`disabled_ids`)
 
 A shared rules file rarely fits every host exactly: the starter set's
 `wp-probe` rule is right on non-WordPress hosts and wrong on a real WordPress
 domain. Instead of maintaining a diverging copy of the file for one exception,
-list the rule's exact `id` in that scope's `disabled_rule_ids`:
+list the rule's exact `id` in that scope's `disabled_ids`:
 
 ```yaml
 defaults:
   waf:
-    keywords:
+    rules:
       enabled: true
-      rules_file: /etc/guardian/rules.d/common.yaml
+      file: /etc/guardian/rules.d/common.yaml
 
 domains:
   wordpress.example.com:
     waf:
-      keywords:
-        disabled_rule_ids: [ wp-probe ]
+      rules:
+        disabled_ids: [ wp-probe ]
 ```
 
 A disabled rule is removed from evaluation for that resolved scope only; the
@@ -178,20 +178,20 @@ exclusions add no per-request work.
 
 Validation is deliberately strict, so a typo can never silently leave a
 dangerous rule enabled: empty, whitespace-only or duplicate entries, an
-exclusion list with no effective `rules_file` (even while `enabled: false`),
+exclusion list with no effective `file` (even while `enabled: false`),
 and any ID absent from the scope's effective rules file are all rejected at
 `guardiand -t`, startup and reload, with the error naming the scope, the file
 and the unknown ID.
 
-The [examples page](/examples#signature-rules-one-starter-file-scoped-per-domain)
+The [examples page](/examples#waf-rules-one-starter-file-scoped-per-domain)
 has a complete copyable config combining a shared file, per-domain exclusions,
 a domain-specific file and a fully disabled scope, and
 [`GET /admin/config`](/reference/admin-api#get-admin-config) shows every
-scope's effective `rules_file` and exclusions together.
+scope's effective `file` and exclusions together.
 
 Rules files hot-reload two ways: they are watched on disk (edits apply within
 seconds, no signal needed), and a SIGHUP/`/admin/reload` re-reads
-`guardian.yaml` including any changed `rules_file` paths. A file that fails to
+`guardian.yaml` including any changed `file` paths. A file that fails to
 parse or exceeds the 8 MiB bound keeps the previous rules active; only a cold
 start hard-fails. A watched update that removes or renames a rule ID some
 scope still excludes is rejected the same way, so a renamed formerly-disabled
@@ -249,7 +249,7 @@ Which value fires:
   HTTP method or User-Agent,
   pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie. The
   token lifetime must be at least one second and at most seven days.
-- **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits
+- **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`). A valid bound token satisfies rules whose action is
   `challenge`; it never bypasses `deny` or `block` rules. On a domain or path
   where PoW is disabled there is nothing to challenge with, so

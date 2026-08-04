@@ -85,7 +85,7 @@ func TestAdminConfigReflectsDomains(t *testing.T) {
 		Store   string `json:"store"`
 		Domains map[string]struct {
 			PoWEnabled bool `json:"pow_enabled"`
-			Keywords   bool `json:"waf_keywords"`
+			Rules      bool `json:"waf_rules"`
 		} `json:"domains"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
@@ -97,8 +97,8 @@ func TestAdminConfigReflectsDomains(t *testing.T) {
 	if d, ok := cfg.Domains["localhost"]; !ok || !d.PoWEnabled {
 		t.Errorf("localhost pow_enabled = %+v, want present and true", d)
 	}
-	if d, ok := cfg.Domains["api.localhost"]; !ok || d.PoWEnabled {
-		t.Errorf("api.localhost pow_enabled = %+v, want present and false", d)
+	if d, ok := cfg.Domains["api.localhost"]; !ok || d.PoWEnabled || !d.Rules {
+		t.Errorf("api.localhost = %+v, want present with pow disabled and WAF rules enabled", d)
 	}
 }
 

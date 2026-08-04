@@ -109,7 +109,7 @@ Independently of the posture, `max_inflight` bounds concurrent auth
 evaluations. The shed path performs no store or DNS I/O, but it still applies
 the local terminal checks that normally precede token acceptance: static
 deny/block state, deny reputation/GeoIP policy, verified-bot spoof policy,
-honeypots, and WAF signatures. A clean token holder passes only after those
+honeypots, and WAF rules. A clean token holder passes only after those
 checks clear and the in-process block mirror can prove the client is not
 blocked without consulting the store. Otherwise the request gets a fast `503`
 with `Retry-After`; WAF/deny hits keep their deny response.

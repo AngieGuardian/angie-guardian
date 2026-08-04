@@ -49,7 +49,7 @@ const (
 	// wafOnlyHost has pow disabled: WAF runs, but no interstitial.
 	wafOnlyHost = "api.localhost"
 	// wpHost shares the common rules file but disables wp-probe by id
-	// (waf.keywords.disabled_rule_ids); pow is off like wafOnlyHost.
+	// (waf.rules.disabled_ids); pow is off like wafOnlyHost.
 	wpHost = "wp.localhost"
 )
 

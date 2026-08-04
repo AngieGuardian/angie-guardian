@@ -250,7 +250,7 @@ defaults:
 	if got := th["tamper"]; got.Count != 3 {
 		t.Errorf("operator override of a built-in must win: %+v", got)
 	}
-	for _, event := range []string{"signature", "pow_fail", "bot_spoof"} {
+	for _, event := range []string{"rule_match", "pow_fail", "bot_spoof"} {
 		if _, ok := th[event]; !ok {
 			t.Errorf("built-in threshold %q wiped by a custom entry", event)
 		}
@@ -386,7 +386,7 @@ func TestConfigValidation(t *testing.T) {
 		"empty allowlist ua":                     "defaults: { allowlist: { uas: [\"  \"] } }",
 		"pow without signing key":                "defaults: { pow: { enabled: true } }",
 		"anomaly without model":                  "defaults: { anomaly: { enabled: true, challenge_threshold: 0.8, deny_threshold: 0.9 } }",
-		"keywords without rules":                 "defaults: { waf: { keywords: { enabled: true } } }",
+		"rules without file":                     "defaults: { waf: { rules: { enabled: true } } }",
 		"reputation without feeds":               "defaults: { reputation: { enabled: true } }",
 		"nan difficulty":                         "defaults: { pow: { base_difficulty: .nan } }",
 		"infinite max difficulty":                "defaults: { pow: { max_difficulty: .inf } }",
@@ -404,13 +404,13 @@ func TestConfigValidation(t *testing.T) {
 		"typo inside path overlay":               "domains: { a.test: { paths: { \"/api/\": { pow: { enabeld: true } } } } }",
 		"bad difficulty inside path overlay":     "domains: { a.test: { paths: { \"/api/\": { pow: { base_difficulty: 9 } } } } }",
 		"path pow without signing key":           "domains: { a.test: { paths: { \"/app/\": { pow: { enabled: true, token_ttl: 1h, challenge_ttl: 5m } } } } }",
-		"path keywords without rules":            "domains: { a.test: { paths: { \"/api/\": { waf: { keywords: { enabled: true } } } } } }",
-		"empty disabled rule id":                 "defaults: { waf: { keywords: { enabled: true, rules_file: r.yaml, disabled_rule_ids: [ \"\" ] } } }",
-		"whitespace disabled rule id":            "defaults: { waf: { keywords: { enabled: true, rules_file: r.yaml, disabled_rule_ids: [ \"  \" ] } } }",
-		"duplicate disabled rule id":             "defaults: { waf: { keywords: { enabled: true, rules_file: r.yaml, disabled_rule_ids: [ a, a ] } } }",
-		"exclusions without rules_file":          "defaults: { waf: { keywords: { disabled_rule_ids: [ a ] } } }",
-		"parked exclusions without rules_file":   "domains: { a.test: { waf: { keywords: { enabled: false, disabled_rule_ids: [ a ] } } } }",
-		"path exclusions without rules_file":     "domains: { a.test: { paths: { \"/api/\": { waf: { keywords: { disabled_rule_ids: [ a ] } } } } } }",
+		"path rules without file":                "domains: { a.test: { paths: { \"/api/\": { waf: { rules: { enabled: true } } } } } }",
+		"empty disabled rule id":                 "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ \"\" ] } } }",
+		"whitespace disabled rule id":            "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ \"  \" ] } } }",
+		"duplicate disabled rule id":             "defaults: { waf: { rules: { enabled: true, file: r.yaml, disabled_ids: [ a, a ] } } }",
+		"exclusions without file":                "defaults: { waf: { rules: { disabled_ids: [ a ] } } }",
+		"parked exclusions without file":         "domains: { a.test: { waf: { rules: { enabled: false, disabled_ids: [ a ] } } } }",
+		"path exclusions without file":           "domains: { a.test: { paths: { \"/api/\": { waf: { rules: { disabled_ids: [ a ] } } } } } }",
 		"path reputation without feeds":          "domains: { a.test: { paths: { \"/api/\": { reputation: { enabled: true } } } } }",
 		"path geo without databases":             "domains: { a.test: { paths: { \"/api/\": { geo: { enabled: true, deny: { countries: [ NL ] } } } } } }",
 	} {
@@ -452,9 +452,9 @@ func TestValidateConfigArtifactsLoadsRules(t *testing.T) {
 signing_key_file: test-signing.key
 defaults:
   waf:
-    keywords:
+    rules:
       enabled: true
-      rules_file: /definitely/missing/rules.yaml
+      file: /definitely/missing/rules.yaml
 `)
 	if err := ValidateConfigArtifacts(cfg, slog.Default()); err == nil {
 		t.Fatal("missing rules artifact must fail preflight validation")
@@ -849,8 +849,8 @@ defaults:
     "/robots.txt":
       allowlist: { ips: [ "192.0.2.0/24" ] }
       waf:
-        keywords: { enabled: true, rules_file: rules.yaml }
-        ip_behaviour: { enabled: true, thresholds: { signature: 3/h } }
+        rules: { enabled: true, file: rules.yaml }
+        ip_behaviour: { enabled: true, thresholds: { rule_match: 3/h } }
 domains:
   a.test: {}
 `)
@@ -876,8 +876,8 @@ domains:
 	if scopes := cfg.RuleVariants()[0].Scopes; len(scopes) == 0 || scopes[0] != "defaults path /robots.txt" {
 		t.Errorf("RuleVariants scopes = %v, want the defaults path overlay named", scopes)
 	}
-	if !slices.Contains(cfg.BehaviourWindows(), BehaviourWindow{Event: "signature", Window: time.Hour}) {
-		t.Errorf("BehaviourWindows = %v, want the defaults path overlay 1h signature window", cfg.BehaviourWindows())
+	if !slices.Contains(cfg.BehaviourWindows(), BehaviourWindow{Event: "rule_match", Window: time.Hour}) {
+		t.Errorf("BehaviourWindows = %v, want the defaults path overlay 1h rule_match window", cfg.BehaviourWindows())
 	}
 }
 
@@ -940,7 +940,7 @@ domains:
     paths:
       "/api/":
         waf:
-          keywords: { enabled: true, rules_file: path-rules.yaml }
+          rules: { enabled: true, file: path-rules.yaml }
           anomaly: { enabled: true, model: path-model.json, challenge_at: 0.8, deny_at: 0.9 }
 `)
 	rules := cfg.RuleFiles()
@@ -957,34 +957,34 @@ domains:
 	}
 }
 
-// TestDisabledRuleIDsOverlay pins the list-overlay semantics for
-// waf.keywords.disabled_rule_ids: omitted inherits, a non-empty list replaces
+// TestDisabledIDsOverlay pins the list-overlay semantics for
+// waf.rules.disabled_ids: omitted inherits, a non-empty list replaces
 // wholesale, an explicit [] clears, and a path overlay replaces the domain's
 // resolved list. RuleVariants must collect one spec per distinct
 // (file, exclusions) pair with the scope labels that use it, including a
 // parked (enabled: false) scope that still carries exclusions.
-func TestDisabledRuleIDsOverlay(t *testing.T) {
+func TestDisabledIDsOverlay(t *testing.T) {
 	cfg := loadTestConfig(t, `
 store: { backend: memory }
 defaults:
   waf:
-    keywords: { enabled: true, rules_file: common.yaml, disabled_rule_ids: [ wp-probe ] }
+    rules: { enabled: true, file: common.yaml, disabled_ids: [ wp-probe ] }
 domains:
   inherit.test:
   replace.test:
-    waf: { keywords: { disabled_rule_ids: [ scanner-ua, sqli-basic ] } }
+    waf: { rules: { disabled_ids: [ scanner-ua, sqli-basic ] } }
   clear.test:
-    waf: { keywords: { disabled_rule_ids: [] } }
+    waf: { rules: { disabled_ids: [] } }
   otherfile.test:
-    waf: { keywords: { rules_file: api.yaml, disabled_rule_ids: [ scanner-ua ] } }
+    waf: { rules: { file: api.yaml, disabled_ids: [ scanner-ua ] } }
   parked.test:
-    waf: { keywords: { enabled: false, disabled_rule_ids: [ sqli-basic ] } }
+    waf: { rules: { enabled: false, disabled_ids: [ sqli-basic ] } }
   pathed.test:
     paths:
       "/legacy/":
-        waf: { keywords: { disabled_rule_ids: [ sqli-basic ] } }
+        waf: { rules: { disabled_ids: [ sqli-basic ] } }
 `)
-	ids := func(dc *DomainConfig) []string { return dc.WAF.Keywords.DisabledRuleIDs }
+	ids := func(dc *DomainConfig) []string { return dc.WAF.Rules.DisabledIDs }
 	if got := ids(cfg.DomainFor("inherit.test")); !slices.Equal(got, []string{"wp-probe"}) {
 		t.Errorf("inherit.test = %v, want inherited [wp-probe]", got)
 	}
@@ -1004,7 +1004,7 @@ domains:
 	specs := cfg.RuleVariants()
 	byScope := make(map[string]string) // scope label -> "path|sorted ids"
 	for _, s := range specs {
-		sorted := slices.Clone(s.Disabled)
+		sorted := slices.Clone(s.DisabledIDs)
 		slices.Sort(sorted)
 		for _, scope := range s.Scopes {
 			byScope[scope] = s.Path + "|" + strings.Join(sorted, ",")

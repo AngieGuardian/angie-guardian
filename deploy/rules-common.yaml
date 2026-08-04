@@ -1,15 +1,15 @@
-# Starter WAF signature rules for Angie Guardian.
-# Copy to /etc/guardian/rules.d/common.yaml (or wherever waf.keywords.rules_file
+# Starter WAF rules for Angie Guardian.
+# Copy to /etc/guardian/rules.d/common.yaml (or wherever waf.rules.file
 # points) and tune per site. The file is hot-reloaded: edits apply within
 # seconds, and a file that fails to parse keeps the previous rules active. An
 # update that removes or renames a rule id still listed in some scope's
-# waf.keywords.disabled_rule_ids is rejected the same way (last-good rules
+# waf.rules.disabled_ids is rejected the same way (last-good rules
 # stay active): drop the id from guardian.yaml and reload first, then delete
 # the rule here.
 #
 # Rule fields:
 #   id:          unique name, shows up in logs as waf:<id>. Also the exact,
-#                case-sensitive selector for waf.keywords.disabled_rule_ids in
+#                case-sensitive selector for waf.rules.disabled_ids in
 #                guardian.yaml, which disables the rule for one domain or path
 #                scope instead of copying this file.
 #   action:      deny (default) | challenge (a valid bound token satisfies it;

@@ -61,8 +61,8 @@ domains:
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: no PoW, no behavioural scoring. Signature rules still
-  # apply from defaults; override waf.keywords too for a minimal policy.
+  # Static assets: no PoW, no behavioural scoring. WAF rules still
+  # apply from defaults; override waf.rules too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -110,21 +110,21 @@ domains:
       "/robots.txt": { pow: { enabled: true } }   # opt this host back in
 ```
 
-## Signature rules: one starter file, scoped per domain
+## WAF rules: one starter file, scoped per domain
 
-Signature rules are not auto-discovered: a rules file must be installed on
-disk and named by `waf.keywords.rules_file`, with `enabled: true`, or no
-signature matching happens at all. The install recipe in the
+WAF rules are not auto-discovered: a rules file must be installed on
+disk and named by `waf.rules.file`, with `enabled: true`, or no
+WAF rule matching happens at all. The install recipe in the
 [production guide](/guide/production#systemd) copies the shipped starter file
 `deploy/rules-common.yaml` to `/etc/guardian/rules.d/common.yaml`; a
 configured file that is missing fails validation (and so startup) rather than
 silently matching nothing.
 
-`defaults.waf.keywords` is inherited by every domain and path overlay unless
+`defaults.waf.rules` is inherited by every domain and path overlay unless
 overridden there. Scoping works three ways: point a domain (or path overlay)
 at a *different* rules file, disable matching for that scope, or disable
 selected rules from the effective file by their exact `id` with
-`disabled_rule_ids` (no need to copy the file for one exception). The `id`
+`disabled_ids` (no need to copy the file for one exception). The `id`
 inside a rules file is both the log/reason label (a hit reports `waf:<id>`)
 and the case-sensitive selector for exclusions; rules are evaluated in file
 order, first match wins, and a disabled rule simply falls through to the next
@@ -134,17 +134,17 @@ rule sets:
 ```yaml
 defaults:
   waf:
-    keywords:
+    rules:
       enabled: true
-      rules_file: /etc/guardian/rules.d/common.yaml
+      file: /etc/guardian/rules.d/common.yaml
 
 domains:
   # A real WordPress site: keep the shared starter set but drop its
   # wp-probe rule, which would flag legitimate wp-login traffic.
   wordpress.example.com:
     waf:
-      keywords:
-        disabled_rule_ids: [ wp-probe ]
+      rules:
+        disabled_ids: [ wp-probe ]
 
   # APIs get their own, stricter-or-looser file instead of the shared one
   # (e.g. drop challenge-action heuristics, which degrade to deny where PoW
@@ -152,29 +152,29 @@ domains:
   # here api.yaml.
   api.example.com:
     waf:
-      keywords:
+      rules:
         enabled: true
-        rules_file: /etc/guardian/rules.d/api.yaml
-        disabled_rule_ids: [ scanner-ua ]
+        file: /etc/guardian/rules.d/api.yaml
+        disabled_ids: [ scanner-ua ]
 
-  # No signature matching at all on the assets host.
+  # No WAF rule matching at all on the assets host.
   static.example.com:
     waf:
-      keywords:
+      rules:
         enabled: false
 ```
 
-`disabled_rule_ids` overlays like every list: omitted inherits the parent's
+`disabled_ids` overlays like every list: omitted inherits the parent's
 resolved list, `[]` clears inherited exclusions, and a non-empty list replaces
 them wholesale. Unknown, empty or duplicate ids are rejected at `-t`, startup
 and reload, and a rules-file update that removes a still-excluded id keeps the
 last-good rules active, so a typo or rename can never silently re-enable a
-rule. `GET /admin/config` shows each scope's effective `rules_file` and
+rule. `GET /admin/config` shows each scope's effective `file` and
 exclusions together.
 
-See [the signature-rules walkthrough](/guide/configuration#signature-rules-waf-keywords)
+See [the WAF rules walkthrough](/guide/configuration#waf-rules)
 for the file format, inheritance, and hot-reload behavior, and the
-[field reference](/reference/configuration#waf-keywords) for every rule field.
+[field reference](/reference/configuration#waf-rules) for every rule field.
 
 ## Suspicion-only challenges (anomaly model)
 

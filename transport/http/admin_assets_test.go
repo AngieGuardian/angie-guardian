@@ -76,6 +76,18 @@ func TestChartJSEmbedded(t *testing.T) {
 	}
 }
 
+func TestDashboardUsesWAFRulesConfigFields(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, field := range []string{"waf_rules", "waf_rules_file", "waf_rules_disabled_ids"} {
+		if !bytes.Contains(page, []byte(field)) {
+			t.Errorf("dashboard does not consume /admin/config field %q", field)
+		}
+	}
+}
+
 // TestChartGeoEmbedded: the map module is embedded, self-contained and paired
 // with a real atlas. chartjs-chart-geo ships no geometry, so the atlas is not
 // optional decoration: without it the choropleth has nothing to draw.

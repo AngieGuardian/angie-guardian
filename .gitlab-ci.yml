@@ -269,7 +269,7 @@ upload_and_release:
       test -f "$PKG/deploy/alerts.yaml"
       grep -q '^signing_key_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
       grep -q '^  token_file: /var/lib/guardian/' "$PKG/guardian.example.yaml"
-      grep -q 'rules_file: /etc/guardian/rules.d/common.yaml' "$PKG/guardian.example.yaml"
+      grep -q 'file: /etc/guardian/rules.d/common.yaml' "$PKG/guardian.example.yaml"
       grep -q '^StateDirectoryMode=0700$' "$PKG/deploy/guardiand.service"
       grep -q '^ConfigurationDirectoryMode=0710$' "$PKG/deploy/guardiand.service"
       ! grep -q '^ReadWritePaths=/etc/guardian' "$PKG/deploy/guardiand.service"

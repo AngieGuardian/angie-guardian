@@ -25,9 +25,9 @@ import (
 // block clear it afterwards (t.Cleanup → clearGatewayBlocks) so they don't
 // poison later assertions.
 
-// TestWAFSignatureDeny confirms a `deny` rule (wp-probe) returns Angie's 403
+// TestWAFRuleDeny confirms a `deny` rule (wp-probe) returns Angie's 403
 // denied page and does NOT place a behavioural block (deny != block).
-func TestWAFSignatureDeny(t *testing.T) {
+func TestWAFRuleDeny(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks) // defensive; a deny shouldn't block, but be safe
 
 	resp := get(t, "/wp-login.php", powHost, "curl/8.0", nil)
@@ -138,7 +138,7 @@ func TestWAFMethodRule(t *testing.T) {
 // challenge rather than an outright deny on a PoW-enabled host: a softer
 // response that spares false positives. It also proves the difficulty relay
 // works through real Angie: the escalated difficulty from the auth decision
-// (base + 4 bits for a signature hit) must reach the issued challenge via
+// (base + 4 bits for a rule hit) must reach the issued challenge via
 // auth_request_set + X-Guardian-Difficulty, not fall back to base.
 func TestWAFChallengeAction(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
@@ -147,16 +147,16 @@ func TestWAFChallengeAction(t *testing.T) {
 	// `challenge`, so the browser is diverted to the interstitial (200 HTML),
 	// not denied.
 	ch := fetchChallenge(t, "/search?q="+urlEscape("' or 1=1"), powHost, browserUA)
-	// guardian.e2e.yaml: base_difficulty 4 = 16 bits; signature escalation
+	// guardian.e2e.yaml: base_difficulty 4 = 16 bits; rule escalation
 	// adds one full step (4 bits).
 	if ch.Difficulty != 20 {
-		t.Fatalf("signature challenge difficulty = %d bits, want escalated 20 (base 16 + 4)", ch.Difficulty)
+		t.Fatalf("rule challenge difficulty = %d bits, want escalated 20 (base 16 + 4)", ch.Difficulty)
 	}
 }
 
 // TestPerDomainPolicy confirms per-domain config is honoured through Angie: on
 // the PoW-disabled host (api.localhost) a browser UA is NOT challenged (WAF
-// only, no interstitial a machine client can't solve), yet a WAF signature
+// only, no interstitial a machine client can't solve), yet a WAF rule
 // still denies. This proves the domain merge reaches the live decision.
 func TestPerDomainPolicy(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
@@ -170,9 +170,9 @@ func TestPerDomainPolicy(t *testing.T) {
 		t.Fatal("WAF-only host must not serve a PoW interstitial")
 	}
 
-	// A WAF `deny` signature still fires on the same host.
+	// A WAF `deny` rule still fires on the same host.
 	if r := get(t, "/wp-login.php", wafOnlyHost, "curl/8.0", nil); r.StatusCode != http.StatusForbidden {
-		t.Fatalf("signature on WAF-only host: status %d, want 403", r.StatusCode)
+		t.Fatalf("rule on WAF-only host: status %d, want 403", r.StatusCode)
 	}
 }
 

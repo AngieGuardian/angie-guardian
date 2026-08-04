@@ -9,7 +9,7 @@ Angie (reverse proxy, auth_request)  ──►  guardiand (sidecar)  ──►  
 ```
 
 It wires the full Path A topology (the `auth_request` decision flow, the PoW
-challenge interstitial, WAF signature denies, behavioural blocking, the admin
+challenge interstitial, WAF rules denies, behavioural blocking, the admin
 API, and the fail-open toggle) so you can verify behaviour and reproduce
 findings on a real Angie binary.
 

@@ -30,7 +30,7 @@ func TestReasonCategoryBounded(t *testing.T) {
 		"reputation:firehol-level1-with-a-very-long-feed-name",
 		"verified_bot:Some-Bot/1.2.3 (+http://evil.example/;drop)",
 		"bot_spoof:" + "arbitrary bot name from config",
-		"behaviour_block:threshold:signature:extra:colons",
+		"behaviour_block:threshold:rule_match:extra:colons",
 		"geo:asn:64500",
 		"honeypot:path",
 		"default",

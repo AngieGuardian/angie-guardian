@@ -85,6 +85,16 @@ func TestStoreProbeSeriesIdentity(t *testing.T) {
 	}
 }
 
+func TestRuleMatchBlockMetricLabel(t *testing.T) {
+	m := New("memory")
+	m.BlockPlaced("rule_match")
+	mf := family(t, m, "guardian_blocks_placed_total")
+	got := series(t, mf, map[string]string{"reason": "rule_match"})
+	if got.GetCounter().GetValue() != 1 {
+		t.Errorf("rule_match block counter = %v, want 1", got.GetCounter().GetValue())
+	}
+}
+
 // TestStoreSeriesCarryTheBackend: every store series is labelled with the
 // backend, so a mixed fleet (or a deployment mid-migration between backends)
 // can group by it directly instead of joining against guardian_store_up. The

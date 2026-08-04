@@ -7,7 +7,7 @@
 // WebAssembly support instead of the sidecar.
 //
 // It is stateless WAF-only: static allowlist, static denylist, honeypot trap
-// paths, and keyword/regex signatures. Because the http-wasm ABI is
+// paths, and WAF rules with literal/regex matchers. Because the http-wasm ABI is
 // synchronous with no shared store or outbound HTTP, the stateful features
 // (proof-of-work challenges, behavioural IP blocking, anomaly scoring) are not
 // available here and require the sidecar (cmd/guardiand).

@@ -40,7 +40,7 @@ A=http://127.0.0.1:8072
 
 # Is an IP currently blocked, and why?
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
-# {"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
+# {"ip":"203.0.113.9","blocked":true,"reason":"threshold:rule_match"}
 
 # List a bounded page of active blocks, with reasons and expiry. The default
 # is 1000 and the hard maximum is 10000; complete=false means more exist.

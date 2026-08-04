@@ -1485,18 +1485,18 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PoWMode    string  `json:"pow_mode"`
 		PoWBase    float64 `json:"pow_base_difficulty"`
 		PoWMax     float64 `json:"pow_max_difficulty"`
-		Keywords   bool    `json:"waf_keywords"`
-		// RulesFile and DisabledRuleIDs expose the effective signature-rule
+		Rules      bool    `json:"waf_rules"`
+		// RulesFile and DisabledIDs expose the effective WAF rule
 		// selection together, so an operator can see which file a scope uses
 		// and which rule IDs it excludes from it without shell access.
-		RulesFile       string   `json:"waf_rules_file,omitempty"`
-		DisabledRuleIDs []string `json:"waf_disabled_rule_ids,omitempty"`
-		Anomaly         bool     `json:"waf_anomaly"`
-		AnomalyObserve  bool     `json:"waf_anomaly_observe_only"`
-		Honeypot        bool     `json:"waf_honeypot"`
-		IPBehaviour     bool     `json:"waf_ip_behaviour"`
-		Geo             bool     `json:"geo"`
-		Reputation      bool     `json:"reputation"`
+		RulesFile      string   `json:"waf_rules_file,omitempty"`
+		DisabledIDs    []string `json:"waf_rules_disabled_ids,omitempty"`
+		Anomaly        bool     `json:"waf_anomaly"`
+		AnomalyObserve bool     `json:"waf_anomaly_observe_only"`
+		Honeypot       bool     `json:"waf_honeypot"`
+		IPBehaviour    bool     `json:"waf_ip_behaviour"`
+		Geo            bool     `json:"geo"`
+		Reputation     bool     `json:"reputation"`
 		// Paths are the domain's per-path overlays keyed by their configured
 		// path. JSON map order is alphabetical; lookup precedence is by key
 		// specificity (longest bare key, exact before prefix).
@@ -1506,8 +1506,8 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return domainView{
 			PoWEnabled: dc.PoW.Enabled, PoWMode: dc.PoW.Mode,
 			PoWBase: dc.PoW.BaseDifficulty, PoWMax: dc.PoW.MaxDifficulty,
-			Keywords: dc.WAF.Keywords.Enabled, RulesFile: dc.WAF.Keywords.RulesFile,
-			DisabledRuleIDs: dc.WAF.Keywords.DisabledRuleIDs, Anomaly: dc.WAF.Anomaly.Enabled,
+			Rules: dc.WAF.Rules.Enabled, RulesFile: dc.WAF.Rules.File,
+			DisabledIDs: dc.WAF.Rules.DisabledIDs, Anomaly: dc.WAF.Anomaly.Enabled,
 			AnomalyObserve: dc.WAF.Anomaly.ObserveOnly,
 			Honeypot:       dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,
 			Geo: dc.Geo.Enabled, Reputation: dc.Reputation.Enabled,

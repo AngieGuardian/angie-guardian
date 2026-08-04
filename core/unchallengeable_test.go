@@ -169,8 +169,8 @@ defaults:
     ip_behaviour:
       enabled: true
       block_ttl: 15m
-      thresholds: { signature: 2/h }
-    keywords: { enabled: true, rules_file: %s }
+      thresholds: { rule_match: 2/h }
+    rules: { enabled: true, file: %s }
 `
 
 const refusalScoringRules = `
@@ -188,8 +188,8 @@ rules:
 // bumps the unsolved-issuance escalation and challenge_farm cannot follow.
 // That is the favicon case, and it arrives here carrying no events at all.
 //
-// It does NOT exonerate the request. A client that trips a WAF signature and
-// happens to be unable to run an interstitial has still tripped the signature,
+// It does NOT exonerate the request. A client that trips a WAF rule and
+// happens to be unable to run an interstitial has still tripped the rule,
 // and the event the stage emitted is recorded before the action is converted
 // (see Engine.Evaluate). Withholding it would hand any scanner a one-header
 // amnesty: claim Sec-Fetch-Dest: image and probe for SQL injection forever
@@ -218,7 +218,7 @@ func TestRefusedChallengeStillScoresItsEvent(t *testing.T) {
 	t.Cleanup(e.Close)
 	ua := "Mozilla/5.0 (X11; Linux x86_64)"
 
-	// A signature hit that cannot be challenged: refused, but still scored, so
+	// A rule hit that cannot be challenged: refused, but still scored, so
 	// the threshold of 2 is crossed on the second request and the third is
 	// denied by the block the first two placed.
 	scanner := "198.51.100.31"
@@ -230,7 +230,7 @@ func TestRefusedChallengeStillScoresItsEvent(t *testing.T) {
 		}
 	}
 	if _, blocked, err := e.BlockStatus(ctx, scanner); err != nil || !blocked {
-		t.Errorf("scanner blocked = %v (err %v), want true: a refused signature hit must still score", blocked, err)
+		t.Errorf("scanner blocked = %v (err %v), want true: a refused rule hit must still score", blocked, err)
 	}
 
 	// The favicon case, on the same config: no stage emitted an event, so
@@ -247,7 +247,7 @@ func TestRefusedChallengeStillScoresItsEvent(t *testing.T) {
 	if _, blocked, err := e.BlockStatus(ctx, visitor); err != nil || blocked {
 		t.Errorf("visitor blocked = %v (err %v), want false: an eventless refusal must score nothing", blocked, err)
 	}
-	// Not blocked is too weak on its own: only the signature threshold is
+	// Not blocked is too weak on its own: only the rule threshold is
 	// tightened here, so a regression that emitted some OTHER event type would
 	// stay under its default rate for five requests and pass anyway. Assert
 	// what is actually claimed, which is that nothing was scored at all.

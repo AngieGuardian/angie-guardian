@@ -8,7 +8,7 @@
 // Guardian, compiled to WebAssembly to run in-process inside Angie via its
 // WASM support. It is an optional alternative to the sidecar for operators who
 // want the WASM integration; it runs the store-free checks only (allowlist,
-// denylist, honeypot, signatures). Stateful features (proof-of-work,
+// denylist, honeypot, WAF rules). Stateful features (proof-of-work,
 // behavioural blocking, anomaly scoring) require the sidecar.
 //
 // Build: GOOS=wasip1 GOARCH=wasm go build -o guardian.wasm ./transport/wasm

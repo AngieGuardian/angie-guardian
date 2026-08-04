@@ -22,7 +22,7 @@ store: { backend: memory }
 signing_key_file: test-signing.key
 defaults:
   waf:
-    keywords: { enabled: true, rules_file: %q }
+    rules: { enabled: true, file: %q }
 domains:
   shop.test:
     pow: { enabled: true, base_difficulty: 1, max_difficulty: 6 }
@@ -153,7 +153,7 @@ store: { backend: memory }
 signing_key_file: test-signing.key
 defaults:
   waf:
-    keywords: { enabled: true, rules_file: %q }
+    rules: { enabled: true, file: %q }
 domains:
   shop.test:
     pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, token_ttl: 1h }

@@ -15,7 +15,7 @@
 // It talks to guardiand directly, standing in for Angie by setting the
 // X-Guardian-* headers itself, so the target must run with trusted_proxy: true.
 // To exercise every leg the target config also needs proof of work enabled,
-// waf.keywords pointing at rules (deploy/rules-common.yaml works), and
+// waf.rules pointing at a file (deploy/rules-common.yaml works), and
 // waf.ip_behaviour on for blocks. A pow-disabled domain (default plain.test)
 // supplies the allowed traffic. test/seed/guardian.seed.yaml is a ready-made
 // throwaway config with all of that set up.
@@ -260,7 +260,7 @@ func (s *seeder) visitor(host, uri, ip, ua string, redeem, valid bool) {
 	s.do(http.MethodPost, "/__guardian/pass", host, uri, ip, ua, payload)
 }
 
-// scanner probes signature-matching paths from a small IP pool. The starter
+// scanner probes rule-matching paths from a small IP pool. The starter
 // rules deny most of these and block a couple, and the repeats push offenders
 // over the behavioural threshold.
 func (s *seeder) scanner() { s.scan(s.clientIP("203.0.113", 60)) }

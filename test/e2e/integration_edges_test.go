@@ -64,7 +64,7 @@ func TestLargePOSTPassesThrough(t *testing.T) {
 // TestPOSTHitsWAF: the WAF still evaluates a non-GET request even though its
 // body is never sent to the sidecar. A POST to a dotfile-probe path is blocked
 // on method+path+headers alone, confirming body-less auth does not weaken
-// signature matching for POST/PUT/etc.
+// rule matching for POST/PUT/etc.
 func TestPOSTHitsWAF(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
 	clearGatewayBlocks()

@@ -13,7 +13,7 @@ sound protection and a false sense of one. This page is the honest map.
   A client that keeps fetching challenges without ever solving one is
   rate-limited, escalated to the difficulty ceiling, and past the
   `challenge_farm` threshold temporarily blocked.
-- **Scanner and probe traffic.** WAF signature rules (keywords + RE2 regexes,
+- **Scanner and probe traffic.** WAF rules (literal keywords + RE2 regexes,
   on the path, query, User-Agent and named headers) deny known-bad requests:
   dotfile probes, admin-panel scans, injection payloads. Repeat offenders earn
   a behavioural IP block with backoff.
@@ -61,7 +61,7 @@ tools that own these problems.
 - **Vulnerabilities in the protected application.** Guardian filters who gets
   through; it does not fix the app behind it. A logic flaw reachable by a
   vouched, well-behaved client is still reachable.
-- **Perfect bot detection.** Anomaly scoring and signatures are heuristics.
+- **Perfect bot detection.** Anomaly scoring and WAF rules are heuristics.
   They raise the cost and catch the unsubtle; a patient, browser-faithful
   adversary can blend in. The goal is economic deterrence, not an oracle.
 

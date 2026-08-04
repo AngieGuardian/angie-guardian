@@ -76,8 +76,8 @@ domains:
   api.example.com:
     pow: { enabled: false }
 
-  # Static assets: no PoW, no behavioural scoring. Signature rules still
-  # apply from defaults; override waf.keywords too for a minimal policy.
+  # Static assets: no PoW, no behavioural scoring. WAF rules still
+  # apply from defaults; override waf.rules too for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -108,11 +108,11 @@ GeoIP, and file-feed artifact. Remote URL feeds are not fetched. It then exits:
 # config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got "etcd"
 ```
 
-### Signature rules
+### WAF rules
 
-`waf.keywords.rules_file` points at a YAML rules file (start from
-`deploy/rules-common.yaml`, which documents every field). Rules are keyword
-and RE2-regex signatures with an `action` of `deny`, `challenge` or `block`,
+`waf.rules.file` points at a YAML rules file (start from
+`deploy/rules-common.yaml`, which documents every field). Rules contain literal
+keywords and/or RE2 regexes, with an `action` of `deny`, `challenge` or `block`,
 hot-reloaded on change. Empty keyword/regex entries and trailing YAML documents
 are rejected. The first matching rule in file order wins. With PoW enabled, a
 valid bound token satisfies `challenge`; without PoW, `challenge` denies.
@@ -130,11 +130,11 @@ valid bound token satisfies `challenge`; without PoW, `challenge` denies.
 
 The file must be installed and named explicitly (the systemd recipe in step 3
 does both): nothing under `/etc/guardian/rules.d/` is auto-discovered, and a
-configured `rules_file` that is missing fails `-t` and startup rather than
-silently matching nothing. `defaults.waf.keywords` is inherited by every
+configured `file` that is missing fails `-t` and startup rather than
+silently matching nothing. `defaults.waf.rules` is inherited by every
 domain and path overlay unless overridden there; a scope can point at a
-different `rules_file`, set `enabled: false`, or disable selected rules from
-its effective file by exact, case-sensitive `id` with `disabled_rule_ids`
+different `file`, set `enabled: false`, or disable selected rules from
+its effective file by exact, case-sensitive `id` with `disabled_ids`
 (the `id` is also the log/reason label, `waf:<id>`). A disabled rule falls
 through to the next matching rule in file order. The list overlays wholesale
 (omitted inherits, `[]` clears, non-empty replaces); unknown, empty or
@@ -180,7 +180,7 @@ Which value fires:
   method or User-Agent, pays exactly `base_difficulty`, once, then rides a
   `token_ttl` cookie. The token lifetime must be at least one second and at
   most seven days.
-- **A WAF signature hit:** one full step over base (`base + 1`, i.e. +4 bits =
+- **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits =
   16x, capped at `max`). A valid bound token satisfies challenge-only rules;
   deny/block rules still apply.
 - **The anomaly scorer:** scales the difficulty across the `[base, max]` range
@@ -584,7 +584,7 @@ handler. Application-origin errors are untouched. Comment out the 5xx
 
 Two header relays in the snippets matter beyond routing:
 `X-Guardian-Difficulty` carries an
-escalated difficulty (WAF signature hit, anomaly score) from the auth decision
+escalated difficulty (WAF rule hit, anomaly score) from the auth decision
 into the issued challenge, and `X-Guardian-Proto` (`$scheme`) tells Guardian
 whether the token cookie may carry the `Secure` flag; without it a plain-http
 site would loop on the challenge. If you wrote your own glue before these
@@ -644,9 +644,9 @@ sudo install -d -o root -g guardian -m710 /etc/guardian
 sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
 sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
 # The starter WAF rules the example config enables; without this file the
-# unit's ExecStartPre `-t` preflight fails on the missing rules_file.
+# unit's ExecStartPre `-t` preflight fails on the missing file.
 # Per-host exceptions to this shared file belong in guardian.yaml
-# (waf.keywords.disabled_rule_ids), not in diverging copies of the file.
+# (waf.rules.disabled_ids), not in diverging copies of the file.
 sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
 
 sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
@@ -698,7 +698,7 @@ A=http://127.0.0.1:8072
 
 # Is an IP currently blocked, and why?
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
-# {"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature"}
+# {"ip":"203.0.113.9","blocked":true,"reason":"threshold:rule_match"}
 
 # List a bounded page of active blocks. Default 1000, maximum 10000;
 # complete=false means additional blocks exist.
@@ -978,8 +978,8 @@ not read by the verifier.
 
 Instead of the sidecar, you can run Guardian's **stateless WAF checks**
 in-process inside Angie via its WebAssembly support. This path does the
-store-free checks only (allowlist, denylist, honeypot, keyword/regex
-signatures); proof-of-work and behavioural IP blocking need sidecar state,
+store-free checks only (allowlist, denylist, honeypot, literal/regex WAF
+rules); proof-of-work and behavioural IP blocking need sidecar state,
 while anomaly scoring also remains sidecar-only. Use it when you want the WASM
 integration and the stateless WAF subset is enough, or alongside a backend
 that handles the rest.

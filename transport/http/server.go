@@ -179,7 +179,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	// Load-shedding: when the daemon is saturated, admit a bounded number of
 	// full evaluations. Over the bound, a client holding a valid token still
-	// passes (a cheap stateless signature check, no store I/O), and everyone
+	// passes (a cheap stateless WAF rule check, no store I/O), and everyone
 	// else gets a fast 503 with Retry-After instead of a full evaluation that
 	// would only add to the pileup. This keeps the backend seeing vouched
 	// traffic under overload rather than fail-open dumping the whole flood.
@@ -248,7 +248,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		// because no challenge is being issued to carry one.
 		//
 		// The kind is recomputed rather than threaded out of requestContext,
-		// which leaves that signature (and the allocation benchmark measuring
+		// which leaves that WAF rule (and the allocation benchmark measuring
 		// the whole per-request setup through it) alone. refusalKind is two
 		// switches over short tokens and an allocation-free Accept scan, on a
 		// branch that is about to cost a whole second subrequest anyway.
@@ -449,7 +449,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	base, maxBits := attackmode.EffectiveBits(attack,
 		dcfg.PoW.BaseBits(), dcfg.PoW.MaxBits(), attack.Cap(dcfg.PoW.MaxBits()))
 
-	// The auth decision may have escalated the difficulty (WAF signature hit,
+	// The auth decision may have escalated the difficulty (WAF rule hit,
 	// anomaly score); Angie relays it via X-Guardian-Difficulty (see the
 	// auth_request_set lines in deploy/angie-guardian.conf). Clamp it to the
 	// (possibly attack-shifted) [base, max] so a client forging the header can

@@ -13,7 +13,7 @@ with proof of work, and blocks clear threats.
 Guardian combines a request-time WAF with proof-of-work challenges. Policy is
 configurable per domain, so one instance can protect multiple vhosts.
 
-- **Hot-reloadable WAF:** RE2 keyword and regex rules for paths, queries,
+- **Hot-reloadable WAF:** literal and RE2 regex rules for paths, queries,
   User-Agents, headers, and HTTP methods.
 - **Adaptive bot defence:** behavioural scoring, honeypots, IP blocking,
   GeoIP/reputation checks, and verified-bot DNS validation.
@@ -92,9 +92,9 @@ Guardian offers two ways to run, sharing one decision core:
   proof-of-work and behavioural IP blocking use the shared store it owns;
   anomaly scoring and verified-bot DNS are also sidecar-only. Start here.
 - **WASM module (optional, stateless WAF).** The store-free checks (allowlist,
-  denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
-  in-process inside Angie via its WASM support, for operators who prefer that
-  integration. It is stateless WAF-only: proof-of-work, behavioural blocking,
+  denylist, honeypot, WAF rules with literal/regex matchers) are compiled to
+  WebAssembly and run in-process inside Angie via its WASM support, for
+  operators who prefer that integration. It is stateless WAF-only: proof-of-work, behavioural blocking,
   anomaly scoring and verified-bot DNS checks need the sidecar. Build it with `make wasm`; see the
   "WASM module" section of [USAGE.md](USAGE.md).
 
@@ -102,7 +102,7 @@ Both paths share the same store-free matching logic. Their stateful outcomes
 differ: in the sidecar, `challenge` can be satisfied by a bound PoW token and
 `block`/honeypot hits persist an IP block; the stateless WASM guest returns a
 plain deny for any of those matches. A vouched PoW token never exempts a
-sidecar client from `deny` or `block` signature checks, so a stolen token can't
+sidecar client from `deny` or `block` WAF rule checks, so a stolen token can't
 ride past the WAF.
 
 ## Operations
@@ -374,7 +374,7 @@ dragging in the store, PoW or anomaly dependencies.
 core/             decision engine, pipeline, config, scoreboard, recent-decision ring
 core/stateless/   store-free WAF checks + value types (shared by sidecar & WASM)
 core/pow/         challenges, Ed25519 JWTs, token cache, key persistence + rotation
-core/waf/         signature rules, signed IDs
+core/waf/         WAF rules, signed IDs
 core/anomaly/     statistical baseline model, online scorer, hot-swap cache
 core/store/       TTL'd shared state: memory | buntdb | pebble | redis
 core/intel/       GeoIP/ASN databases and IP reputation feeds

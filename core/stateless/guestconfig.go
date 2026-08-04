@@ -15,8 +15,8 @@ import (
 
 // GuestConfig is the self-contained configuration the WASM guest receives from
 // the host (Angie's module config). It carries only the stateless WAF subset,
-// with signature rules inline (the guest has no filesystem to read a
-// rules_file from). It is a compact analogue of guardian.yaml.
+// with WAF rules inline (the guest has no filesystem to read a rule file
+// from). It is a compact analogue of guardian.yaml.
 //
 // Domains are captured as raw nodes so each domain can be resolved by
 // overlaying its own fields on top of a copy of Defaults, exactly like the
@@ -40,8 +40,8 @@ type GuestDomain struct {
 	Allowlist ListConfig     `yaml:"allowlist" json:"allowlist"`
 	Denylist  ListConfig     `yaml:"denylist" json:"denylist"`
 	Honeypot  HoneypotConfig `yaml:"honeypot" json:"honeypot"`
-	// Rules is an inline signature rules document (same shape as a rules_file).
-	// When present, keyword matching is enabled for the domain.
+	// Rules is an inline WAF rules document (the same shape as a rule file).
+	// When present, rule matching is enabled for the domain.
 	Rules yaml.Node `yaml:"rules" json:"rules"`
 }
 
@@ -114,7 +114,7 @@ func ParseGuestConfig(raw []byte) (*GuestConfig, error) {
 func isNullNode(n *yaml.Node) bool { return n.Kind == 0 || n.Tag == "!!null" }
 
 // hasRules reports whether an inline rules node carries any actual rules:
-// null/unset and an empty list both mean "no signature matching", so a domain
+// null/unset and an empty list both mean "no rule matching", so a domain
 // can opt out of inherited default rules with "rules: null" or "rules: []".
 func hasRules(n *yaml.Node) bool {
 	return !isNullNode(n) && (n.Kind != yaml.SequenceNode || len(n.Content) > 0)
@@ -166,7 +166,7 @@ func (gd *GuestDomain) resolve(host string) (*DomainRules, error) {
 			return nil, fmt.Errorf("domain %s rules: %w", host, err)
 		}
 		dr.Rules = rs
-		dr.KeywordsEnabled = true
+		dr.RulesEnabled = true
 	}
 	return dr, nil
 }

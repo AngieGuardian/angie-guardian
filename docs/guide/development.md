@@ -23,7 +23,7 @@ end-to-end suite.
 | `cmd/guardian-loadtest` | Hot-path load generator. The only tool that measures throughput. |
 | `core` | The decision engine (`engine.go`), the whole config surface (`config.go`), the recent-decisions ring, unblocking. |
 | `core/pow` | Proof of work: challenge issue and redeem, difficulty escalation, stateless challenges, key rotation. |
-| `core/waf` | Signature rules and their hot-reloading cache. |
+| `core/waf` | WAF rules and their hot-reloading cache. |
 | `core/anomaly` | The statistical baseline and scoring. |
 | `core/intel` | GeoIP and IP reputation feeds. |
 | `core/store` | Store backends behind one interface: sharded memory, BuntDB, Pebble, Redis/Valkey. |
@@ -317,7 +317,7 @@ Angie (auth_request)  ──►  guardiand  ──►  whoami backend
 
 ```sh
 make e2e                                                    # everything
-go test -tags e2e -run TestWAFSignatureDeny ./test/e2e/     # one scenario
+go test -tags e2e -run TestWAFRuleDeny ./test/e2e/          # one scenario
 ```
 
 The suite picks three free host ports, brings the stack up, and tears it (and

@@ -16,10 +16,10 @@ pipeline. Everything is per-domain configurable.
 
 ### 1. The WAF layer, on every request
 
-- Hot-reloadable keyword/regex threat signatures (RE2: no ReDoS by
+- Hot-reloadable WAF rules with literal/regex matchers (RE2: no ReDoS by
   construction), matched against the decoded path and query, the User-Agent,
   and any named request header, optionally scoped to HTTP methods.
-- Behavioural IP blocking with exponential backoff, fed by signature hits,
+- Behavioural IP blocking with exponential backoff, fed by WAF rule hits,
   PoW failures, tamper events, and bot-spoof attempts.
 - Verified crawler allowlisting: Googlebot and friends are admitted by
   rDNS + forward-confirmed identity, never by their forgeable User-Agent
@@ -36,7 +36,7 @@ pipeline. Everything is per-domain configurable.
   route/method baselines from Angie JSON access logs offline; the
   sub-microsecond online scorer rates each unvouched request and drives
   challenge/deny plus difficulty escalation. Valid PoW tokens short-circuit
-  this stage after the signature checks. The model artifact is self-describing
+  this stage after the WAF rule checks. The model artifact is self-describing
   and hot-swapped, so another detector can slot in behind the same seam later.
 
 ### 2. The proof-of-work challenge layer, only for suspicious or new clients
@@ -65,7 +65,7 @@ Guardian offers two ways to run, sharing one decision core:
   proof-of-work and behavioural IP blocking use the shared store it owns;
   anomaly scoring and verified-bot DNS are also sidecar-only. Start here.
 - **WASM module (optional, stateless WAF).** The store-free checks (allowlist,
-  denylist, honeypot, keyword/regex signatures) compiled to WebAssembly and run
+  denylist, honeypot, WAF rules with literal/regex matchers) compiled to WebAssembly and run
   in-process inside Angie via its WASM support. It is stateless WAF-only. See
   the [WASM module guide](/guide/wasm).
 
@@ -73,7 +73,7 @@ Both paths share the same store-free matching logic. Their stateful outcomes
 differ: in the sidecar, `challenge` can be satisfied by a bound PoW token and
 `block`/honeypot hits persist an IP block; the stateless WASM guest returns a
 plain deny for any of those matches. A vouched PoW token never exempts a
-sidecar client from `deny` or `block` signature checks, so a stolen token can't
+sidecar client from `deny` or `block` WAF rule checks, so a stolen token can't
 ride past the WAF.
 
 ## Architecture
@@ -93,7 +93,7 @@ dragging in the store, PoW, or anomaly dependencies.
 core/            decision engine, pipeline, config
 core/stateless/  store-free WAF checks + value types (shared by sidecar & WASM)
 core/pow/        challenges, Ed25519 JWTs, token cache, key persistence + rotation
-core/waf/        signature rules, signed IDs
+core/waf/        WAF rules, signed IDs
 core/anomaly/    statistical baseline model, online scorer, hot-swap cache
 core/botverify/  rDNS + forward-confirm crawler identity, store-cached
 core/intel/      GeoIP country/ASN lookups + reputation feed sets

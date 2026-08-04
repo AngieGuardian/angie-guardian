@@ -742,7 +742,7 @@
           <thead><tr><th title="Configured domain, or defaults">Domain</th>
                      <th title="Proof of work">PoW</th>
                      <th title="When proof of work applies">Mode</th>
-                     <th title="WAF keyword rules; hover a cell for the rules file">Signatures</th>
+                     <th title="WAF rules; hover a cell for the rules file">Rules</th>
                      <th title="Anomaly scoring: enforce, observe or off">Anomaly</th>
                      <th title="Per-IP behavioural blocking">Behaviour</th>
                      <th title="GeoIP country and ASN rules">Geo</th>
@@ -3331,17 +3331,17 @@
     $("domains").replaceChildren(...doms.map(([name, dc]) => {
       const pow = td(null, "");
       pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
-      // Keywords cell: flag rule-ID exclusions and expose the effective
+      // Rules cell: flag rule-ID exclusions and expose the effective
       // rules file + excluded IDs in the tooltip.
-      const excluded = dc.waf_disabled_rule_ids || [];
-      const kw = td(null, dc.waf_keywords ? (excluded.length ? "on (" + excluded.length + " excluded)" : "on") : "off");
+      const excluded = dc.waf_rules_disabled_ids || [];
+      const rulesCell = td(null, dc.waf_rules ? (excluded.length ? "on (" + excluded.length + " excluded)" : "on") : "off");
       if (dc.waf_rules_file) {
-        kw.title = dc.waf_rules_file + (excluded.length ? " minus: " + excluded.join(", ") : "");
+        rulesCell.title = dc.waf_rules_file + (excluded.length ? " minus: " + excluded.join(", ") : "");
       }
       const anomalyMode = dc.waf_anomaly
         ? (dc.waf_anomaly_observe_only ? "observe" : "enforce") : "off";
       return row(td("wrap", name), pow, td(null, dc.pow_mode),
-        kw, td(null, anomalyMode),
+        rulesCell, td(null, anomalyMode),
         td(null, dc.waf_ip_behaviour ? "on" : "off"),
         td(null, dc.geo ? "on" : "off"),
         td(null, dc.reputation ? "on" : "off"));

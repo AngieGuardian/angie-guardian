@@ -49,7 +49,7 @@ const (
 )
 
 const (
-	EventSignature     = stateless.EventSignature
+	EventRuleMatch     = stateless.EventRuleMatch
 	EventPoWFail       = stateless.EventPoWFail
 	EventTamper        = stateless.EventTamper
 	EventAnomaly       = stateless.EventAnomaly
@@ -220,16 +220,16 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		log:    log,
 		stages: []Stage{
 			// Evaluated in this order; the first stage to return a terminal
-			// decision wins and the rest are skipped. Signatures run before the
+			// decision wins and the rest are skipped. WAF rules run before the
 			// token stage so vouched clients keep paying the cheap WAF checks,
-			// which is what stops a stolen token riding past the signatures.
+			// which is what stops a stolen token riding past the WAF rules.
 			allowlistStage{},      // 0. static allowlist
 			denylistStage{},       // 1. static denylist
 			verifiedBotStage{},    //    rDNS-verified crawler allow / impostor deny
 			intelDenyStage{},      //    geo scoping + reputation feeds (deny half)
 			behaviourBlockStage{}, // 2. behavioural IP block (store-backed)
 			honeypotStage{},       //    trap paths: one hit blocks
-			wafSignatureStage{},   // 4. keyword/regex signatures
+			wafRulesStage{},       // 4. WAF rules (literal/regex matchers)
 			powTokenStage{},       // 3. valid PoW token → allow
 			intelChallengeStage{}, //    geo scoping + reputation feeds (challenge half)
 			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
@@ -470,7 +470,7 @@ func (e *Engine) RecentDecisionSnapshot() RecentDecisionSnapshot {
 }
 
 // reasonCategory collapses a full reason string ("waf:dotfile-probe",
-// "behaviour_block:threshold:signature") to its leading token so the metric
+// "behaviour_block:threshold:rule_match") to its leading token so the metric
 // label stays low-cardinality regardless of rule IDs and detail suffixes.
 func reasonCategory(reason string) string {
 	if i := strings.IndexByte(reason, ':'); i >= 0 {
@@ -928,7 +928,7 @@ const (
 // ShedDecision is the load-shedding gate: it runs ONLY the cheap, store-free
 // terminal checks that the full pipeline would run before the token stage, so
 // a saturated daemon still enforces blocks, denylists, local IP-intel verdicts,
-// honeypots and WAF signatures while fast-passing clean vouched clients. It
+// honeypots and WAF rules while fast-passing clean vouched clients. It
 // deliberately does not run store reads, verified-bot DNS, anomaly scoring or
 // event-recording writes; those are what the shed exists to skip. Because it
 // preserves the terminal pre-token checks, a token can never become a WAF or
@@ -1002,7 +1002,7 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	if d, _ := (honeypotStage{}).Evaluate(context.Background(), req, env); d != nil {
 		return ShedDeny
 	}
-	if d, _ := (wafSignatureStage{}).Evaluate(context.Background(), req, env); d != nil {
+	if d, _ := (wafRulesStage{}).Evaluate(context.Background(), req, env); d != nil {
 		switch d.Action {
 		case ActionDeny:
 			return ShedDeny
@@ -1014,7 +1014,7 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	}
 
 	// A valid PoW token vouches after every retained terminal check. Cheap
-	// stateless signature check; no store I/O on a cache hit.
+	// stateless WAF rule check; no store I/O on a cache hit.
 	if hasValidPoWToken(req, env) {
 		return ShedPass
 	}

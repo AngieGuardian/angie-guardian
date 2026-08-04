@@ -252,7 +252,7 @@ func BenchmarkEvaluatePebbleMirrorBlocked(b *testing.B) {
 	benchmarkEvaluateMirror(b, st, req, "behaviour_block:flood")
 }
 
-// benchRulesYAML is a realistic starter signature set: every request that
+// benchRulesYAML is a realistic starter rule match set: every request that
 // reaches the WAF stage scans it, so its cost is paid on the common path, not
 // only when something matches.
 const benchRulesYAML = `
@@ -289,7 +289,7 @@ func BenchmarkEvaluateWAFClean(b *testing.B) {
 		b.Fatal(err)
 	}
 	cfgPath := filepath.Join(dir, "guardian.yaml")
-	cfgYAML := "store: { backend: memory }\ndefaults:\n  waf:\n    keywords: { enabled: true, rules_file: " +
+	cfgYAML := "store: { backend: memory }\ndefaults:\n  waf:\n    rules: { enabled: true, file: " +
 		strconv.Quote(rules) + " }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		b.Fatal(err)
@@ -362,7 +362,7 @@ func BenchmarkShedDecision(b *testing.B) {
 
 // BenchmarkRecordEvent is the behaviour-scoring write path: one bad event
 // counted for one IP, below the threshold so no block is placed. It is not the
-// auth hot path (only a non-allow decision produces events), but a signature
+// auth hot path (only a non-allow decision produces events), but a rule match
 // flood drives it once per request. It performs two exact-key store operations:
 // a generation read and one atomic guarded increment. Measured here so that
 // coordination's cost remains a number.
@@ -377,7 +377,7 @@ func BenchmarkRecordEvent(b *testing.B) {
 		// A fresh IP every 1000 events, so the counter neither trips the
 		// threshold nor turns into a single-key hot spot.
 		ip := "198.51." + strconv.Itoa(i/1000%256) + "." + strconv.Itoa(i%256)
-		if _, err := board.RecordEvent(ctx, ip, "signature", 1<<30, time.Minute, time.Minute, time.Hour); err != nil {
+		if _, err := board.RecordEvent(ctx, ip, "rule_match", 1<<30, time.Minute, time.Minute, time.Hour); err != nil {
 			b.Fatal(err)
 		}
 	}

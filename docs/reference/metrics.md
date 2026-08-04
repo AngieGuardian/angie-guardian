@@ -55,7 +55,7 @@ Label values are bounded by construction:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `guardian_blocks_placed_total` | counter | `reason` | Behavioural IP blocks placed, by reason category (threshold blocks carry their event type, e.g. `pow_fail` or `challenge_farm`). |
+| `guardian_blocks_placed_total` | counter | `reason` | Behavioural IP blocks placed, by reason category (threshold blocks carry their event type, e.g. `rule_match`, `pow_fail` or `challenge_farm`). |
 | `guardian_bot_verifications_total` | counter | `bot`, `result` | [Verified-bot](/reference/configuration#verified-bots) rDNS checks by bot name and result: `verified`, `spoof` (definitively failed, an impostor), or `error` (transient DNS failure, falls through unverified). |
 
 ## IP reputation feeds

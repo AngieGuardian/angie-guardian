@@ -257,7 +257,7 @@ func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env 
 			return &Decision{
 				Action: ActionChallenge,
 				// A reputation-listed client pays one full step (+4 bits =
-				// 16x) more than a clean one, like a WAF signature hit.
+				// 16x) more than a clean one, like a WAF rule hit.
 				Difficulty: min(base+4, maxDiff),
 				Reason:     "reputation:" + feed,
 			}, nil
@@ -287,21 +287,21 @@ func (honeypotStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	return stateless.CheckHoneypot(req, &env.domain.WAF.Honeypot), nil
 }
 
-// wafSignatureStage is pipeline stage 4. It runs BEFORE the token stage on
+// wafRulesStage is pipeline stage 4. It runs BEFORE the token stage on
 // purpose: a vouched client keeps passing these cheap precompiled checks, so a
 // stolen or borrowed token cannot ride past the WAF.
-type wafSignatureStage struct{}
+type wafRulesStage struct{}
 
-func (wafSignatureStage) Name() string { return "waf_signatures" }
+func (wafRulesStage) Name() string { return "waf_rules" }
 
-func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	kw := &env.domain.WAF.Keywords
-	if !kw.Enabled || env.rules == nil {
+func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	rules := &env.domain.WAF.Rules
+	if !rules.Enabled || env.rules == nil {
 		return nil, nil
 	}
-	// ruleKey resolves this scope's precompiled (rules_file, disabled_rule_ids)
+	// ruleKey resolves this scope's precompiled (file, disabled_ids)
 	// variant; exclusions cost nothing here.
-	rs := env.rules.Get(kw.ruleKey)
+	rs := env.rules.Get(rules.ruleKey)
 	if rs == nil {
 		return nil, nil
 	}
@@ -314,7 +314,7 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 	switch rule.Action {
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
-			// A challenge-only signature asks the client to prove work; a valid
+			// A challenge-only WAF rule asks the client to prove work; a valid
 			// bound token is that proof. Deny/block rules still terminate above
 			// the ordinary token stage and can never be bypassed by a token.
 			if hasValidPoWToken(req, env) {
@@ -323,12 +323,12 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 			base, maxDiff := env.effBits()
 			return &Decision{
 				Action: ActionChallenge,
-				// A signature hit pays one full difficulty step (+4 bits = 16x
+				// A WAF rule hit pays one full difficulty step (+4 bits = 16x
 				// the base work), capped at the (possibly attack-shifted)
 				// domain ceiling.
 				Difficulty: min(base+4, maxDiff),
 				Reason:     reason,
-				Events:     []Event{{Type: EventSignature, Detail: rule.ID}},
+				Events:     []Event{{Type: EventRuleMatch, Detail: rule.ID}},
 			}, nil
 		}
 		fallthrough // no PoW on this domain: challenge degrades to deny
@@ -336,7 +336,7 @@ func (wafSignatureStage) Evaluate(_ context.Context, req *RequestContext, env *s
 		return &Decision{
 			Action: ActionDeny,
 			Reason: reason,
-			Events: []Event{{Type: EventSignature, Detail: rule.ID}},
+			Events: []Event{{Type: EventRuleMatch, Detail: rule.ID}},
 		}, nil
 	default: // waf.ActionBlock
 		return &Decision{
