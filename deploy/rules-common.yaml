@@ -33,43 +33,275 @@
 
 rules:
   - id: dotfile-probe
-    description: Dotfiles are never served legitimately; fetching them is scanning
+    description: Dotfiles, VCS paths, and local IDE metadata are never served legitimately
     action: block
     targets: [ path ]
-    keywords: [ "/.env", "/.git/", "/.aws/", "/.ssh/", "/.htpasswd", "/.svn/" ]
+    keywords:
+      - "/.env"
+      - "/.env.local"
+      - "/.env.production"
+      - "/.env.staging"
+      - "/.env.backup"
+      - "/.env.old"
+      - "/.env.save"
+      - "/.env.dev"
+      - "/.git/"
+      - "/.git-rewrite/"
+      - "/.gitignore"
+      - "/.aws/"
+      - "/.ssh/"
+      - "/.htpasswd"
+      - "/.htaccess"
+      - "/.user.ini"
+      - "/.svn/"
+      - "/.hg/"
+      - "/.gitlab-ci.yml"
+      - "/.github/"
+      - "/.docker"
+      - "/.dockercfg"
+      - "/.npmrc"
+      - "/.DS_Store"
+      - "/.vscode/"
+      - "/.idea/"
+      - "/.bash_history"
 
-  - id: wp-probe
-    description: WordPress probes; on a real WordPress site, disable this rule via waf.keywords.disabled_rule_ids
+  # Cloud infrastructure, IAM, and secret scanning
+  - id: cloud-credentials-probe
+    description: Probes for cloud provider secrets, IAM keys, service accounts, and Terraform state
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/aws.json"
+      - "/aws-ses.json"
+      - "/aws.env"
+      - "/aws.yml"
+      - "/aws.ini"
+      - "/aws_s3"
+      - "/aws_config"
+      - "/aws_credentials"
+      - "/aws-secret.json"
+      - "/credentials/aws.txt"
+      - "/credentials/amazon.txt"
+      - "/s3/bucket.env"
+      - "/s3.json"
+      - "/s3.env"
+      - "/google-service-account.json"
+      - "/gcp-credentials.json"
+      - "/gcp-key.json"
+      - "/azure-credentials.json"
+      - "/azure.json"
+      - "/terraform.tfstate"
+      - "/terraform.tfstate.backup"
+      - "/terraform.tfvars"
+      - "/creds.json"
+      - "/privatekey"
+      - "/privatekey.json"
+      - "/keyfile.json"
+      - "/key.json"
+      - "/stripe.env"
+      - "/boto.cfg"
+      - "/kube/config"
+
+  # Container, serverless, and application configs
+  - id: application-config-probe
+    description: Probes for framework configuration, secret YAMLs, build lockfiles, and orchestrators
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/docker-compose"
+      - "/docker-compose.override.yml"
+      - "/docker-compose.dev.yml"
+      - "/serverless.json"
+      - "/serverless.yml"
+      - "/amplify.yml"
+      - "/appsettings.json"
+      - "/appsettings.development.json"
+      - "/config.yaml"
+      - "/config.yml"
+      - "/config.json"
+      - "/config.inc.php"
+      - "/config.php.bak"
+      - "/config.php.old"
+      - "/application.yml"
+      - "/secrets.yml"
+      - "/config/database.yml"
+      - "/config/secrets.yml"
+      - "/config/mail.php"
+      - "/config/smtp.php"
+      - "/web.config"
+      - "/composer.lock"
+      - "/package-lock.json"
+      - "/yarn.lock"
+
+  # Database dumps and environment backups
+  - id: database-backup-probe
+    description: Direct requests for database exports, log dumps, and web server info scripts
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/dump.sql"
+      - "/backup.sql"
+      - "/database.sql"
+      - "/db.sqlite"
+      - "/phpinfo.php"
+      - "/info.php"
+
+  - id: wp-cms-probe
+    description: Probes for common PHP CMS configuration leaks and entry points
     action: deny
     targets: [ path ]
-    keywords: [ "/wp-login.php", "/xmlrpc.php", "/wp-config", "/wp-json/wp/v2/users" ]
+    keywords:
+      - "/wp-login.php"
+      - "/xmlrpc.php"
+      - "/wp-config"
+      - "/wp-json/wp/v2/users"
+      - "/configuration.php"
+      - "/wp-admin/"
 
+  # Spring Boot Actuator endpoints
+  - id: spring-actuator-probe
+    description: Exposure of Java Spring Boot management and memory dump endpoints
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/actuator/env"
+      - "/actuator/configprops"
+      - "/actuator/heapdump"
+      - "/actuator/health"
+      - "/actuator/gateway"
+
+  # Known Webshell & Backdoor filenames
+  - id: webshell-probe
+    description: Direct access attempts to common pre-installed PHP webshells and backdoors
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/c99.php"
+      - "/r57.php"
+      - "/wso.php"
+      - "/alfa.php"
+      - "/shell.php"
+      - "/cmd.php"
+      - "/b374k.php"
+
+  # Dedicated Scanner User-Agent blocklist (Excludes generic HTTP client libraries)
+  - id: scanner-ua
+    description: Dedicated security scanners and active recon tools announcing via User-Agent
+    action: block
+    targets: [ ua ]
+    keywords:
+      - "sqlmap"
+      - "nikto"
+      - "masscan"
+      - "nuclei"
+      - "wpscan"
+      - "acunetix"
+      - "zgrab"
+      - "censys"
+      - "shodan"
+      - "nmap"
+      - "dirbuster"
+      - "gobuster"
+
+  # Path traversal attempts
   - id: path-traversal
     action: deny
     targets: [ path, query ]
-    keywords: [ "../", "..\\", "%2e%2e/" ]
+    keywords: [ "../", "..\\", "%2e%2e/", "%2e%2e%2f" ]
 
-  - id: sqli-basic
-    description: Cheap SQL injection heuristics; challenge rather than deny to spare false positives
+  # Command Injection Heuristics
+  - id: cmd-injection-basic
+    description: Basic OS command execution payloads targeting path or query string
+    action: deny
+    targets: [ path, query ]
+    regexes:
+      - '(?i)(;|\||`)\s*(cat|ls|id|whoami|uname|wget|curl|nc|bash|sh)\b'
+      - '(?i)/etc/(passwd|shadow|issue|hosts)'
+
+  # Cross-Site Scripting (XSS)
+  - id: xss-basic
+    description: Common inline script tags, JavaScript schemes, and DOM event listener payloads
     action: challenge
     targets: [ path, query ]
     regexes:
-      - '(?i)\bunion\b[\s/*+]+(all[\s/*+]+)?select\b'
-      - '(?i)\b(sleep|benchmark|pg_sleep)\s*\('
-      - "(?i)['\"]\\s*or\\s+1\\s*=\\s*1"
+      - '(?i)<script\b[^>]*>'
+      - '(?i)javascript\s*:'
+      - '(?i)\bon(error|load|click|mouseover|submit)\s*='
+      - '(?i)document\.cookie'
 
-  - id: scanner-ua
-    description: Vulnerability scanners announce themselves in the User-Agent
-    action: block
-    targets: [ ua ]
-    keywords: [ "sqlmap", "nikto", "masscan", "nuclei", "wpscan", "acunetix" ]
+  # Remote File Inclusion (RFI) / Basic SSRF
+  - id: rfi-ssrf-basic
+    description: Attempts to inject external HTTP/FTP URLs into query parameters
+    action: deny
+    targets: [ query ]
+    regexes:
+      - '(?i)=\s*(https?|ftps?)://'
 
+  # SQL Injection - Tautologies & Auth Bypasses
+  - id: sqli-tautology
+    description: Tautology patterns used to bypass login forms and WHERE clauses
+    action: challenge
+    targets: [ path, query ]
+    regexes:
+      - "(?i)['\"]\\s*(or|and)\\s+['\"]?1['\"]?\\s*=\\s*['\"]?1"
+      - "(?i)['\"]\\s*(or|and)\\s+['\"]?[a-z0-9]+['\"]?\\s*=\\s*['\"]?[a-z0-9]+"
+      - "(?i)['\"]\\s*or\\s+true\\b"
+      - "(?i)\\badmin'\\s*--"
+
+  # SQL Injection - Comments & Obfuscation Bypasses
+  - id: sqli-comments
+    description: Inline comments and MySQL comment hacks used to bypass simple string matching
+    action: deny
+    targets: [ path, query ]
+    regexes:
+      - "(?i)['\"].*?(--|#|/\\*)"
+      - "(?i)/\\*!\\d+.*?\\*/"
+
+  # SQL Injection - UNION & Data Exfiltration
+  - id: sqli-union-select
+    description: UNION-based queries attempting to extract cross-table data
+    action: deny
+    targets: [ path, query ]
+    regexes:
+      - "(?i)\\bunion\\b[\\s/*+]+(all[\\s/*+]+)?select\\b"
+      - "(?i)\\bselect\\b[\\s/*+]+.*?\\bfrom\\b[\\s/*+]+"
+
+  # SQL Injection - Schema Reconnaissance & Database Functions
+  - id: sqli-recon-functions
+    description: Probes targeting system tables, DB metadata, or XML error exploitation
+    action: deny
+    targets: [ path, query ]
+    regexes:
+      - "(?i)\\b(information_schema|sys\\.tables|sys\\.objects|pg_catalog|sqlite_master)\\b"
+      - "(?i)\\b(extractvalue|updatexml|concat_ws)\\s*\\("
+      - "(?i)\\b(user|version|database|schema|current_user)\\s*\\(\\s*\\)"
+
+  # SQL Injection - Time-Based, Stacked Queries & OS Execution
+  - id: sqli-time-stacked
+    description: Blind time delays, stacked statement chaining, and MSSQL command calls
+    action: deny
+    targets: [ path, query ]
+    regexes:
+      - "(?i)\\b(sleep|benchmark|pg_sleep)\\s*\\("
+      - "(?i)\\bwaitfor\\s+delay\\s+['\"]"
+      - ";\\s*(declare|exec|execute|select|insert|update|delete|drop|alter)\\b"
+      - "(?i)\\bxp_cmdshell\\b"
+
+  # Log4Shell / JNDI injection attempts
   - id: log4shell
     description: JNDI lookup probes arrive in URL-shaped headers as often as in the URI
     action: block
     targets: [ query, ua, "header:referer", "header:x-forwarded-for" ]
     keywords: [ "${jndi:" ]
 
+  # Shellshock (CVE-2014-6271)
+  - id: shellshock
+    description: Bash environment function injection targeting CGI and environment variables
+    action: block
+    targets: [ query, ua, "header:referer" ]
+    keywords: [ "() { :; };" ]
+
+  # Unused HTTP Methods
   - id: trace-method
     description: TRACE/TRACK have no legitimate use on a production site
     action: deny
