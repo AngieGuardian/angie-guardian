@@ -387,6 +387,36 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 	}
 }
 
+// TestDashboardOffenderSurface pins the six-card markup and API bindings. The
+// server tests own the counts; this catches a response-field or DOM-ID rename
+// that would otherwise leave a shipped table silently blank.
+func TestDashboardOffenderSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, id := range []string{
+		"off-ips", "off-reasons", "off-paths", "off-countries",
+		"off-user-agents", "off-hosts",
+	} {
+		if !bytes.Contains(page, []byte(`id="`+id+`"`)) {
+			t.Errorf("dashboard is missing offender table %q", id)
+		}
+		if !bytes.Contains(page, []byte(`fill("`+id+`"`)) {
+			t.Errorf("dashboard declares offender table %q but does not render it", id)
+		}
+	}
+	for _, needle := range []string{
+		`data.user_agents || []`, `data.hosts || []`, `r.key || "(empty)"`,
+		`new Intl.DisplayNames(["en"], { type: "region" })`, `countryName(r.key)`,
+		`grid-template-columns: repeat(3, minmax(0, 1fr))`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard offender surface missing %q", needle)
+		}
+	}
+}
+
 // The per-domain bar measure. A fleet's busiest domain can outweigh its
 // quietest by orders of magnitude, so the card offers each domain's own action
 // mix as well as raw counts.
