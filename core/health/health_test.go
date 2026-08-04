@@ -422,6 +422,27 @@ func TestRecoveryAfterDeadlineMisses(t *testing.T) {
 	}
 }
 
+// TestBoundedProbeReleasesInflightBeforeReturning: a successful synchronous
+// probe is fully complete when it returns. In particular, its bookkeeping must
+// not make an immediately following probe look like a still-running attempt.
+func TestBoundedProbeReleasesInflightBeforeReturning(t *testing.T) {
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	c := newChecker(t, st, nil, nil)
+
+	for range 100 {
+		if err := c.boundedProbe(context.Background()); err != nil {
+			t.Fatalf("back-to-back bounded probe failed: %v", err)
+		}
+		c.inflightMu.Lock()
+		inflight := c.inflight
+		c.inflightMu.Unlock()
+		if inflight != nil {
+			t.Fatal("boundedProbe returned before releasing its in-flight slot")
+		}
+	}
+}
+
 // TestStartAndCloseSurviveAHungStore: the two lifecycle hazards the wall-clock
 // bound exists to prevent. Start must return even if the first probe is wedged,
 // and Close must then return even though the probe goroutine is still stuck.
@@ -498,8 +519,8 @@ func TestStaleTimerSuperseded(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	c := newChecker(t, st, nil, nil)
 
-	c.probe(context.Background()) // generation 1
-	c.probe(context.Background()) // generation 2 supersedes it
+	c.publish(Status{Probed: true, Up: true}) // generation 1
+	c.publish(Status{Probed: true, Up: true}) // generation 2 supersedes it
 
 	c.markStale(1) // the generation-1 timer, firing late
 

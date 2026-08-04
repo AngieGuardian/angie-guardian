@@ -344,12 +344,17 @@ func (c *Checker) boundedProbe(ctx context.Context) error {
 	c.inflightMu.Unlock()
 
 	go func() {
-		att.done <- c.probeOnce(ctx)
+		err := c.probeOnce(ctx)
 		c.inflightMu.Lock()
 		if c.inflight == att {
 			c.inflight = nil
 		}
 		c.inflightMu.Unlock()
+		// Release the in-flight slot before reporting completion. Otherwise a
+		// caller that wins the select on done can begin its next probe while
+		// this goroutine is still clearing the slot, spuriously treating a
+		// completed probe as wedged.
+		att.done <- err
 	}()
 
 	timer := time.NewTimer(c.timeout)
