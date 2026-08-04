@@ -22,12 +22,12 @@ Choose a pinned version on the
 [releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
 under **Assets > Packages**. Most Intel and AMD servers use `linux-amd64`; an
 ARM server uses `linux-arm64` instead. For example, to download and extract
-version `0.17.0` for amd64:
+version `0.18.0` for amd64:
 
 ```sh
-wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.17.0/angie-guardian-0.17.0-linux-amd64.tar.gz
-tar -xzf angie-guardian-0.17.0-linux-amd64.tar.gz
-cd angie-guardian-0.17.0-linux-amd64
+wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.18.0/angie-guardian-0.18.0-linux-amd64.tar.gz
+tar -xzf angie-guardian-0.18.0-linux-amd64.tar.gz
+cd angie-guardian-0.18.0-linux-amd64
 ```
 
 Substitute the version you selected, without the leading `v` the releases page
@@ -68,13 +68,13 @@ ending in `OK` before installing.
 Run both commands from the directory holding the archive you downloaded above:
 
 ```sh
-# Same directory as angie-guardian-0.17.0-linux-amd64.tar.gz
-wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.17.0/SHA256SUMS
+# Same directory as angie-guardian-0.18.0-linux-amd64.tar.gz
+wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.18.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ```
-angie-guardian-0.17.0-linux-amd64.tar.gz: OK
+angie-guardian-0.18.0-linux-amd64.tar.gz: OK
 ```
 
 `SHA256SUMS` lists both architectures, so `--ignore-missing` is what lets you
