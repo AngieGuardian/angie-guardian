@@ -28,6 +28,10 @@ domains:
       enabled: true
       paths: [ "/wp-login.php", "/admin-old/" ]
     rules:
+      - id: api-json
+        action: allow
+        targets: [ "header:accept" ]
+        regexes: [ 'application/(json|problem\+json)' ]
       - id: dotfile
         action: block
         keywords: [ "/.env" ]
@@ -55,6 +59,13 @@ func req(host, ip, uri, ua string) *RequestContext {
 
 func TestEvaluateViaGuestConfig(t *testing.T) {
 	gc := mustGuestConfig(t, guestYAML)
+	apiJSON := req("site.test", "192.0.2.9", "/app/.env", "curl")
+	apiJSON.Header = func(name string) []string {
+		if name == "accept" {
+			return []string{"text/html", "Application/Problem+JSON; Charset=UTF-8"}
+		}
+		return nil
+	}
 
 	cases := []struct {
 		name   string
@@ -71,6 +82,7 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		{"honeypot", req("site.test", "192.0.2.8", "/wp-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded", req("site.test", "192.0.2.8", "/%77p-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded prefix", req("site.test", "192.0.2.8", "/%61dmin-old/secret", "Mozilla"), ActionDeny, "honeypot:path"},
+		{"WAF allow header beats later deny rule", apiJSON, ActionAllow, "waf:api-json"},
 		{"WAF rule keyword (block->deny)", req("site.test", "192.0.2.9", "/app/.env", "curl"), ActionDeny, "waf:dotfile"},
 		{"WAF rule url-encoded", req("site.test", "192.0.2.9", "/%2e%65nv", "curl"), ActionDeny, "waf:dotfile"},
 		{"WAF rule challenge degrades to deny", req("site.test", "192.0.2.9", "/x?q=union+all+select+1", "curl"), ActionDeny, "waf:sqli"},
@@ -89,6 +101,9 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 			d := gc.Evaluate(tc.req)
 			if d.Action != tc.action || d.Reason != tc.reason {
 				t.Errorf("got %s/%s, want %s/%s", d.Action, d.Reason, tc.action, tc.reason)
+			}
+			if tc.reason == "waf:api-json" && len(d.Events) != 0 {
+				t.Errorf("allow rule emitted bad events: %+v", d.Events)
 			}
 		})
 	}

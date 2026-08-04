@@ -57,12 +57,12 @@ domains:
 
   # API host: WAF only, no interstitial a machine client can't solve. With
   # PoW off, challenge-action rules degrade to deny (nothing to challenge
-  # with); give APIs their own rules file if that is too blunt.
+  # with); append API rules and disable selected shared IDs if that is too blunt.
   api.example.com:
     pow: { enabled: false }
 
   # Static assets: no PoW, no behavioural scoring. WAF rules still
-  # apply from defaults; override waf.rules too for a minimal policy.
+  # apply from defaults; disable matching or selected IDs for a minimal policy.
   static.example.com:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
@@ -110,52 +110,49 @@ domains:
       "/robots.txt": { pow: { enabled: true } }   # opt this host back in
 ```
 
-## WAF rules: one starter file, scoped per domain
+## WAF rules: shared protection with domain additions
 
-WAF rules are not auto-discovered: a rules file must be installed on
-disk and named by `waf.rules.file`, with `enabled: true`, or no
+WAF rules are not auto-discovered: one or more rules files must be installed on
+disk and named by `waf.rules.files`, with `enabled: true`, or no
 WAF rule matching happens at all. The install recipe in the
 [production guide](/guide/production#systemd) copies the shipped starter file
 `deploy/rules-common.yaml` to `/etc/guardian/rules.d/common.yaml`; a
 configured file that is missing fails validation (and so startup) rather than
 silently matching nothing.
 
-`defaults.waf.rules` is inherited by every domain and path overlay unless
-overridden there. Scoping works three ways: point a domain (or path overlay)
-at a *different* rules file, disable matching for that scope, or disable
-selected rules from the effective file by their exact `id` with
-`disabled_ids` (no need to copy the file for one exception). The `id`
+`defaults.waf.rules` is inherited by every domain and path overlay. Files named
+by a narrower scope extend that inherited policy; they do not replace it. The
+effective order is defaults first, then domain additions, then matching path
+additions. You can disable matching for a scope, or remove selected rules from
+the combined set by their exact `id` with `disabled_ids` (no need to copy a
+file for one exception). The `id`
 inside a rules file is both the log/reason label (a hit reports `waf:<id>`)
-and the case-sensitive selector for exclusions; rules are evaluated in file
-order, first match wins, and a disabled rule simply falls through to the next
-matching rule. Separate files remain fully supported for genuinely different
-rule sets:
+and the case-sensitive selector for exclusions; rules are evaluated in
+effective file order and then file order, first match wins, and a disabled rule
+simply falls through to the next matching rule. Rule IDs must be unique across
+the effective files so exclusions and decision reasons stay unambiguous:
 
 ```yaml
 defaults:
   waf:
     rules:
       enabled: true
-      file: /etc/guardian/rules.d/common.yaml
+      files: [ /etc/guardian/rules.d/common.yaml ]
 
 domains:
   # A real WordPress site: keep the shared starter set but drop its
-  # wp-probe rule, which would flag legitimate wp-login traffic.
+  # wp-cms-probe rule, which would flag legitimate wp-login traffic.
   wordpress.example.com:
     waf:
       rules:
-        disabled_ids: [ wp-probe ]
+        disabled_ids: [ wp-cms-probe ]
 
-  # APIs get their own, stricter-or-looser file instead of the shared one
-  # (e.g. drop challenge-action heuristics, which degrade to deny where PoW
-  # is off). Exclusions always select from the scope's own effective file,
-  # here api.yaml.
+  # APIs retain common.yaml, then evaluate these API-specific additions.
   api.example.com:
     waf:
       rules:
         enabled: true
-        file: /etc/guardian/rules.d/api.yaml
-        disabled_ids: [ scanner-ua ]
+        files: [ /etc/guardian/rules.d/api.yaml ]
 
   # No WAF rule matching at all on the assets host.
   static.example.com:
@@ -164,13 +161,58 @@ domains:
         enabled: false
 ```
 
+For `api.example.com`, Guardian combines `[common.yaml, api.yaml]`. The shared
+rules run first, so their protection remains active. The API additions then
+reject unsafe methods, allow infrastructure probes and clients requesting JSON
+response media types, and deny other API traffic:
+
+```yaml
+# /etc/guardian/rules.d/api.yaml
+rules:
+  - id: unsafe-methods
+    description: APIs do not accept legacy diagnostic methods
+    action: deny
+    methods: [ TRACE, TRACK ]
+
+  - id: health-endpoints
+    description: Let infrastructure health probes through the API policy
+    action: allow
+    methods: [ GET, HEAD ]
+    targets: [ path ]
+    regexes: [ '^/(healthz|readyz)$' ]
+
+  - id: json-api-clients
+    description: Allow clients that request a JSON response media type
+    action: allow
+    methods: [ GET, HEAD, POST, PUT, PATCH, DELETE ]
+    targets: [ "header:accept" ]
+    regexes:
+      - '(^|,\s*)application/(json|[a-z0-9][a-z0-9.-]*\+json)(\s*;\s*[^,]+)?\s*(,|$)'
+
+  - id: unsupported-api-client
+    description: Reject requests that did not match an allowed API client rule
+    action: deny
+    targets: [ path ]
+    regexes: [ '^/' ]
+```
+
+Effective file order is policy order: `common.yaml` runs before this file. In
+`api.yaml`, the two narrow allow rules must stay before the fallback deny,
+while the unsafe-method rule stays first so a matching method cannot bypass it
+by sending an allowed `Accept` value. An allow decision is terminal at the WAF
+stage, but requests already denied by an earlier common rule, denylist, active
+block, or honeypot remain denied. To exempt this API from a common rule, list
+that common rule's ID in this domain's `disabled_ids`; the remaining common and
+API rules keep their order.
+
 `disabled_ids` overlays like every list: omitted inherits the parent's
 resolved list, `[]` clears inherited exclusions, and a non-empty list replaces
 them wholesale. Unknown, empty or duplicate ids are rejected at `-t`, startup
-and reload, and a rules-file update that removes a still-excluded id keeps the
-last-good rules active, so a typo or rename can never silently re-enable a
-rule. `GET /admin/config` shows each scope's effective `file` and
-exclusions together.
+and reload, as are duplicate paths or rule IDs across an effective file set. A
+rules-file update that removes a still-excluded id keeps the last-good combined
+policy active, so a typo or rename can never silently re-enable a rule.
+`GET /admin/config` shows each scope's ordered effective `files` and exclusions
+together.
 
 See [the WAF rules walkthrough](/guide/configuration#waf-rules)
 for the file format, inheritance, and hot-reload behavior, and the

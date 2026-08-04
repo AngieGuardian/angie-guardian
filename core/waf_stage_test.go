@@ -13,12 +13,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 )
 
 const stageRules = `
 rules:
+  - id: api-json
+    action: allow
+    targets: [ "header:accept" ]
+    regexes: [ 'application/(json|problem\+json)' ]
   - id: dotfile
     action: deny
     keywords: [ "/.env" ]
@@ -40,10 +45,12 @@ defaults:
       enabled: true
       block_ttl: 15m
       thresholds: { rule_match: 3/min, pow_fail: 3/min, tamper: 3/min }
-    rules: { enabled: true, file: %q }
+    rules: { enabled: true, files: [ %q ] }
     honeypot: { enabled: true, paths: [ "/wp-login.php", "/admin-old/" ] }
   allowlist:
     ips: [ "10.0.0.0/8" ]
+  denylist:
+    ips: [ "203.0.113.0/24" ]
 domains:
   pow.test:
     pow: { enabled: true, base_difficulty: 2, max_difficulty: 6 }
@@ -71,6 +78,17 @@ func wafEngine(t *testing.T) (*Engine, *pow.Manager) {
 	return e, mgr
 }
 
+func reqWithAccept(host, ip, uri, accept string) *RequestContext {
+	r := req(host, ip, uri, "curl")
+	r.Header = func(name string) []string {
+		if name == "accept" {
+			return []string{accept}
+		}
+		return nil
+	}
+	return r
+}
+
 func TestWAFRuleStage(t *testing.T) {
 	ctx := context.Background()
 	e, _ := wafEngine(t)
@@ -81,6 +99,10 @@ func TestWAFRuleStage(t *testing.T) {
 		action Action
 		reason string
 	}{
+		{"allow header beats a later deny rule",
+			reqWithAccept("plain.test", "198.51.100.6", "/backup/.env", "text/html, Application/Problem+JSON; Charset=UTF-8"), ActionAllow, "waf:api-json"},
+		{"allow header skips the PoW stage",
+			reqWithAccept("pow.test", "198.51.100.7", "/clean", "application/json"), ActionAllow, "waf:api-json"},
 		{"keyword deny",
 			req("plain.test", "198.51.100.1", "/backup/.env", "curl"), ActionDeny, "waf:dotfile"},
 		{"url-encoded keyword still caught",
@@ -105,6 +127,62 @@ func TestWAFRuleStage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWAFAllowRulePrecedenceMetricsAndScoring(t *testing.T) {
+	ctx := context.Background()
+	e, _ := wafEngine(t)
+	m := metrics.New("memory")
+	e.SetMetrics(m)
+
+	// Hard-deny stages before WAF rules retain precedence even when the
+	// request carries a header that matches an allow rule.
+	if d := e.Evaluate(ctx, reqWithAccept("plain.test", "203.0.113.8", "/clean", "application/json")); d.Action != ActionDeny || d.Reason != "denylist:ip" {
+		t.Fatalf("denylisted allow match = %s/%s, want deny/denylist:ip", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(ctx, reqWithAccept("plain.test", "198.51.100.8", "/wp-login.php", "application/json")); d.Action != ActionDeny || d.Reason != "honeypot:path" {
+		t.Fatalf("honeypot allow match = %s/%s, want deny/honeypot:path", d.Action, d.Reason)
+	}
+
+	// The threshold is 3/min. Repeated allow matches must neither score nor
+	// place a block, and—as all allows—must stay out of the recent ring.
+	ip := "198.51.100.9"
+	for i := 0; i < 3; i++ {
+		d := e.Evaluate(ctx, reqWithAccept("plain.test", ip, "/backup/.env", "application/problem+json"))
+		if d.Action != ActionAllow || d.Reason != "waf:api-json" {
+			t.Fatalf("allow hit %d = %s/%s, want allow/waf:api-json", i, d.Action, d.Reason)
+		}
+	}
+	if d := e.Evaluate(ctx, req("plain.test", ip, "/clean", "curl")); d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("after allow hits = %s/%s, want allow/default (not behaviour-blocked)", d.Action, d.Reason)
+	}
+	if got := len(e.RecentDecisions(0)); got != 2 {
+		// Only the denylist and honeypot checks above are non-allow decisions.
+		t.Fatalf("recent decisions = %d, want 2; WAF allows entered the non-allow ring", got)
+	}
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "guardian_decisions_total" {
+			continue
+		}
+		for _, sample := range family.GetMetric() {
+			labels := make(map[string]string, len(sample.GetLabel()))
+			for _, label := range sample.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["action"] == "allow" && labels["reason"] == "waf" && labels["domain"] == "default" {
+				if got := sample.GetCounter().GetValue(); got != 3 {
+					t.Fatalf("WAF allow metric = %v, want 3", got)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("guardian_decisions_total has no {action=allow,reason=waf,domain=default} series")
 }
 
 func TestBlockActionBlocksIP(t *testing.T) {
@@ -201,7 +279,7 @@ const disabledRulesYAML = `
 store: { backend: memory }
 defaults:
   waf:
-    rules: { enabled: true, file: %q }
+    rules: { enabled: true, files: [ %q ] }
 domains:
   excl.test:
     waf: { rules: { disabled_ids: [ dotfile ] } }
@@ -263,7 +341,7 @@ func TestWAFDisabledIDs(t *testing.T) {
 }
 
 // TestUnknownDisabledRuleIDFailsEverywhere: an exclusion naming a rule the
-// effective file does not contain must be rejected at engine construction,
+// effective files do not contain must be rejected at engine construction,
 // artifact preflight (guardiand -t) and hot reload, with the running engine
 // keeping its current rule sets on a failed reload.
 func TestUnknownDisabledRuleIDFailsEverywhere(t *testing.T) {
@@ -276,7 +354,7 @@ func TestUnknownDisabledRuleIDFailsEverywhere(t *testing.T) {
 store: { backend: memory }
 defaults:
   waf:
-    rules: { enabled: true, file: %q }
+    rules: { enabled: true, files: [ %q ] }
 domains:
   excl.test:
     waf: { rules: { disabled_ids: [ nope ] } }

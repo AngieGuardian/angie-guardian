@@ -349,9 +349,10 @@ type DomainRules struct {
 
 // Evaluate runs the stateless pipeline (allowlist -> denylist -> honeypot ->
 // WAF rules, first terminal wins). The result is terminal for this subset:
-// ActionAllow (reason "default" if nothing matched) or ActionDeny. Because
-// there is no PoW here, a WAF rule whose action is "challenge" degrades
-// to a deny.
+// ActionAllow (reason "default" if nothing matched) or ActionDeny. An allow
+// rule is terminal for this subset and carries its waf:<id> reason. Because
+// there is no PoW here, a WAF rule whose action is "challenge" degrades to a
+// deny.
 func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 	if d, ok := evalAllowlist(req, dr); ok {
 		return d
@@ -507,6 +508,9 @@ func evalRules(req *RequestContext, dr *DomainRules) (Decision, bool) {
 	rule := dr.Rules.Match(&in)
 	if rule == nil {
 		return Decision{}, false
+	}
+	if rule.Action == waf.ActionAllow {
+		return Decision{Action: ActionAllow, Reason: "waf:" + rule.ID}, true
 	}
 	event := EventRuleMatch
 	if rule.Action == waf.ActionBlock {

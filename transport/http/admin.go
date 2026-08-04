@@ -1486,10 +1486,10 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PoWBase    float64 `json:"pow_base_difficulty"`
 		PoWMax     float64 `json:"pow_max_difficulty"`
 		Rules      bool    `json:"waf_rules"`
-		// RulesFile and DisabledIDs expose the effective WAF rule
-		// selection together, so an operator can see which file a scope uses
-		// and which rule IDs it excludes from it without shell access.
-		RulesFile      string   `json:"waf_rules_file,omitempty"`
+		// RulesFiles and DisabledIDs expose the effective WAF rule selection
+		// together, so an operator can see the ordered files a scope uses and
+		// which rule IDs it excludes without shell access.
+		RulesFiles     []string `json:"waf_rules_files,omitempty"`
 		DisabledIDs    []string `json:"waf_rules_disabled_ids,omitempty"`
 		Anomaly        bool     `json:"waf_anomaly"`
 		AnomalyObserve bool     `json:"waf_anomaly_observe_only"`
@@ -1506,7 +1506,7 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return domainView{
 			PoWEnabled: dc.PoW.Enabled, PoWMode: dc.PoW.Mode,
 			PoWBase: dc.PoW.BaseDifficulty, PoWMax: dc.PoW.MaxDifficulty,
-			Rules: dc.WAF.Rules.Enabled, RulesFile: dc.WAF.Rules.File,
+			Rules: dc.WAF.Rules.Enabled, RulesFiles: dc.WAF.Rules.Files,
 			DisabledIDs: dc.WAF.Rules.DisabledIDs, Anomaly: dc.WAF.Anomaly.Enabled,
 			AnomalyObserve: dc.WAF.Anomaly.ObserveOnly,
 			Honeypot:       dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,

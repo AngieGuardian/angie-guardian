@@ -289,8 +289,8 @@ func BenchmarkEvaluateWAFClean(b *testing.B) {
 		b.Fatal(err)
 	}
 	cfgPath := filepath.Join(dir, "guardian.yaml")
-	cfgYAML := "store: { backend: memory }\ndefaults:\n  waf:\n    rules: { enabled: true, file: " +
-		strconv.Quote(rules) + " }\n"
+	cfgYAML := "store: { backend: memory }\ndefaults:\n  waf:\n    rules: { enabled: true, files: [ " +
+		strconv.Quote(rules) + " ] }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		b.Fatal(err)
 	}

@@ -68,7 +68,7 @@ defaults:
         bot_spoof: 5/min
     rules:
       enabled: true
-      file: /etc/guardian/rules.d/common.yaml
+      files: [ /etc/guardian/rules.d/common.yaml ]
     honeypot:
       enabled: false
       paths: []
@@ -138,6 +138,14 @@ domains:
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }
+  # A WAF-only API policy that extends the common rules for multi-file tests.
+  rules.localhost:
+    pow: { enabled: false }
+    waf:
+      rules:
+        # Appends after common.yaml: baseline probes still win before these
+        # API-specific allow/fallback rules.
+        files: [ /etc/guardian/rules.d/api.yaml ]
   # challenge_farm blocking test host: base == max pins the unsolved-
   # challenge escalation at the ceiling from its first extra bit (the 6th
   # abandoned issuance), and the low threshold override blocks quickly
@@ -149,9 +157,9 @@ domains:
       ip_behaviour:
         thresholds: { challenge_farm: 3/min }
   # A WordPress-ish host: shares the common rules file but disables its
-  # wp-probe rule by exact id (issue #27); every other rule still applies.
+  # wp-cms-probe rule by exact id (issue #27); every other rule still applies.
   wp.localhost:
     pow: { enabled: false }
     waf:
       rules:
-        disabled_ids: [ wp-probe ]
+        disabled_ids: [ wp-cms-probe ]

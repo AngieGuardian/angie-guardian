@@ -33,6 +33,7 @@ services:
     volumes:
       - ${GUARDIAN_CONFIG:-./guardian.e2e-nft.yaml}:/etc/guardian/guardian.yaml:ro
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
+      - ./rules-api.yaml:/etc/guardian/rules.d/api.yaml:ro
       - guardian-nft-data:/var/lib/guardian
       - guardian-nft-keys:/etc/guardian/keys
     depends_on:

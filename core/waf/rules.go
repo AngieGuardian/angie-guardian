@@ -32,6 +32,7 @@ const maxRulesBytes = 8 << 20
 type Action string
 
 const (
+	ActionAllow     Action = "allow"     // accept this request and stop evaluation
 	ActionDeny      Action = "deny"      // reject this request
 	ActionChallenge Action = "challenge" // force a PoW challenge
 	ActionBlock     Action = "block"     // reject and immediately block the IP
@@ -74,7 +75,8 @@ type rulesFileYAML struct {
 	Rules []ruleYAML `yaml:"rules"`
 }
 
-// RuleSet is an immutable compiled rules file; swapped atomically on reload.
+// RuleSet is an immutable compiled rule policy; source documents and combined
+// per-scope sets use the same representation and are swapped atomically.
 type RuleSet struct {
 	Rules []Rule
 
@@ -219,7 +221,7 @@ func compileRules(raw []byte, path string) (*RuleSet, error) {
 
 		r := Rule{ID: ry.ID, Description: ry.Description}
 		switch Action(ry.Action) {
-		case ActionDeny, ActionChallenge, ActionBlock:
+		case ActionAllow, ActionDeny, ActionChallenge, ActionBlock:
 			r.Action = Action(ry.Action)
 		case "":
 			r.Action = ActionDeny
@@ -364,40 +366,43 @@ func requiredUppercaseLiteral(re *syntax.Regexp) string {
 	return ""
 }
 
-// VariantSpec names one effective rule set to precompile: a rules file plus
-// the rule IDs a resolved config scope disables from it. Scopes carries the
+// VariantSpec names one effective rule set to precompile: ordered rules files
+// plus the rule IDs a resolved config scope disables from their combined set. Scopes carries the
 // config scope labels ("defaults", "domain x path /y/") that use this exact
-// (file, exclusions) pair, so validation errors can name who is affected.
+// (files, exclusions) pair, so validation errors can name who is affected.
 type VariantSpec struct {
-	Path        string
+	Paths       []string
 	DisabledIDs []string // exact rule IDs; empty = the full file
 	Scopes      []string
 }
 
-// VariantKey canonicalizes a (rules file, disabled IDs) pair into the cache
-// key RuleCache.Get expects. Exclusion order does not matter, so the IDs are
-// sorted; with no exclusions the key is the bare path, which keeps plain
-// file lookups working unchanged. The exclusion set is folded into a
+// VariantKey canonicalizes an ordered (rules files, disabled IDs) pair into
+// the cache key RuleCache.Get expects. File order matters; exclusion order
+// does not. A single file with no exclusions keeps its bare path as the key
+// for NewRuleCache compatibility. Every other selection is folded into a
 // fixed-size, length-prefixed SHA-256 digest rather than joined verbatim:
 // the request path performs one map lookup with this key, so its length (and
-// thus the per-request hash/compare cost) must not scale with the number or
-// size of the excluded IDs, and length-prefixing keeps the encoding
-// unambiguous for IDs containing any byte (["a\x00b"] never collides with
-// ["a", "b"]).
-func VariantKey(path string, disabled []string) string {
-	if len(disabled) == 0 {
-		return path
+// thus the per-request hash/compare cost) must not scale with the selection.
+func VariantKey(paths, disabled []string) string {
+	if len(paths) == 1 && len(disabled) == 0 {
+		return paths[0]
 	}
 	ids := slices.Clone(disabled)
 	slices.Sort(ids)
 	h := sha256.New()
 	var lenBuf [8]byte
-	for _, id := range ids {
-		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(id)))
+	writeStrings := func(values []string) {
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(values)))
 		h.Write(lenBuf[:])
-		h.Write([]byte(id))
+		for _, value := range values {
+			binary.BigEndian.PutUint64(lenBuf[:], uint64(len(value)))
+			h.Write(lenBuf[:])
+			h.Write([]byte(value))
+		}
 	}
-	return path + "\x00" + hex.EncodeToString(h.Sum(nil))
+	writeStrings(paths)
+	writeStrings(ids)
+	return "bundle\x00" + hex.EncodeToString(h.Sum(nil))
 }
 
 // filter returns a copy of the set without the disabled rules, preserving
@@ -428,45 +433,72 @@ func (rs *RuleSet) filter(disabled []string) (*RuleSet, error) {
 			missing = append(missing, id)
 		}
 		slices.Sort(missing)
-		return nil, fmt.Errorf("disabled_ids not present in file (ids are exact and case-sensitive): %q", missing)
+		return nil, fmt.Errorf("disabled_ids not present in effective files (ids are exact and case-sensitive): %q", missing)
 	}
-	for i := range out.Rules {
-		out.needsMethod = out.needsMethod || len(out.Rules[i].methods) > 0
-		for _, name := range out.Rules[i].headers {
-			if !slices.Contains(out.headerTargets, name) {
-				out.headerTargets = append(out.headerTargets, name)
+	out.rebuildHints()
+	return out, nil
+}
+
+func (rs *RuleSet) rebuildHints() {
+	rs.headerTargets = nil
+	rs.needsMethod = false
+	for i := range rs.Rules {
+		rs.needsMethod = rs.needsMethod || len(rs.Rules[i].methods) > 0
+		for _, name := range rs.Rules[i].headers {
+			if !slices.Contains(rs.headerTargets, name) {
+				rs.headerTargets = append(rs.headerTargets, name)
 			}
 		}
 	}
-	slices.Sort(out.headerTargets)
+	slices.Sort(rs.headerTargets)
+}
+
+// combineRuleSets concatenates files in configured order and rejects IDs that
+// would be ambiguous to disabled_ids, logs, metrics, or decision reasons.
+func combineRuleSets(paths []string, sets []*RuleSet) (*RuleSet, error) {
+	out := &RuleSet{}
+	owners := make(map[string]string)
+	for i, rs := range sets {
+		for _, rule := range rs.Rules {
+			if previous, exists := owners[rule.ID]; exists {
+				return nil, fmt.Errorf("duplicate rule id %q across effective files %q and %q", rule.ID, previous, paths[i])
+			}
+			owners[rule.ID] = paths[i]
+			out.Rules = append(out.Rules, rule)
+		}
+	}
+	out.rebuildHints()
 	return out, nil
 }
 
 // RuleCache holds the compiled rule sets for every configured rules file and
 // hot-reloads them when the file changes on disk. Each file is read and
-// watched once; per (file, disabled_ids) variant a filtered rule set is
-// precompiled at load/reload time, so per-request lookup stays one map access
-// with no ID filtering on the hot path. A reload that fails to parse, or that
-// removes a rule ID some scope still disables, keeps the last good rule sets
-// (and logs the error) rather than leaving the domain unprotected or silently
-// reactivating a renamed rule.
+// watched once; per (ordered files, disabled_ids) variant a combined, filtered
+// rule set is precompiled at load/reload time, so per-request lookup stays one
+// map access with no composition or ID filtering on the hot path. A reload
+// that fails to parse, introduces a duplicate ID, or removes a rule ID some
+// scope still disables keeps the last-good variants.
 type RuleCache struct {
-	files map[string]*ruleFile
-	byKey map[string]*ruleVariant
-	log   *slog.Logger
-	stop  chan struct{}
+	files     map[string]*ruleFile
+	fileOrder []*ruleFile
+	byKey     map[string]*ruleVariant
+	log       *slog.Logger
+	stop      chan struct{}
 }
 
 type ruleFile struct {
-	path     string
-	hash     atomic.Uint64 // FNV-64a of the last loaded file contents
-	variants []*ruleVariant
+	path       string
+	hash       atomic.Uint64 // FNV-64a of the last loaded file contents
+	set        atomic.Pointer[RuleSet]
+	dependents []*ruleVariant
 }
 
-// ruleVariant is one precompiled effective rule set: a rules file minus the
-// IDs its scopes disable. The full file is the variant with no exclusions.
+// ruleVariant is one precompiled effective rule set: ordered files minus the
+// IDs its scopes disable.
 type ruleVariant struct {
 	key      string
+	paths    []string
+	files    []*ruleFile
 	disabled []string
 	scopes   []string
 	set      atomic.Pointer[RuleSet]
@@ -490,7 +522,7 @@ func contentHash(raw []byte) uint64 {
 func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
 	specs := make([]VariantSpec, 0, len(paths))
 	for _, path := range paths {
-		specs = append(specs, VariantSpec{Path: path})
+		specs = append(specs, VariantSpec{Paths: []string{path}})
 	}
 	return NewRuleCacheVariants(specs, log)
 }
@@ -507,33 +539,72 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 		stop:  make(chan struct{}),
 	}
 	for _, spec := range specs {
-		key := VariantKey(spec.Path, spec.DisabledIDs)
+		if len(spec.Paths) == 0 {
+			return nil, fmt.Errorf("rules variant used by %s has no files", strings.Join(spec.Scopes, ", "))
+		}
+		key := VariantKey(spec.Paths, spec.DisabledIDs)
 		if v, ok := c.byKey[key]; ok {
-			// Same file + same exclusions: one shared variant.
+			// Same ordered files + same exclusions: one shared variant.
 			v.scopes = append(v.scopes, spec.Scopes...)
 			continue
 		}
-		f, ok := c.files[spec.Path]
-		if !ok {
-			f = &ruleFile{path: spec.Path}
-			c.files[spec.Path] = f
+		v := &ruleVariant{
+			key: key, paths: slices.Clone(spec.Paths), disabled: slices.Clone(spec.DisabledIDs),
+			scopes: slices.Clone(spec.Scopes),
 		}
-		v := &ruleVariant{key: key, disabled: spec.DisabledIDs, scopes: spec.Scopes}
-		f.variants = append(f.variants, v)
+		seenPaths := make(map[string]bool, len(spec.Paths))
+		for _, path := range spec.Paths {
+			if strings.TrimSpace(path) == "" {
+				return nil, fmt.Errorf("rules variant used by %s contains an empty file path", strings.Join(spec.Scopes, ", "))
+			}
+			if seenPaths[path] {
+				return nil, fmt.Errorf("rules variant used by %s repeats file %q", strings.Join(spec.Scopes, ", "), path)
+			}
+			seenPaths[path] = true
+			f, ok := c.files[path]
+			if !ok {
+				f = &ruleFile{path: path}
+				c.files[path] = f
+				c.fileOrder = append(c.fileOrder, f)
+			}
+			v.files = append(v.files, f)
+			f.dependents = append(f.dependents, v)
+		}
 		c.byKey[key] = v
 	}
-	for _, f := range c.files {
-		if _, err := f.load(log); err != nil {
+	for _, f := range c.fileOrder {
+		if _, err := f.loadSource(log); err != nil {
 			return nil, err
 		}
-		for _, v := range f.variants {
-			if len(v.disabled) > 0 {
-				log.Info("waf rule exclusions active",
-					"file", f.path, "disabled_ids", v.disabled, "scopes", v.scopes)
-			}
+	}
+	for _, v := range c.byKey {
+		set, err := v.build(nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("rules files %q (used by %s): %w", v.paths, strings.Join(v.scopes, ", "), err)
+		}
+		v.set.Store(set)
+		if len(v.disabled) > 0 && log != nil {
+			log.Info("waf rule exclusions active",
+				"files", v.paths, "disabled_ids", v.disabled, "scopes", v.scopes)
 		}
 	}
 	return c, nil
+}
+
+func (v *ruleVariant) build(candidateFile *ruleFile, candidate *RuleSet) (*RuleSet, error) {
+	sets := make([]*RuleSet, len(v.files))
+	for i, f := range v.files {
+		if f == candidateFile {
+			sets[i] = candidate
+		} else {
+			sets[i] = f.set.Load()
+		}
+	}
+	combined, err := combineRuleSets(v.paths, sets)
+	if err != nil {
+		return nil, err
+	}
+	return combined.filter(v.disabled)
 }
 
 // logRuleWarnings emits every non-fatal lint note a compiled rule set carries.
@@ -546,11 +617,8 @@ func logRuleWarnings(log *slog.Logger, path string, rs *RuleSet) {
 	}
 }
 
-// load reads, compiles and installs the rules file and every variant filtered
-// from it, returning the content hash so the poller can record what it
-// loaded. All variants are validated before any is installed, so a failure
-// leaves every currently serving set unchanged.
-func (f *ruleFile) load(log *slog.Logger) (uint64, error) {
+// loadSource reads and compiles one source file during cache construction.
+func (f *ruleFile) loadSource(log *slog.Logger) (uint64, error) {
 	raw, err := safefile.Read(f.path, maxRulesBytes)
 	if err != nil {
 		return 0, err
@@ -560,18 +628,8 @@ func (f *ruleFile) load(log *slog.Logger) (uint64, error) {
 		return 0, err
 	}
 	logRuleWarnings(log, f.path, rs)
-	sets := make([]*RuleSet, len(f.variants))
-	for i, v := range f.variants {
-		filtered, err := rs.filter(v.disabled)
-		if err != nil {
-			return 0, fmt.Errorf("%s (used by %s): %w", f.path, strings.Join(v.scopes, ", "), err)
-		}
-		sets[i] = filtered
-	}
-	for i, v := range f.variants {
-		v.set.Store(sets[i])
-	}
 	hash := contentHash(raw)
+	f.set.Store(rs)
 	f.hash.Store(hash)
 	return hash, nil
 }
@@ -607,7 +665,7 @@ func (c *RuleCache) Start(interval time.Duration) {
 }
 
 func (c *RuleCache) reloadChanged() {
-	for _, f := range c.files {
+	for _, f := range c.fileOrder {
 		raw, err := safefile.Read(f.path, maxRulesBytes)
 		if err != nil {
 			c.log.Warn("rules file unreadable, keeping loaded rules", "file", f.path, "err", err)
@@ -624,32 +682,32 @@ func (c *RuleCache) reloadChanged() {
 			continue
 		}
 		logRuleWarnings(c.log, f.path, rs)
-		// Validate every variant before installing any: an update that removes
-		// or renames a rule ID some scope still disables is rejected wholesale,
-		// so a formerly-disabled rule can never become active silently. To
-		// intentionally delete a disabled rule, drop its ID from guardian.yaml
-		// and reload first, then edit the rules file.
-		sets := make([]*RuleSet, len(f.variants))
+		// Validate every dependent combined variant before installing any: an
+		// update that introduces a cross-file duplicate or removes an excluded
+		// ID is rejected wholesale for this source file.
+		sets := make([]*RuleSet, len(f.dependents))
 		ok := true
-		for i, v := range f.variants {
-			filtered, err := rs.filter(v.disabled)
+		for i, v := range f.dependents {
+			combined, err := v.build(f, rs)
 			if err != nil {
 				c.log.Error("rules reload rejected, keeping previous rules",
-					"file", f.path, "scopes", v.scopes, "err", err)
+					"file", f.path, "effective_files", v.paths, "scopes", v.scopes, "err", err)
 				ok = false
 				break
 			}
-			sets[i] = filtered
+			sets[i] = combined
 		}
 		if !ok {
-			f.hash.Store(hash) // don't retry-spam the same broken version
+			// Keep retrying this content: a cross-file duplicate can become valid
+			// when another source changes, without this file being touched again.
 			continue
 		}
-		for i, v := range f.variants {
+		f.set.Store(rs)
+		for i, v := range f.dependents {
 			v.set.Store(sets[i])
 			if len(v.disabled) > 0 {
 				c.log.Info("waf rule exclusions active",
-					"file", f.path, "disabled_ids", v.disabled, "scopes", v.scopes)
+					"files", v.paths, "disabled_ids", v.disabled, "scopes", v.scopes)
 			}
 		}
 		f.hash.Store(hash)

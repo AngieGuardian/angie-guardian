@@ -170,7 +170,7 @@ defaults:
       enabled: true
       block_ttl: 15m
       thresholds: { rule_match: 2/h }
-    rules: { enabled: true, file: %s }
+    rules: { enabled: true, files: [ %s ] }
 `
 
 const refusalScoringRules = `
