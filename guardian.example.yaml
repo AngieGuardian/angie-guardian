@@ -228,7 +228,7 @@ defaults:
                               # on the 6th block within 24h; max 8760h
       thresholds:             # bad events per window before the IP is blocked;
                               # "off" disables one event type individually
-        signature: 10/min     # WAF keyword/regex rule hits (waf.keywords);
+        rule_match: 10/min     # WAF rule hits (literal/regex; waf.rules);
                               # scanners trip these in rapid bursts
         pow_fail: 10/min      # wrong PoW solutions submitted; an honest
                               # client fails at most once or twice
@@ -241,10 +241,10 @@ defaults:
                               # max_difficulty; any solve resets, so real
                               # visitors never get near it. Tighten (30/h)
                               # when farmers are a problem.
-    keywords:
+    rules:
       enabled: true           # requires the rules file to exist (fail-fast);
-      rules_file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
-      # disabled_rule_ids removes selected rules from the file for a scope by
+      file: /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
+      # disabled_ids removes selected rules from the file for a scope by
       # their exact, case-sensitive id, without copying the file. Like every
       # list, an overlay replaces it wholesale: omitted inherits, [] clears,
       # a non-empty list replaces the inherited one. Unknown/empty/duplicate
@@ -252,8 +252,8 @@ defaults:
       # wp-probe rule is wrong on a real WordPress site, so under domains:
       #   wordpress.example.com:
       #     waf:
-      #       keywords:
-      #         disabled_rule_ids: [ wp-probe ]
+      #       rules:
+      #         disabled_ids: [ wp-probe ]
     anomaly:
       enabled: false          # requires a model trained from your own logs:
       model: /etc/guardian/model.json   #   guardian-train train -out model.json /var/log/angie/*.access.json*
@@ -287,7 +287,7 @@ defaults:
     # No challenge is issued, so nothing escalates and no challenge_farm event
     # can follow: an anonymous /favicon.ico poll cannot walk a real visitor
     # into a block. A WAF or anomaly challenge refused this way is still scored
-    # for the signature or score that asked for it, which the request did trip.
+    # for the WAF rule or anomaly score that asked for it, which the request did trip.
     # Covers declared subresources and, where the destination is unrecognized
     # or absent and Sec-Fetch-Mode is not navigate, an Accept naming neither
     # text/html nor text/*. Set false to challenge them
@@ -354,7 +354,7 @@ defaults:
     # UAs you control, e.g. your own uptime monitor.
     uas: []
     # A path entry ends the pipeline at stage 0: denylist, behaviour blocks,
-    # GeoIP, honeypots, signatures and PoW are all skipped for it. Reserve it
+    # GeoIP, honeypots, WAF rules and PoW are all skipped for it. Reserve it
     # for endpoints that must keep working even for otherwise-blocked clients,
     # keep every entry as narrow as possible (trailing slash = prefix match),
     # and scope it to the domain that needs it, not defaults: an entry here is
@@ -389,7 +389,7 @@ defaults:
     "/sitemap.xml": { pow: { enabled: false } }
   # Verified crawler allowlisting (verified_bots) is deliberately NOT set in
   # defaults: a confirmed crawler identity is a terminal allow that skips
-  # GeoIP, reputation, behaviour blocks, signatures and PoW alike, and a
+  # GeoIP, reputation, behaviour blocks, WAF rules and PoW alike, and a
   # search crawler has no business on an API or static-assets vhost. Grant it
   # per domain instead; see example.com below.
 
@@ -500,7 +500,7 @@ domains:
     pow: { enabled: false }
 
   # Static assets host: no PoW interstitial, no behavioural scoring. The
-  # signature WAF still applies from defaults; override waf.keywords too if
+  # WAF rules still apply from defaults; override waf.rules too if
   # you want a truly minimal policy here.
   static.example.com:
     pow: { enabled: false }

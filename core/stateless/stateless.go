@@ -5,7 +5,7 @@
 // Package stateless holds the store-free, I/O-free subset of Guardian's
 // decision logic: the request/decision value types and the WAF checks that
 // need no shared store, PoW manager or anomaly model (static allowlist,
-// static denylist, honeypot trap paths, keyword/regex signatures).
+// static denylist, honeypot trap paths, WAF rules with literal/regex matchers).
 //
 // It is a leaf package depending only on core/waf and the standard library,
 // so it can be compiled to WebAssembly (the http-wasm guest imports it) as
@@ -123,8 +123,8 @@ const (
 	// worth stating because the obvious reading is wrong. No challenge is
 	// issued, so nothing bumps the unsolved-issuance escalation and no
 	// challenge_farm event can follow it. What a stage already emitted still
-	// stands: a request refused the challenge a WAF signature or the anomaly
-	// scorer asked for is still scored for that signature or that score,
+	// stands: a request refused the challenge a WAF rule or the anomaly
+	// scorer asked for is still scored for that WAF rule or that score,
 	// because it really did trip one, and being unable to solve a puzzle is no
 	// evidence otherwise. The favicon case this exists for reaches the refusal
 	// carrying no events at all, which is why it scores nothing end to end.
@@ -139,7 +139,7 @@ type Event struct {
 
 // Event type constants shared with the sidecar's scoreboard.
 const (
-	EventSignature    = "signature"
+	EventRuleMatch    = "rule_match"
 	EventPoWFail      = "pow_fail"
 	EventTamper       = "tamper"
 	EventAnomaly      = "anomaly"
@@ -335,22 +335,22 @@ type HoneypotConfig struct {
 }
 
 // DomainRules bundles the stateless per-domain config plus the compiled
-// signature rule set. The sidecar builds this from its full DomainConfig; the
+// WAF rule set. The sidecar builds this from its full DomainConfig; the
 // guest builds it from GuestConfig.
 type DomainRules struct {
-	Allowlist       ListConfig
-	Denylist        ListConfig
-	Honeypot        HoneypotConfig
-	KeywordsEnabled bool
-	Rules           *waf.RuleSet // nil disables signature matching
+	Allowlist    ListConfig
+	Denylist     ListConfig
+	Honeypot     HoneypotConfig
+	RulesEnabled bool
+	Rules        *waf.RuleSet // nil disables rule matching
 }
 
 // --- the evaluator ---------------------------------------------------------
 
 // Evaluate runs the stateless pipeline (allowlist -> denylist -> honeypot ->
-// signatures, first terminal wins). The result is terminal for this subset:
+// WAF rules, first terminal wins). The result is terminal for this subset:
 // ActionAllow (reason "default" if nothing matched) or ActionDeny. Because
-// there is no PoW here, a signature rule whose action is "challenge" degrades
+// there is no PoW here, a WAF rule whose action is "challenge" degrades
 // to a deny.
 func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 	if d, ok := evalAllowlist(req, dr); ok {
@@ -362,7 +362,7 @@ func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 	if d, ok := evalHoneypot(req, dr); ok {
 		return d
 	}
-	if d, ok := evalSignatures(req, dr); ok {
+	if d, ok := evalRules(req, dr); ok {
 		return d
 	}
 	return Decision{Action: ActionAllow, Reason: "default"}
@@ -464,7 +464,7 @@ func CheckHoneypot(req *RequestContext, hp *HoneypotConfig) *Decision {
 	return nil
 }
 
-// BuildMatchInput assembles the normalized signature-matcher input for a rule
+// BuildMatchInput assembles the normalized matcher input for a WAF rule
 // set, fetching method and headers only when some rule targets them. Header
 // values get the same best-effort percent-decoding as the path, so encoded
 // payloads in URL-shaped headers (Referer and friends) can't slip past
@@ -499,8 +499,8 @@ func BuildMatchInput(req *RequestContext, rs *waf.RuleSet) waf.MatchInput {
 	return in
 }
 
-func evalSignatures(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	if !dr.KeywordsEnabled || dr.Rules == nil {
+func evalRules(req *RequestContext, dr *DomainRules) (Decision, bool) {
+	if !dr.RulesEnabled || dr.Rules == nil {
 		return Decision{}, false
 	}
 	in := BuildMatchInput(req, dr.Rules)
@@ -508,7 +508,7 @@ func evalSignatures(req *RequestContext, dr *DomainRules) (Decision, bool) {
 	if rule == nil {
 		return Decision{}, false
 	}
-	event := EventSignature
+	event := EventRuleMatch
 	if rule.Action == waf.ActionBlock {
 		event = EventInstantBlock
 	}
@@ -537,7 +537,7 @@ func RequestQuery(uri string) string {
 	return ""
 }
 
-// DecodePath best-effort URL-decodes a path for signature matching, so
+// DecodePath best-effort URL-decodes a path for WAF rule matching, so
 // percent-encoding can't slip past literal keywords. On malformed escapes the
 // raw string is returned.
 func DecodePath(p string) string {
@@ -555,7 +555,7 @@ func DecodePath(p string) string {
 // "/b", "//x" -> "/x"), preserving a trailing slash. Every path-scoped policy
 // match (allowlist, honeypot, per-path overlays) must use this form: matching
 // the raw URI instead would let "/static/../admin" adopt or escape a policy
-// for a path Angie never serves. WAF signature matching deliberately keeps the
+// for a path Angie never serves. WAF rule matching deliberately keeps the
 // un-cleaned decoded path so traversal rules still see "../" attempts.
 func NormalizePath(p string) string {
 	p = DecodePath(p)

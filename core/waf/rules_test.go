@@ -278,7 +278,7 @@ func TestDisabledRuleVariants(t *testing.T) {
 	disabled := []string{"dotfile-probe", "log4shell-header", "trace-method", "put-script"}
 	cache, err := NewRuleCacheVariants([]VariantSpec{
 		{Path: path, Scopes: []string{"defaults"}},
-		{Path: path, Disabled: disabled, Scopes: []string{"domain a.test"}},
+		{Path: path, DisabledIDs: disabled, Scopes: []string{"domain a.test"}},
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +328,7 @@ func TestUnknownDisabledRuleIDFailsFast(t *testing.T) {
 		"case mismatch": {"Dotfile-Probe"},
 	} {
 		_, err := NewRuleCacheVariants([]VariantSpec{
-			{Path: path, Disabled: ids, Scopes: []string{"domain a.test"}},
+			{Path: path, DisabledIDs: ids, Scopes: []string{"domain a.test"}},
 		}, slog.Default())
 		if err == nil {
 			t.Fatalf("%s: expected error, got nil", name)
@@ -349,7 +349,7 @@ func TestHotReloadRejectsRemovedExcludedID(t *testing.T) {
 	path := writeRules(t, "rules: [ { id: keep, keywords: [ keepkw ] }, { id: banned, keywords: [ badkw ] } ]")
 	cache, err := NewRuleCacheVariants([]VariantSpec{
 		{Path: path, Scopes: []string{"defaults"}},
-		{Path: path, Disabled: []string{"banned"}, Scopes: []string{"domain a.test"}},
+		{Path: path, DisabledIDs: []string{"banned"}, Scopes: []string{"domain a.test"}},
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)

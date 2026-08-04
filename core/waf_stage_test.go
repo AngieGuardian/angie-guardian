@@ -39,8 +39,8 @@ defaults:
     ip_behaviour:
       enabled: true
       block_ttl: 15m
-      thresholds: { signature: 3/min, pow_fail: 3/min, tamper: 3/min }
-    keywords: { enabled: true, rules_file: %q }
+      thresholds: { rule_match: 3/min, pow_fail: 3/min, tamper: 3/min }
+    rules: { enabled: true, file: %q }
     honeypot: { enabled: true, paths: [ "/wp-login.php", "/admin-old/" ] }
   allowlist:
     ips: [ "10.0.0.0/8" ]
@@ -71,7 +71,7 @@ func wafEngine(t *testing.T) (*Engine, *pow.Manager) {
 	return e, mgr
 }
 
-func TestWAFSignatureStage(t *testing.T) {
+func TestWAFRuleStage(t *testing.T) {
 	ctx := context.Background()
 	e, _ := wafEngine(t)
 
@@ -153,7 +153,7 @@ func TestEncodedHoneypotTrapBlocksIP(t *testing.T) {
 	}
 }
 
-func TestSignatureThresholdBlocks(t *testing.T) {
+func TestRuleThresholdBlocks(t *testing.T) {
 	ctx := context.Background()
 	e, _ := wafEngine(t)
 	ip := "198.51.100.22"
@@ -165,7 +165,7 @@ func TestSignatureThresholdBlocks(t *testing.T) {
 		}
 	}
 	d := e.Evaluate(ctx, req("plain.test", ip, "/clean", "curl"))
-	if d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:signature" {
+	if d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:rule_match" {
 		t.Fatalf("after threshold: got %s/%s", d.Action, d.Reason)
 	}
 }
@@ -182,13 +182,13 @@ func TestVouchedClientStillPassesWAF(t *testing.T) {
 	if d := e.Evaluate(ctx, r); d.Reason != "pow:token" {
 		t.Fatalf("clean vouched request: %s/%s", d.Action, d.Reason)
 	}
-	// ...but does not exempt the client from signature checks (WAF-lite).
+	// ...but does not exempt the client from rule checks (WAF-lite).
 	r = req("pow.test", ip, "/backup/.env", ua)
 	r.Cookie = pow.CookieName + "=" + token
 	if d := e.Evaluate(ctx, r); d.Action != ActionDeny || d.Reason != "waf:dotfile" {
 		t.Fatalf("vouched attack request: got %s/%s, want waf:dotfile deny", d.Action, d.Reason)
 	}
-	// A challenge-only signature is satisfied by that same valid token instead
+	// A challenge-only rule is satisfied by that same valid token instead
 	// of trapping the client in an infinite challenge loop.
 	r = req("pow.test", ip, "/union all select", ua)
 	r.Cookie = pow.CookieName + "=" + token
@@ -201,14 +201,14 @@ const disabledRulesYAML = `
 store: { backend: memory }
 defaults:
   waf:
-    keywords: { enabled: true, rules_file: %q }
+    rules: { enabled: true, file: %q }
 domains:
   excl.test:
-    waf: { keywords: { disabled_rule_ids: [ dotfile ] } }
+    waf: { rules: { disabled_ids: [ dotfile ] } }
   pathed.test:
     paths:
       "/legacy/":
-        waf: { keywords: { disabled_rule_ids: [ scanner ] } }
+        waf: { rules: { disabled_ids: [ scanner ] } }
 `
 
 func disabledRulesEngine(t *testing.T) *Engine {
@@ -228,10 +228,10 @@ func disabledRulesEngine(t *testing.T) *Engine {
 	return e
 }
 
-// TestWAFDisabledRuleIDs: an excluded rule produces no decision for its scope
+// TestWAFDisabledIDs: an excluded rule produces no decision for its scope
 // only; file order among the remaining rules is preserved, so the next
 // matching rule still decides the request.
-func TestWAFDisabledRuleIDs(t *testing.T) {
+func TestWAFDisabledIDs(t *testing.T) {
 	ctx := context.Background()
 	e := disabledRulesEngine(t)
 
@@ -276,10 +276,10 @@ func TestUnknownDisabledRuleIDFailsEverywhere(t *testing.T) {
 store: { backend: memory }
 defaults:
   waf:
-    keywords: { enabled: true, rules_file: %q }
+    rules: { enabled: true, file: %q }
 domains:
   excl.test:
-    waf: { keywords: { disabled_rule_ids: [ nope ] } }
+    waf: { rules: { disabled_ids: [ nope ] } }
 `, rules)
 	badCfg := loadTestConfig(t, badYAML)
 
@@ -312,7 +312,7 @@ domains:
 }
 
 // TestWAFExclusionsAddNoPerRequestAllocations: the effective filtered sets are
-// precompiled at load time, so the signature stage must allocate exactly as
+// precompiled at load time, so the rule stage must allocate exactly as
 // much per request with exclusions configured as without.
 func TestWAFExclusionsAddNoPerRequestAllocations(t *testing.T) {
 	ctx := context.Background()
@@ -320,7 +320,7 @@ func TestWAFExclusionsAddNoPerRequestAllocations(t *testing.T) {
 		snap := e.snap.Load()
 		env := &stageEnv{domain: snap.cfg.ConfigFor(host, "/blog/post"), rules: snap.rules}
 		r := req(host, "198.51.100.50", "/blog/post?page=2", "Mozilla/5.0")
-		stage := wafSignatureStage{}
+		stage := wafRulesStage{}
 		return testing.AllocsPerRun(1000, func() {
 			if _, err := stage.Evaluate(ctx, r, env); err != nil {
 				t.Fatal(err)

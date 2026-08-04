@@ -114,7 +114,7 @@ Is this IP currently blocked, why, until when, and how often has it been
 blocked before?
 
 ```json
-{"ip":"203.0.113.9","blocked":true,"reason":"threshold:signature",
+{"ip":"203.0.113.9","blocked":true,"reason":"threshold:rule_match",
  "expires_at":"2026-08-24T22:14:39+02:00","offenses":4}
 ```
 
@@ -643,8 +643,8 @@ not automatically deleted from disk).
 ### `GET /admin/config`
 
 The active per-domain configuration: which features are enabled where,
-including PoW base/max difficulty, each scope's effective signature-rule
-selection (`waf_rules_file` plus `waf_disabled_rule_ids`, both omitted when
+including PoW base/max difficulty, each scope's effective WAF rule
+selection (`waf_rules_file` plus `waf_rules_disabled_ids`, both omitted when
 empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a scope defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
 a `paths` object with the same view per overlay. `defaults` carries its own
@@ -660,11 +660,11 @@ its effective overlays, inherited entries included:
       "pow_enabled": true,
       "pow_base_difficulty": 5,
       "pow_max_difficulty": 6,
-      "waf_keywords": true,
+      "waf_rules": true,
       "waf_anomaly": true,
       "waf_anomaly_observe_only": true,
       "waf_rules_file": "/etc/guardian/rules.d/common.yaml",
-      "waf_disabled_rule_ids": ["wp-probe"],
+      "waf_rules_disabled_ids": ["wp-probe"],
       "paths": {
         "/api/v1/": { "pow_enabled": false, "...": "..." }
       }

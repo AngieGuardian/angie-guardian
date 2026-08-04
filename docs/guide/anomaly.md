@@ -4,10 +4,10 @@ The statistical anomaly scorer rates each unvouched request that reaches its
 pipeline stage against a per-domain baseline learned from your own traffic.
 Training and scoring normalize host case, ports, trailing dots, and bracketed
 IPv6 the same way domain config lookup does, so equivalent host spellings use
-one baseline. Valid PoW tokens short-circuit the scorer after signature checks:
+one baseline. Valid PoW tokens short-circuit the scorer after WAF rule checks:
 `deny` and `block` still apply, while `challenge` is already satisfied. With a
 trained model in place, Guardian can challenge or deny
-bot-shaped requests that no static signature would catch, and scale the PoW
+bot-shaped requests that no static WAF rule would catch, and scale the PoW
 difficulty with the suspicion score.
 
 ## What training gives you
@@ -19,7 +19,7 @@ aggregates and two frequency tables; it records the *shape* of traffic, not
 individual visitors, IPs, or sessions. In return, three things change at
 runtime:
 
-- **Bot-shaped requests can be caught without a signature.** A scanner using a
+- **Bot-shaped requests can be caught without a WAF rule.** A scanner using a
   fresh path list, or probing a CVE nobody has written a rule for yet, still
   looks nothing like normal traffic for that host. The WAF has no rule to match;
   the scorer has an opinion anyway.

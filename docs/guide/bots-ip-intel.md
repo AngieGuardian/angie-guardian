@@ -249,7 +249,7 @@ listed yet".
 
 An `action: deny` feed rejects matching IPs outright; `action: challenge`
 makes them prove work first, one full difficulty step (+4 bits = 16x) above
-base, like a WAF signature hit. Challenge feeds are inert on PoW-disabled
+base, like a WAF rule hit. Challenge feeds are inert on PoW-disabled
 domains.
 
 ## Watching it run

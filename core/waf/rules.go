@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Melroy van den Berg
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package waf implements the WAF layer: keyword/regex threat signatures with
-// hot reload, the behavioural IP scoreboard, and tamper-proof signed IDs.
+// Package waf implements the WAF layer: hot-reloadable request rules with
+// literal/regex matchers, the behavioural IP scoreboard, and tamper-proof
+// signed IDs.
 package waf
 
 import (
@@ -44,7 +45,7 @@ const (
 	targetUA
 )
 
-// Rule is one compiled signature. Keywords are case-insensitive literals;
+// Rule is one compiled WAF rule. Keywords are case-insensitive literals;
 // regexes are Go RE2, which is guaranteed linear-time, so a rules file cannot
 // introduce catastrophic backtracking (the ReDoS class).
 type Rule struct {
@@ -174,7 +175,7 @@ func (r *Rule) matchesText(text string) bool {
 }
 
 // CompileRules compiles a rules document (the same YAML format as a
-// rules_file) into an immutable RuleSet. Exported for callers that hold the
+// rule file) into an immutable RuleSet. Exported for callers that hold the
 // rules in memory rather than on disk, such as the WASM guest, which receives
 // its rules inline in the host config. label is used only in error messages.
 func CompileRules(raw []byte, label string) (*RuleSet, error) {
@@ -368,9 +369,9 @@ func requiredUppercaseLiteral(re *syntax.Regexp) string {
 // config scope labels ("defaults", "domain x path /y/") that use this exact
 // (file, exclusions) pair, so validation errors can name who is affected.
 type VariantSpec struct {
-	Path     string
-	Disabled []string // exact rule IDs; empty = the full file
-	Scopes   []string
+	Path        string
+	DisabledIDs []string // exact rule IDs; empty = the full file
+	Scopes      []string
 }
 
 // VariantKey canonicalizes a (rules file, disabled IDs) pair into the cache
@@ -427,7 +428,7 @@ func (rs *RuleSet) filter(disabled []string) (*RuleSet, error) {
 			missing = append(missing, id)
 		}
 		slices.Sort(missing)
-		return nil, fmt.Errorf("disabled_rule_ids not present in file (ids are exact and case-sensitive): %q", missing)
+		return nil, fmt.Errorf("disabled_ids not present in file (ids are exact and case-sensitive): %q", missing)
 	}
 	for i := range out.Rules {
 		out.needsMethod = out.needsMethod || len(out.Rules[i].methods) > 0
@@ -443,7 +444,7 @@ func (rs *RuleSet) filter(disabled []string) (*RuleSet, error) {
 
 // RuleCache holds the compiled rule sets for every configured rules file and
 // hot-reloads them when the file changes on disk. Each file is read and
-// watched once; per (file, disabled_rule_ids) variant a filtered rule set is
+// watched once; per (file, disabled_ids) variant a filtered rule set is
 // precompiled at load/reload time, so per-request lookup stays one map access
 // with no ID filtering on the hot path. A reload that fails to parse, or that
 // removes a rule ID some scope still disables, keeps the last good rule sets
@@ -482,8 +483,8 @@ func contentHash(raw []byte) uint64 {
 }
 
 // NewRuleCache loads every rules file eagerly; any parse error fails startup
-// (fail fast beats silently running without signatures). It keeps the
-// pre-exclusions signature for downstream users: each path becomes one
+// (fail fast beats silently running without WAF rules). It keeps the
+// pre-exclusions behavior for downstream users: each path becomes one
 // full-file variant, exactly equivalent to NewRuleCacheVariants with
 // exclusion-free specs.
 func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
@@ -496,7 +497,7 @@ func NewRuleCache(paths []string, log *slog.Logger) (*RuleCache, error) {
 
 // NewRuleCacheVariants loads every rules file eagerly and precompiles every
 // variant; any parse error or unknown disabled rule ID fails startup (fail
-// fast beats silently running without signatures, or with a mistyped
+// fast beats silently running without WAF rules, or with a mistyped
 // exclusion).
 func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, error) {
 	c := &RuleCache{
@@ -506,7 +507,7 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 		stop:  make(chan struct{}),
 	}
 	for _, spec := range specs {
-		key := VariantKey(spec.Path, spec.Disabled)
+		key := VariantKey(spec.Path, spec.DisabledIDs)
 		if v, ok := c.byKey[key]; ok {
 			// Same file + same exclusions: one shared variant.
 			v.scopes = append(v.scopes, spec.Scopes...)
@@ -517,7 +518,7 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 			f = &ruleFile{path: spec.Path}
 			c.files[spec.Path] = f
 		}
-		v := &ruleVariant{key: key, disabled: spec.Disabled, scopes: spec.Scopes}
+		v := &ruleVariant{key: key, disabled: spec.DisabledIDs, scopes: spec.Scopes}
 		f.variants = append(f.variants, v)
 		c.byKey[key] = v
 	}
@@ -528,7 +529,7 @@ func NewRuleCacheVariants(specs []VariantSpec, log *slog.Logger) (*RuleCache, er
 		for _, v := range f.variants {
 			if len(v.disabled) > 0 {
 				log.Info("waf rule exclusions active",
-					"file", f.path, "disabled_rule_ids", v.disabled, "scopes", v.scopes)
+					"file", f.path, "disabled_ids", v.disabled, "scopes", v.scopes)
 			}
 		}
 	}
@@ -648,7 +649,7 @@ func (c *RuleCache) reloadChanged() {
 			v.set.Store(sets[i])
 			if len(v.disabled) > 0 {
 				c.log.Info("waf rule exclusions active",
-					"file", f.path, "disabled_rule_ids", v.disabled, "scopes", v.scopes)
+					"file", f.path, "disabled_ids", v.disabled, "scopes", v.scopes)
 			}
 		}
 		f.hash.Store(hash)

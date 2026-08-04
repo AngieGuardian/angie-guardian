@@ -101,7 +101,7 @@ const unblockGenRetention = 24 * time.Hour
 
 // Scoreboard counts bad-behaviour events per IP in time-bucketed windows and
 // places TTL'd blocks when a per-domain threshold is crossed. Only discrete
-// bad events are counted (signature hits, PoW failures, tamper, honeypot):
+// bad events are counted (WAF rule hits, PoW failures, tamper, honeypot):
 // they are rare, so a store write per event is affordable. It is inherently
 // stateful (needs the shared store), so it lives with the sidecar, not in the
 // store-free stateless package.

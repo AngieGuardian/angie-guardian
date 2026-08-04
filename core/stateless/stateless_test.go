@@ -71,10 +71,10 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		{"honeypot", req("site.test", "192.0.2.8", "/wp-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded", req("site.test", "192.0.2.8", "/%77p-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded prefix", req("site.test", "192.0.2.8", "/%61dmin-old/secret", "Mozilla"), ActionDeny, "honeypot:path"},
-		{"signature keyword (block->deny)", req("site.test", "192.0.2.9", "/app/.env", "curl"), ActionDeny, "waf:dotfile"},
-		{"signature url-encoded", req("site.test", "192.0.2.9", "/%2e%65nv", "curl"), ActionDeny, "waf:dotfile"},
-		{"signature challenge degrades to deny", req("site.test", "192.0.2.9", "/x?q=union+all+select+1", "curl"), ActionDeny, "waf:sqli"},
-		{"signature ua", req("site.test", "192.0.2.9", "/", "sqlmap/1.7"), ActionDeny, "waf:scanner"},
+		{"WAF rule keyword (block->deny)", req("site.test", "192.0.2.9", "/app/.env", "curl"), ActionDeny, "waf:dotfile"},
+		{"WAF rule url-encoded", req("site.test", "192.0.2.9", "/%2e%65nv", "curl"), ActionDeny, "waf:dotfile"},
+		{"WAF rule challenge degrades to deny", req("site.test", "192.0.2.9", "/x?q=union+all+select+1", "curl"), ActionDeny, "waf:sqli"},
+		{"WAF rule ua", req("site.test", "192.0.2.9", "/", "sqlmap/1.7"), ActionDeny, "waf:scanner"},
 		{"defaults denylist", req("other.test", "203.0.113.5", "/", "curl"), ActionDeny, "denylist:ip"},
 		{"defaults allow", req("other.test", "192.0.2.1", "/", "curl"), ActionAllow, "default"},
 		{"host case + port normalized", req("SITE.test:443", "198.51.100.66", "/page", "curl"), ActionDeny, "denylist:ip"},
@@ -94,7 +94,7 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 	}
 }
 
-func TestSignatureHeaderAndMethodRules(t *testing.T) {
+func TestRuleHeaderAndMethodRules(t *testing.T) {
 	gc := mustGuestConfig(t, `
 domains:
   h.test:
@@ -155,7 +155,7 @@ func TestGuestConfigRejectsTrailingYAMLDocument(t *testing.T) {
 }
 
 func TestEvaluatePrecedence(t *testing.T) {
-	// allowlist -> denylist -> honeypot -> signatures; first terminal wins.
+	// allowlist -> denylist -> honeypot -> WAF rules; first terminal wins.
 	gc := mustGuestConfig(t, `
 domains:
   x.test:
@@ -284,10 +284,10 @@ domains:
 }
 
 // TestNoRulesStaysDisabled locks in that a config without any rules block
-// resolves every domain with keyword matching off, like the fallback. The
+// resolves every domain with rule matching off, like the fallback. The
 // defaults round-trip serializes a zero Rules node as "rules: null", which
 // parses back as a non-zero !!null scalar; without the null guard in resolve()
-// every configured domain would spuriously enable signatures on an empty set.
+// every configured domain would spuriously enable WAF rules on an empty set.
 func TestNoRulesStaysDisabled(t *testing.T) {
 	gc := mustGuestConfig(t, `
 defaults:
@@ -300,17 +300,17 @@ domains:
 	if dr == nil {
 		t.Fatal("a.test not resolved")
 	}
-	if dr.KeywordsEnabled || dr.Rules != nil {
-		t.Errorf("no rules configured: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	if dr.RulesEnabled || dr.Rules != nil {
+		t.Errorf("no rules configured: got RulesEnabled=%v Rules=%v, want false/nil", dr.RulesEnabled, dr.Rules)
 	}
-	if dr.KeywordsEnabled != gc.fallback.KeywordsEnabled {
-		t.Errorf("resolved domain KeywordsEnabled=%v diverges from fallback=%v", dr.KeywordsEnabled, gc.fallback.KeywordsEnabled)
+	if dr.RulesEnabled != gc.fallback.RulesEnabled {
+		t.Errorf("resolved domain RulesEnabled=%v diverges from fallback=%v", dr.RulesEnabled, gc.fallback.RulesEnabled)
 	}
 
 	// An explicit empty list means the same as no rules.
 	gc = mustGuestConfig(t, `domains: { c.test: { rules: [] } }`)
-	if dr := gc.resolved["c.test"]; dr.KeywordsEnabled || dr.Rules != nil {
-		t.Errorf("rules []: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	if dr := gc.resolved["c.test"]; dr.RulesEnabled || dr.Rules != nil {
+		t.Errorf("rules []: got RulesEnabled=%v Rules=%v, want false/nil", dr.RulesEnabled, dr.Rules)
 	}
 
 	// A domain can opt out of inherited default rules with an explicit null.
@@ -325,14 +325,14 @@ domains:
     rules: null
   inherits.test: {}
 `)
-	if dr := gc.resolved["optout.test"]; dr.KeywordsEnabled || dr.Rules != nil {
-		t.Errorf("rules null opt-out: got KeywordsEnabled=%v Rules=%v, want false/nil", dr.KeywordsEnabled, dr.Rules)
+	if dr := gc.resolved["optout.test"]; dr.RulesEnabled || dr.Rules != nil {
+		t.Errorf("rules null opt-out: got RulesEnabled=%v Rules=%v, want false/nil", dr.RulesEnabled, dr.Rules)
 	}
-	if dr := gc.resolved["inherits.test"]; !dr.KeywordsEnabled || dr.Rules == nil {
+	if dr := gc.resolved["inherits.test"]; !dr.RulesEnabled || dr.Rules == nil {
 		t.Errorf("sibling should inherit default rules: got %+v", dr)
 	}
 
-	// Positive counterpart: a real rules block does enable keyword matching.
+	// Positive counterpart: a real rules block does enable rule matching.
 	gc = mustGuestConfig(t, `
 domains:
   b.test:
@@ -342,8 +342,8 @@ domains:
         keywords: [ "/.env" ]
 `)
 	dr = gc.resolved[NormalizeHost("b.test")]
-	if dr == nil || !dr.KeywordsEnabled || dr.Rules == nil {
-		t.Errorf("rules configured: got %+v, want KeywordsEnabled=true and non-nil Rules", dr)
+	if dr == nil || !dr.RulesEnabled || dr.Rules == nil {
+		t.Errorf("rules configured: got %+v, want RulesEnabled=true and non-nil Rules", dr)
 	}
 }
 

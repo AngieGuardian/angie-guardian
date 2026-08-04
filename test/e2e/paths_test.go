@@ -48,7 +48,7 @@ func TestPathOverridePoWDisabled(t *testing.T) {
 }
 
 // TestPathOverrideWAFStillActive: disabling PoW for /api/ must not soften the
-// WAF there; a signature probe under the PoW-free prefix is still denied.
+// WAF there; a rule probe under the PoW-free prefix is still denied.
 func TestPathOverrideWAFStillActive(t *testing.T) {
 	// wp-probe is a deny rule (no behavioural block), so this leaves no state.
 	resp := get(t, "/api/wp-login.php", powHost, "machine-client/1.0", nil)

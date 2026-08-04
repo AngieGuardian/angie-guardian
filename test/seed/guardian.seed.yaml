@@ -26,7 +26,7 @@ store:
 # Committed demo fixtures (regenerate with `go generate ./test/seed`): they
 # map the seeder's documentation ranges to a spread of countries/cities/ASNs,
 # so the Geo columns, the world map, the country rollup and the IP lookup
-# panel all light up. Paths are relative to the repo root, like rules_file.
+# panel all light up. Paths are relative to the repo root, like file.
 geoip:
   location_db: test/seed/seed-city.mmdb
   asn_db: test/seed/seed-asn.mmdb
@@ -57,17 +57,17 @@ defaults:
     base_difficulty: 4
     max_difficulty: 8
   waf:
-    keywords:
+    rules:
       enabled: true
       # The shipped starter rules: the seeder's scanner traffic is built to
       # match these, so denies and blocks appear without extra setup.
-      rules_file: deploy/rules-common.yaml
+      file: deploy/rules-common.yaml
     ip_behaviour:
       enabled: true
       block_ttl: 30m
     # Trap paths no legitimate client visits: one hit denies and (with
     # ip_behaviour on) persists a block, so the seeder can produce honeypot
-    # decisions alongside the signature ones.
+    # decisions alongside the rule ones.
     honeypot:
       enabled: true
       paths: [ "/admin-old/", "/wp-admin-backup/" ]

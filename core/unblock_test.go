@@ -27,7 +27,7 @@ defaults:
     ip_behaviour:
       enabled: true
       block_ttl: 15m
-      thresholds: { pow_fail: 3/min, signature: off }
+      thresholds: { pow_fail: 3/min, rule_match: off }
 domains:
   slow.test:
     waf: { ip_behaviour: { thresholds: { pow_fail: 3/h } } }
@@ -561,7 +561,7 @@ func TestOffenseIsRecordedOnlyForABlockThatStands(t *testing.T) {
 		}
 		time.Sleep(4 * e.board.unblockHold)
 		// A fresh scorer, with a current view, blocks the IP again.
-		if err := e.board.Block(ctx, ip, "threshold:signature", time.Minute, time.Hour); err != nil {
+		if err := e.board.Block(ctx, ip, "threshold:rule_match", time.Minute, time.Hour); err != nil {
 			t.Fatal(err)
 		}
 		if got := offensesNow(t, e, ip); got != 1 {
@@ -577,8 +577,8 @@ func TestOffenseIsRecordedOnlyForABlockThatStands(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !blocked || reason != "threshold:signature" {
-			t.Fatalf("block = %q %v, want threshold:signature true: the stale writer overwrote a newer block", reason, blocked)
+		if !blocked || reason != "threshold:rule_match" {
+			t.Fatalf("block = %q %v, want threshold:rule_match true: the stale writer overwrote a newer block", reason, blocked)
 		}
 		if got := offensesNow(t, e, ip); got != 1 {
 			t.Fatalf("offenses = %d, want 1: the stale writer moved a counter it does not own", got)
@@ -1089,7 +1089,7 @@ func TestBehaviourWindows(t *testing.T) {
 		{Event: "pow_fail", Window: time.Second}: true, // slow.test /api/
 	}
 	for _, w := range got {
-		if w.Event == "signature" {
+		if w.Event == "rule_match" {
 			t.Fatalf("an \"off\" threshold produced a window: %+v", w)
 		}
 		if !want[w] {

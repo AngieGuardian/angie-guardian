@@ -35,7 +35,7 @@ func TestThresholdBlocks(t *testing.T) {
 	ip := "198.51.100.7"
 
 	for i := 1; i <= 2; i++ {
-		hit, err := board.RecordEvent(ctx, ip, "signature", 3, time.Minute, 15*time.Minute, time.Hour)
+		hit, err := board.RecordEvent(ctx, ip, "rule_match", 3, time.Minute, 15*time.Minute, time.Hour)
 		if err != nil || hit {
 			t.Fatalf("event %d: hit=%v err=%v, want no block yet", i, hit, err)
 		}
@@ -43,12 +43,12 @@ func TestThresholdBlocks(t *testing.T) {
 	if _, ok := scoreboardBlocked(t, st, ip); ok {
 		t.Fatal("blocked before reaching the threshold")
 	}
-	hit, err := board.RecordEvent(ctx, ip, "signature", 3, time.Minute, 15*time.Minute, time.Hour)
+	hit, err := board.RecordEvent(ctx, ip, "rule_match", 3, time.Minute, 15*time.Minute, time.Hour)
 	if err != nil || !hit {
 		t.Fatalf("third event: hit=%v err=%v, want block", hit, err)
 	}
-	if reason, ok := scoreboardBlocked(t, st, ip); !ok || reason != "threshold:signature" {
-		t.Fatalf("block = %q %v, want threshold:signature true", reason, ok)
+	if reason, ok := scoreboardBlocked(t, st, ip); !ok || reason != "threshold:rule_match" {
+		t.Fatalf("block = %q %v, want threshold:rule_match true", reason, ok)
 	}
 
 	// Events of a different type use separate counters.
@@ -134,7 +134,7 @@ func TestThresholdBlocksIPv6SharedCounter(t *testing.T) {
 		"2001:db8::7",
 	}
 	for i, form := range forms {
-		hit, err := board.RecordEvent(ctx, form, "signature", 3, time.Minute, 15*time.Minute, time.Hour)
+		hit, err := board.RecordEvent(ctx, form, "rule_match", 3, time.Minute, 15*time.Minute, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -142,8 +142,8 @@ func TestThresholdBlocksIPv6SharedCounter(t *testing.T) {
 			t.Fatalf("event %d (%s): hit=%v, want %v (forms must share one counter)", i+1, form, hit, want)
 		}
 	}
-	if reason, ok := scoreboardBlocked(t, st, "2001:0DB8::0007"); !ok || reason != "threshold:signature" {
-		t.Fatalf("block via yet another form = %q %v, want threshold:signature true", reason, ok)
+	if reason, ok := scoreboardBlocked(t, st, "2001:0DB8::0007"); !ok || reason != "threshold:rule_match" {
+		t.Fatalf("block via yet another form = %q %v, want threshold:rule_match true", reason, ok)
 	}
 
 	// The IPv4-mapped form shares identity with the plain v4 address.

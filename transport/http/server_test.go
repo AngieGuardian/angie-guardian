@@ -251,7 +251,7 @@ func TestAuthHeaderAndMethodRules(t *testing.T) {
 	}
 	ts := testServerWithYAML(t, fmt.Sprintf(`store: { backend: memory }
 defaults:
-  waf: { keywords: { enabled: true, rules_file: "%s" } }
+  waf: { rules: { enabled: true, file: "%s" } }
 `, rules))
 
 	// Clean request: allowed.
@@ -660,7 +660,7 @@ defaults:
   pow: { enabled: true, mode: always, base_difficulty: 2, max_difficulty: 4 }
   waf:
     honeypot: { enabled: true, paths: [ "/trap" ] }
-    keywords: { enabled: true, rules_file: %q }
+    rules: { enabled: true, file: %q }
   denylist: { ips: [ "203.0.113.66" ] }
 domains:
   html.test: { pow: { enabled: true } }
@@ -705,7 +705,7 @@ domains:
 	}
 
 	// A token is not a WAF bypass. The normal pipeline runs honeypot and
-	// terminal signature checks before token acceptance; saturation must retain
+	// terminal rule checks before token acceptance; saturation must retain
 	// those store-free checks instead of fast-passing a vouched attack request.
 	for _, uri := range []string{"/backup/.env", "/trap"} {
 		bad := guardianHeaders("html.test", ip, uri, ua)

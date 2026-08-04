@@ -895,7 +895,7 @@ type ReputationConfig struct {
 
 type WAFConfig struct {
 	IPBehaviour IPBehaviourConfig `yaml:"ip_behaviour"`
-	Keywords    KeywordsConfig    `yaml:"keywords"`
+	Rules       RulesConfig       `yaml:"rules"`
 	Anomaly     AnomalyConfig     `yaml:"anomaly"` // enforced from P3
 	Honeypot    HoneypotConfig    `yaml:"honeypot"`
 	// SignedID reserves the signed-ID feature: opaque
@@ -923,19 +923,19 @@ type IPBehaviourConfig struct {
 // Aliased from the leaf package so the sidecar and WASM guest share the type.
 type HoneypotConfig = stateless.HoneypotConfig
 
-type KeywordsConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	RulesFile string `yaml:"rules_file"`
-	// DisabledRuleIDs removes rules from the effective rules_file for this
+type RulesConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	File    string `yaml:"file"`
+	// DisabledIDs removes rules from the effective file for this
 	// scope by their exact, case-sensitive id, without copying the file. Like
 	// every list field it overlays wholesale: omitted inherits the parent's
 	// list, [] clears it, a non-empty list replaces it (re-list inherited IDs
-	// to keep them). Every ID must exist in the effective rules_file; typos
+	// to keep them). Every ID must exist in the effective file; typos
 	// are load/reload errors, never silently-enabled rules.
-	DisabledRuleIDs []string `yaml:"disabled_rule_ids"`
+	DisabledIDs []string `yaml:"disabled_ids"`
 
 	// ruleKey is the precomputed RuleCache variant key for this scope's
-	// (rules_file, disabled_rule_ids) pair, set in validate() so the request
+	// (file, disabled_ids) pair, set in validate() so the request
 	// hot path stays a single map lookup with no per-request filtering.
 	ruleKey string
 }
@@ -1260,7 +1260,7 @@ func (c *Config) finalize() error {
 	// visitors never accumulate that; write "off" to disable blocking and
 	// keep the farm_detected metric only.
 	for event, rate := range map[string]ThresholdRate{
-		"signature":      {Rate{Count: 10, Per: time.Minute}},
+		"rule_match":     {Rate{Count: 10, Per: time.Minute}},
 		"pow_fail":       {Rate{Count: 10, Per: time.Minute}},
 		"tamper":         {Rate{Count: 10, Per: time.Minute}},
 		"bot_spoof":      {Rate{Count: 5, Per: time.Minute}},
@@ -1571,8 +1571,8 @@ func (c *Config) validateFeatureDependencies() error {
 		if dc.WAF.Anomaly.Enabled && strings.TrimSpace(dc.WAF.Anomaly.Model) == "" {
 			return fmt.Errorf("%s: waf.anomaly is enabled but model is not configured", label)
 		}
-		if dc.WAF.Keywords.Enabled && strings.TrimSpace(dc.WAF.Keywords.RulesFile) == "" {
-			return fmt.Errorf("%s: waf.keywords is enabled but rules_file is not configured", label)
+		if dc.WAF.Rules.Enabled && strings.TrimSpace(dc.WAF.Rules.File) == "" {
+			return fmt.Errorf("%s: waf.rules is enabled but file is not configured", label)
 		}
 		if dc.Reputation.Enabled && len(c.Reputation.Feeds) == 0 {
 			return fmt.Errorf("%s: reputation is enabled but no reputation.feeds are configured", label)
@@ -1629,24 +1629,24 @@ func (dc *DomainConfig) validate() error {
 			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(maxPoWTTL), t.d.Std())
 		}
 	}
-	kw := &dc.WAF.Keywords
-	seenIDs := make(map[string]bool, len(kw.DisabledRuleIDs))
-	for _, id := range kw.DisabledRuleIDs {
+	rules := &dc.WAF.Rules
+	seenIDs := make(map[string]bool, len(rules.DisabledIDs))
+	for _, id := range rules.DisabledIDs {
 		if strings.TrimSpace(id) == "" {
-			return fmt.Errorf("waf.keywords.disabled_rule_ids: empty or whitespace-only entry; every entry must be an exact rule id")
+			return fmt.Errorf("waf.rules.disabled_ids: empty or whitespace-only entry; every entry must be an exact rule id")
 		}
 		if seenIDs[id] {
-			return fmt.Errorf("waf.keywords.disabled_rule_ids: duplicate entry %q", id)
+			return fmt.Errorf("waf.rules.disabled_ids: duplicate entry %q", id)
 		}
 		seenIDs[id] = true
 	}
-	// Checked whether or not keywords is enabled: a parked exclusion list with
-	// no rules_file to select from would activate broken policy the day the
+	// Checked whether or not rules are enabled: a parked exclusion list with
+	// no file to select from would activate broken policy the day the
 	// layer is switched on.
-	if len(kw.DisabledRuleIDs) > 0 && strings.TrimSpace(kw.RulesFile) == "" {
-		return fmt.Errorf("waf.keywords.disabled_rule_ids is set but rules_file is not configured; exclusions select ids from the effective rules_file")
+	if len(rules.DisabledIDs) > 0 && strings.TrimSpace(rules.File) == "" {
+		return fmt.Errorf("waf.rules.disabled_ids is set but file is not configured; exclusions select ids from the effective file")
 	}
-	kw.ruleKey = waf.VariantKey(kw.RulesFile, kw.DisabledRuleIDs)
+	rules.ruleKey = waf.VariantKey(rules.File, rules.DisabledIDs)
 	a := &dc.WAF.Anomaly
 	if a.Enabled && (math.IsNaN(a.ChallengeAt) || math.IsInf(a.ChallengeAt, 0) ||
 		math.IsNaN(a.DenyAt) || math.IsInf(a.DenyAt, 0) ||
@@ -1907,10 +1907,10 @@ func (c *Config) AllowlistUnion() []netip.Prefix {
 	return out
 }
 
-// RuleVariants returns every distinct (rules file, disabled_rule_ids) pair
+// RuleVariants returns every distinct (rules file, disabled_ids) pair
 // referenced by a resolved scope, for the rule cache to load, watch and
-// precompile. A scope contributes when keywords is enabled, or when it is
-// disabled but carries exclusions: parked exclusions are still validated
+// precompile. A scope contributes when rules are enabled, or when they are
+// disabled but carry exclusions: parked exclusions are still validated
 // against the file so they cannot later activate broken policy. Scope labels
 // are collected per variant (defaults first, then sorted hosts) so cache
 // errors name who is affected.
@@ -1918,15 +1918,15 @@ func (c *Config) RuleVariants() []waf.VariantSpec {
 	var order []string
 	byKey := make(map[string]*waf.VariantSpec)
 	_ = c.eachScope(func(label, _ string, dc *DomainConfig) error {
-		kw := &dc.WAF.Keywords
-		if kw.RulesFile == "" || (!kw.Enabled && len(kw.DisabledRuleIDs) == 0) {
+		rules := &dc.WAF.Rules
+		if rules.File == "" || (!rules.Enabled && len(rules.DisabledIDs) == 0) {
 			return nil
 		}
-		spec, ok := byKey[kw.ruleKey]
+		spec, ok := byKey[rules.ruleKey]
 		if !ok {
-			spec = &waf.VariantSpec{Path: kw.RulesFile, Disabled: kw.DisabledRuleIDs}
-			byKey[kw.ruleKey] = spec
-			order = append(order, kw.ruleKey)
+			spec = &waf.VariantSpec{Path: rules.File, DisabledIDs: rules.DisabledIDs}
+			byKey[rules.ruleKey] = spec
+			order = append(order, rules.ruleKey)
 		}
 		spec.Scopes = append(spec.Scopes, label)
 		return nil

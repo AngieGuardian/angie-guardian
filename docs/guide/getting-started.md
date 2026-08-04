@@ -118,7 +118,7 @@ The release archive already contains the
 [canonical `guardian.example.yaml`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/guardian.example.yaml).
 It is the recommended, thoroughly annotated host/systemd profile; the same
 file is rendered as the [full annotated example](/examples#the-full-annotated-example).
-Install it together with the starter signature rules it actively references:
+Install it together with the starter WAF rules it actively references:
 
 ```sh
 # Immutable policy: root-owned, readable but not writable by guardiand.
@@ -168,7 +168,7 @@ the file you just edited. A valid config prints
 
 Continue with the [configuration guide](/guide/configuration), the
 [configuration reference](/reference/configuration), and the
-[signature-rules walkthrough](/guide/configuration#signature-rules-waf-keywords)
+[WAF rules walkthrough](/guide/configuration#waf-rules)
 when adapting the annotated profile.
 
 ### Minimal evaluation config (alternative)
@@ -176,7 +176,7 @@ when adapting the annotated profile.
 The full annotated profile above is the recommended host starting point. If
 you only want a disposable foreground evaluation, create a separate config
 such as `/tmp/guardian-evaluation/guardian.yaml` instead. This example uses an
-in-memory store, no admin listener, and no signature rules; do not feed it into
+in-memory store, no admin listener, and no WAF rules; do not feed it into
 the production systemd steps below:
 
 ```sh

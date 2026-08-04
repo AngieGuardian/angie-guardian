@@ -55,12 +55,12 @@ func adminServer(t *testing.T) (*httptest.Server, string) {
 	if err := os.WriteFile(rulesPath, []byte(adminRulesYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// adminServer's config additionally carries a keywords domain with a rule
-	// exclusion, so the config view can be asserted end to end (the other
+	// adminServer's config additionally carries a domain with WAF rules and a
+	// rule exclusion, so the config view can be asserted end to end (the other
 	// adminYAML users construct their engines without a rules file on disk).
 	cfgYAML := adminYAML + fmt.Sprintf(`  waf.test:
     waf:
-      keywords: { enabled: true, rules_file: %q, disabled_rule_ids: [ probe ] }
+      rules: { enabled: true, file: %q, disabled_ids: [ probe ] }
 `, rulesPath)
 	cfgPath := filepath.Join(dir, "guardian.yaml")
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
@@ -685,19 +685,19 @@ func TestAdminConfigView(t *testing.T) {
 	if !ok {
 		t.Fatalf("config view missing waf.test: %v", m["domains"])
 	}
-	if waf["waf_keywords"] != true {
-		t.Errorf("waf.test waf_keywords = %v, want true", waf["waf_keywords"])
+	if waf["waf_rules"] != true {
+		t.Errorf("waf.test waf_rules = %v, want true", waf["waf_rules"])
 	}
 	if file, _ := waf["waf_rules_file"].(string); !strings.HasSuffix(file, "rules.yaml") {
 		t.Errorf("waf.test waf_rules_file = %v, want the configured rules file", waf["waf_rules_file"])
 	}
-	ids, ok := waf["waf_disabled_rule_ids"].([]any)
+	ids, ok := waf["waf_rules_disabled_ids"].([]any)
 	if !ok || len(ids) != 1 || ids[0] != "probe" {
-		t.Errorf("waf.test waf_disabled_rule_ids = %v, want [probe]", waf["waf_disabled_rule_ids"])
+		t.Errorf("waf.test waf_rules_disabled_ids = %v, want [probe]", waf["waf_rules_disabled_ids"])
 	}
 	// Scopes without exclusions omit the field instead of showing null.
-	if _, present := shop["waf_disabled_rule_ids"]; present {
-		t.Error("shop.test must omit waf_disabled_rule_ids")
+	if _, present := shop["waf_rules_disabled_ids"]; present {
+		t.Error("shop.test must omit waf_rules_disabled_ids")
 	}
 }
 
