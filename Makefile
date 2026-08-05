@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed dashboard-dev
+.PHONY: all build wasm test install-test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -30,6 +30,12 @@ all: build wasm
 
 test:
 	go test -race -count=1 ./...
+
+# Contract checks for the root-only release installer. Full installation is
+# exercised on real Debian/Ubuntu hosts; this keeps its public command and
+# safety invariants from drifting in ordinary CI.
+install-test:
+	bash scripts/test-install.sh
 
 # End-to-end suite: boots the real Angie + guardiand + whoami stack from
 # deploy/docker/compose.yaml (via testcontainers-go) and drives it through

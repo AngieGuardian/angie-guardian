@@ -75,6 +75,7 @@ test:
   stage: test
   script:
     - go test -race -count=1 ./...
+    - make install-test
 
 # Hot-path allocation regression gate. allocs/op at a fixed iteration count is
 # deterministic and machine-independent, so it can gate a pipeline where ns/op

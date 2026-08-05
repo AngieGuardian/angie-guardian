@@ -29,18 +29,23 @@ configurable per domain, so one instance can protect multiple vhosts.
 
 ## Quick start
 
-Install a pinned `linux-amd64` or `linux-arm64` package from the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
-then follow the release-first
-[Getting Started guide](https://angieguardian.org/guide/getting-started).
-The archive contains the binaries, example configuration, starter WAF rules,
-Angie snippets, and systemd unit; operators do not need Go or a repository
-checkout.
+On Debian or Ubuntu with systemd and Angie already installed, run:
 
 ```sh
-# After downloading and extracting a pinned release:
-sudo install -Dm755 guardiand /usr/local/bin/guardiand
+curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
 ```
+
+The installer fetches the latest GitHub release, verifies its checksum, starts
+Guardian, and installs the supplied Angie snippets. It preserves existing
+Guardian configuration and state, and does not edit or reload Angie vhosts.
+Add the required includes and reload Angie as described in the
+[Getting Started guide](https://angieguardian.org/guide/getting-started).
+
+For a specific pinned version, download a `linux-amd64` or `linux-arm64`
+package from the [GitHub releases page](https://github.com/AngieGuardian/angie-guardian/releases)
+and follow the same guide. The archive contains the binaries, example
+configuration, starter WAF rules, Angie snippets, and systemd unit; operators
+do not need Go or a repository checkout.
 
 For containers and persistent state, see the
 [production Docker guide](https://angieguardian.org/guide/production#docker).

@@ -18,20 +18,47 @@ the host installation described here.
 
 ## 1. Install a prebuilt release
 
+### One-command Debian/Ubuntu install
+
+On a Debian or Ubuntu host that already has Angie installed, this installer
+downloads the latest GitHub release, pins that run to the release's exact
+version, verifies `SHA256SUMS`, installs and starts `guardiand`, and places
+the two shipped Angie snippets in `/etc/angie`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
+```
+
+It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
+binary and systemd unit but preserves `/etc/guardian/guardian.yaml`, starter
+rules, existing Angie snippets, and all state under `/var/lib/guardian`.
+
+The installer deliberately does **not** edit any Angie vhost or reload Angie:
+review the example policy and replace its `example.com` domains, define the
+documented `upstream guardian` once in `http {}`, then add the following to
+each protected `server {}` block and validate/reload Angie yourself:
+
+```nginx
+include angie-guardian.conf;
+include angie-guardian-location.conf;
+```
+
+Use the manual installation below when you need a particular release version,
+a non-Debian/Ubuntu host, or want to inspect the archive before installation.
+
 Choose a pinned version on the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases),
-under **Assets > Packages**. Most Intel and AMD servers use `linux-amd64`; an
+[GitHub releases page](https://github.com/AngieGuardian/angie-guardian/releases).
+Most Intel and AMD servers use `linux-amd64`; an
 ARM server uses `linux-arm64` instead. For example, to download and extract
 version `0.18.0` for amd64:
 
 ```sh
-wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.18.0/angie-guardian-0.18.0-linux-amd64.tar.gz
+wget https://github.com/AngieGuardian/angie-guardian/releases/download/0.18.0/angie-guardian-0.18.0-linux-amd64.tar.gz
 tar -xzf angie-guardian-0.18.0-linux-amd64.tar.gz
 cd angie-guardian-0.18.0-linux-amd64
 ```
 
-Substitute the version you selected, without the leading `v` the releases page
-shows on the tag. On ARM64, also replace `amd64` with `arm64` in the URL,
+Substitute the version you selected. On ARM64, also replace `amd64` with `arm64` in the URL,
 archive name, and directory name.
 
 The extracted directory contains `guardiand`, the `guardian-train` and
@@ -69,7 +96,7 @@ Run both commands from the directory holding the archive you downloaded above:
 
 ```sh
 # Same directory as angie-guardian-0.18.0-linux-amd64.tar.gz
-wget https://gitlab.melroy.org/api/v4/projects/210/packages/generic/angie-guardian/0.18.0/SHA256SUMS
+wget https://github.com/AngieGuardian/angie-guardian/releases/download/0.18.0/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
