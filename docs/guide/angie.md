@@ -296,6 +296,59 @@ access_log /var/log/angie/example.com.access.json guardian_json;
 
 See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 
+## Keep Guardian decisions out of a Fail2Ban input log
+
+This is optional and only useful when a Fail2Ban jail consumes a broad
+access-log filter, for example one that counts `401`, `403` and `404`
+responses. Do not weaken that filter just because Guardian can intentionally
+return a `403`: a backend's own `403` should still be visible to the jail.
+Instead, write Guardian decisions to a separate audit log and keep them out of
+the normal log that Fail2Ban watches.
+
+The shipped location include already captures `$guardian_action`. Define these
+maps in `http {}` and use the two conditional logs in each protected
+`server {}`. This example uses Angie's built-in `combined` format; retain your
+own format name if you already use one.
+
+```nginx
+# http {}: ordinary application responses, including application 4xx, stay in
+# the Fail2Ban input. Guardian's own terminal decisions go to the audit log.
+map $guardian_action $normal_access_log {
+    default 1;
+    deny    0;
+    refuse  0;
+    shed    0;
+}
+
+map $guardian_action $guardian_decision_log {
+    default 0;
+    deny    1;
+    refuse  1;
+    shed    1;
+}
+
+# protected server {}; use the normal access-log filename your jail watches.
+access_log /var/log/angie/access.log combined
+    if=$normal_access_log buffer=32k flush=1m;
+access_log /var/log/angie/guardian_decisions.log combined
+    if=$guardian_decision_log buffer=32k flush=1m;
+```
+
+Configure Fail2Ban to read only your normal access log (`access.log` in this
+example). A backend response after Guardian allowed the request still appears
+there, including `401`, `403`, `404` and every other status. A Guardian `deny`
+or `refuse` appears only in `guardian_decisions.log`, where it remains
+available for incident review but cannot make a legitimate client trip a
+generic 4xx jail. `shed` is included in the audit log too; the shipped glue
+converts it to `503` with `Retry-After`.
+
+This log split is not a substitute for an endpoint policy. The simpler
+alternative for a known machine endpoint that repeatedly reconnects, such as a
+WebSocket route, is a targeted
+[`paths:` PoW exception](/guide/configuration#per-path-overlays). That prevents
+Guardian from issuing its intentional `403` on that route in the first place,
+while its WAF and other Guardian checks remain enabled.
+
 ## Rate limiting (volumetric DDoS)
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
