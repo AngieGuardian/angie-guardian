@@ -345,7 +345,7 @@ converts it to `503` with `Retry-After`.
 This log split is not a substitute for an endpoint policy. The simpler
 alternative for a known machine endpoint that repeatedly reconnects, such as a
 WebSocket route, is a targeted
-[`paths:` PoW exception](/guide/configuration#per-path-overlays). That prevents
+[`paths:` PoW exception](/guide/configuration#per-path-overrides). That prevents
 Guardian from issuing its intentional `403` on that route in the first place,
 while its WAF and other Guardian checks remain enabled.
 
