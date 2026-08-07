@@ -3381,9 +3381,9 @@
   // next scheduled tick refreshes anyway.
   let ticking = false;
   const tick = () => {
-    if (paused || ticking) return;
+    if (paused || ticking) return Promise.resolve();
     ticking = true;
-    render()
+    return render()
       .catch((e) => { if (e.message !== "unauthorized") console.error(e); })
       .finally(() => { ticking = false; });
   };
@@ -3401,13 +3401,14 @@
   };
   const start = () => {
     $("gate").hidden = true; $("app").hidden = false;
-    tick();
     armTimer();
     probeReload();
     // Deep link: /admin/dashboard?ip=... opens the lookup on load, so an
-    // operator can share a lookup URL with the on-call.
+    // operator can share a lookup URL with the on-call. Wait for the initial
+    // render: on a refresh, scrolling before it has established the document
+    // height can stop at the old maximum and leave the lookup off-screen.
     const linked = new URLSearchParams(location.search).get("ip");
-    if (linked) openLookup(linked);
+    tick().finally(() => { if (linked) openLookup(linked); });
   };
   const logout = (msg) => {
     sessionStorage.removeItem(KEY);

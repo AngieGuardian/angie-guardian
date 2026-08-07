@@ -80,6 +80,18 @@ func dashboardSource(t *testing.T) string {
 	return string(b)
 }
 
+// TestDashboardDeepLinkWaitsForInitialRender keeps a refresh-time IP lookup
+// from scrolling against the short pre-render document. A button click starts
+// after layout already exists, but a ?ip= navigation does not.
+func TestDashboardDeepLinkWaitsForInitialRender(t *testing.T) {
+	src := dashboardSource(t)
+	linked := strings.Index(src, `const linked = new URLSearchParams(location.search).get("ip");`)
+	deferred := strings.Index(src, `tick().finally(() => { if (linked) openLookup(linked); });`)
+	if linked < 0 || deferred < 0 || deferred < linked {
+		t.Fatal("dashboard deep link must open only after the initial tick settles")
+	}
+}
+
 // jsRuntime builds a goja runtime holding the DOM stubs plus the named
 // declarations, in the order given (they are hoisted as consts, so order is
 // dependency order).
