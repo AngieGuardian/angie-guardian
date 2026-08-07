@@ -75,7 +75,8 @@ ConfigurationDirectoryMode=0710
 # shared with other processes. Measure with guardian-loadtest; the default is
 # fine at typical rates. See docs "GC tuning for peak throughput".
 # Environment=GOGC=800
-# Set this to ~90% of guardiand's memory budget.
+# Set this to ~80% of guardiand's memory budget, leaving RSS headroom for
+# memory that GOMEMLIMIT does not account for.
 # Environment=GOMEMLIMIT=2GiB
 
 # Hardening

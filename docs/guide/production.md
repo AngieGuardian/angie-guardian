@@ -452,15 +452,36 @@ Where guardiand owns the host's or container's memory, the
 [Go GC guide](https://go.dev/doc/gc-guide) recommends pairing a high `GOGC`
 with `GOMEMLIMIT` as a safety cap, so the larger heap cannot OOM (the runtime
 does extra GC only as it nears the limit). `GOMEMLIMIT` is a **soft** limit:
-leave 5-10% headroom for memory the runtime does not track, and never set it
-to the machine's total RAM, since a too-tight limit can thrash the GC into a
-slowdown worse than an OOM. Skip `GOMEMLIMIT` when the host's memory is shared
-with other processes.
+never set it to the machine's total RAM or a systemd/container memory limit.
+Leave room for memory the Go runtime does not track; a too-tight limit can
+make it GC nearly continuously, causing a slowdown worse than an OOM. Skip
+`GOMEMLIMIT` when the host's memory is shared with other processes.
+
+For a dedicated Guardian service, start with these conservative budgets:
+
+```ini
+# 1 GiB MemoryMax/container limit: 20% RSS headroom outside GOMEMLIMIT.
+Environment=GOGC=400
+Environment=GOMEMLIMIT=800MiB
+
+# 2 GiB MemoryMax/container limit: use this pair instead.
+# Environment=GOGC=800
+# Environment=GOMEMLIMIT=1600MiB
+```
+
+`GOGC=400` is the starting point: it reduces GC CPU without immediately
+allowing the largest heap. Raise it to `800` only for a dedicated,
+high-throughput instance after measuring with the same workload you expect in
+production; the benchmark's ~20% read-path gain came from that setting. The
+20% gap is deliberate: `GOMEMLIMIT` covers Go-managed memory, not every byte
+in the process's RSS (for example file mappings and other runtime-external
+memory). When using systemd `MemoryMax=` or a container memory limit, base the
+calculation on that service limit, not on the host's total RAM.
 
 Set these in the systemd unit's `Environment=` (see
 [`deploy/guardiand.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardiand.service))
-and measure with `guardian-loadtest`; at typical production rates the default is
-fine.
+and measure with `guardian-loadtest`; at typical production rates leaving both
+settings at their defaults is fine.
 
 ## Memory footprint
 
