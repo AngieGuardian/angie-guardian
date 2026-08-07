@@ -266,7 +266,6 @@ defaults:
     # and parallelizes cheaply, so leave it off (the default) unless no-JS
     # visitors matter more to you than that weakening.
     # noscript_fallback: true
-    #
   geo:
     enabled: false            # needs the geoip: databases above
     # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
@@ -277,7 +276,6 @@ defaults:
     # deny: { countries: [] }
     # allow: { countries: [] }
     # default_action: allow   # allow | challenge | deny for unlisted origins
-    #
   reputation:
     enabled: false            # set true after configuring at least one feed
                               # above; enabled-without-feeds is rejected
