@@ -58,9 +58,11 @@ ConfigurationDirectoryMode=0710
 # Admin API bearer token: simplest is admin.token_file in guardian.yaml
 # (auto-generated 0600 on first start; point it into /var/lib/guardian, the
 # example config does). To manage the token yourself instead, keep it out of
-# the YAML and inject via env:
-# Environment=ADMIN_TOKEN=...    (better: EnvironmentFile=/etc/guardian/env)
-# Environment=REDIS_PASSWORD=... (when using the redis store backend)
+# the YAML and inject it via env. Prefer EnvironmentFile=/etc/guardian/env for
+# a secret rather than placing it in the unit itself.
+# Environment=ADMIN_TOKEN=...
+# Set this too when using the redis store backend.
+# Environment=REDIS_PASSWORD=...
 
 # Throughput tuning (optional). At tens of thousands of req/s the read paths
 # are GC-bound; a higher GOGC runs the GC less often (~20% more read throughput
@@ -73,7 +75,8 @@ ConfigurationDirectoryMode=0710
 # shared with other processes. Measure with guardian-loadtest; the default is
 # fine at typical rates. See docs "GC tuning for peak throughput".
 # Environment=GOGC=800
-# Environment=GOMEMLIMIT=2GiB     (set to ~90% of guardiand's memory budget)
+# Set this to ~90% of guardiand's memory budget.
+# Environment=GOMEMLIMIT=2GiB
 
 # Hardening
 NoNewPrivileges=true
