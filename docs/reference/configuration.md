@@ -210,13 +210,21 @@ defaults:
   pow: { enabled: true }
   paths:
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 ```
 
 Unlike an [`allowlist.paths`](#allowlist-denylist) entry, which ends the
 pipeline at stage 0, this only turns off the layers it names: blocks, GeoIP,
-reputation and the WAF still cover `/robots.txt` here.
+reputation and the WAF still cover `/robots.txt` here. The manifest, icon and
+browser metadata names are only conventional root URLs: add any site-specific
+asset URL explicitly rather than exempting a broad asset prefix.
 
 Keys match exactly (see the matching rules below), so `"/sitemap.xml"` exempts
 that one file. Sites whose sitemap lives elsewhere (`/wp-sitemap.xml`,
@@ -380,8 +388,13 @@ Static lists, evaluated before everything else. An allowlist match is
 terminal: denylist, behaviour blocks, GeoIP, honeypots, WAF rules and PoW
 are all skipped for it, so reserve it for endpoints that must keep working
 even for otherwise-blocked clients (ACME renewal, say) and keep every entry
-as narrow as possible. To merely skip the PoW interstitial for public assets
-like `/robots.txt`, prefer a
+as narrow as possible. `defaults.allowlist.paths` is inherited by every host,
+known or unknown: the shipped example includes the fixed ACME http-01 prefix
+as an optional entry for installations that use it on every HTTP vhost. Put it
+under a specific domain instead when that is not true.
+
+To merely skip the PoW interstitial for public assets like `/robots.txt`, prefer
+a
 [per-path overlay](#per-path-overrides-domains-host-paths) with
 `pow: { enabled: false }`: the rest of the pipeline still runs there. `ips`
 match the client address Angie reports (`X-Guardian-IP`), not the
@@ -419,11 +432,10 @@ for crawlers instead; loading a config where an `allowlist.uas` entry
 overlaps a configured bot fails fast for exactly this reason.
 
 ```yaml
-allowlist:
-  ips: []
-  uas: []
-  paths:
-    - /.well-known/acme-challenge/   # ACME http-01 only, NOT all of /.well-known/
+defaults:
+  allowlist:
+    paths:
+      - /.well-known/acme-challenge/ # ACME http-01 only, NOT all of /.well-known/
 denylist:
   ips: []
 ```

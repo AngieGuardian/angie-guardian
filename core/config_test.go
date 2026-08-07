@@ -756,8 +756,14 @@ store:
   backend: memory
 defaults:
   pow: { enabled: true, base_difficulty: 5, max_difficulty: 6 }
+  allowlist:
+    paths: [ "/.well-known/acme-challenge/" ]
   paths:
     "/robots.txt":
+      pow: { enabled: false }
+    "/manifest.json":
+      pow: { enabled: false }
+    "/apple-touch-icon.png":
       pow: { enabled: false }
     "/api/":
       pow: { base_difficulty: 5.5 }
@@ -786,11 +792,19 @@ func TestDefaultsPathOverlayInherited(t *testing.T) {
 	if cfg.ConfigFor("unknown.test", "/robots.txt").PoW.Enabled {
 		t.Error("defaults overlay must disable pow at /robots.txt for unknown hosts")
 	}
+	for _, path := range []string{"/manifest.json", "/apple-touch-icon.png"} {
+		if cfg.ConfigFor("unknown.test", path).PoW.Enabled {
+			t.Errorf("defaults overlay must disable pow at %s for unknown hosts", path)
+		}
+	}
 	if !cfg.ConfigFor("unknown.test", "/other").PoW.Enabled {
 		t.Error("unmatched path on an unknown host must keep the defaults' pow")
 	}
 	if cfg.ConfigFor("unknown.test", "/other") != &cfg.Defaults {
 		t.Error("unmatched path must return the defaults pointer, not a copy")
+	}
+	if !cfg.ConfigFor("unknown.test", "/.well-known/acme-challenge/token").Allowlist.MatchPath("/.well-known/acme-challenge/token") {
+		t.Error("defaults allowlist must inherit the ACME challenge prefix on unknown hosts")
 	}
 
 	// A domain that declares no paths: of its own still inherits them, and the
@@ -1318,7 +1332,7 @@ func TestSilentlyInertConfigIsRejected(t *testing.T) {
 // The normalized-key rule must not reject the forms operators actually write,
 // including the shipped defaults.
 func TestNormalizedPathKeysAreAccepted(t *testing.T) {
-	for _, key := range []string{"/robots.txt", "/favicon.ico", "/sitemap.xml", "/api/v1/", "/a", "/"} {
+	for _, key := range []string{"/robots.txt", "/favicon.ico", "/favicon.svg", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.json", "/manifest.webmanifest", "/site.webmanifest", "/sitemap.xml", "/api/v1/", "/a", "/"} {
 		yaml := "store: { backend: memory }\ndefaults:\n  paths:\n    \"" + key + "\": { pow: { enabled: false } }\n"
 		if _, err := loadConfigErr(t, yaml); err != nil {
 			t.Errorf("paths key %q was rejected: %v", key, err)

@@ -30,8 +30,14 @@ defaults:
                                   # host: files a crawler must reach but can
                                   # never solve a challenge for
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults
@@ -99,12 +105,18 @@ defaults:
   pow: { enabled: true }
   paths:
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }   # keys match exactly: add
                                                   # your own sitemap paths
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 
 domains:
-  example.com: {}                 # inherits all three entries
+  example.com: {}                 # inherits all conventional-file entries
   api.example.com:
     paths:
       "/robots.txt": { pow: { enabled: true } }   # opt this host back in

@@ -75,8 +75,14 @@ defaults:
   pow: { enabled: true }
   paths:
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 ```
 
 Leaving PoW on at `/robots.txt` means well-behaved crawlers get the
@@ -92,9 +98,11 @@ Keys match exactly, so `"/sitemap.xml"` covers a flat sitemap and nothing
 else: add the paths yours actually uses when they differ (WordPress core
 serves `/wp-sitemap.xml`, Yoast `/sitemap_index.xml`), including per-type
 children named by an index, or the index resolves while every child it points
-at is challenged. This hands an anonymous client your URL list; the pages
-themselves still cost a solve, and one solve buys `token_ttl` of crawling
-either way.
+at is challenged. The listed manifest, icon and browser-metadata files are
+only conventional root URLs; add your site's own asset URLs explicitly rather
+than exempting a broad asset prefix. This hands an anonymous client your URL
+list; the pages themselves still cost a solve, and one solve buys `token_ttl`
+of crawling either way.
 
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.

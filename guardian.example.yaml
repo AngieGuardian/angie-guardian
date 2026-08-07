@@ -1,11 +1,6 @@
-# Angie Guardian example configuration: the host/systemd profile (loopback
-# listeners, root-owned read-only config under /etc/guardian, generated keys
-# and state under /var/lib/guardian; the production guide documents that
-# layout and the matching install commands). Running in containers instead?
-# Follow the Docker section of the production guide (docs/guide/production.md)
-# for a production compose shape. deploy/docker/guardian.docker.yaml is the
-# runnable DEMO harness only: it ships a fixed admin token and demo-only
-# allowlist/crawler exceptions, so it is not a production starting point.
+# Angie Guardian example configuration for a host/systemd deployment. Keep
+# read-only config under /etc/guardian and generated state under
+# /var/lib/guardian. See docs/guide/production.md for installation and Docker.
 #
 # Per-domain settings are merged over `defaults` field-by-field: a domain only
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
@@ -35,79 +30,44 @@ log_level: info
 # curl) keeps working; /healthz and the denied page are never gated.
 # require_proxied: true
 
-# Admin API + Prometheus /metrics, on a SEPARATE listener from the hot path.
-# /metrics, /healthz, /readyz, and the optional static dashboard shell are open; every
-# JSON/data /admin route requires the bearer token. A non-loopback bind without
-# a configured token is refused at startup, but a bearer token alone does not
-# make a remote bind safe: the listener speaks plain HTTP (the token would
-# cross the wire in clear) and /metrics is unauthenticated unless metrics_auth
-# below is enabled. Keep it on loopback or a firewalled management network,
-# and put a TLS/mTLS reverse proxy in front for any cross-network hop. Leave
-# admin.listen empty to disable it.
+# Management listener for the admin API, metrics and dashboard. Admin data
+# needs a bearer token; metrics stay public unless metrics_auth is enabled.
+# Keep it on loopback or a private TLS/mTLS-protected network; empty disables it.
 admin:
   listen: 127.0.0.1:8072
-  # Bearer token resolution: `token` (or the ADMIN_TOKEN env var) wins;
-  # otherwise one is auto-generated into `token_file` on first start (0600,
-  # never regenerated, like the signing key) so you never invent one by hand.
-  # With neither set, a loopback listener gets a fresh token each start,
-  # printed in the startup log.
+  # `token` or ADMIN_TOKEN wins; otherwise token_file is generated once. With
+  # neither, loopback gets a fresh token on each start.
   token: ""                   # or set the ADMIN_TOKEN env var
-  token_file: /var/lib/guardian/admin.token   # generated at runtime, so it
-                              # lives in the service-writable state dir, not
-                              # the root-owned read-only /etc/guardian
-  # Built-in reporting page at GET /admin/dashboard: active blocks (one-click
-  # block/unblock), the recent feed of non-allow decisions, solves and failed
-  # redemptions with filters, activity and
-  # distribution graphs, a top-offenders panel, challenge stats, and per-domain
-  # config. On startup guardiand logs the bare login URL ("admin dashboard
-  # ready"). Read the token from token_file and paste it into the page;
-  # persistent secrets are never logged. Off by default.
+  token_file: /var/lib/guardian/admin.token   # generated service state
+  # Token-protected dashboard at GET /admin/dashboard; read token_file to log in.
   dashboard: true
-  # Per-instance live decision window used by recent stats, offenders and the
-  # dashboard charts. Start-time only; changing it requires a restart. This is
-  # deliberately bounded and cleared on restart; use /metrics with
-  # Prometheus/Grafana for historical analysis. Default 4096, maximum 16384.
+  # Bounded, per-instance dashboard history; cleared on restart. Use Prometheus
+  # for long-term history. Start-time only; default 4096, maximum 16384.
   # recent_size: 4096
-  # Show real server traffic on the dashboard (per-domain requests and rates,
-  # connections, response codes, bandwidth, upstream peer health, proxy-cache
-  # hit rates, rate-limit zones, shared memory) by reading Angie's own HTTP
-  # API: data Guardian never sees on its allow path. guardiand fetches it
-  # server-side and relays it behind the admin token, so keep Angie's API on
-  # loopback (see deploy/angie-status.conf for the Angie side). Off when unset.
+  #
+  # Optional Angie API data in the dashboard; keep Angie's API on loopback.
   # angie_api:
   #   url: http://127.0.0.1:81/status/   # Angie's api location
   #   timeout: 2s                         # per-fetch cap (default 2s)
-  # metrics_auth puts /metrics behind the same bearer token. Off by default so
-  # scrapers need no secret, but worth enabling on a routable admin bind:
-  # /metrics exposes every protected vhost name plus per-domain traffic and
-  # attack posture. /healthz and /readyz always stay unauthenticated so
-  # orchestrator probes keep working. Prometheus sends the token via
-  # authorization.credentials / credentials_file; pair it with a stable token
-  # (token or token_file), since an ephemeral per-start token would break the
-  # scrape config on every restart.
+  #
+  # Require the same token for /metrics; /healthz and /readyz stay public.
   # metrics_auth: true
 
-# Persistent Ed25519 signing key for PoW JWTs. Generated on first run if
-# missing; NEVER regenerated on restart, so restarts don't log clients out
-# and replicas can share it. Retired keys (from `POST /admin/rotate-key`) are
-# archived here and accept only pre-rotation tokens with lifetimes up to 7 days;
-# older archive files are ignored in memory, not auto-deleted. Both are
-# GENERATED state, so they live under /var/lib/guardian (writable for the
-# service user), never under the root-owned read-only /etc/guardian.
+# Persistent Ed25519 key for PoW JWTs: generated once if missing and retained
+# across restarts; replicas may share it. Rotated keys accept pre-rotation
+# tokens for up to seven days. Keep these generated files in service-writable
+# state, not read-only /etc/guardian.
 signing_key_file: /var/lib/guardian/ed25519.key
 previous_key_dir: /var/lib/guardian/keys.d
 
 store:
   backend: pebble             # memory | buntdb | pebble | redis
   path: /var/lib/guardian/pebble  # a file for buntdb; a directory for pebble
-  # sync: fsync every write when true (pebble ONLY; buntdb refuses it at load,
-  # its single writer makes fsync-per-commit ~100x slower). The async default
-  # is not just faster: a power/OS crash can lose the unflushed tail, including
-  # spent-challenge markers (a solved challenge could be replayed until its
-  # challenge_ttl expires) and the newest blocks and counters. Set true when
-  # crash-consistent single-spend and block state matters more than write
-  # latency.
+  # sync: fsync each Pebble write (BuntDB rejects it; ~100x slower). Async can
+  # lose the unflushed tail after a power/OS crash, including spent challenges,
+  # blocks and counters. Enable it when crash-consistent single-spend matters.
   # sync: false
+  #
   # redis backend (multi-instance): all replicas OF THE SAME DEPLOYMENT share
   # one server. Keys are not prefixed per installation, so give staging,
   # production and any unrelated Guardian install its own logical db (or
@@ -176,39 +136,19 @@ store:
 #     never_block:              # ALWAYS list your load balancer / CDN ranges
 #       - 203.0.113.0/24
 
-# GeoIP databases in MaxMind format (MaxMind GeoLite2/GeoIP2, DB-IP, ...),
-# for the per-domain `geo` scoping below. Get them from MaxMind with a free
-# licence key (geoipupdate), or without an account from the GeoLite2 mirror at
-# https://github.com/P3TERX/GeoLite.mmdb/releases (latest/download/ URLs, so
-# `curl -fsSL -o /tmp/x.mmdb ... && mv` from cron is a full update). guardiand
-# hot-reloads the files when they are replaced on disk, no restart needed.
-# Omit a database you don't use; config is refused if a geo rule needs one
-# that isn't configured.
-#
-# location_db takes a Country OR a City database: City is a superset (same
-# country data plus city/region), so `countries:` rules behave identically.
-# Country is recommended; City costs ~7.5x the size (8.8 MB vs 66 MB) and adds
-# only admin-view detail, never new selectors.
+# MaxMind-format GeoIP databases for per-domain `geo` rules. `location_db`
+# accepts Country or City data; `asn_db` enables ASN rules. Replaced files are
+# hot-reloaded without a restart.
 # geoip:
 #   location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
 #   # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb   # city/region in admin
 #   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
 
-# External IP reputation feeds: plain-text lists of IPs/CIDRs (one entry per
-# line, '#'/';' comments), like the FireHOL netsets or a local file you
-# maintain. URL feeds refresh in the background: a slow or down mirror never
-# blocks startup, and the last good list keeps serving (including across a hot
-# reload when name+URL are unchanged). cache_dir persists fetched feeds so a
-# restart enforces yesterday's list immediately. Feeds are defined once here;
-# each domain opts in via `reputation.enabled` below.
-#
-# Cold-start caveat for URL feeds: on a first boot with no cache yet, a feed
-# enforces NOTHING until its first successful fetch, and a failing mirror
-# keeps it empty while the daemon stays healthy. Watch guardian_feed_entries
-# and guardian_feed_refresh_total{status="error"} in Prometheus, seed
-# cache_dir (or use a local file: feed you curate) where continuous
-# enforcement matters, and stage a new third-party feed as action: challenge
-# before promoting it to a hard deny.
+# Global IP/CIDR reputation feeds; domains opt in with `reputation.enabled`.
+# URL feeds refresh in the background and retain the last good data; cache_dir
+# preserves it across restarts. A new or unavailable URL feed stays empty until
+# its first successful fetch, so monitor it and start third-party feeds as
+# `challenge` before promoting them to `deny`.
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds
 #   feeds:
@@ -263,11 +203,13 @@ defaults:
       observe_only: false     # true records scores but suppresses anomaly challenge/deny
       challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
       deny_at: 0.9            # score >= this -> deny outright
+    # Honeypot hits deny and, with ip_behaviour on, persistently block an IP;
+    # behind CGNAT that can affect many users. Do not ship a universal trap:
+    # choose a path unique to your site that nothing links to, disallow it in
+    # robots.txt, and avoid paths the starter WAF already denies (/.env, etc.).
     honeypot:
-      enabled: false          # trap paths deny immediately and persist a block
-                              # when ip_behaviour is enabled. Add paths no
-      paths: []               # legit client visits, e.g. [ "/admin-old/" ], and
-                              # Disallow them in robots.txt.
+      enabled: false
+      paths: []               # e.g. [ "/your-own-trap/" ]; then set enabled: true
     # signed_id reserves the signed-ID feature (opaque HMAC-bound identifiers);
     # no flow mints them yet, so it is dormant. Forged/replayed PoW challenge
     # IDs always emit a tamper event, with or without this toggle; the
@@ -285,18 +227,11 @@ defaults:
     mode: always              # always: challenge every unvouched request
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
-    # Default true: a request that cannot run the interstitial gets a terse 403
-    # instead of a challenge it would only drop, recorded as action "refuse".
-    # No challenge is issued, so nothing escalates and no challenge_farm event
-    # can follow: an anonymous /favicon.ico poll cannot walk a real visitor
-    # into a block. A WAF or anomaly challenge refused this way is still scored
-    # for the WAF rule or anomaly score that asked for it, which the request did trip.
-    # Covers declared subresources and, where the destination is unrecognized
-    # or absent and Sec-Fetch-Mode is not navigate, an Accept naming neither
-    # text/html nor text/*. Set false to challenge them
-    # anyway: that Accept test is a heuristic, and over plain HTTP it can
-    # refuse an unusual real navigation.
-    # Scoped per domain and per path; sidecar only (inert in the WASM guest).
+    # Default true: return 403 (`refuse`) instead of a challenge a subresource
+    # cannot solve, preventing it from escalating a client. Covers declared
+    # subresources and non-navigation requests whose Accept is not HTML/text.
+    # That heuristic can refuse unusual HTTP navigations; set false to always
+    # challenge. Per-domain/per-path; sidecar only.
     refuse_unchallengeable: true
     # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
     # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
@@ -325,11 +260,13 @@ defaults:
     # deploy/angie-guardian-location.conf, and the "Rate limiting" section of
     # the Angie guide.
     # issuance_rate_limit: 60/min
+    #
     # noscript_fallback serves no-JS clients a meta-refresh page: a minimum 5s
     # wait substitutes for hash work. The wait costs an attacker no computation
     # and parallelizes cheaply, so leave it off (the default) unless no-JS
     # visitors matter more to you than that weakening.
     # noscript_fallback: true
+    #
   geo:
     enabled: false            # needs the geoip: databases above
     # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
@@ -340,6 +277,7 @@ defaults:
     # deny: { countries: [] }
     # allow: { countries: [] }
     # default_action: allow   # allow | challenge | deny for unlisted origins
+    #
   reputation:
     enabled: false            # set true after configuring at least one feed
                               # above; enabled-without-feeds is rejected
@@ -356,46 +294,28 @@ defaults:
     # (Guardian refuses a config where the two overlap). Reserve uas for
     # UAs you control, e.g. your own uptime monitor.
     uas: []
-    # A path entry ends the pipeline at stage 0: denylist, behaviour blocks,
-    # GeoIP, honeypots, WAF rules and PoW are all skipped for it. Reserve it
-    # for endpoints that must keep working even for otherwise-blocked clients,
-    # keep every entry as narrow as possible (trailing slash = prefix match),
-    # and scope it to the domain that needs it, not defaults: an entry here is
-    # inherited by every host, known or not. ACME http-01 is the classic case;
-    # terminate it in a dedicated Angie location with `auth_request off`
-    # (example in deploy/angie-guardian.conf) so it never reaches Guardian, or
-    # allowlist "/.well-known/acme-challenge/" only on the domains whose
-    # certificates you renew that way. To merely skip the PoW interstitial for
-    # public assets like /robots.txt, use the fleet-wide paths: overlay below:
-    # the rest of the pipeline still runs there.
-    paths: []
+    # Path entries are terminal: they skip denylist, blocks, GeoIP, WAF and
+    # PoW. Keep them narrow (a trailing / matches a prefix). Uncomment ACME
+    # when every HTTP host uses http-01; otherwise add it per domain. For
+    # assets that need only PoW off, use the paths: overlay below.
+    paths:
+      # - /.well-known/acme-challenge/ # ACME http-01 only, NOT all of /.well-known/
   denylist:
     ips: []
-  # Fleet-wide per-path overlays: same syntax as domains.<host>.paths, but
-  # inherited by every host, known or not, and merged over each domain's own
-  # settings (a domain's own paths: entry for the same key wins, which is also
-  # how one host opts back out). Nothing here is terminal: only the layers an
-  # entry names are changed, so blocks, GeoIP, reputation and the WAF still
-  # cover these paths.
-  #
-  # /robots.txt is the case worth shipping: a crawler cannot solve the
-  # interstitial, so leaving PoW on means well-behaved bots never read your
-  # Disallow rules (including the ones pointing away from honeypot traps),
-  # and cached HTML gets served where a text file was expected. Same story
-  # for /favicon.ico, which browsers fetch outside the page context, and for
-  # /sitemap.xml, the URL robots.txt itself advertises. Keys match exactly, so
-  # add your own sitemap paths where they differ (/wp-sitemap.xml,
-  # /sitemap_index.xml, the per-type children an index names).
+  # Fleet-wide path overlays apply to every host; a domain entry for the same
+  # key overrides one. Only named layers change, so blocks, GeoIP, reputation
+  # and the WAF still apply. These exact root-file entries let crawlers fetch
+  # metadata and icons without PoW; add your own sitemap and asset paths.
   paths:
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }
-  # Verified crawler allowlisting (verified_bots) is deliberately NOT set in
-  # defaults: a confirmed crawler identity is a terminal allow that skips
-  # GeoIP, reputation, behaviour blocks, WAF rules and PoW alike, and a
-  # search crawler has no business on an API or static-assets vhost. Grant it
-  # per domain instead; see example.com below.
-
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 # Host keys are EXACT matches: www.example.com, redirect aliases and every
 # other Host value are NOT covered by the example.com entry below; an
 # unlisted host silently gets `defaults` (this passes validation). Enumerate
@@ -406,25 +326,11 @@ domains:
   # the URI/header WAF. (auth_request forwards no request body, so payload
   # validation still belongs to the backend or a full inline WAF.)
   example.com:
-    # base_difficulty is what a clean visitor normally pays, once, per
-    # token_ttl; max_difficulty is the normal-operation ceiling escalation can
-    # reach when a request is scored suspicious (anomaly/WAF/reputation hit)
-    # or an IP keeps requesting challenges without solving them (challenge
-    # farming). Attack mode shifts the whole [base, max] window up for
-    # everyone, so with attack_mode enabled the ceiling becomes its
-    # difficulty_cap (default 7), not this 6. Fractional steps allowed: each
-    # +0.25 doubles the work, so 5.25 is 2x the default 5.
-    # token_ttl is omitted, so it inherits the 4h default.
+    # Clean visitors normally pay base once per token_ttl; suspicious traffic
+    # and challenge farming may escalate toward max. Attack mode shifts that
+    # window up to difficulty_cap (default 7). Each +0.25 doubles work, so
+    # 5.25 is 2x the default 5. token_ttl inherits the 4h default.
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6 }
-    # honeypot: one hit on a trap path denies and, with ip_behaviour on,
-    # persistently blocks the source IP, which behind CGNAT is a whole
-    # population. NO universal trap path is safe to ship enabled: any URL
-    # guessable enough to put in an example (an old admin panel, a backup
-    # dir) is plausible as a real route or a curious visitor's typo on some
-    # estate. Invent paths specific to YOUR site that nothing links to,
-    # Disallow them in robots.txt, and avoid paths the starter WAF rules
-    # already block (/.env etc. never reach the honeypot). Then enable:
-    # waf: { honeypot: { enabled: true, paths: [ "/your-own-trap/" ] } }
     # Crawlers allowlisted by PROVEN identity, not by their UA string: a
     # client claiming a listed bot's User-Agent is admitted only if its IP
     # reverse-DNS resolves under the bot's published domains AND that hostname
@@ -441,12 +347,14 @@ domains:
         # APIs-Google) verify under google.com via the google-special preset;
         # enable it if you run Google Ads:
         # - name: google-special
+        #
         # User-triggered fetchers (Feedfetcher etc.) are deliberately not a
         # preset: third parties can aim them at your site on demand.
         # Custom bots: give the UA needles and rDNS domains yourself.
         # - name: mybot
         #   uas: [ "MyBot/1.0" ]
         #   domains: [ "crawler.example.net" ]
+      #
       # spoof_action: what happens to a client that claims a listed UA but
       # definitively fails verification (no PTR, or rDNS owned by someone
       # else):
@@ -458,23 +366,12 @@ domains:
       cache_ttl: 12h          # confirmed identities; max 8760h
       negative_ttl: 1h        # proven impostors; max 8760h
       # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
-    # Per-path overlays: scope any setting to a URI prefix within this host.
-    # Keys are exact paths, or prefixes when they end with "/"; the most
-    # specific key wins, matched against the percent-decoded path. Each entry
-    # only overrides the fields it mentions (defaults, then domain, then the
-    # defaults.paths entry for that key, then this one). CAUTION when an
-    # overlay weakens policy: matching percent-decodes
-    # but deliberately does NOT resolve ../ segments, collapse repeated
-    # slashes or fold case, while many backends canonicalize before routing,
-    # so a crafted path could select the weaker overlay yet route elsewhere.
-    # Keep the starter path-traversal rule on (it denies dot segments), make
-    # Angie reject ambiguous paths, or prefer a separate host (like
-    # api.example.com below) as the safer security boundary.
-    # The fleet-wide entries from defaults.paths (/robots.txt, /favicon.ico,
-    # /sitemap.xml) already apply to this host and do not need repeating;
-    # naming one of those keys here would override it for example.com alone.
-    # This block holds only what is specific to this host, and can be dropped
-    # entirely when there is nothing:
+    #
+    # Per-path overlays override only named fields. Exact keys match one path;
+    # a trailing / matches a prefix, with the most-specific key winning.
+    # Guardian decodes but does not normalize paths, so avoid weaker overlays
+    # on ambiguous routes. defaults.paths already applies; add host-specific
+    # overrides only.
     paths:
       # The machine-facing API could skip the interstitial while the WAF
       # stays on (challenge-action rules degrade to deny, see the API host
@@ -490,15 +387,10 @@ domains:
       # "/account/login":
       #   pow: { base_difficulty: 6 }
 
-  # API host: WAF only, no PoW interstitial a machine client can't solve.
-  # NOTE: with PoW off, WAF rules whose action is `challenge` (like the
-  # starter sqli-tautology heuristic) degrade to deny: there is no challenge to
-  # send. Append an API-specific rules file and disable selected shared rule
-  # IDs if hard denies on challenge-grade heuristics are not acceptable there.
-  # NOTE: Guardian sees the request line and headers ONLY. Angie's
-  # auth_request never forwards a body, so JSON/form payloads (where most API
-  # injection lives) are invisible here by design; body validation belongs to
-  # the backend or a full inline WAF. "WAF only" is not payload protection.
+  # API host: WAF only; machine clients cannot solve PoW. Without PoW, WAF
+  # `challenge` actions become denies, so use API-specific rules if needed.
+  # Guardian inspects only the request line and headers; validate JSON/form
+  # bodies in the backend or an inline WAF.
   api.example.com:
     pow: { enabled: false }
 

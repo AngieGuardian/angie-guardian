@@ -43,11 +43,17 @@ defaults:
   # Fleet-wide per-path overlays, inherited by every host: a crawler cannot
   # solve the interstitial, so files meant for machines skip only that layer
   # (blocks, GeoIP and the WAF still apply, unlike allowlist.paths). Keys
-  # match exactly, so add your own sitemap paths if they are not this one.
+  # match exactly, so add your own sitemap paths and site-specific assets.
   paths:
     "/robots.txt": { pow: { enabled: false } }
-    "/favicon.ico": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
 
 domains:
   example.com: {}                 # inherits all defaults
