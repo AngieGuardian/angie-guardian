@@ -314,6 +314,7 @@ defaults:
     "/manifest.json": { pow: { enabled: false } }
     "/manifest.webmanifest": { pow: { enabled: false } }
     "/site.webmanifest": { pow: { enabled: false } }
+
 # Host keys are EXACT matches: www.example.com, redirect aliases and every
 # other Host value are NOT covered by the example.com entry below; an
 # unlisted host silently gets `defaults` (this passes validation). Enumerate
