@@ -49,7 +49,7 @@ A duration is a number followed by a unit.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `listen` | string | `127.0.0.1:8071` | Numeric `host:port` for the auth hot path (Angie's `auth_request` target). Must be loopback unless `trusted_proxy` is set. Listener syntax is checked by `guardiand -t`. |
-| `log_level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
+| `log_level` | string | `warn` | One of `debug`, `info`, `warn`, `error`. `warn` keeps routine decisions out of production logs. Temporarily set `info` while investigating: it logs every non-allow decision, including client identity and the full raw URI/query. |
 | `trusted_proxy` | bool | `false` | Allow a non-loopback `listen`. The hot path trusts the `X-Guardian-*` client-identity headers from its caller, so only set this when the listener is isolated to Angie (private network, firewall, or mTLS). |
 | `require_proxied` | bool | `false` | Reject `/auth`, `/challenge` and `/pass` requests that arrive without the `X-Guardian-*` headers the Angie glue sets, instead of falling back to the socket address. A tripwire for traffic that bypassed Angie (scanners, a firewall mistake): stray direct requests are refused and counted in `guardian_unproxied_rejects_total` rather than processed under their socket identity. It does not stop a deliberate direct client from forging the headers; only listener isolation does (see `trusted_proxy`). `/healthz` and `/denied` are never gated. Hot-reloadable. |
 | `signing_key_file` | string | | Persistent Ed25519 signing key for PoW JWTs. Required when any effective domain enables PoW. Generated on first run if missing; never regenerated on restart. |

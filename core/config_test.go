@@ -110,6 +110,9 @@ func TestDomainMerge(t *testing.T) {
 // bits), including for unknown hosts falling back to defaults.
 func TestBuiltinDifficultyDefaults(t *testing.T) {
 	cfg := loadTestConfig(t, "store: { backend: memory }\ndomains: { bare.test: }\n")
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("log_level = %q, want production-safe default warn", cfg.LogLevel)
+	}
 	if cfg.Admin.RecentSize != defaultRecentSize {
 		t.Fatalf("admin.recent_size = %d, want default %d", cfg.Admin.RecentSize, defaultRecentSize)
 	}

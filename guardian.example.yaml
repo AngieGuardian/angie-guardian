@@ -6,13 +6,14 @@
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
 listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
-# At `info`, every non-allow decision (challenge, refuse, deny) is logged with
-# the client IP, User-Agent, method and the FULL raw URI, query string
-# included. With pow.mode: always that covers the first request of essentially
-# every visitor, so reset tokens, OAuth codes and other query-string secrets
-# can land in your logs: mind log access control and retention, or use `warn`
-# if you don't need that detail.
-log_level: info
+# Log levels: debug, info, warn, error. Keep routine decision records out of
+# the production journal: `info` emits a line for every non-allow decision
+# (challenge, refuse, deny), which with pow.mode: always means most first
+# visits and adds logging work on the hot path. Change this to `info`
+# temporarily when investigating decisions; those records include the client
+# IP, User-Agent, method and full raw URI (including its query string), so
+# protect journal access and retention accordingly.
+log_level: warn
 
 # The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
 # (client IP, host, cookie). Keep `listen` on loopback so no client can reach

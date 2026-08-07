@@ -25,6 +25,13 @@ Validate an edit before applying it with `guardiand -config
 Most of the file hot-reloads on `systemctl reload guardiand` (domains, lists,
 thresholds, difficulty); listeners, the store and keys need a restart.
 
+The shipped profile uses `log_level: warn`: it retains warnings and errors
+without writing a line for every routine challenge, refusal, or deny decision
+to the systemd journal. For short-lived diagnosis, change it to `info` and run
+`systemctl reload guardiand`; decision records include client identity and the
+full raw URI/query, so restrict journal access and retention. The same setting
+applies to container logs.
+
 ## Installation
 
 Run guardiand under systemd on a host, or as a container. Both load the same

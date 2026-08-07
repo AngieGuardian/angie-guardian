@@ -1161,7 +1161,7 @@ func (c *Config) finalize() error {
 	}
 	switch c.LogLevel {
 	case "":
-		c.LogLevel = "info"
+		c.LogLevel = "warn"
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log_level must be debug, info, warn or error, got %q", c.LogLevel)

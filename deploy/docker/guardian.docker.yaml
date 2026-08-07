@@ -17,13 +17,21 @@ listen: 0.0.0.0:8071
 # isolated to the compose network. trusted_proxy acknowledges that isolation;
 # without it guardiand refuses a non-loopback bind.
 trusted_proxy: true
-log_level: info
+# Log levels: debug, info, warn, error. Keep routine decision records out of
+# production container logs: `info` logs every challenge, refuse and deny
+# decision, which is noisy (and adds work on the hot path) with pow.mode:
+# always. Switch to `info` temporarily to inspect decisions; the records
+# include client identity and the full raw URI/query.
+log_level: warn
 
 admin:
   listen: 0.0.0.0:8072
   token: "harness-admin-token"   # harness only; use ADMIN_TOKEN env in real deploys
                                   # (0.0.0.0 admin bind without a token is refused)
   dashboard: true                 # the reporting page at /admin/dashboard
+  angie_api:                      # dashboard reads Angie's own traffic counters
+    url: http://angie:81/status/  # the api listener in angie.docker.conf
+    timeout: 3s
 
 signing_key_file: /etc/guardian/keys/ed25519.key
 previous_key_dir: /etc/guardian/keys/keys.d
@@ -82,16 +90,24 @@ defaults:
     # No crawler names in uas: a UA string is forgeable. See verified_bots.
     uas: []
     paths:
-      # robots.txt stays a terminal allowlist entry here (unlike the
-      # production example, which exempts it with a defaults.paths pow
-      # overlay): the compose healthcheck fetches it before any challenge
-      # flow.
-      - /robots.txt
-      - /favicon.ico
-      - /.well-known/acme-challenge/   # narrowest possible: allowlisted paths
-                                       # skip the entire pipeline
+      # Terminal allowlist: use only for endpoints that must bypass every
+      # protection layer. Uncomment for ACME http-01 when every HTTP vhost
+      # uses it; otherwise place it under the relevant domain.
+      # - /.well-known/acme-challenge/
   denylist:
     ips: []
+  # These public root files bypass only PoW: blocks, GeoIP, reputation and the
+  # WAF still apply. Add site-specific sitemap or asset paths explicitly.
+  paths:
+    "/robots.txt": { pow: { enabled: false } }
+    "/sitemap.xml": { pow: { enabled: false } }
+    "/favicon.ico": { pow: { enabled: false } }
+    "/favicon.svg": { pow: { enabled: false } }
+    "/apple-touch-icon.png": { pow: { enabled: false } }
+    "/apple-touch-icon-precomposed.png": { pow: { enabled: false } }
+    "/manifest.json": { pow: { enabled: false } }
+    "/manifest.webmanifest": { pow: { enabled: false } }
+    "/site.webmanifest": { pow: { enabled: false } }
   # verified_bots is granted per domain (below), never in defaults: a
   # confirmed crawler identity is a terminal allow and is not authorization
   # for every vhost. See guardian.example.yaml and USAGE.md.
