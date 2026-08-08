@@ -10,6 +10,11 @@ help_output="$(bash "$installer" --help)"
 [[ "$help_output" == *'raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh'* ]]
 [[ "$help_output" == *'Debian/Ubuntu systemd hosts'* ]]
 
+# Bash leaves BASH_SOURCE unset for scripts consumed from standard input.
+pipe_help_output="$(bash -s -- --help <"$installer")"
+[[ "$pipe_help_output" == *'raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh'* ]]
+[[ "$pipe_help_output" == *'Debian/Ubuntu systemd hosts'* ]]
+
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 

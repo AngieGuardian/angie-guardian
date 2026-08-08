@@ -153,7 +153,10 @@ main() {
   printf '%s\n' 'Define the guardian upstream once in Angie http{} as documented, then run angie -t and reload Angie yourself.'
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# BASH_SOURCE is unset when Bash reads this script from standard input, which is
+# the documented curl | sudo bash invocation.  Fall back to $0 in that case,
+# while retaining the guard that prevents main from running when sourced.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
   case "${1:-}" in
     --help|-h)
       printf '%s\n' 'Usage: curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash'
