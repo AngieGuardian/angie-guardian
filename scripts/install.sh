@@ -22,6 +22,9 @@ cleanup() {
   if [[ -n "${work_dir:-}" && -d "$work_dir" ]]; then
     rm -rf "$work_dir"
   fi
+  if [[ -n "${validation_binary:-}" ]]; then
+    rm -f -- "$validation_binary"
+  fi
 }
 
 require_root() {
@@ -126,8 +129,12 @@ main() {
   install_if_missing "$package_dir/deploy/rules-common.yaml" "$CONFIG_DIR/rules.d/common.yaml" 0640
   chown root:guardian "$CONFIG_DIR/guardian.yaml" "$CONFIG_DIR/rules.d/common.yaml"
 
-  # Validate the new binary against retained policy before a running service is changed.
-  runuser -u guardian -- "$package_dir/guardiand" -config "$CONFIG_DIR/guardian.yaml" -t
+  # Validate from an executable filesystem: /tmp may be mounted noexec.
+  validation_binary="$INSTALL_DIR/.guardiand-validation.$$"
+  install -D -m 0755 "$package_dir/guardiand" "$validation_binary"
+  runuser -u guardian -- "$validation_binary" -config "$CONFIG_DIR/guardian.yaml" -t
+  rm -f -- "$validation_binary"
+  validation_binary=''
 
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
   install -D -m 0644 "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service"
