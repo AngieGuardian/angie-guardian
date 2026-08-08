@@ -107,7 +107,8 @@ main() {
   info "Installing Angie Guardian ${version} for linux-${arch}"
   download "https://github.com/${REPOSITORY}/releases/download/${version}/${archive}" "$work_dir/$archive" || error "could not download GitHub release ${version}"
   download "https://github.com/${REPOSITORY}/releases/download/${version}/SHA256SUMS" "$work_dir/SHA256SUMS" || error "could not download checksums for GitHub release ${version}"
-  verify_archive "$archive" "$work_dir/SHA256SUMS"
+  # SHA256SUMS contains a relative archive name; verify it from the download directory.
+  (cd "$work_dir" && verify_archive "$archive" SHA256SUMS)
   tar --no-same-owner -xzf "$work_dir/$archive" -C "$work_dir"
 
   [[ -x "$package_dir/guardiand" ]] || error 'release archive does not contain guardiand'
