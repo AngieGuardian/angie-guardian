@@ -17,7 +17,7 @@ domains:
   # the backend). Difficulty takes quarter steps: 5.25 is exactly 2x the
   # work of 5 (see the difficulty table below).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 4h
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 24h
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:
@@ -273,8 +273,9 @@ Which value fires:
 
 - **`mode: always` (the default):** every unvouched request, regardless of
   HTTP method or User-Agent,
-  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie. The
-  token lifetime must be at least one second and at most seven days.
+  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie (by default 24 hours).
+  The cookie token lifetime must be at least one second and at most thirty days. An issued
+  challenge remains solvable for `challenge_ttl`, which defaults to 30 minutes.
 - **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`). A valid bound token satisfies rules whose action is
   `challenge`; it never bypasses `deny` or `block` rules. On a domain or path
@@ -483,7 +484,7 @@ set `trusted_proxy: true`, otherwise `guardiand` refuses to start.
 generated on first run if missing and **never** regenerated on restart, so
 restarts don't log clients out and replicas can share it. Retired keys (from
 `POST /admin/rotate-key`) are archived in `previous_key_dir` and accepted only
-for bounded, pre-rotation token lifetimes (at most seven days); expired
+for bounded, pre-rotation token lifetimes (at most thirty days); expired
 archives may remain on disk but drop out of the active verification set after
 that horizon. Rotation requires a non-empty `previous_key_dir`; replicas must
 share both paths and automatically refresh their verification set when

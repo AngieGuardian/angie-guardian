@@ -68,7 +68,7 @@ domains:
   # WAF (request bodies never reach Guardian; payload validation stays with
   # the backend). Difficulty takes quarter steps: each +0.25 doubles the
   # work, so 5.25 is 2x the default 5 (see the difficulty table below).
-  # token_ttl inherits the 4h default.
+  # token_ttl inherits the 24h default.
   example.com:
     pow: { enabled: true, base_difficulty: 5.25 }
     # Honeypot: no generic trap path is safe to copy (one hit persistently
@@ -192,7 +192,9 @@ Which value fires:
 - **`mode: always` (the default):** every unvouched request, regardless of HTTP
   method or User-Agent, pays exactly `base_difficulty`, once, then rides a
   `token_ttl` cookie. The token lifetime must be at least one second and at
-  most seven days.
+  most thirty days; the default is 24 hours. An issued challenge remains
+  solvable for `challenge_ttl`, which defaults to 30 minutes and is capped at
+  24 hours.
 - **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits =
   16x, capped at `max`). A valid bound token satisfies challenge-only rules;
   deny/block rules still apply.
@@ -778,7 +780,7 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/anomaly
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
 # replicas refresh automatically. Pre-rotation tokens remain valid for at most
-# seven days; older archive files are ignored in memory, not auto-deleted.
+# thirty days; older archive files are ignored in memory, not auto-deleted.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
@@ -947,7 +949,7 @@ verification perform bounded, rate-limited key-set refreshes. Verification
 fails closed when the shared key files cannot be refreshed, including before
 accepting a cached token. The archive directory is required
 before `POST /admin/rotate-key` is allowed. Retired archives verify
-pre-rotation tokens for at most seven days and in-flight stateless challenges
+pre-rotation tokens for at most thirty days and in-flight stateless challenges
 through a rolling rotation; older files may remain on disk but are ignored by
 the active verifier.
 Valkey is a fully compatible drop-in replacement for Redis; the configuration

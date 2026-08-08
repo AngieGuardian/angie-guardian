@@ -649,7 +649,7 @@ replica cannot remain indefinitely on a stale key without adding a file
 lock/read to every attack-path challenge. Current and still-live retired
 secrets keep in-flight stateless challenges redeemable through the rotation;
 retired keys accept only tokens issued before rotation, and no accepted token
-may have a lifetime longer than seven days. Older archive files may remain for
+may have a lifetime longer than thirty days. Older archive files may remain for
 operator retention, but Guardian drops them from the in-memory verification
 set once that horizon has elapsed (expired timestamped key contents are
 skipped before file reads and parsing). Each replica still enumerates the

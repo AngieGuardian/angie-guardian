@@ -55,7 +55,7 @@ domains:
   # Difficulty takes quarter steps: each +0.25 doubles the work (so 5.25 is
   # 2x the work of 5).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 4h
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 24h
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:
@@ -360,7 +360,7 @@ store:
   # password: ""            # or the REDIS_PASSWORD env var
 signing_key_file: /var/lib/guardian/ed25519.key   # same file on every replica
 previous_key_dir: /var/lib/guardian/keys.d        # same lock-capable shared filesystem
-# Retired archives verify pre-rotation tokens for at most 7 days; older files
+# Retired archives verify pre-rotation tokens for at most 30 days; older files
 # may be retained on disk but are ignored by the active verifier.
 ```
 

@@ -127,6 +127,9 @@ func TestBuiltinDifficultyDefaults(t *testing.T) {
 		if dc.PoW.BaseBits() != 20 || dc.PoW.MaxBits() != 24 {
 			t.Errorf("default bits = %d/%d, want 20/24", dc.PoW.BaseBits(), dc.PoW.MaxBits())
 		}
+		if dc.PoW.TokenTTL.Std() != 24*time.Hour || dc.PoW.ChallengeTTL.Std() != 30*time.Minute {
+			t.Errorf("default PoW TTLs = %v/%v, want 24h/30m", dc.PoW.TokenTTL.Std(), dc.PoW.ChallengeTTL.Std())
+		}
 	}
 }
 
@@ -340,7 +343,7 @@ func TestConfigValidation(t *testing.T) {
 		"negative challenge_ttl":                 "domains: { a.test: { pow: { enabled: true, challenge_ttl: -1s } } }",
 		"zero token_ttl when enabled":            "domains: { a.test: { pow: { enabled: true, token_ttl: 0s } } }",
 		"negative default token_ttl":             "defaults: { pow: { token_ttl: -5m } }",
-		"pow ttl above cap":                      "domains: { a.test: { pow: { enabled: true, challenge_ttl: 192h } } }",
+		"pow ttl above cap":                      "domains: { a.test: { pow: { enabled: true, challenge_ttl: 25h } } }",
 		"difficulty off the quarter grid":        "defaults: { pow: { base_difficulty: 4.3 } }",
 		"max off the quarter grid":               "defaults: { pow: { base_difficulty: 4, max_difficulty: 6.1 } }",
 		"bad cidr":                               "defaults: { allowlist: { ips: [ \"10.0.0.0/99\" ] } }",
@@ -432,6 +435,16 @@ func TestMinimumPoWTokenTTLIsAccepted(t *testing.T) {
 	cfg := loadTestConfig(t, "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 1s } }")
 	if got := cfg.Defaults.PoW.TokenTTL.Std(); got != time.Second {
 		t.Fatalf("token_ttl = %v, want 1s", got)
+	}
+}
+
+func TestMaximumPoWTTLIsAccepted(t *testing.T) {
+	cfg := loadTestConfig(t, "signing_key_file: /tmp/key\ndefaults: { pow: { enabled: true, token_ttl: 720h, challenge_ttl: 24h } }")
+	if got := cfg.Defaults.PoW.TokenTTL.Std(); got != 30*24*time.Hour {
+		t.Fatalf("token_ttl = %v, want 720h", got)
+	}
+	if got := cfg.Defaults.PoW.ChallengeTTL.Std(); got != 24*time.Hour {
+		t.Fatalf("challenge_ttl = %v, want 24h", got)
 	}
 }
 

@@ -1004,16 +1004,20 @@ func (p *PoWConfig) RefusesUnchallengeable() bool {
 	return p.RefuseUnchallengeable == nil || *p.RefuseUnchallengeable
 }
 
-// maxPoWTTL caps token_ttl and challenge_ttl so a mistyped unit (e.g. a value
-// meant as minutes read as hours, or an accidental huge number) cannot create
-// effectively-permanent store records. A week is far above any legitimate
-// challenge or token lifetime.
-const maxPoWTTL = Duration(7 * 24 * time.Hour)
+// maxTokenTTL caps token_ttl so a mistyped unit (e.g. a value meant as minutes
+// read as hours, or an accidental huge number) cannot create effectively-
+// permanent replay windows. Thirty days is ample for a token lifetime.
+const maxTokenTTL = Duration(30 * 24 * time.Hour)
+
+// maxChallengeTTL bounds issued and spent challenge records. 24 hours is
+// already far beyond the normal 30-minute solve window while keeping stale
+// records from living unnecessarily long in the store.
+const maxChallengeTTL = Duration(24 * time.Hour)
 
 // MaxStateTTL is the longest operator-configurable lifetime for blocks and
 // identity-cache records. It prevents unit typos from creating effectively
 // permanent state while leaving ample room for long-lived administrative
-// policy. PoW has its stricter seven-day cap above.
+// policy. PoW has its stricter caps above.
 const MaxStateTTL = 365 * 24 * time.Hour
 
 // BaseBits is the floor difficulty in leading zero bits (what every clean
@@ -1268,7 +1272,7 @@ func (c *Config) finalize() error {
 		c.Defaults.PoW.MaxDifficulty = 6
 	}
 	if c.Defaults.PoW.TokenTTL == 0 {
-		c.Defaults.PoW.TokenTTL = Duration(4 * time.Hour)
+		c.Defaults.PoW.TokenTTL = Duration(24 * time.Hour)
 	}
 	if c.Defaults.PoW.ChallengeTTL == 0 {
 		c.Defaults.PoW.ChallengeTTL = Duration(30 * time.Minute)
@@ -1661,7 +1665,7 @@ func (dc *DomainConfig) validate() error {
 	// records permanent (unbounded store growth) and breaks the local counter
 	// window, and a non-positive token_ttl yields unusable cookies. A negative
 	// value is never meaningful, so reject it whether or not PoW is enabled;
-	// require strictly positive values once PoW is on. Cap at maxPoWTTL so a
+	// require strictly positive values once PoW is on. Cap each lifetime so a
 	// fat-fingered unit can't set an effectively-permanent record.
 	for _, t := range []struct {
 		name string
@@ -1676,8 +1680,12 @@ func (dc *DomainConfig) validate() error {
 		if t.name == "token_ttl" && p.Enabled && t.d < Duration(time.Second) {
 			return fmt.Errorf("pow.token_ttl must be at least 1s when pow is enabled, got %v", t.d.Std())
 		}
-		if t.d > maxPoWTTL {
-			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(maxPoWTTL), t.d.Std())
+		max := maxTokenTTL
+		if t.name == "challenge_ttl" {
+			max = maxChallengeTTL
+		}
+		if t.d > max {
+			return fmt.Errorf("pow.%s must be <= %v, got %v", t.name, time.Duration(max), t.d.Std())
 		}
 	}
 	rules := &dc.WAF.Rules

@@ -431,8 +431,8 @@ func TestPoWFlowEndToEnd(t *testing.T) {
 			if !c.HttpOnly || !c.Secure || c.Path != "/" {
 				t.Errorf("cookie flags: HttpOnly=%v Secure=%v Path=%q", c.HttpOnly, c.Secure, c.Path)
 			}
-			if c.MaxAge != int((4 * time.Hour).Seconds()) {
-				t.Errorf("cookie MaxAge = %d, want %d", c.MaxAge, int((4 * time.Hour).Seconds()))
+			if c.MaxAge != int((24 * time.Hour).Seconds()) {
+				t.Errorf("cookie MaxAge = %d, want %d", c.MaxAge, int((24 * time.Hour).Seconds()))
 			}
 		}
 	}

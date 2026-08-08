@@ -18,8 +18,8 @@ configurable per domain, so one instance can protect multiple vhosts.
 - **Adaptive bot defence:** behavioural scoring, honeypots, IP blocking,
   GeoIP/reputation checks, and verified-bot DNS validation.
 - **Proof-of-work passes:** adaptive SHA-256 browser challenges followed by a
-  cheaply validated Ed25519-signed cookie; an optional no-JS fallback is
-  available.
+  cheaply validated Ed25519-signed cookie (24-hour default, configurable up to
+  30 days); an optional no-JS fallback is available.
 - **Replay resistance:** challenges are single-use and bound to the domain and
   client IP.
 - **Anomaly detection:** optional offline training from Angie access logs with

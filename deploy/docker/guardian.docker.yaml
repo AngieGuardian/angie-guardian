@@ -26,8 +26,11 @@ log_level: warn
 
 admin:
   listen: 0.0.0.0:8072
-  token: "harness-admin-token"   # harness only; use ADMIN_TOKEN env in real deploys
+  token: "harness-admin-token"    # harness only; use ADMIN_TOKEN env in real deploys
                                   # (0.0.0.0 admin bind without a token is refused)
+  # Either use a pre-generated token file (see `guardiand -admin-token`) or let
+  # guardiand generate one on first start.
+  # token_file: /var/lib/guardian/admin.token
   dashboard: true                 # the reporting page at /admin/dashboard
   angie_api:                      # dashboard reads Angie's own traffic counters
     url: http://angie:81/status/  # the api listener in angie.docker.conf
@@ -37,8 +40,36 @@ signing_key_file: /etc/guardian/keys/ed25519.key
 previous_key_dir: /etc/guardian/keys/keys.d
 
 store:
-  backend: pebble
+  backend: pebble  # memory | buntdb | pebble | redis
   path: /var/lib/guardian/pebble
+
+  # Redis config (optional; only if store.backend: redis).
+  # addr: 127.0.0.1:6379
+  # password: ""              # or the REDIS_PASSWORD env var
+  # db: 0                     # dedicate one logical db per deployment
+
+# Fleet-wide attack posture. Off when absent (see guardian.example.yaml).
+# attack_mode:
+#   enabled: true
+#   window: 30s                       # sliding measurement window (10s..10m)
+#   min_dwell: 60s                    # hold a level this long before it decays a step; >= window
+#   share_posture: true               # publish/adopt the level via the shared store (redis fleets)
+#   signals:
+#     challenge_rate: 200/s           # issuance/s entering elevated
+#     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
+#     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
+#     request_rate: 5000/s            # global Evaluate/s entering elevated; omit to disable
+#     store_error_ratio: 0.05         # store op error fraction entering elevated
+#     store_slow_ratio: 0.25          # store ops slower than 25ms, as a fraction
+#   effects:
+#     elevated_difficulty_raise: 0.5  # +0.5 = +2 bits = 4x the work at elevated
+#     attack_difficulty_raise: 1.0    # +1.0 = +4 bits = 16x the work at attack
+#     force_always: true              # attack: pow.mode suspicion behaves as always
+#     stateless_issuance: true        # attack: issue store-free challenges
+#     scoreboard_factor: 1.0          # attack: multiply ip_behaviour thresholds (0<f<=1 tightens)
+#     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
+#     difficulty_cap: 7               # ceiling of the SHIFTED window: during an attack this,
+#                                     # not the per-domain max_difficulty, bounds issued work
 
 # GeoIP scoping + reputation feeds (see guardian.example.yaml). Off in the
 # harness: the fixture databases/feeds would have to be mounted into the
@@ -46,58 +77,163 @@ store:
 # geoip:
 #   location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb  # or GeoLite2-City.mmdb
 #   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
+
+# Global IP/CIDR reputation feeds; domains opt in with `reputation.enabled`.
 # reputation:
 #   cache_dir: /var/lib/guardian/feeds
 #   feeds:
-#     - name: firehol-level1
+#     - name: firehol-level1  # names the reason ("reputation:firehol-level1")
 #       url: https://iplists.firehol.org/files/firehol_level1.netset
+#       refresh: 12h          # default 12h
+#       action: deny          # deny (default) | challenge (= solve PoW first)
+#     - name: local-badnets
+#       file: /etc/guardian/badnets.txt  # hot-reloaded like the rules files
 
 defaults:
   waf:
     ip_behaviour:
       enabled: true
-      block_ttl: 30m          # maximum 8760h
-      max_block_ttl: 12h      # maximum 8760h
-      thresholds:
-        rule_match: 10/min
-        pow_fail: 10/min
-        tamper: 10/min
-        bot_spoof: 5/min
+      block_ttl: 30m          # first offense; doubles per repeat; max 8760h
+      max_block_ttl: 12h      # backoff cap: 30m, 1h, 2h, 4h, 8h, 12h. Reached
+                              # on the 6th block within 24h; max 8760h
+      thresholds:             # bad events per window before the IP is blocked;
+                              # "off" disables one event type individually
+        rule_match: 10/min    # WAF rule hits (literal/regex; waf.rules);
+                              # scanners trip these in rapid bursts
+        pow_fail: 10/min      # wrong PoW solutions submitted; an honest
+                              # client fails at most once or twice
+        tamper: 10/min        # forged or replayed challenge/signed IDs;
+                              # never produced by a real browser
+        bot_spoof: 5/min      # clients claiming a verified-bot UA whose
+                              # rDNS identity failed verification
+        challenge_farm: 80/h  # challenges fetched but never solved, counted
+                              # only once escalation is pinned at
+                              # max_difficulty; any solve resets, so real
+                              # visitors never get near it. Tighten (30/h)
+                              # when farmers are a problem.
     rules:
-      enabled: true
-      files: [ /etc/guardian/rules.d/common.yaml ]
+      enabled: true           # requires the rules file to exist (fail-fast);
+      files:                  # inherited files stay first; narrower scopes append
+        - /etc/guardian/rules.d/common.yaml  # start from deploy/rules-common.yaml
+      # Narrower scopes append their files after these defaults, preserving
+      # common protection. disabled_ids removes selected rules from the
+      # combined set by exact, case-sensitive id, without copying files. Like every
+      # list, an overlay replaces it wholesale: omitted inherits, [] clears,
+      # a non-empty list replaces the inherited one. Unknown/empty/duplicate
+      # ids fail -t, startup and reload; file paths and rule ids must be unique
+      # across the combined set. Typical use: the starter set's
+      # wp-cms-probe rule is wrong on a real WordPress site, so under domains:
+      #   wordpress.example.com:
+      #     waf:
+      #       rules:
+      #         disabled_ids: [ wp-cms-probe ]
+    anomaly:
+      enabled: false          # requires a model trained from your own logs:
+      model: /etc/guardian/model.json  # guardian-train train -out model.json /var/log/angie/*.access.json*
+      observe_only: false     # true records scores but suppresses anomaly challenge/deny
+      challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
+      deny_at: 0.9            # score >= this -> deny outright
+    # Honeypot hits deny and, with ip_behaviour on, persistently block an IP;
+    # behind CGNAT that can affect many users. Do not ship a universal trap:
+    # choose a path unique to your site that nothing links to, disallow it in
+    # robots.txt, and avoid paths the starter WAF already denies (/.env, etc.).
     honeypot:
       enabled: false
-      paths: []
+      paths: []               # e.g. [ "/your-own-trap/" ]; then set enabled: true
+    # signed_id reserves the signed-ID feature (opaque HMAC-bound identifiers);
+    # no flow mints them yet, so it is dormant. Forged/replayed PoW challenge
+    # IDs always emit a tamper event, with or without this toggle; the
+    # ip_behaviour threshold counts it only when behaviour is enabled.
+    signed_id: { enabled: false }
   pow:
     enabled: true
-    mode: always
-    # One quarter-step above the default (5), i.e. 2x the work, so the
-    # interstitial is still perceptible on a fast desktop when demoing
-    # (about a quarter second; 5 solves in ~0.1s there). The e2e suite uses
-    # guardian.e2e.yaml with a lower value instead.
-    base_difficulty: 5.25
-    max_difficulty: 6
-    token_ttl: 4h             # 1s minimum, 7d maximum
-    challenge_ttl: 30m         # must be positive; 7d maximum
-    # noscript_fallback stays off like production: the 5s no-JS wait costs an
-    # attacker no computation. Enable it only to demo the no-JS flow.
+    # `always` challenges every unvouched request REGARDLESS of HTTP method,
+    # and the challenge redirect cannot carry a request body: a first-contact
+    # (or token-expired) POST/PUT/DELETE, a webhook, an upload or a direct
+    # form submission gets diverted and its body is lost. It assumes a
+    # GET-first browser flow; exempt state-changing machine endpoints with a
+    # per-path `pow: { enabled: false }` overlay or a separate host (both
+    # shown below), or use `suspicion` there.
+    mode: always              # always: challenge every unvouched request
+                              # suspicion: no catch-all; explicit anomaly/WAF/
+                              # geo/reputation challenge policies still apply
+    # Default true: return 403 (`refuse`) instead of a challenge a subresource
+    # cannot solve, preventing it from escalating a client. Covers declared
+    # subresources and non-navigation requests whose Accept is not HTML/text.
+    # That heuristic can refuse unusual HTTP navigations; set false to always
+    # challenge. Per-domain/per-path; sidecar only.
+    refuse_unchallengeable: true
+    # Difficulty N = 4*N leading zero bits; +1 is 16x the work, and quarter
+    # steps are allowed: each +0.25 doubles it (5.25 = 2x harder than 5).
+    # See docs/guide/configuration.md, "Measured solve times", before changing these.
+    base_difficulty: 5        # ~1s on a mid-range phone, near instant on desktop
+    max_difficulty: 6         # normal-operation ceiling: reached when a request
+                              # is scored suspicious (anomaly model, WAF/
+                              # reputation hit) or an IP keeps requesting
+                              # challenges without solving them (challenge
+                              # farming). base is the normal floor, not a
+                              # guarantee: attack mode shifts the WHOLE
+                              # [base, max] window up for everyone, so with
+                              # attack_mode enabled the true ceiling is
+                              # attack_mode.effects.difficulty_cap (default 7),
+                              # not this value. Farming is scored per host+IP,
+                              # so a clean visitor behind the same CGNAT/proxy
+                              # IP as a farmer can inherit above-base work.
+    token_ttl: 24h            # 1s minimum, 30d maximum
+    challenge_ttl: 30m        # must be positive; 24h maximum
+    # Per-IP challenge issuance throttle (the default). PoW taxes clients that
+    # solve; a raw flood that never solves still costs Angie an auth_request
+    # each hit and can cost the store a write per issued challenge, and the
+    # shipped Angie glue FAILS OPEN when the sidecar is unreachable. Always
+    # pair Guardian with Angie's own limit_req/limit_conn ahead of the auth
+    # subrequest: ready-made snippets are in deploy/angie-guardian.conf,
+    # deploy/angie-guardian-location.conf, and the "Rate limiting" section of
+    # the Angie guide.
+    # issuance_rate_limit: 60/min
+    #
+    # noscript_fallback serves no-JS clients a meta-refresh page: a minimum 5s
+    # wait substitutes for hash work. The wait costs an attacker no computation
+    # and parallelizes cheaply, so leave it off (the default) unless no-JS
+    # visitors matter more to you than that weakening.
     # noscript_fallback: true
+  geo:
+    enabled: false            # needs the geoip: databases above
+    # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
+    # deny beats challenge; allow exempts an origin from default_action.
+    # Origins with no database record (private ranges) match no selector and
+    # get default_action, so allowlist internal IPs before tightening it.
+    # challenge: { countries: [ CN, RU ], asns: [] }
+    # deny: { countries: [] }
+    # allow: { countries: [] }
+    # default_action: allow   # allow | challenge | deny for unlisted origins
+  reputation:
+    enabled: false            # set true after configuring at least one feed
+                              # above; enabled-without-feeds is rejected
   allowlist:
-    # ips match the CLIENT address Angie reports, not the container hop;
-    # loopback entries would bypass Guardian for a broken real-IP setup.
+    # ips match the CLIENT address Angie reports (X-Guardian-IP), NOT the
+    # Angie-to-Guardian loopback hop, so normal wiring needs nothing here.
+    # Allowlisting 127.0.0.1/::1 turns a broken real-IP setup into a total
+    # bypass; add them only if you deliberately trust local-origin HTTP
+    # clients (e.g. an on-box monitor requesting the site through Angie).
     ips: []
-    # No crawler names in uas: a UA string is forgeable. See verified_bots.
+    # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
+    # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
+    # everything by claiming to be Googlebot. Use verified_bots below instead
+    # (Guardian refuses a config where the two overlap). Reserve uas for
+    # UAs you control, e.g. your own uptime monitor.
     uas: []
+    # Path entries are terminal: they skip denylist, blocks, GeoIP, WAF and
+    # PoW. Keep them narrow (a trailing / matches a prefix). Uncomment ACME
+    # when every HTTP host uses http-01; otherwise add it per domain. For
+    # assets that need only PoW off, use the paths: overlay below.
     paths:
-      # Terminal allowlist: use only for endpoints that must bypass every
-      # protection layer. Uncomment for ACME http-01 when every HTTP vhost
-      # uses it; otherwise place it under the relevant domain.
-      # - /.well-known/acme-challenge/
+      # - /.well-known/acme-challenge/ # ACME http-01 only, NOT all of /.well-known/
   denylist:
     ips: []
-  # These public root files bypass only PoW: blocks, GeoIP, reputation and the
-  # WAF still apply. Add site-specific sitemap or asset paths explicitly.
+  # Fleet-wide path overlays apply to every host; a domain entry for the same
+  # key overrides one. Only named layers change, so blocks, GeoIP, reputation
+  # and the WAF still apply. These exact root-file entries let crawlers fetch
+  # metadata and icons without PoW; add your own sitemap and asset paths.
   paths:
     "/robots.txt": { pow: { enabled: false } }
     "/sitemap.xml": { pow: { enabled: false } }

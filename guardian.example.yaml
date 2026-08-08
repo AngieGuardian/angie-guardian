@@ -5,7 +5,7 @@
 # Per-domain settings are merged over `defaults` field-by-field: a domain only
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
-listen: 127.0.0.1:8071        # the auth hot path (Angie's auth_request target)
+listen: 127.0.0.1:8071  # the auth hot path (Angie's auth_request target)
 # Log levels: debug, info, warn, error. Keep routine decision records out of
 # the production journal: `info` emits a line for every non-allow decision
 # (challenge, refuse, deny), which with pow.mode: always means most first
@@ -49,20 +49,20 @@ admin:
   # Optional Angie API data in the dashboard; keep Angie's API on loopback.
   # angie_api:
   #   url: http://127.0.0.1:81/status/   # Angie's api location
-  #   timeout: 2s                         # per-fetch cap (default 2s)
+  #   timeout: 2s                        # per-fetch cap (default 2s)
   #
   # Require the same token for /metrics; /healthz and /readyz stay public.
   # metrics_auth: true
 
 # Persistent Ed25519 key for PoW JWTs: generated once if missing and retained
 # across restarts; replicas may share it. Rotated keys accept pre-rotation
-# tokens for up to seven days. Keep these generated files in service-writable
+# tokens for up to thirty days. Keep these generated files in service-writable
 # state, not read-only /etc/guardian.
 signing_key_file: /var/lib/guardian/ed25519.key
 previous_key_dir: /var/lib/guardian/keys.d
 
 store:
-  backend: pebble             # memory | buntdb | pebble | redis
+  backend: pebble                 # memory | buntdb | pebble | redis
   path: /var/lib/guardian/pebble  # a file for buntdb; a directory for pebble
   # sync: fsync each Pebble write (BuntDB rejects it; ~100x slower). Async can
   # lose the unflushed tail after a power/OS crash, including spent challenges,
@@ -142,7 +142,7 @@ store:
 # hot-reloaded without a restart.
 # geoip:
 #   location_db: /var/lib/GeoIP/GeoLite2-Country.mmdb
-#   # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb   # city/region in admin
+#   # location_db: /var/lib/GeoIP/GeoLite2-City.mmdb  # city/region in admin
 #   asn_db: /var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Global IP/CIDR reputation feeds; domains opt in with `reputation.enabled`.
@@ -158,7 +158,7 @@ store:
 #       refresh: 12h          # default 12h
 #       action: deny          # deny (default) | challenge (= solve PoW first)
 #     - name: local-badnets
-#       file: /etc/guardian/badnets.txt   # hot-reloaded like the rules files
+#       file: /etc/guardian/badnets.txt  # hot-reloaded like the rules files
 
 defaults:
   waf:
@@ -169,7 +169,7 @@ defaults:
                               # on the 6th block within 24h; max 8760h
       thresholds:             # bad events per window before the IP is blocked;
                               # "off" disables one event type individually
-        rule_match: 10/min     # WAF rule hits (literal/regex; waf.rules);
+        rule_match: 10/min    # WAF rule hits (literal/regex; waf.rules);
                               # scanners trip these in rapid bursts
         pow_fail: 10/min      # wrong PoW solutions submitted; an honest
                               # client fails at most once or twice
@@ -184,8 +184,8 @@ defaults:
                               # when farmers are a problem.
     rules:
       enabled: true           # requires the rules file to exist (fail-fast);
-      files:                    # inherited files stay first; narrower scopes append
-        - /etc/guardian/rules.d/common.yaml   # start from deploy/rules-common.yaml
+      files:                  # inherited files stay first; narrower scopes append
+        - /etc/guardian/rules.d/common.yaml  # start from deploy/rules-common.yaml
       # Narrower scopes append their files after these defaults, preserving
       # common protection. disabled_ids removes selected rules from the
       # combined set by exact, case-sensitive id, without copying files. Like every
@@ -200,7 +200,7 @@ defaults:
       #         disabled_ids: [ wp-cms-probe ]
     anomaly:
       enabled: false          # requires a model trained from your own logs:
-      model: /etc/guardian/model.json   #   guardian-train train -out model.json /var/log/angie/*.access.json*
+      model: /etc/guardian/model.json  # guardian-train train -out model.json /var/log/angie/*.access.json*
       observe_only: false     # true records scores but suppresses anomaly challenge/deny
       challenge_at: 0.6       # score >= this -> PoW challenge, difficulty scaled by score
       deny_at: 0.9            # score >= this -> deny outright
@@ -250,8 +250,8 @@ defaults:
                               # not this value. Farming is scored per host+IP,
                               # so a clean visitor behind the same CGNAT/proxy
                               # IP as a farmer can inherit above-base work.
-    token_ttl: 4h             # 1s minimum, 7d maximum
-    challenge_ttl: 30m         # must be positive; 7d maximum
+    token_ttl: 24h            # 1s minimum, 30d maximum
+    challenge_ttl: 30m        # must be positive; 24h maximum
     # Per-IP challenge issuance throttle (the default). PoW taxes clients that
     # solve; a raw flood that never solves still costs Angie an auth_request
     # each hit and can cost the store a write per issued challenge, and the
@@ -329,7 +329,7 @@ domains:
     # Clean visitors normally pay base once per token_ttl; suspicious traffic
     # and challenge farming may escalate toward max. Attack mode shifts that
     # window up to difficulty_cap (default 7). Each +0.25 doubles work, so
-    # 5.25 is 2x the default 5. token_ttl inherits the 4h default.
+    # 5.25 is 2x the default 5. token_ttl inherits the 24h default.
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6 }
     # Crawlers allowlisted by PROVEN identity, not by their UA string: a
     # client claiming a listed bot's User-Agent is admitted only if its IP
@@ -341,7 +341,7 @@ domains:
     verified_bots:
       bots:
         - name: googlebot     # built-in presets: googlebot, google-special,
-        - name: bingbot       #   bingbot, applebot, yandexbot, baiduspider
+        - name: bingbot       # bingbot, applebot, yandexbot, baiduspider
         # googlebot verifies under googlebot.com ONLY (Google's common-crawler
         # PTR masks). Google's special-case crawlers (AdsBot, Mediapartners,
         # APIs-Google) verify under google.com via the google-special preset;
@@ -354,7 +354,6 @@ domains:
         # - name: mybot
         #   uas: [ "MyBot/1.0" ]
         #   domains: [ "crawler.example.net" ]
-      #
       # spoof_action: what happens to a client that claims a listed UA but
       # definitively fails verification (no PTR, or rDNS owned by someone
       # else):
@@ -366,7 +365,6 @@ domains:
       cache_ttl: 12h          # confirmed identities; max 8760h
       negative_ttl: 1h        # proven impostors; max 8760h
       # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
-    #
     # Per-path overlays override only named fields. Exact keys match one path;
     # a trailing / matches a prefix, with the most-specific key winning.
     # Guardian decodes but does not normalize paths, so avoid weaker overlays
@@ -383,7 +381,7 @@ domains:
       # pattern:
       # "/api/v1/":
       #   pow: { enabled: false }
-      #   verified_bots: { bots: [] }   # do not inherit crawler authorization
+      #   verified_bots: { bots: [] }  # do not inherit crawler authorization
       # "/account/login":
       #   pow: { base_difficulty: 6 }
 

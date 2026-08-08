@@ -635,7 +635,7 @@ generate a new one. `previous_key_dir` must be configured. Live replicas that
 share both key paths refresh automatically before issuing stateless challenges
 or accepting JWTs. A verifier fails closed if that refresh cannot read the
 shared key files. Retired keys accept only tokens issued before rotation, with
-a maximum token lifetime of seven days.
+a maximum token lifetime of thirty days.
 Archives older than that verification horizon are ignored in memory (they are
 not automatically deleted from disk).
 

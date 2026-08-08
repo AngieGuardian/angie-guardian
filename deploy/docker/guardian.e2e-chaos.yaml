@@ -49,7 +49,7 @@ defaults:
     # challenges in Go.
     base_difficulty: 4
     max_difficulty: 6
-    token_ttl: 4h
+    token_ttl: 24h
     challenge_ttl: 30m
     issuance_rate_limit: 8/h
     noscript_fallback: false

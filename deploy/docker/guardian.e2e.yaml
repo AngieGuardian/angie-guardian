@@ -80,8 +80,8 @@ defaults:
     # base 16 bits + 4 = 20. Raising this slows every e2e run.
     base_difficulty: 4
     max_difficulty: 6
-    token_ttl: 4h
-    challenge_ttl: 30m         # must be positive; 7d maximum
+    token_ttl: 24h
+    challenge_ttl: 30m         # must be positive; 24h maximum
     # Generous so the attack-mode test can hammer /challenge from a handful of
     # rotating IPs without hitting the per-IP cap before the global rate trips.
     issuance_rate_limit: 6000/min

@@ -94,7 +94,7 @@ func (m *Manager) verificationKeys() []managerKey {
 	return keys
 }
 
-const maxAcceptedTokenLifetime = 7 * 24 * time.Hour
+const maxAcceptedTokenLifetime = 30 * 24 * time.Hour
 
 // Why VerifyToken rejected a token. Every rejection wraps exactly one of these,
 // so a caller can report the cause without parsing error text. The wrapped

@@ -97,7 +97,7 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/anomaly
 
 # Rotate the Ed25519 signing key. Requires previous_key_dir; shared live
 # replicas refresh automatically and pre-rotation tokens remain valid for at
-# most seven days. Older archive files are ignored in memory, not auto-deleted.
+# most thirty days. Older archive files are ignored in memory, not auto-deleted.
 curl -s -H "Authorization: Bearer $TOKEN" -X POST $A/admin/rotate-key
 # {"rotated":true}
 
