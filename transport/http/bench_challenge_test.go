@@ -151,6 +151,24 @@ func BenchmarkChallengeRenderCompiledNoJS(b *testing.B) {
 	}
 }
 
+// BenchmarkChallengeRenderEncoded includes the response JSON construction
+// that the prebuilt-payload renderer benchmarks deliberately exclude.
+func BenchmarkChallengeRenderEncoded(b *testing.B) {
+	renderer := newChallengeRenderer()
+	data := &challengePayload{
+		ChallengeID: "0123456789abcdef0123456789abcdef",
+		Challenge:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Difficulty:  16,
+		PassURL:     PassPath,
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := renderer.RenderChallenge(io.Discard, data, false, ""); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // newIssueBenchServer builds the challenge path on the memory store, with the
 // decision log discarded (a log write per request would swamp what this
 // measures). productionInstrumentation adds the same metrics, attack detector

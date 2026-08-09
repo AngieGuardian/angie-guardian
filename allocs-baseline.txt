@@ -31,4 +31,5 @@ BenchmarkIssueMixedCaseHost 7
 BenchmarkIssueStateless 7
 BenchmarkChallengeRenderCompiled 0
 BenchmarkChallengeRenderCompiledNoJS 0
+BenchmarkChallengeRenderEncoded 0
 BenchmarkCounterCacheDirtyLifecycle 0

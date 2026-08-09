@@ -549,22 +549,20 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 
 	// A struct, not map[string]any: the map encoder sorts keys and boxes every
 	// value through interfaces on each of the many issuances per second this
-	// path serves under load; the struct encoder does none of that.
-	payload, err := json.Marshal(&challengePayload{
+	// path serves under load; the struct encoder does none of that. The renderer
+	// streams Encoder output directly into the page, avoiding Marshal's returned
+	// payload allocation.
+	payload := &challengePayload{
 		ChallengeID: ch.ID,
 		Challenge:   ch.Challenge,
 		Difficulty:  ch.Difficulty,
 		PassURL:     PassPath,
-	})
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
 	}
 	refreshSeconds := ""
 	if dcfg.PoW.NoScriptFallback {
 		refreshSeconds = strconv.Itoa(int(s.pow.NoJSMinDelay/time.Second) + 1)
 	}
-	err = s.challengePage.Render(w, payload, dcfg.PoW.NoScriptFallback, refreshSeconds, ch.ID)
+	err = s.challengePage.RenderChallenge(w, payload, dcfg.PoW.NoScriptFallback, refreshSeconds)
 	if err != nil {
 		s.log.Error("challenge render failed", "err", err)
 	}
