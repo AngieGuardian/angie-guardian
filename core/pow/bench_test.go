@@ -127,3 +127,28 @@ func BenchmarkIssueStateless(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkIssueStatelessParallel exercises the sync.Pool behavior under the
+// concurrent flood shape this path is designed for. It is intentionally not
+// allocation-gated because the benchmark harness's worker goroutines make the
+// exact count scheduler-dependent; BenchmarkIssueStateless owns that gate.
+func BenchmarkIssueStatelessParallel(b *testing.B) {
+	key, err := LoadOrCreateKey(filepath.Join(b.TempDir(), "ed25519.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	m := NewManager(key, st)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := m.IssueStateless("bench.test", "203.0.113.7", "/page?x=1", 8, false); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}

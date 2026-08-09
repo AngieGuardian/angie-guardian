@@ -5,12 +5,14 @@
 package pow
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,6 +86,67 @@ func TestStatelessIssuesNoStoreWrite(t *testing.T) {
 	}
 	if cs.writes.Load() != 0 {
 		t.Fatalf("stateless issuance performed %d store writes, want 0", cs.writes.Load())
+	}
+}
+
+func TestEncodeStatelessChallengeMatchesReference(t *testing.T) {
+	m := testManager(t)
+	secret := m.issuingSecret()
+	payloads := [][]byte{
+		[]byte(`{"v":1,"h":"example.test","i":"203.0.113.7","d":8,"u":"/","n":0,"t":1234,"r":"00112233445566778899aabb"}`),
+		[]byte(`{"v":1,"h":"escaped\\host","i":"2001:db8::1","d":32,"u":"/page?x=<&y=\\\"","n":1,"t":9223372036854775807,"r":"ffeeddccbbaa998877665544"}`),
+		bytes.Repeat([]byte("long-payload-"), 100),
+	}
+	for _, size := range []int{0, 1, 2, 3, 767, 768, 769, 770, 1536, 1537} {
+		payloads = append(payloads, bytes.Repeat([]byte{'x'}, size))
+	}
+	for _, payload := range payloads {
+		gotID, gotSolve := m.encodeStatelessChallenge(secret, payload)
+		mac := statelessMAC(secret, payload)
+		wantID := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(mac)
+		wantSolve := statelessSolve(secret, payload)
+		if gotID != wantID {
+			t.Fatalf("ID differs from reference\nwant %q\n got %q", wantID, gotID)
+		}
+		if gotSolve != wantSolve {
+			t.Fatalf("solve differs from reference\nwant %q\n got %q", wantSolve, gotSolve)
+		}
+	}
+}
+
+func TestStatelessConcurrentIssuanceRoundTrips(t *testing.T) {
+	m := testManager(t)
+	ctx := context.Background()
+	const workers = 16
+	const issuesPerWorker = 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ip := "203.0.113." + strconv.Itoa(worker+1)
+			for range issuesPerWorker {
+				ch, err := m.IssueStateless("concurrent.test", ip, "/page?x=1", 0, false)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if _, err := m.Redeem(ctx, &RedeemRequest{
+					ChallengeID: ch.ID, Nonce: "0", Host: "concurrent.test", IP: ip,
+					UserAgent: "test", TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+				}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 

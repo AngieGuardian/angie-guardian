@@ -31,7 +31,11 @@ import (
 // are accepted unconditionally, so a challenge issued seconds before or after
 // a posture flip still redeems.
 
-const statelessPrefix = "s1."
+const (
+	statelessPrefix      = "s1."
+	statelessAuthDomain  = "guardian-stateless-v1\x00"
+	statelessSolveDomain = "guardian-stateless-chal-v1\x00"
+)
 
 // statelessMaxURI caps the redirect URI carried in the payload, so a crafted
 // long URI cannot bloat the challenge ID.
@@ -76,26 +80,80 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 	if len(uri) > statelessMaxURI {
 		uri = "/"
 	}
-	r := make([]byte, 12)
-	if _, err := rand.Read(r); err != nil {
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
+	var randomHex [2 * len(random)]byte
+	hex.Encode(randomHex[:], random[:])
 	nojs := 0
 	if allowNoJS {
 		nojs = 1
 	}
 	p := statelessPayload{
 		V: 1, Host: strings.ToLower(host), IP: ip, Bits: difficulty,
-		URI: uri, NoJS: nojs, TS: m.now().UnixMilli(), Rand: hex.EncodeToString(r),
+		URI: uri, NoJS: nojs, TS: m.now().UnixMilli(), Rand: string(randomHex[:]),
 	}
 	payload, err := json.Marshal(&p)
 	if err != nil {
 		return nil, err
 	}
 	secret := m.issuingSecret()
-	mac, solve := statelessMAC(secret, payload), statelessSolve(secret, payload)
-	id := statelessPrefix + b64.EncodeToString(payload) + "." + b64.EncodeToString(mac)
+	id, solve := m.encodeStatelessChallenge(secret, payload)
 	return &Challenge{ID: id, Challenge: solve, Difficulty: difficulty}, nil
+}
+
+// encodeStatelessChallenge builds the existing s1 wire representation using
+// the Manager's per-secret HMAC pool. Both domain-separated digests are
+// calculated sequentially with one state, then encoded into fixed scratch or
+// one exactly-sized ID allocation. This function deliberately operates on the
+// already marshalled payload so the authenticated bytes and format remain
+// identical to statelessMAC/statelessSolve.
+func (m *Manager) encodeStatelessChallenge(secret, payload []byte) (id, solve string) {
+	km := m.macs.get(secret)
+	copy(km.msg[:], statelessAuthDomain)
+	km.mac.Write(km.msg[:len(statelessAuthDomain)])
+	km.mac.Write(payload)
+	var auth [16]byte
+	copy(auth[:], km.mac.Sum(km.sum[:0]))
+
+	km.mac.Reset()
+	copy(km.msg[:], statelessSolveDomain)
+	km.mac.Write(km.msg[:len(statelessSolveDomain)])
+	km.mac.Write(payload)
+	var solveHex [2 * sha256.Size]byte
+	hex.Encode(solveHex[:], km.mac.Sum(km.sum[:0]))
+	m.macs.put(km)
+
+	payloadLen := b64.EncodedLen(len(payload))
+	authLen := b64.EncodedLen(len(auth))
+	var idBuilder strings.Builder
+	idBuilder.Grow(len(statelessPrefix) + payloadLen + 1 + authLen)
+	idBuilder.WriteString(statelessPrefix)
+	writeStatelessBase64(&idBuilder, payload)
+	idBuilder.WriteByte('.')
+	writeStatelessBase64(&idBuilder, auth[:])
+	return idBuilder.String(), string(solveHex[:])
+}
+
+// writeStatelessBase64 writes RawURLEncoding directly into the ID builder in
+// complete three-byte groups. Encoding through fixed stack scratch avoids an
+// intermediate allocation while retaining the standard library's exact wire
+// representation for payloads of any length.
+func writeStatelessBase64(dst *strings.Builder, src []byte) {
+	const (
+		rawChunk     = 3 * 256
+		encodedChunk = 4 * 256
+	)
+	var encoded [encodedChunk]byte
+	for len(src) > rawChunk {
+		b64.Encode(encoded[:], src[:rawChunk])
+		dst.Write(encoded[:])
+		src = src[rawChunk:]
+	}
+	n := b64.EncodedLen(len(src))
+	b64.Encode(encoded[:n], src)
+	dst.Write(encoded[:n])
 }
 
 // issuingSecret returns the current signing key's HMAC secret (a snapshot; the
@@ -138,7 +196,7 @@ func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) (statelessVerifyS
 // a short-lived, client-bound token).
 func statelessMAC(secret, payload []byte) []byte {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte("guardian-stateless-v1\x00"))
+	mac.Write([]byte(statelessAuthDomain))
 	mac.Write(payload)
 	return mac.Sum(nil)[:16]
 }
@@ -147,7 +205,7 @@ func statelessMAC(secret, payload []byte) []byte {
 // secret, so it need not be transmitted inside the ID.
 func statelessSolve(secret, payload []byte) string {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte("guardian-stateless-chal-v1\x00"))
+	mac.Write([]byte(statelessSolveDomain))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
