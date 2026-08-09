@@ -103,11 +103,11 @@ bench-report:
 # live in allocs-baseline.txt, which also documents what may be gated: only
 # benchmarks free of background goroutines, whose allocations would otherwise
 # be charged here at a scheduler-dependent rate.
-BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkRecordEvent$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkIssue$$|BenchmarkIssueMixedCaseHost$$|BenchmarkIssueStateless$$|BenchmarkChallengeRenderCompiled$$|BenchmarkChallengeRenderCompiledNoJS$$
+BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkRecordEvent$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkIssue$$|BenchmarkIssueMixedCaseHost$$|BenchmarkIssueStateless$$|BenchmarkChallengeRenderCompiled$$|BenchmarkChallengeRenderCompiledNoJS$$|BenchmarkCounterCacheDirtyLifecycle$$
 
 bench-regress:
 	@go test -run '^$$' -bench '$(BENCH_GATE)' -benchmem -benchtime 10000x \
-		./core/ ./core/pow/ ./transport/http/ \
+		./core/ ./core/pow/ ./core/store/ ./transport/http/ \
 	| awk 'BEGIN { \
 			while ((getline line < "allocs-baseline.txt") > 0) { \
 				if (line !~ /^#/ && line != "") { split(line, f, /[ \t]+/); max[f[1]] = f[2] } \

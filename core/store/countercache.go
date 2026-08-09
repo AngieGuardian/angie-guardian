@@ -55,9 +55,9 @@ type CounterCache struct {
 
 	mu      sync.Mutex
 	m       map[string]counterEntry
-	dirty   map[string]*dirtyEntry // keys with unpushed work
-	queue   []string               // FIFO of dirty keys awaiting a drainer
-	workers int                    // live drain goroutines, capped at maxFlushWorkers
+	dirty   map[string]dirtyEntry // keys with unpushed work
+	queue   []string              // FIFO of dirty keys awaiting a drainer
+	workers int                   // live drain goroutines, capped at maxFlushWorkers
 	// nextRoomSweep paces the O(n) at-capacity room sweep: at most one full
 	// scan per second, whatever the previous sweep achieved. A new key arriving
 	// at capacity between sweeps is counted in the overflow sketch instead of
@@ -110,7 +110,10 @@ type overflowCounterCell struct {
 // Ops arriving while it is owned fold into the entry (a bump raises delta; a
 // Forget sets del) and are handled by the owner's follow-up round. This is the
 // per-key singleflight guarantee, and it holds across both increment and delete
-// store rounds.
+// store rounds. Entries are values in c.dirty rather than separately allocated
+// pointers: every access is already serialized by c.mu, so callers copy,
+// update, and store the small record while holding that lock. This removes one
+// heap object for every new dirty key without weakening the ownership rule.
 type dirtyEntry struct {
 	delta    int64
 	deadline int64
@@ -154,7 +157,7 @@ func NewCounterCache(st Store) *CounterCache {
 		store: st,
 		Go:    func(f func()) { go f() },
 		m:     make(map[string]counterEntry),
-		dirty: make(map[string]*dirtyEntry),
+		dirty: make(map[string]dirtyEntry),
 		now:   time.Now,
 	}
 	for i := range c.overflow {
@@ -254,7 +257,7 @@ func (c *CounterCache) Flush(ctx context.Context) error {
 			// retries; stealing it now would race the owner.
 			continue
 		}
-		c.dirty[key] = &dirtyEntry{delta: e.pending, deadline: e.expires}
+		c.dirty[key] = dirtyEntry{delta: e.pending, deadline: e.expires}
 		e.pending = 0
 		c.m[key] = e
 		c.queue = append(c.queue, key)
@@ -367,16 +370,18 @@ func (c *CounterCache) makeCounterRoomLocked() bool {
 	// shorten the gap before the next one.
 	c.nextRoomSweep = now + time.Second.Nanoseconds()
 	for key, e := range c.m {
-		// Rule 2: cheap checks first. Do NOT "tidy" this into
-		// c.dirty[key] == nil && (...). Both orders are the same boolean, so
+		// Rule 2: cheap checks first. Do NOT "tidy" this by making the c.dirty
+		// lookup the outer condition. Both orders are the same boolean, so
 		// nothing will fail and no test will catch you: the difference is only
-		// in work done. && short-circuits, and in the saturated regime nearly
-		// every entry stops at the pending field read, which is free. Probing
-		// c.dirty first hashes all 131k keys on every sweep instead, which put
-		// aeshashbody alone at 22% of daemon CPU. This ordering is load-bearing
-		// and is the second half of the 16091b3 regression.
-		if (e.pending == 0 || now >= e.expires) && c.dirty[key] == nil {
-			delete(c.m, key)
+		// in work done. In the saturated regime nearly every entry stops at the
+		// pending field read, which is free. Probing c.dirty first hashes all
+		// 131k keys on every sweep instead, which put aeshashbody alone at 22%
+		// of daemon CPU. This ordering is load-bearing and is the second half of
+		// the 16091b3 regression.
+		if e.pending == 0 || now >= e.expires {
+			if _, dirty := c.dirty[key]; !dirty {
+				delete(c.m, key)
+			}
 		}
 	}
 	return len(c.m) < maxCounterEntries
@@ -473,7 +478,8 @@ func (c *CounterCache) overflowCountLocked(key string, now int64) int64 {
 // seam cannot re-enter the lock.
 func (c *CounterCache) markDirtyLocked(key string, deadline int64, del bool) (spawn bool) {
 	if d, ok := c.dirty[key]; ok {
-		c.foldOpLocked(d, deadline, del)
+		c.foldOpLocked(&d, deadline, del)
+		c.dirty[key] = d
 		// A key already dirty is either queued or owned by a flushing drainer.
 		// Either way no new drainer is needed: the queued key will be drained,
 		// and the flushing owner re-checks the entry after its store round.
@@ -482,7 +488,7 @@ func (c *CounterCache) markDirtyLocked(key string, deadline int64, del bool) (sp
 	if len(c.queue) >= maxFlushQueue {
 		return false // overload: this new key's push is dropped, local count enforces
 	}
-	d := &dirtyEntry{del: del, deadline: deadline}
+	d := dirtyEntry{del: del, deadline: deadline}
 	if !del {
 		e := c.m[key]
 		d.delta = e.pending
@@ -591,8 +597,8 @@ func (d *drainCtx) close() {
 func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 	for {
 		c.mu.Lock()
-		d := c.dirty[key]
-		if d == nil {
+		d, ok := c.dirty[key]
+		if !ok {
 			c.mu.Unlock()
 			return
 		}
@@ -600,6 +606,7 @@ func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 		// Delete first: it supersedes any earlier increments.
 		if d.del {
 			d.del = false // consumed; a follow-up Incr may have set delta already
+			c.dirty[key] = d
 			c.mu.Unlock()
 			if !c.flushDelete(dc, key) {
 				c.release(key)
@@ -623,6 +630,7 @@ func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 			// start a fresh store window. The next loop iteration releases the
 			// key (or handles a delete / fresh delta that folded in meanwhile).
 			d.delta = 0
+			c.dirty[key] = d
 			c.mu.Unlock()
 			continue
 		}
@@ -632,6 +640,7 @@ func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 		delta := d.delta
 		deadline := d.deadline
 		d.delta = 0
+		c.dirty[key] = d
 		c.mu.Unlock()
 
 		if !c.flushIncr(dc, key, delta, deadline) {
@@ -649,8 +658,8 @@ func (c *CounterCache) flushKey(dc *drainCtx, key string) {
 // dirty and is re-queued through the normal release path.
 func (c *CounterCache) preserveFailedIncr(key string, claimed, deadline int64) {
 	c.mu.Lock()
-	d := c.dirty[key]
-	if d == nil {
+	d, ok := c.dirty[key]
+	if !ok {
 		c.mu.Unlock()
 		return
 	}
@@ -692,8 +701,8 @@ func (c *CounterCache) release(key string) {
 // start a drainer after unlocking (never calls c.Go itself, so the inline test
 // seam cannot re-enter the lock).
 func (c *CounterCache) releaseLocked(key string) (spawn bool) {
-	d := c.dirty[key]
-	if d == nil {
+	d, ok := c.dirty[key]
+	if !ok {
 		return false
 	}
 	if d.delta == 0 && !d.del {

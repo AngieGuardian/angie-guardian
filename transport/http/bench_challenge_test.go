@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/attackmode"
+	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/web"
@@ -37,7 +39,21 @@ import (
 // to reproduce the loaded-regime slowdown in-process (run with a large
 // -benchtime to push both caches past their 131k-entry capacity).
 func BenchmarkChallengeIssue(b *testing.B) {
-	srv := newIssueBenchServer(b)
+	benchmarkChallengeIssue(b, false)
+}
+
+// BenchmarkChallengeIssueInstrumented is the production-observability view of
+// the same stateful issuance path. Unlike BenchmarkChallengeIssue it includes
+// store timing, Prometheus recording and attack-mode signal feeds. It is a
+// manual reporting benchmark (matched by make bench-report), not part of the
+// deterministic allocation gate: CounterCache drainers run in the background,
+// so their instrumentation is charged at scheduler-dependent times.
+func BenchmarkChallengeIssueInstrumented(b *testing.B) {
+	benchmarkChallengeIssue(b, true)
+}
+
+func benchmarkChallengeIssue(b *testing.B, instrumented bool) {
+	srv := newIssueBenchServer(b, instrumented)
 	var seq int64
 
 	probe := httptest.NewRecorder()
@@ -135,10 +151,11 @@ func BenchmarkChallengeRenderCompiledNoJS(b *testing.B) {
 	}
 }
 
-// newIssueBenchServer builds a Server the way guardiand wires it, on the memory
-// store, with the decision log discarded (a log write per request would swamp
-// what this measures).
-func newIssueBenchServer(b *testing.B) *Server {
+// newIssueBenchServer builds the challenge path on the memory store, with the
+// decision log discarded (a log write per request would swamp what this
+// measures). productionInstrumentation adds the same metrics, attack detector
+// and store wrapper that guardiand wires around the backend.
+func newIssueBenchServer(b *testing.B, productionInstrumentation bool) *Server {
 	b.Helper()
 	dir := b.TempDir()
 	cfgPath := filepath.Join(dir, "guardian.yaml")
@@ -156,20 +173,32 @@ domains:
 	if err != nil {
 		b.Fatal(err)
 	}
-	st := store.NewMemory()
+	rawStore := store.NewMemory()
+	var st store.Store = rawStore
+	var m *metrics.Metrics
+	var detector *attackmode.Detector
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if productionInstrumentation {
+		m = metrics.New("memory")
+		detector = attackmode.New(cfg.AttackModeSettings(), rawStore, log)
+		st = store.Instrument(rawStore, m, detector)
+	}
 	b.Cleanup(func() { st.Close() })
 	key, err := pow.LoadOrCreateKey(cfg.SigningKeyFile)
 	if err != nil {
 		b.Fatal(err)
 	}
 	mgr := pow.NewManager(key, st)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine, err := core.NewEngine(cfg, st, mgr, log)
 	if err != nil {
 		b.Fatal(err)
 	}
+	if productionInstrumentation {
+		engine.SetMetrics(m)
+		engine.SetAttackDetector(detector)
+	}
 	b.Cleanup(engine.Close)
-	return New(engine, mgr, st, nil, log)
+	return New(engine, mgr, st, m, log)
 }
 
 // issueBenchRequest is the subrequest the Angie glue sends to /challenge, with

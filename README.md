@@ -312,7 +312,8 @@ The `redis` backend works with both Redis and
 #### Reproduce
 
 ```sh
-go build ./cmd/guardiand ./cmd/guardian-loadtest
+go build -o guardiand ./cmd/guardiand
+go build -o guardian-loadtest ./cmd/guardian-loadtest
 mkdir -p .guardian
 sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
     -e 's#/etc/guardian/#.guardian/#g' \
