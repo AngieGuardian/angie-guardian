@@ -26,6 +26,29 @@ func inlineCounterCache(t *testing.T) (*CounterCache, Store) {
 	return c, st
 }
 
+func TestCounterCacheRemovesDirtyEntryAfterFlushOutcomes(t *testing.T) {
+	for _, name := range []string{"success", "failure"} {
+		t.Run(name, func(t *testing.T) {
+			var st Store = failingStore{}
+			if name == "success" {
+				memory := NewMemory()
+				t.Cleanup(func() { memory.Close() })
+				st = memory
+			}
+			c := NewCounterCache(st)
+			c.Go = func(f func()) { f() }
+			if got := c.Incr("flush-outcome", time.Minute); got != 1 {
+				t.Fatalf("Incr = %d, want 1", got)
+			}
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if len(c.dirty) != 0 {
+				t.Fatalf("dirty entries = %d, want 0", len(c.dirty))
+			}
+		})
+	}
+}
+
 // TestCounterCacheCounts: sequential bumps return the running total and the
 // store counter tracks it.
 func TestCounterCacheCounts(t *testing.T) {
