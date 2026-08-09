@@ -12,7 +12,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"hash"
 	"math/bits"
@@ -34,7 +33,7 @@ import (
 // same index: index 0 signs (issues) challenges, and stateless redemption
 // verifies against ALL of them, so an s1. challenge issued by a peer that
 // rotated to a different current key (its old key is retired here) still
-// redeems. Stateful challenges are unaffected: their challenge string is
+// redeems. Stateful challenges are unaffected: their challenge digest is
 // stored, not recomputed.
 type Manager struct {
 	mu          sync.RWMutex
@@ -72,7 +71,7 @@ type Manager struct {
 	// (the zero value is ready to use; see macCache).
 	macs macCache
 
-	// records recycles JSON encoding buffers independently from the HMAC pool,
+	// records recycles record encoding buffers independently from the HMAC pool,
 	// so a slow store write never holds a cryptographic work object.
 	records recordBufferCache
 
@@ -119,7 +118,7 @@ func (c *macCache) put(km *keyedMAC) {
 	c.pool.Put(km)
 }
 
-// recordBufferCache recycles ordinary challenge JSON buffers. Buffers beyond
+// recordBufferCache recycles ordinary encoded challenge records. Buffers beyond
 // the common response size are discarded so an oversized attacker-controlled
 // URI is not retained, and pooled storage is cleared to avoid keeping request
 // bindings readable between uses.
@@ -427,20 +426,6 @@ type Challenge struct {
 	Difficulty int    `json:"difficulty_bits"`
 }
 
-// record is the stored issuance record. State moves from
-// "issued" to "spent" exactly once via compare-and-swap. Difficulty is in
-// leading zero bits.
-type record struct {
-	State      string `json:"state"`
-	Host       string `json:"host"`
-	IP         string `json:"ip"`
-	Challenge  string `json:"challenge"`
-	Difficulty int    `json:"difficulty"`
-	URI        string `json:"uri"`
-	NoJS       bool   `json:"nojs"`
-	IssuedAt   int64  `json:"issued_at"` // unix milliseconds
-}
-
 const challengeKeyPrefix = "challenge:"
 
 func challengeKey(id string) string { return challengeKeyPrefix + id }
@@ -466,9 +451,9 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 
 	// challenge = HMAC(secret, host || ip || time_bucket || id): opaque to the
 	// client, deterministic for us, rotates with the hourly bucket.
-	// Stateful challenges store this string in the record, so cross-rotation
+	// Stateful challenges store the raw digest in the record, so cross-rotation
 	// redemption reads it back rather than recomputing; the issuing secret is
-	// sufficient here.
+	// sufficient here. The response retains the unchanged lowercase hex form.
 	//
 	// The message is appended into pooled scratch and written once (fmt would
 	// box every argument), and the HMAC state comes from the per-secret pool:
@@ -491,21 +476,23 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	msg = append(msg, 0)
 	msg = append(msg, id...)
 	km.mac.Write(msg)
+	var challengeDigest [sha256.Size]byte
+	copy(challengeDigest[:], km.mac.Sum(km.sum[:0]))
 	var chalHex [2 * sha256.Size]byte
-	hex.Encode(chalHex[:], km.mac.Sum(km.sum[:0]))
+	hex.Encode(chalHex[:], challengeDigest[:])
 	challenge := string(chalHex[:])
 	m.macs.put(km)
 
 	recordBuf := m.records.get()
-	rec, err := encodeIssuedRecord(recordBuf, &record{
-		State:      "issued",
-		Host:       normalizedHost,
-		IP:         ip,
-		Challenge:  challenge,
-		Difficulty: difficulty,
-		URI:        uri,
-		NoJS:       allowNoJS,
-		IssuedAt:   m.now().UnixMilli(),
+	rec, err := encodeChallengeRecord(recordBuf, &record{
+		State:           recordStateIssued,
+		Host:            normalizedHost,
+		IP:              ip,
+		ChallengeDigest: challengeDigest,
+		Difficulty:      difficulty,
+		URI:             uri,
+		NoJS:            allowNoJS,
+		IssuedAt:        m.now().UnixMilli(),
 	})
 	if err != nil {
 		m.records.put(recordBuf)
@@ -520,19 +507,6 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 		return nil, errors.New("challenge id collision")
 	}
 	return &Challenge{ID: id, Challenge: challenge, Difficulty: difficulty}, nil
-}
-
-// encodeIssuedRecord uses Encoder so its destination can be recycled, then
-// removes Encoder's framing newline. With the default options the remaining
-// bytes are identical to json.Marshal for this record; tests pin that contract
-// for escaping and boundary values because the raw bytes participate in the
-// redemption compare-and-swap.
-func encodeIssuedRecord(buf *bytes.Buffer, rec *record) ([]byte, error) {
-	if err := json.NewEncoder(buf).Encode(rec); err != nil {
-		return nil, err
-	}
-	encoded := buf.Bytes()
-	return encoded[:len(encoded)-1], nil
 }
 
 // RedeemRequest carries a solution (or a no-JS wait) plus the caller-supplied
@@ -614,11 +588,14 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if !ok {
 		return nil, ErrChallengeUnknown
 	}
-	var rec record
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return nil, err
+	rec, err := decodeChallengeRecord(raw)
+	if err != nil {
+		// Compact binary is the only supported stateful record format. An
+		// upgrade intentionally invalidates outstanding pre-migration records;
+		// clients receive the ordinary "gone" result and obtain a new challenge.
+		return nil, ErrChallengeUnknown
 	}
-	if rec.State != "issued" {
+	if rec.State != recordStateIssued {
 		return nil, ErrChallengeUnknown
 	}
 	if !strings.EqualFold(rec.Host, req.Host) || rec.IP != req.IP {
@@ -637,18 +614,27 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 			return nil, ErrTooFast
 		}
 	} else {
-		sum := sha256.Sum256([]byte(rec.Challenge + req.Nonce))
+		// 64 hex bytes plus an ordinary decimal nonce fit in stack scratch.
+		// An attacker-controlled oversized nonce may spill, but compact records
+		// never allocate merely to reconstruct their client-facing challenge.
+		var solveScratch [128]byte
+		solveInput := rec.appendChallengeText(solveScratch[:0])
+		solveInput = append(solveInput, req.Nonce...)
+		sum := sha256.Sum256(solveInput)
 		if leadingZeroBits(sum[:]) < rec.Difficulty {
 			return nil, ErrBadSolution
 		}
 	}
 
-	rec.State = "spent"
-	spent, err := json.Marshal(&rec)
+	rec.State = recordStateSpent
+	recordBuf := m.records.get()
+	spent, err := encodeChallengeRecord(recordBuf, &rec)
 	if err != nil {
+		m.records.put(recordBuf)
 		return nil, err
 	}
 	swapped, err := m.store.CompareAndSwap(ctx, challengeKey(req.ChallengeID), raw, spent, challengeTTL)
+	m.records.put(recordBuf)
 	if err != nil {
 		return nil, err
 	}

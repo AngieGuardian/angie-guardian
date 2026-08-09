@@ -5,11 +5,9 @@
 package pow
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -174,39 +172,6 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	// Double redemption must fail: the spent CAS is the anti-replay guarantee.
 	if _, err := m.Redeem(ctx, req); !errors.Is(err, ErrChallengeUnknown) {
 		t.Errorf("second redemption = %v, want ErrChallengeUnknown", err)
-	}
-}
-
-func TestIssuedRecordEncodingMatchesMarshal(t *testing.T) {
-	records := []record{
-		{
-			State: "issued", Host: "example.test", IP: "203.0.113.7",
-			Challenge: strings.Repeat("a", 64), Difficulty: 8, URI: "/page?x=1",
-			IssuedAt: 123456789,
-		},
-		{
-			State: "issued", Host: "<script>&\"\\\ufffd", IP: "2001:db8::1",
-			Challenge: strings.Repeat("f", 64), Difficulty: 32,
-			URI: "/escaped?<x>&q=\"quoted\"\\path", NoJS: true, IssuedAt: 1<<63 - 1,
-		},
-		{
-			State: "issued", Host: "large.test", IP: "198.51.100.9",
-			Challenge: strings.Repeat("0", 64), URI: "/" + strings.Repeat("x", maxPooledRecordBuffer*2),
-		},
-	}
-	for _, rec := range records {
-		var buf bytes.Buffer
-		got, err := encodeIssuedRecord(&buf, &rec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want, err := json.Marshal(&rec)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Fatalf("pooled encoding differs from json.Marshal\nwant %q\n got %q", want, got)
-		}
 	}
 }
 

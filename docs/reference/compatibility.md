@@ -10,6 +10,16 @@ describes what will hold **from 1.0 onward**; it is published now so the naming
 is settled before the freeze.
 :::
 
+::: warning Compact challenge-record migration
+The pre-1.0 release introducing compact binary `challenge:` records
+intentionally invalidates outstanding **stateful** challenges from older
+versions. Affected clients receive the ordinary expired/unknown-challenge
+response and must request a new challenge. Existing signed PoW cookies, blocks,
+other stored state, and stateless attack-mode challenges are unaffected. There
+is no legacy JSON reader, so replicas sharing Redis/Valkey must not run old and
+new versions concurrently during this upgrade; use a coordinated rollout.
+:::
+
 ## What a stable (1.x) release guarantees
 
 Within a `1.x` line, these do not change in a breaking way (new fields,
