@@ -5,9 +5,11 @@
 package pow
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -34,6 +36,21 @@ func testManager(t *testing.T) *Manager {
 	// store state instead of racing background goroutines.
 	m.counters.Go = func(f func()) { f() }
 	return m
+}
+
+// issueCASCapture intentionally retains the CAS input after returning, unlike
+// a conforming production Store, so tests can observe whether Issue cleared
+// and recycled its record buffer on every exit path.
+type issueCASCapture struct {
+	store.Store
+	swapped bool
+	err     error
+	value   []byte
+}
+
+func (s *issueCASCapture) CompareAndSwap(_ context.Context, _ string, _, new []byte, _ time.Duration) (bool, error) {
+	s.value = new
+	return s.swapped, s.err
 }
 
 func TestLoadOrCreateKeyConcurrentFirstStart(t *testing.T) {
@@ -160,6 +177,139 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIssuedRecordEncodingMatchesMarshal(t *testing.T) {
+	records := []record{
+		{
+			State: "issued", Host: "example.test", IP: "203.0.113.7",
+			Challenge: strings.Repeat("a", 64), Difficulty: 8, URI: "/page?x=1",
+			IssuedAt: 123456789,
+		},
+		{
+			State: "issued", Host: "<script>&\"\\\ufffd", IP: "2001:db8::1",
+			Challenge: strings.Repeat("f", 64), Difficulty: 32,
+			URI: "/escaped?<x>&q=\"quoted\"\\path", NoJS: true, IssuedAt: 1<<63 - 1,
+		},
+		{
+			State: "issued", Host: "large.test", IP: "198.51.100.9",
+			Challenge: strings.Repeat("0", 64), URI: "/" + strings.Repeat("x", maxPooledRecordBuffer*2),
+		},
+	}
+	for _, rec := range records {
+		var buf bytes.Buffer
+		got, err := encodeIssuedRecord(&buf, &rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(&rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("pooled encoding differs from json.Marshal\nwant %q\n got %q", want, got)
+		}
+	}
+}
+
+func TestRecordBufferCacheClearsAndDropsOversizedBuffers(t *testing.T) {
+	var cache recordBufferCache
+	buf := cache.get()
+	buf.Grow(256)
+	buf.WriteString("sensitive-host-ip-and-uri")
+	storage := buf.Bytes()
+	storage = storage[:cap(storage)]
+	cache.put(buf)
+	for i, b := range storage {
+		if b != 0 {
+			t.Fatalf("pooled record buffer byte %d was not cleared", i)
+		}
+	}
+
+	var oversizedCache recordBufferCache
+	oversized := oversizedCache.get()
+	oversized.Grow(maxPooledRecordBuffer + 1)
+	oversized.WriteString("oversized")
+	oversizedCache.put(oversized)
+	if retained := oversizedCache.pool.Get(); retained != nil {
+		t.Fatal("oversized record buffer was retained in the pool")
+	}
+}
+
+func TestIssueClearsRecordBufferAfterCASExit(t *testing.T) {
+	sentinel := errors.New("store unavailable")
+	tests := []struct {
+		name     string
+		swapped  bool
+		storeErr error
+	}{
+		{name: "store error", storeErr: sentinel},
+		{name: "collision", swapped: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testManager(t)
+			capture := &issueCASCapture{Store: m.store, swapped: tc.swapped, err: tc.storeErr}
+			m.store = capture
+
+			_, err := m.Issue(context.Background(), "Example.TEST", "198.51.100.7", "/page", 8, time.Minute, false)
+			if tc.storeErr != nil {
+				if !errors.Is(err, tc.storeErr) {
+					t.Fatalf("Issue error = %v, want %v", err, tc.storeErr)
+				}
+			} else if err == nil || err.Error() != "challenge id collision" {
+				t.Fatalf("Issue error = %v, want challenge id collision", err)
+			}
+			if len(capture.value) == 0 {
+				t.Fatal("capturing store did not receive a record")
+			}
+			// put is the only post-CAS operation that clears this storage. Do
+			// not assert that sync.Pool returns the same buffer: the runtime may
+			// discard any pooled item during GC by contract.
+			storage := capture.value[:cap(capture.value)]
+			for i, b := range storage {
+				if b != 0 {
+					t.Fatalf("record buffer byte %d was not cleared after CAS exit", i)
+				}
+			}
+		})
+	}
+}
+
+func TestConcurrentStatefulIssueRedeemRoundTrips(t *testing.T) {
+	m := testManager(t)
+	ctx := context.Background()
+	const workers = 16
+	const issuesPerWorker = 25
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ip := "203.0.113." + strconv.Itoa(worker+1)
+			for range issuesPerWorker {
+				ch, err := m.Issue(ctx, "concurrent.test", ip, "/page?x=1", 0, time.Minute, false)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if _, err := m.Redeem(ctx, &RedeemRequest{
+					ChallengeID: ch.ID, Nonce: "0", Host: "concurrent.test", IP: ip,
+					UserAgent: "test", TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+				}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
 // TestIssueOversizedBindingStillRoundTrips pins the fallback beyond keyedMAC's
 // common-case scratch capacity. An attacker-supplied oversized binding may pay
 // one allocation, but it must not be truncated, rejected, or retained by the
@@ -183,6 +333,27 @@ func TestIssueOversizedBindingStillRoundTrips(t *testing.T) {
 	}
 	if res.RedirectURI != "/oversized" {
 		t.Fatalf("redirect = %q, want /oversized", res.RedirectURI)
+	}
+}
+
+func TestIssueOversizedRecordStillRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	uri := "/" + strings.Repeat("x", maxPooledRecordBuffer*2)
+
+	ch, err := m.Issue(ctx, "large.test", "198.51.100.7", uri, 0, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: "0", Host: "large.test", IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RedirectURI != uri {
+		t.Fatalf("redirect length = %d, want %d", len(res.RedirectURI), len(uri))
 	}
 }
 

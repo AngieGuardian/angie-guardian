@@ -316,6 +316,20 @@ func assertStoreConformance(t *testing.T, s Store, advance func(time.Duration), 
 				t.Fatalf("cas value = %q, want spent", v)
 			}
 
+			// CompareAndSwap consumes caller-owned slices synchronously. Hot-path
+			// callers may recycle their encoding buffer immediately after return,
+			// so every backend must retain its own representation of the value.
+			owned := []byte("caller-owned")
+			ok, err = s.CompareAndSwap(ctx, "cas-owned", nil, owned, 0)
+			if err != nil || !ok {
+				t.Fatalf("ownership CAS = %v %v, want true nil", ok, err)
+			}
+			clear(owned)
+			v, _, _ = s.Get(ctx, "cas-owned")
+			if string(v) != "caller-owned" {
+				t.Fatalf("CAS retained caller slice: stored value = %q", v)
+			}
+
 			// CompareAndDelete: the counterpart a writer needs to take back its
 			// own write and nobody else's. A stale old must not delete, or a
 			// delayed writer would remove whatever replaced its value.

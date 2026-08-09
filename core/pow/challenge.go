@@ -5,6 +5,7 @@
 package pow
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -71,6 +72,10 @@ type Manager struct {
 	// (the zero value is ready to use; see macCache).
 	macs macCache
 
+	// records recycles JSON encoding buffers independently from the HMAC pool,
+	// so a slow store write never holds a cryptographic work object.
+	records recordBufferCache
+
 	now func() time.Time
 }
 
@@ -112,6 +117,33 @@ func (c *macCache) put(km *keyedMAC) {
 	clear(km.msg[:])
 	clear(km.sum[:])
 	c.pool.Put(km)
+}
+
+// recordBufferCache recycles ordinary challenge JSON buffers. Buffers beyond
+// the common response size are discarded so an oversized attacker-controlled
+// URI is not retained, and pooled storage is cleared to avoid keeping request
+// bindings readable between uses.
+type recordBufferCache struct {
+	pool sync.Pool // holds *bytes.Buffer
+}
+
+const maxPooledRecordBuffer = 1024
+
+func (c *recordBufferCache) get() *bytes.Buffer {
+	if v := c.pool.Get(); v != nil {
+		return v.(*bytes.Buffer)
+	}
+	return new(bytes.Buffer)
+}
+
+func (c *recordBufferCache) put(buf *bytes.Buffer) {
+	if buf.Cap() > maxPooledRecordBuffer {
+		return
+	}
+	storage := buf.Bytes()
+	clear(storage[:cap(storage)])
+	buf.Reset()
+	c.pool.Put(buf)
 }
 
 type managerKey struct {
@@ -409,7 +441,9 @@ type record struct {
 	IssuedAt   int64  `json:"issued_at"` // unix milliseconds
 }
 
-func challengeKey(id string) string { return "challenge:" + id }
+const challengeKeyPrefix = "challenge:"
+
+func challengeKey(id string) string { return challengeKeyPrefix + id }
 
 // Issue derives a fresh challenge bound to {host, ip} and persists its
 // issuance record with the given TTL. allowNoJS enables the meta-refresh
@@ -419,11 +453,16 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	if _, err := rand.Read(idRaw[:]); err != nil {
 		return nil, err
 	}
-	// hex.Encode into a stack scratch, then one string conversion:
-	// EncodeToString would allocate the intermediate byte slice as well.
-	var idHex [32]byte
-	hex.Encode(idHex[:], idRaw[:])
-	id := string(idHex[:])
+	// Build the store key and ID in one backing string. The ID substring keeps
+	// that allocation alive for the response, while the complete string is the
+	// key passed to the store; constructing them separately costs an additional
+	// allocation on every challenge.
+	var keyBytes [len(challengeKeyPrefix) + 32]byte
+	copy(keyBytes[:], challengeKeyPrefix)
+	hex.Encode(keyBytes[len(challengeKeyPrefix):], idRaw[:])
+	key := string(keyBytes[:])
+	id := key[len(challengeKeyPrefix):]
+	normalizedHost := strings.ToLower(host)
 
 	// challenge = HMAC(secret, host || ip || time_bucket || id): opaque to the
 	// client, deterministic for us, rotates with the hourly bucket.
@@ -444,7 +483,7 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	// pool. Do not "fix" that with a length check, and do not shrink the array
 	// below the sum above, or the common case starts allocating.
 	km := m.macs.get(m.issuingSecret())
-	msg := append(km.msg[:0], strings.ToLower(host)...)
+	msg := append(km.msg[:0], normalizedHost...)
 	msg = append(msg, 0)
 	msg = append(msg, ip...)
 	msg = append(msg, 0)
@@ -457,9 +496,10 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	challenge := string(chalHex[:])
 	m.macs.put(km)
 
-	rec, err := json.Marshal(&record{
+	recordBuf := m.records.get()
+	rec, err := encodeIssuedRecord(recordBuf, &record{
 		State:      "issued",
-		Host:       strings.ToLower(host),
+		Host:       normalizedHost,
 		IP:         ip,
 		Challenge:  challenge,
 		Difficulty: difficulty,
@@ -468,9 +508,11 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 		IssuedAt:   m.now().UnixMilli(),
 	})
 	if err != nil {
+		m.records.put(recordBuf)
 		return nil, err
 	}
-	created, err := m.store.CompareAndSwap(ctx, challengeKey(id), nil, rec, ttl)
+	created, err := m.store.CompareAndSwap(ctx, key, nil, rec, ttl)
+	m.records.put(recordBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +520,19 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 		return nil, errors.New("challenge id collision")
 	}
 	return &Challenge{ID: id, Challenge: challenge, Difficulty: difficulty}, nil
+}
+
+// encodeIssuedRecord uses Encoder so its destination can be recycled, then
+// removes Encoder's framing newline. With the default options the remaining
+// bytes are identical to json.Marshal for this record; tests pin that contract
+// for escaping and boundary values because the raw bytes participate in the
+// redemption compare-and-swap.
+func encodeIssuedRecord(buf *bytes.Buffer, rec *record) ([]byte, error) {
+	if err := json.NewEncoder(buf).Encode(rec); err != nil {
+		return nil, err
+	}
+	encoded := buf.Bytes()
+	return encoded[:len(encoded)-1], nil
 }
 
 // RedeemRequest carries a solution (or a no-JS wait) plus the caller-supplied

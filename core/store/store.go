@@ -157,7 +157,9 @@ type Store interface {
 	// CompareAndSwap atomically replaces the current value with new if it
 	// equals old. old == nil requires the key to be absent (create-only).
 	// This is what makes spent-challenge marking replay-safe, and it is how a
-	// writer fences a write against state it has not observed.
+	// writer fences a write against state it has not observed. Implementations
+	// must consume old and new before returning and must not retain either
+	// caller-owned byte slice; callers may reuse or mutate them after return.
 	CompareAndSwap(ctx context.Context, key string, old, new []byte, ttl time.Duration) (swapped bool, err error)
 
 	// CompareAndDelete atomically removes key if its current value is exactly

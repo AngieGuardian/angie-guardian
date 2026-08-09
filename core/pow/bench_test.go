@@ -5,9 +5,11 @@
 package pow
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +74,18 @@ func BenchmarkVerifyTokenCached(b *testing.B) {
 // CounterCache, so it spawns no background flush goroutines and its allocs/op
 // is stable enough to gate (see allocs-baseline.txt).
 func BenchmarkIssue(b *testing.B) {
+	benchmarkIssue(b, "bench.test")
+}
+
+// BenchmarkIssueMixedCaseHost pins the one-allocation normalization path.
+// BenchmarkIssue deliberately uses the overwhelmingly common lowercase host;
+// without this second gate a duplicate ToLower call is invisible there.
+func BenchmarkIssueMixedCaseHost(b *testing.B) {
+	benchmarkIssue(b, "Bench.TEST")
+}
+
+func benchmarkIssue(b *testing.B, host string) {
+	b.Helper()
 	key, err := LoadOrCreateKey(filepath.Join(b.TempDir(), "ed25519.key"))
 	if err != nil {
 		b.Fatal(err)
@@ -93,10 +107,59 @@ func BenchmarkIssue(b *testing.B) {
 		ip = strconv.AppendInt(ip, int64((i>>8)&0xff), 10)
 		ip = append(ip, '.')
 		ip = strconv.AppendInt(ip, int64(i&0xff), 10)
-		if _, err := m.Issue(ctx, "bench.test", string(ip), "/page?x=1", 8, time.Minute, false); err != nil {
+		if _, err := m.Issue(ctx, host, string(ip), "/page?x=1", 8, time.Minute, false); err != nil {
 			b.Fatal(err)
 		}
 	}
+}
+
+// BenchmarkRecordBufferAfterLargeRecord measures the review-sensitive reuse
+// pattern: one retained near-ceiling record followed by ordinary short ones.
+// put clears retained capacity for request-data privacy, so the ceiling bounds
+// the per-request clearing work this benchmark observes.
+func BenchmarkRecordBufferAfterLargeRecord(b *testing.B) {
+	var cache recordBufferCache
+	large := cache.get()
+	large.Grow(maxPooledRecordBuffer)
+	large.Write(bytes.Repeat([]byte{'x'}, maxPooledRecordBuffer-1))
+	cache.put(large)
+	rec := &record{State: "issued", Host: "bench.test", IP: "203.0.113.7", Challenge: strings.Repeat("a", 64), URI: "/"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		buf := cache.get()
+		if _, err := encodeIssuedRecord(buf, rec); err != nil {
+			b.Fatal(err)
+		}
+		cache.put(buf)
+	}
+}
+
+// BenchmarkIssueParallel exercises both issuance pools and store writes under
+// concurrent normal-mode traffic. It is not allocation-gated because worker
+// scheduling makes harness allocations nondeterministic; BenchmarkIssue owns
+// the exact allocation regression gate.
+func BenchmarkIssueParallel(b *testing.B) {
+	key, err := LoadOrCreateKey(filepath.Join(b.TempDir(), "ed25519.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	m := NewManager(key, st)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := m.Issue(ctx, "bench.test", "203.0.113.7", "/page?x=1", 8, time.Minute, false); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
 }
 
 // BenchmarkIssueStateless covers the attack-mode issuance core: an
