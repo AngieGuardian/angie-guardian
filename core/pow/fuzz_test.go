@@ -5,10 +5,11 @@
 package pow
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
+	"crypto/sha256"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 
 // FuzzRedeem drives the redeem path with arbitrary challenge IDs and nonces
 // against a real (issued) challenge in the store. Redeem parses a
-// client-controlled challenge ID and nonce and unmarshals the stored record;
+// client-controlled challenge ID and nonce and decodes the stored record;
 // a hostile ID/nonce must yield an error, never a panic or a spurious mint.
 func FuzzRedeem(f *testing.F) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
@@ -56,10 +57,10 @@ func FuzzRedeem(f *testing.F) {
 	})
 }
 
-// FuzzRedeemRecord fuzzes the stored-record JSON path directly: a corrupted or
-// hostile record in the store must not panic Redeem's json.Unmarshal + field
-// handling. (Defence in depth: the store is trusted, but a shared redis could
-// hold a value written by a different/older version.)
+// FuzzRedeemRecord fuzzes compact stored records directly: a non-compact,
+// truncated, unknown-version or hostile record must not panic the decoder or
+// Redeem. Defence in depth: the store is trusted, but a shared Redis could hold
+// a value written by a different or older version.
 func FuzzRedeemRecord(f *testing.F) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -71,6 +72,17 @@ func FuzzRedeemRecord(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`not json`))
 	f.Add([]byte(``))
+	f.Add([]byte("AGCR\x02"))
+	var buf bytes.Buffer
+	encoded, err := encodeChallengeRecord(&buf, &record{
+		State: recordStateIssued, Host: "fuzz.test", IP: "203.0.113.7",
+		ChallengeDigest: sha256.Sum256([]byte("fuzz challenge")),
+		Difficulty:      8, URI: "/x", IssuedAt: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(bytes.Clone(encoded))
 
 	f.Fuzz(func(t *testing.T, rec []byte) {
 		st := store.NewMemory()
@@ -88,8 +100,7 @@ func FuzzRedeemRecord(f *testing.F) {
 		}
 		_, _ = m.Redeem(ctx, req)
 
-		// Also confirm the raw JSON never panics the unmarshal path on its own.
-		var r record
-		_ = json.Unmarshal(rec, &r)
+		// Also drive the version dispatch and decoder directly.
+		_, _ = decodeChallengeRecord(rec)
 	})
 }

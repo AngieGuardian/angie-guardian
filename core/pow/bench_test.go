@@ -7,9 +7,9 @@ package pow
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -68,7 +68,7 @@ func BenchmarkVerifyTokenCached(b *testing.B) {
 }
 
 // BenchmarkIssue mints one stateful challenge: the random id, the HMAC over
-// the {host, ip, bucket, id} binding, the JSON issuance record and the
+// the {host, ip, bucket, id} binding, the compact issuance record and the
 // create-only store CAS. It is the deterministic core of the challenge write
 // path, and unlike the transport-level BenchmarkChallengeIssue it touches no
 // CounterCache, so it spawns no background flush goroutines and its allocs/op
@@ -123,13 +123,16 @@ func BenchmarkRecordBufferAfterLargeRecord(b *testing.B) {
 	large.Grow(maxPooledRecordBuffer)
 	large.Write(bytes.Repeat([]byte{'x'}, maxPooledRecordBuffer-1))
 	cache.put(large)
-	rec := &record{State: "issued", Host: "bench.test", IP: "203.0.113.7", Challenge: strings.Repeat("a", 64), URI: "/"}
+	rec := &record{
+		State: recordStateIssued, Host: "bench.test", IP: "203.0.113.7",
+		ChallengeDigest: sha256.Sum256([]byte("challenge")), URI: "/",
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		buf := cache.get()
-		if _, err := encodeIssuedRecord(buf, rec); err != nil {
+		if _, err := encodeChallengeRecord(buf, rec); err != nil {
 			b.Fatal(err)
 		}
 		cache.put(buf)

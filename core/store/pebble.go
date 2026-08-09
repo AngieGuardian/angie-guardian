@@ -148,7 +148,7 @@ func (p *Pebble) Set(_ context.Context, key string, value []byte, ttl time.Durat
 	// mutation for a key must serialize through the same lock.
 	unlock := p.locks.lock(kb)
 	defer unlock()
-	return p.db.Set(kb, encodeExpiry(value, ttl), p.writeOpts)
+	return p.setWithExpiry(kb, value, expiryDeadline(ttl))
 }
 
 func (p *Pebble) Delete(_ context.Context, key string) error {
@@ -198,7 +198,7 @@ func (p *Pebble) getExpiry(key []byte) ([]byte, int64, bool, error) {
 
 // setDeadline writes value expiring at an absolute unix-nanos deadline.
 func (p *Pebble) setDeadline(key, value []byte, deadline int64) error {
-	return p.db.Set(key, encodeExpiryDeadline(value, deadline), p.writeOpts)
+	return p.setWithExpiry(key, value, deadline)
 }
 
 func (p *Pebble) CompareAndSwap(_ context.Context, key string, old, new []byte, ttl time.Duration) (bool, error) {
@@ -336,7 +336,36 @@ func (p *Pebble) CommitUnblock(_ context.Context, c UnblockCommit) error {
 // rawSet writes an already-formed value with the given TTL under the caller's
 // shard lock (used by the emulated CAS/incr helpers).
 func (p *Pebble) rawSet(key, value []byte, ttl time.Duration) error {
-	return p.db.Set(key, encodeExpiry(value, ttl), p.writeOpts)
+	return p.setWithExpiry(key, value, expiryDeadline(ttl))
+}
+
+// setWithExpiry encodes one TTL-prefixed value directly into Pebble's pooled
+// batch memory. DB.Set builds the same one-operation batch but first requires
+// Guardian to allocate encodeExpiry's intermediate slice, which Batch.Set then
+// copies. SetDeferred preserves one ordinary Pebble commit per Store operation
+// while removing that allocation and copy.
+func (p *Pebble) setWithExpiry(key, value []byte, deadline int64) error {
+	if deadline < 0 {
+		deadline = 0
+	}
+	// Pebble's batch representation needs a 12-byte header, one kind byte and
+	// two varints in addition to the key and TTL-prefixed value. Reserve a small
+	// upper bound so the first use does not need to grow the pooled batch.
+	batch := p.db.NewBatchWithSize(len(key) + len(value) + 8 + 32)
+	op := batch.SetDeferred(len(key), len(value)+8)
+	copy(op.Key, key)
+	binary.BigEndian.PutUint64(op.Value[:8], uint64(deadline))
+	copy(op.Value[8:], value)
+	if err := op.Finish(); err != nil {
+		_ = batch.Close()
+		return err
+	}
+	if err := batch.Commit(p.writeOpts); err != nil {
+		// Match DB.Set: a batch that failed while committing is not returned to
+		// Pebble's pool because the commit pipeline may still reference it.
+		return err
+	}
+	return batch.Close()
 }
 
 func (p *Pebble) Scan(ctx context.Context, prefix string) ([]KV, error) {
@@ -455,14 +484,18 @@ func maxPostureVoteVia(ctx context.Context, s Store, excludeInstanceID string) (
 // encodeExpiry prefixes value with an 8-byte big-endian unix-nanos deadline
 // (0 = permanent) derived from ttl.
 func encodeExpiry(value []byte, ttl time.Duration) []byte {
-	var exp uint64
-	if ttl > 0 {
-		exp = uint64(time.Now().Add(ttl).UnixNano())
-	}
+	exp := expiryDeadline(ttl)
 	buf := make([]byte, 8+len(value))
-	binary.BigEndian.PutUint64(buf[:8], exp)
+	binary.BigEndian.PutUint64(buf[:8], uint64(exp))
 	copy(buf[8:], value)
 	return buf
+}
+
+func expiryDeadline(ttl time.Duration) int64 {
+	if ttl > 0 {
+		return time.Now().Add(ttl).UnixNano()
+	}
+	return 0
 }
 
 // splitExpiry separates the expiry prefix from the payload without a copy. ok is

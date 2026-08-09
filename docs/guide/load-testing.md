@@ -54,6 +54,15 @@ A behavioural block from one run can bleed into the next. The `challenge`
 scenario rotates the client IP itself to dodge the per-IP issuance limit.
 :::
 
+::: warning Duration soaks need a test-only limiter override
+A multi-million-request challenge soak eventually exceeds CounterCache's
+bounded exact-key capacity. Its overload sketch then becomes deliberately
+conservative, and collisions start testing the per-IP issuance limiter rather
+than Pebble endurance. For that soak only, use a temporary config with a very
+high `pow.issuance_rate_limit`; never carry that setting into production. The
+fixed-work comparison above does not need an override.
+:::
+
 Every run ends with a `per-second:` line, one measured-completion count per
 second. Read it before trusting the aggregate: a flat line is a steady state,
 a falling line means the run was measuring store growth and only a fixed-work
@@ -74,7 +83,7 @@ cell is **throughput / p50 / p99** (req/s and per-request latency):
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
 | `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.6ms** |
+| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **81k / 0.67ms / 2.7ms** |
 | `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
@@ -85,7 +94,7 @@ so the per-request store read is gone on allow/token (redis keeps one read for
 cross-replica correctness, so its reads land lower). The takeaway is the
 **write** path, one CAS record per issued challenge. The durable
 LSM/append-only backends absorb it far better than a synchronously-fsync'd
-single writer (`pebble` ~61k/s async, ~34k/s fully durable; `buntdb` ~56k/s
+single writer (`pebble` ~81k/s async, ~34k/s fully durable; `buntdb` ~56k/s
 async; `buntdb` + `sync: true` is rejected at startup, since its single writer
 makes fsync-per-commit ~100x slower, so use `pebble` for synchronous
 durability), and [attack mode](/guide/attack-mode)'s stateless issuance lifts

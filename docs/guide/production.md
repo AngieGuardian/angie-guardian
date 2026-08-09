@@ -355,7 +355,7 @@ verdicts) in a pluggable store. Signing keys remain in
 - **pebble**: single instance, persistent, and the **recommended durable
   backend**. Pebble is an LSM engine (CockroachDB's), so a write hits the WAL and
   an in-memory memtable and is flushed to disk in the background rather than
-  fsync'ing every commit. It sustains ~61k challenge writes/s with `sync: false`
+  fsync'ing every commit. It sustains ~81k challenge writes/s with `sync: false`
   (the default), and ~34k/s with `sync: true` (fsync every write, fully durable).
   Its state lives in a directory (set `store.path` to a directory).
 - **buntdb**: single instance, persistent, stored in a **single file** (simpler

@@ -77,7 +77,7 @@ store):
 | Store backend | Allow requests/s | Returning-client requests/s | Challenges issued/s |
 |---|---:|---:|---:|
 | In-memory store (ephemeral) | 180,000 | 173,000 | 160,000 |
-| Pebble (async, default) | 182,000 | 171,000 | 61,000 |
+| Pebble (async, default) | 182,000 | 171,000 | 81,000 |
 | Pebble (sync, fully durable) | 179,000 | 170,000 | 34,000 |
 | BuntDB (async) | 182,000 | 170,000 | 56,000 |
 | Redis/Valkey | 94,000 | 93,000 | 49,000 |
@@ -251,7 +251,7 @@ cold start an empty store serves. Each cell is **throughput / p50 / p99**
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
 | `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **61k / 0.90ms / 3.6ms** |
+| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **81k / 0.67ms / 2.7ms** |
 | `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
@@ -271,7 +271,7 @@ The **write** path is where the backend matters. Issuing a challenge writes one
 CAS record, and the durable backends absorb that far better than a synchronous
 single-writer store:
 
-- **`pebble`** (default durable) sustains ~61k challenge writes/s in async mode,
+- **`pebble`** (default durable) sustains ~81k challenge writes/s in async mode,
   and even in fully-durable `sync: true` mode still does ~34k/s. Both are far above
   a synchronously-fsync'd single-writer store. It is an LSM engine, so writes hit
   the WAL and memtable and are flushed in the background.
@@ -338,6 +338,13 @@ sed -e 's#/etc/guardian/rules.d/common.yaml#deploy/rules-common.yaml#' \
 ./guardian-loadtest -scenario deny      -host example.com     -ip 203.0.113.9   -c 64 -warmup 50000  -n 500000   # IP must be denylisted
 ./guardian-loadtest -scenario challenge -host example.com                        -c 64 -warmup 150000 -n 150000
 ```
+
+A multi-million-request duration soak is a different test: the bounded
+CounterCache deliberately becomes conservative after more distinct client keys
+than it can retain, so sketch collisions will eventually exercise the issuance
+limiter instead of Pebble. To isolate store endurance, use a temporary test-only
+config with a very high `pow.issuance_rate_limit`; do not copy that setting to
+production. Fixed-work comparison runs above need no override.
 
 The output's `per-second:` line shows whether the run reached a steady state; a
 falling line means the aggregate is blending regimes and only fixed-work runs

@@ -175,12 +175,7 @@ func main() {
 					req.Header.Set(k, v)
 				}
 				if rotateIP {
-					// A distinct IP per request across the 10.64/10 space, derived
-					// from the global sequence number so warmup and measured
-					// requests never repeat one and hit the 60/min cap. Wraps
-					// after ~4.1M requests, far beyond any sane run.
-					req.Header.Set("X-Guardian-IP", fmt.Sprintf("10.%d.%d.%d",
-						(seq>>16)&0x3f|0x40, (seq>>8)&0xff, seq&0xff))
+					req.Header.Set("X-Guardian-IP", rotatingChallengeIP(seq))
 				}
 				start := time.Now()
 				resp, err := client.Do(req)
@@ -251,6 +246,18 @@ func main() {
 		}
 		fmt.Println()
 	}
+}
+
+// rotatingChallengeIP derives a synthetic private IPv4 address from the
+// global request sequence. Use the full 10/8: its 16.7M addresses take more
+// than the default one-minute issuance window to cycle even at the in-memory
+// backend's measured ~160k requests/s. The former 10.64/10 range wrapped after
+// 4.1M requests. A multi-million-request soak must still raise the temporary
+// issuance limit: CounterCache's bounded overload sketch intentionally becomes
+// conservative when flooded with more distinct keys than it can retain.
+func rotatingChallengeIP(seq int64) string {
+	return fmt.Sprintf("10.%d.%d.%d",
+		(seq>>16)&0xff, (seq>>8)&0xff, seq&0xff)
 }
 
 var dataRe = regexp.MustCompile(`<script id="guardian-data" type="application/json">(.*?)</script>`)

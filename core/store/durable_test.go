@@ -5,6 +5,7 @@
 package store
 
 import (
+	"bytes"
 	"testing"
 	"time"
 )
@@ -67,5 +68,57 @@ func TestPebbleSweepExpired(t *testing.T) {
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("second Close must be a no-op, got: %v", err)
+	}
+}
+
+func TestPebbleDeferredWriteEncoding(t *testing.T) {
+	st, err := NewPebble(t.TempDir(), PebbleOptions{})
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	defer st.Close()
+
+	ctx := t.Context()
+	ttl := time.Hour
+	value := []byte("caller-owned challenge record")
+	before := time.Now()
+	if err := st.Set(ctx, "challenge:deferred", value, ttl); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	clear(value)
+
+	raw, closer, err := st.db.Get([]byte("challenge:deferred"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, payload, ok := splitExpiry(raw)
+	if !ok {
+		t.Fatal("deferred write has no expiry prefix")
+	}
+	if !bytes.Equal(payload, []byte("caller-owned challenge record")) {
+		t.Fatalf("deferred write retained caller bytes: %q", payload)
+	}
+	expiresAt := time.Unix(0, exp)
+	if expiresAt.Before(before.Add(ttl)) || expiresAt.After(after.Add(ttl)) {
+		t.Fatalf("expiry = %v, want between %v and %v", expiresAt, before.Add(ttl), after.Add(ttl))
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.Set(ctx, "challenge:permanent", []byte("record"), 0); err != nil {
+		t.Fatal(err)
+	}
+	raw, closer, err = st.db.Get([]byte("challenge:permanent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, payload, ok = splitExpiry(raw)
+	if !ok || exp != 0 || !bytes.Equal(payload, []byte("record")) {
+		t.Fatalf("permanent deferred write = exp %d payload %q ok %v", exp, payload, ok)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
