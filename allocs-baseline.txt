@@ -26,7 +26,8 @@ BenchmarkEvaluateChallengeDecision 5
 BenchmarkRecordEvent 6
 BenchmarkVerifyTokenCached 0
 BenchmarkAuthAllow 7
-BenchmarkIssue 8
+BenchmarkIssue 6
+BenchmarkIssueMixedCaseHost 7
 BenchmarkIssueStateless 7
 BenchmarkChallengeRenderCompiled 0
 BenchmarkChallengeRenderCompiledNoJS 0

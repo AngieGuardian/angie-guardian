@@ -103,7 +103,7 @@ bench-report:
 # live in allocs-baseline.txt, which also documents what may be gated: only
 # benchmarks free of background goroutines, whose allocations would otherwise
 # be charged here at a scheduler-dependent rate.
-BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkRecordEvent$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkIssue$$|BenchmarkIssueStateless$$|BenchmarkChallengeRenderCompiled$$|BenchmarkChallengeRenderCompiledNoJS$$
+BENCH_GATE := BenchmarkEvaluateAllowDefault$$|BenchmarkEvaluateDeny$$|BenchmarkEvaluatePoWTokenCached$$|BenchmarkEvaluateChallengeDecision$$|BenchmarkRecordEvent$$|BenchmarkVerifyTokenCached$$|BenchmarkAuthAllow$$|BenchmarkIssue$$|BenchmarkIssueMixedCaseHost$$|BenchmarkIssueStateless$$|BenchmarkChallengeRenderCompiled$$|BenchmarkChallengeRenderCompiledNoJS$$
 
 bench-regress:
 	@go test -run '^$$' -bench '$(BENCH_GATE)' -benchmem -benchtime 10000x \
