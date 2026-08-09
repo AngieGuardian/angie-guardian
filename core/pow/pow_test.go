@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,32 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	// Double redemption must fail: the spent CAS is the anti-replay guarantee.
 	if _, err := m.Redeem(ctx, req); !errors.Is(err, ErrChallengeUnknown) {
 		t.Errorf("second redemption = %v, want ErrChallengeUnknown", err)
+	}
+}
+
+// TestIssueOversizedBindingStillRoundTrips pins the fallback beyond keyedMAC's
+// common-case scratch capacity. An attacker-supplied oversized binding may pay
+// one allocation, but it must not be truncated, rejected, or retained by the
+// pool merely because ordinary DNS/IP inputs use fixed pooled work storage.
+func TestIssueOversizedBindingStillRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	host := strings.Repeat("A", 500) + ".example"
+
+	ch, err := m.Issue(ctx, host, "198.51.100.7", "/oversized", 0, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(ctx, &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: "0",
+		Host: strings.ToLower(host), IP: "198.51.100.7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RedirectURI != "/oversized" {
+		t.Fatalf("redirect = %q, want /oversized", res.RedirectURI)
 	}
 }
 

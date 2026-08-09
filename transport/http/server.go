@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
@@ -69,7 +68,7 @@ type Server struct {
 	// gets a fast 503; the backend sees only vouched traffic under saturation.
 	inflight atomic.Int64
 
-	challengeTmpl *template.Template
+	challengePage challengeRenderer
 	deniedHTML    []byte
 }
 
@@ -80,7 +79,7 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		engine: engine, pow: mgr, store: st, metrics: m, log: log,
 		counters:      store.NewCounterCache(st),
 		mux:           http.NewServeMux(),
-		challengeTmpl: template.Must(template.ParseFS(web.FS, "challenge.html.tmpl")),
+		challengePage: newChallengeRenderer(),
 	}
 	s.deniedHTML, _ = web.FS.ReadFile("denied.html")
 
@@ -282,13 +281,6 @@ func (s *Server) logDecision(req *core.RequestContext, d core.Decision) {
 		"uri", req.URI,
 		"ua", req.UserAgent,
 	)
-}
-
-type challengeData struct {
-	JSON           template.JS
-	NoScript       bool
-	RefreshSeconds int
-	NoJSURL        string
 }
 
 // challengePayload is the JSON embedded in the interstitial for the solver.
@@ -568,12 +560,11 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	err = s.challengeTmpl.Execute(w, &challengeData{
-		JSON:           template.JS(payload),
-		NoScript:       dcfg.PoW.NoScriptFallback,
-		RefreshSeconds: int(s.pow.NoJSMinDelay/time.Second) + 1,
-		NoJSURL:        fmt.Sprintf("%s?cid=%s&nojs=1", PassPath, ch.ID),
-	})
+	refreshSeconds := ""
+	if dcfg.PoW.NoScriptFallback {
+		refreshSeconds = strconv.Itoa(int(s.pow.NoJSMinDelay/time.Second) + 1)
+	}
+	err = s.challengePage.Render(w, payload, dcfg.PoW.NoScriptFallback, refreshSeconds, ch.ID)
 	if err != nil {
 		s.log.Error("challenge render failed", "err", err)
 	}
