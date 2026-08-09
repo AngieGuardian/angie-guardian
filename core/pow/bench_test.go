@@ -98,3 +98,32 @@ func BenchmarkIssue(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkIssueStateless covers the attack-mode issuance core: an
+// authenticated self-contained challenge ID and solve string, with no store
+// write. A flood is exactly when this path takes over, so its allocation count
+// must be watched independently from ordinary stateful issuance.
+func BenchmarkIssueStateless(b *testing.B) {
+	key, err := LoadOrCreateKey(filepath.Join(b.TempDir(), "ed25519.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	m := NewManager(key, st)
+
+	var ipBuf [16]byte
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		ip := append(ipBuf[:0], "10."...)
+		ip = strconv.AppendInt(ip, int64((i>>16)&0x3f|0x40), 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, int64((i>>8)&0xff), 10)
+		ip = append(ip, '.')
+		ip = strconv.AppendInt(ip, int64(i&0xff), 10)
+		if _, err := m.IssueStateless("bench.test", string(ip), "/page?x=1", 8, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

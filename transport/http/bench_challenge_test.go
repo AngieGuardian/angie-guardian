@@ -5,7 +5,9 @@
 package httptransport
 
 import (
+	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"github.com/melroy89/angie-guardian/core"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/web"
 )
 
 // BenchmarkChallengeIssue drives GET /challenge with a fresh client IP per
@@ -75,6 +78,60 @@ func BenchmarkChallengeIssue(b *testing.B) {
 			b.Fatalf("status = %d at seq %d", w.code, seq)
 		}
 		seq++
+	}
+}
+
+// BenchmarkChallengeRenderTemplate isolates the reference html/template cost
+// from counters, challenge generation and store writes, so the compiled
+// production renderer has a stable before implementation to compare against.
+func BenchmarkChallengeRenderTemplate(b *testing.B) {
+	tmpl := template.Must(template.ParseFS(web.FS, "challenge.html.tmpl"))
+	payload, err := json.Marshal(&challengePayload{
+		ChallengeID: "0123456789abcdef0123456789abcdef",
+		Challenge:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Difficulty:  16,
+		PassURL:     PassPath,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, noScript := range []bool{false, true} {
+		b.Run(fmt.Sprintf("nojs=%t", noScript), func(b *testing.B) {
+			data := &challengeData{
+				JSON:           template.JS(payload),
+				NoScript:       noScript,
+				RefreshSeconds: 6,
+				NoJSURL:        PassPath + "?cid=0123456789abcdef0123456789abcdef&nojs=1",
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := tmpl.Execute(io.Discard, data); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkChallengeRenderCompiled(b *testing.B) {
+	renderer := newChallengeRenderer()
+	payload := []byte(`{"challenge_id":"0123456789abcdef0123456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := renderer.Render(io.Discard, payload, false, "", "0123456789abcdef0123456789abcdef"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkChallengeRenderCompiledNoJS(b *testing.B) {
+	renderer := newChallengeRenderer()
+	payload := []byte(`{"challenge_id":"0123456789abcdef0123456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := renderer.Render(io.Discard, payload, true, "6", "0123456789abcdef0123456789abcdef"); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

@@ -85,11 +85,15 @@ type macCache struct {
 }
 
 // keyedMAC is one pooled HMAC state together with the secret it was keyed
-// with. Reset restores the post-key initial state, so reuse leaks nothing
-// between requests beyond the key the state inherently holds.
+// with and its common-case work buffers. Reset restores the post-key initial
+// state, and put clears the work buffers before reuse. Keeping the buffers on
+// this already-heap-resident object prevents calls through hash.Hash from
+// making fresh stack scratch escape on every issuance.
 type keyedMAC struct {
 	secret []byte
 	mac    hash.Hash
+	msg    [384]byte
+	sum    [sha256.Size]byte
 }
 
 func (c *macCache) get(secret []byte) *keyedMAC {
@@ -104,7 +108,11 @@ func (c *macCache) get(secret []byte) *keyedMAC {
 	return &keyedMAC{secret: secret, mac: hmac.New(sha256.New, secret)}
 }
 
-func (c *macCache) put(km *keyedMAC) { c.pool.Put(km) }
+func (c *macCache) put(km *keyedMAC) {
+	clear(km.msg[:])
+	clear(km.sum[:])
+	c.pool.Put(km)
+}
 
 type managerKey struct {
 	private   ed25519.PrivateKey
@@ -423,7 +431,7 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	// redemption reads it back rather than recomputing; the issuing secret is
 	// sufficient here.
 	//
-	// The message is appended into a stack scratch and written once (fmt would
+	// The message is appended into pooled scratch and written once (fmt would
 	// box every argument), and the HMAC state comes from the per-secret pool:
 	// this runs once per issued challenge, which under a flood is the hottest
 	// write path in the product.
@@ -431,22 +439,21 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	// 384 covers the realistic maximum without a heap allocation: a 253-byte
 	// DNS name, a 45-byte IPv6 text form, a 19-digit bucket, the 32-byte id and
 	// three separators. A longer (attacker-supplied) Host is not a correctness
-	// problem: append simply spills to the heap for that one issuance. Do not
-	// "fix" that with a length check, and do not shrink the array below the sum
-	// above, or the common case starts allocating.
-	var msgBuf [384]byte
-	msg := append(msgBuf[:0], strings.ToLower(host)...)
+	// problem: append simply spills to the heap for that one issuance. The
+	// grown slice stays local, so an oversized request is not retained in the
+	// pool. Do not "fix" that with a length check, and do not shrink the array
+	// below the sum above, or the common case starts allocating.
+	km := m.macs.get(m.issuingSecret())
+	msg := append(km.msg[:0], strings.ToLower(host)...)
 	msg = append(msg, 0)
 	msg = append(msg, ip...)
 	msg = append(msg, 0)
 	msg = strconv.AppendInt(msg, bucket, 10)
 	msg = append(msg, 0)
 	msg = append(msg, id...)
-	km := m.macs.get(m.issuingSecret())
 	km.mac.Write(msg)
-	var sumBuf [sha256.Size]byte
 	var chalHex [2 * sha256.Size]byte
-	hex.Encode(chalHex[:], km.mac.Sum(sumBuf[:0]))
+	hex.Encode(chalHex[:], km.mac.Sum(km.sum[:0]))
 	challenge := string(chalHex[:])
 	m.macs.put(km)
 
