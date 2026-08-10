@@ -94,6 +94,25 @@ install_if_missing() {
   install -D -m "$mode" "$source" "$destination"
 }
 
+install_systemd_unit() {
+  local source=$1 destination=$2 source_checksum destination_checksum
+  if [[ ! -e "$destination" ]]; then
+    install -D -m 0644 "$source" "$destination"
+    return
+  fi
+
+  if [[ ! -f "$destination" ]]; then
+    warn "preserving existing non-regular systemd unit ${destination}; review and update it manually if needed"
+    return
+  fi
+
+  source_checksum="$(sha256sum "$source" | awk '{print $1}')"
+  destination_checksum="$(sha256sum "$destination" | awk '{print $1}')"
+  if [[ "$source_checksum" != "$destination_checksum" ]]; then
+    warn "preserving ${destination}: its SHA-256 differs from the release unit; review and update it manually if needed"
+  fi
+}
+
 main() {
   require_root
   require_platform
@@ -137,7 +156,7 @@ main() {
   validation_binary=''
 
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
-  install -D -m 0644 "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+  install_systemd_unit "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service"
   install_if_missing "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
   install_if_missing "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
   if systemctl is-active --quiet "$SERVICE_NAME"; then

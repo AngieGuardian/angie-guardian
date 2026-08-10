@@ -44,6 +44,18 @@ if (
   exit 1
 fi
 
+unit_source="$test_dir/guardiand.service"
+unit_destination="$test_dir/system/guardiand.service"
+printf '%s\n' '[Service]' >"$unit_source"
+install_systemd_unit "$unit_source" "$unit_destination"
+cmp -s "$unit_source" "$unit_destination"
+
+printf '%s\n' 'Environment=EXTRA=value' >>"$unit_destination"
+warning_output="$(install_systemd_unit "$unit_source" "$unit_destination" 2>&1 >/dev/null)"
+[[ "$warning_output" == *'SHA-256 differs from the release unit'* ]]
+grep -Fqx 'Environment=EXTRA=value' "$unit_destination"
+
 grep -Fq 'install_if_missing' "$installer"
+grep -Fq 'install_systemd_unit' "$installer"
 grep -Fq 'systemctl restart' "$installer"
 grep -Fq 'Angie was not changed or reloaded' "$installer"

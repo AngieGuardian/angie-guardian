@@ -30,8 +30,11 @@ curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/s
 ```
 
 It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
-binary and systemd unit but preserves `/etc/guardian/guardian.yaml`, starter
-rules, existing Angie snippets, and all state under `/var/lib/guardian`.
+binary but preserves `/etc/systemd/system/guardiand.service`,
+`/etc/guardian/guardian.yaml`, starter rules, existing Angie snippets, and all
+state under `/var/lib/guardian`. If the preserved unit's SHA-256 differs from
+the unit in the release, the installer warns so you can review and update it
+yourself. This keeps locally added `Environment=` settings intact.
 
 The installer deliberately does **not** edit any Angie vhost or reload Angie:
 review the example policy and replace its `example.com` domains, define the
