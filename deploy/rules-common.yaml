@@ -154,7 +154,7 @@ rules:
     action: block
     targets: [ path ]
     regexes:
-      - '^/(backup\.zip|backup\.tar\.gz|backup\.tgz|site\.zip|www\.zip|webroot\.zip|dump\.tar\.gz)$'
+      - '(?i)^/(backup\.zip|backup\.tar\.gz|backup\.tgz|site\.zip|www\.zip|webroot\.zip|dump\.tar\.gz)$'
 
   # Node.js and package manifest leaks
   - id: js-manifest-leak
@@ -162,7 +162,7 @@ rules:
     action: block
     targets: [ path ]
     regexes:
-      - '^/(package\.json|pnpm-lock\.yaml|bun\.lockb)$'
+      - '(?i)^/(package\.json|pnpm-lock\.yaml|bun\.lockb)$'
 
   - id: wp-cms-probe
     description: Probes for common PHP CMS configuration leaks and entry points
