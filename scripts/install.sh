@@ -88,7 +88,7 @@ verify_archive() {
 install_if_missing() {
   local source=$1 destination=$2 mode=$3
   if [[ -e "$destination" ]]; then
-    warn "preserving existing ${destination}"
+    info "preserving existing ${destination}"
     return
   fi
   install -D -m "$mode" "$source" "$destination"
@@ -145,7 +145,7 @@ main() {
   install -d -o root -g guardian -m 0710 "$CONFIG_DIR"
   install -d -o root -g guardian -m 0750 "$CONFIG_DIR/rules.d"
   install_if_missing "$package_dir/guardian.example.yaml" "$CONFIG_DIR/guardian.yaml" 0640
-  install_if_missing "$package_dir/deploy/rules-common.yaml" "$CONFIG_DIR/rules.d/common.yaml" 0640
+  install_preserving_local "$package_dir/deploy/rules-common.yaml" "$CONFIG_DIR/rules.d/common.yaml" 0640
   chown root:guardian "$CONFIG_DIR/guardian.yaml" "$CONFIG_DIR/rules.d/common.yaml"
 
   # Validate from an executable filesystem: /tmp may be mounted noexec.

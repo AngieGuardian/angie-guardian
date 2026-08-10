@@ -38,8 +38,11 @@ curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/s
 The installer fetches the latest GitHub release, verifies its checksum, starts
 Guardian, and installs the supplied Angie snippets. It preserves existing
 Guardian configuration and state, and does not edit or reload Angie vhosts.
-Add the required includes and reload Angie as described in the
-[Getting Started guide](https://angieguardian.org/guide/getting-started).
+On upgrades it compares the starter rules, systemd unit, and Angie snippets
+with the release; locally modified files are preserved and reported with an
+`ACTION REQUIRED` notice so you can review them manually. Add the required
+includes and reload Angie as described in the [Getting Started
+guide](https://angieguardian.org/guide/getting-started).
 
 For a specific pinned version, download a `linux-amd64` or `linux-arm64`
 package from the [GitHub releases page](https://github.com/AngieGuardian/angie-guardian/releases)
