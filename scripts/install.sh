@@ -94,22 +94,22 @@ install_if_missing() {
   install -D -m "$mode" "$source" "$destination"
 }
 
-install_systemd_unit() {
-  local source=$1 destination=$2 source_checksum destination_checksum
+install_preserving_local() {
+  local source=$1 destination=$2 mode=$3 source_checksum destination_checksum
   if [[ ! -e "$destination" ]]; then
-    install -D -m 0644 "$source" "$destination"
+    install -D -m "$mode" "$source" "$destination"
     return
   fi
 
   if [[ ! -f "$destination" ]]; then
-    warn "preserving existing non-regular systemd unit ${destination}; review and update it manually if needed"
+    warn "ACTION REQUIRED: preserving existing non-regular ${destination}; review and update it manually if needed"
     return
   fi
 
   source_checksum="$(sha256sum "$source" | awk '{print $1}')"
   destination_checksum="$(sha256sum "$destination" | awk '{print $1}')"
   if [[ "$source_checksum" != "$destination_checksum" ]]; then
-    warn "preserving ${destination}: its SHA-256 differs from the release unit; review and update it manually if needed"
+    warn "ACTION REQUIRED: preserving locally modified ${destination}; its SHA-256 differs from the release file. Review the release file and update this file manually if desired."
   fi
 }
 
@@ -118,7 +118,7 @@ main() {
   require_platform
   install_dependencies
 
-  local arch version archive package_dir was_active=false
+  local arch version archive package_dir validation_output was_active=false
   arch="$(detect_architecture)"
   work_dir="$(mktemp -d)"
   trap cleanup EXIT
@@ -151,14 +151,17 @@ main() {
   # Validate from an executable filesystem: /tmp may be mounted noexec.
   validation_binary="$INSTALL_DIR/.guardiand-validation.$$"
   install -D -m 0755 "$package_dir/guardiand" "$validation_binary"
-  runuser -u guardian -- "$validation_binary" -config "$CONFIG_DIR/guardian.yaml" -t
+  if ! validation_output="$(runuser -u guardian -- "$validation_binary" -config "$CONFIG_DIR/guardian.yaml" -t 2>&1)"; then
+    printf '%s\n' "$validation_output" >&2
+    error 'Guardian configuration validation failed'
+  fi
   rm -f -- "$validation_binary"
   validation_binary=''
 
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
-  install_systemd_unit "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service"
-  install_if_missing "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
-  install_if_missing "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
+  install_preserving_local "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service" 0644
+  install_preserving_local "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
+  install_preserving_local "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     was_active=true
   fi

@@ -47,15 +47,16 @@ fi
 unit_source="$test_dir/guardiand.service"
 unit_destination="$test_dir/system/guardiand.service"
 printf '%s\n' '[Service]' >"$unit_source"
-install_systemd_unit "$unit_source" "$unit_destination"
+install_preserving_local "$unit_source" "$unit_destination" 0644
 cmp -s "$unit_source" "$unit_destination"
 
 printf '%s\n' 'Environment=EXTRA=value' >>"$unit_destination"
-warning_output="$(install_systemd_unit "$unit_source" "$unit_destination" 2>&1 >/dev/null)"
-[[ "$warning_output" == *'SHA-256 differs from the release unit'* ]]
+warning_output="$(install_preserving_local "$unit_source" "$unit_destination" 0644 2>&1 >/dev/null)"
+[[ "$warning_output" == *'ACTION REQUIRED: preserving locally modified'* ]]
+[[ "$warning_output" == *'SHA-256 differs from the release file'* ]]
 grep -Fqx 'Environment=EXTRA=value' "$unit_destination"
 
 grep -Fq 'install_if_missing' "$installer"
-grep -Fq 'install_systemd_unit' "$installer"
+grep -Fq 'install_preserving_local' "$installer"
 grep -Fq 'systemctl restart' "$installer"
 grep -Fq 'Angie was not changed or reloaded' "$installer"
