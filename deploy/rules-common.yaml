@@ -150,27 +150,19 @@ rules:
 
   # Full-site and database archive backups
   - id: archive-backup-probe
-    description: Direct requests for web-root compressed site archives and raw backups
+    description: Direct requests for compressed archives and raw backups at the web root
     action: block
     targets: [ path ]
-    keywords:
-      - "/backup.zip"
-      - "/backup.tar.gz"
-      - "/backup.tgz"
-      - "/site.zip"
-      - "/www.zip"
-      - "/webroot.zip"
-      - "/dump.tar.gz"
+    regexes:
+      - '^/(backup\.zip|backup\.tar\.gz|backup\.tgz|site\.zip|www\.zip|webroot\.zip|dump\.tar\.gz)$'
 
   # Node.js and package manifest leaks
   - id: js-manifest-leak
-    description: Probes for package manifests exposing dependency trees and scripts
+    description: Probes for package manifests at the web root exposing dependency trees and scripts
     action: block
     targets: [ path ]
-    keywords:
-      - "/package.json"
-      - "/pnpm-lock.yaml"
-      - "/bun.lockb"
+    regexes:
+      - '^/(package\.json|pnpm-lock\.yaml|bun\.lockb)$'
 
   - id: wp-cms-probe
     description: Probes for common PHP CMS configuration leaks and entry points
