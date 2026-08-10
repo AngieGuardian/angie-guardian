@@ -148,6 +148,30 @@ rules:
       - "/phpinfo.php"
       - "/info.php"
 
+  # Full-site and database archive backups
+  - id: archive-backup-probe
+    description: Direct requests for web-root compressed site archives and raw backups
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/backup.zip"
+      - "/backup.tar.gz"
+      - "/backup.tgz"
+      - "/site.zip"
+      - "/www.zip"
+      - "/webroot.zip"
+      - "/dump.tar.gz"
+
+  # Node.js and package manifest leaks
+  - id: js-manifest-leak
+    description: Probes for package manifests exposing dependency trees and scripts
+    action: block
+    targets: [ path ]
+    keywords:
+      - "/package.json"
+      - "/pnpm-lock.yaml"
+      - "/bun.lockb"
+
   - id: wp-cms-probe
     description: Probes for common PHP CMS configuration leaks and entry points
     action: deny
@@ -210,6 +234,26 @@ rules:
     action: deny
     targets: [ path, query ]
     keywords: [ "../", "..\\", "%2e%2e/", "%2e%2e%2f" ]
+
+  # Linux process-memory and local-file inclusion probes
+  - id: linux-proc-lfi
+    description: Direct traversal attempts targeting Linux /proc environment and process nodes
+    action: block
+    targets: [ path, query ]
+    keywords:
+      - "/proc/self/environ"
+      - "/proc/self/cmdline"
+      - "/proc/self/status"
+
+  # PHP stream pseudo-protocols used in local-file inclusion
+  - id: php-stream-wrappers
+    description: Detects PHP wrapper schemes used in LFI to read source files or execute payload data
+    action: block
+    targets: [ path, query ]
+    keywords:
+      - "php://filter"
+      - "php://input"
+      - "data://text/plain"
 
   # Command Injection Heuristics
   - id: cmd-injection-basic
