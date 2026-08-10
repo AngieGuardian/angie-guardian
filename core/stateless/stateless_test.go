@@ -42,6 +42,14 @@ domains:
         action: deny
         targets: [ ua ]
         keywords: [ "sqlmap" ]
+      - id: archive-root
+        action: block
+        targets: [ path ]
+        regexes: [ '(?i)^/(backup\.zip|backup\.tar\.gz)$' ]
+      - id: manifest-root
+        action: block
+        targets: [ path ]
+        regexes: [ '(?i)^/(package\.json|pnpm-lock\.yaml|bun\.lockb)$' ]
 `
 
 func mustGuestConfig(t *testing.T, yaml string) *GuestConfig {
@@ -87,6 +95,10 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		{"WAF rule url-encoded", req("site.test", "192.0.2.9", "/%2e%65nv", "curl"), ActionDeny, "waf:dotfile"},
 		{"WAF rule challenge degrades to deny", req("site.test", "192.0.2.9", "/x?q=union+all+select+1", "curl"), ActionDeny, "waf:sqli"},
 		{"WAF rule ua", req("site.test", "192.0.2.9", "/", "sqlmap/1.7"), ActionDeny, "waf:scanner"},
+		{"anchored manifest matches mixed case and strips query", req("site.test", "192.0.2.9", "/Package.JSON?v=1", "curl"), ActionDeny, "waf:manifest-root"},
+		{"anchored archive matches mixed case and strips query", req("site.test", "192.0.2.9", "/BACKUP.ZIP?download=1", "curl"), ActionDeny, "waf:archive-root"},
+		{"anchored manifest permits nested documentation path", req("site.test", "192.0.2.9", "/projects/my-app/package.json", "curl"), ActionAllow, "default"},
+		{"anchored archive permits nested download path", req("site.test", "192.0.2.9", "/downloads/backup.zip", "curl"), ActionAllow, "default"},
 		{"defaults denylist", req("other.test", "203.0.113.5", "/", "curl"), ActionDeny, "denylist:ip"},
 		{"defaults allow", req("other.test", "192.0.2.1", "/", "curl"), ActionAllow, "default"},
 		{"host case + port normalized", req("SITE.test:443", "198.51.100.66", "/page", "curl"), ActionDeny, "denylist:ip"},
