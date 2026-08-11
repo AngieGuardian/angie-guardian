@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ func main() {
 	testConfig := flag.Bool("t", false, "test the config: load and validate it, then exit (0 = ok, 1 = error)")
 	healthcheck := flag.Bool("healthcheck", false, "probe every configured Guardian listener, then exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	profileDir := flag.String("profile-dir", "", "write opt-in runtime and Pebble profiles to this empty directory")
 	flag.Parse()
 
 	if *showVersion {
@@ -103,7 +105,7 @@ func main() {
 		fmt.Printf("config %s: ok\n", cfgPath)
 		return
 	}
-	if err := run(cfgPath); err != nil {
+	if err := run(cfgPath, *profileDir); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
@@ -121,7 +123,7 @@ func checkHealth(configPath string, timeout time.Duration) error {
 	return waitListening(context.Background(), listen, adminListen, timeout)
 }
 
-func run(configPath string) error {
+func run(configPath, profileDir string) error {
 	cfg, err := core.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -138,6 +140,24 @@ func run(configPath string) error {
 	level.Set(levels[cfg.LogLevel])
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
+	prof, err := startProfiler(profileDir)
+	if err != nil {
+		return err
+	}
+	if prof != nil {
+		// These profiles are intentionally enabled only for an explicit profiling
+		// run. Leaving their sampling disabled keeps the normal request path
+		// exactly as cheap as before.
+		runtime.SetMutexProfileFraction(5)
+		runtime.SetBlockProfileRate(1)
+		defer func() {
+			runtime.SetMutexProfileFraction(0)
+			runtime.SetBlockProfileRate(0)
+			if err := prof.stop(); err != nil {
+				log.Error("write profiling artifacts", "err", err)
+			}
+		}()
+	}
 
 	var st store.Store
 	switch cfg.Store.Backend {
@@ -152,6 +172,9 @@ func run(configPath string) error {
 		st, err = store.NewPebble(cfg.Store.Path, store.PebbleOptions{Sync: cfg.Store.Sync})
 		if err != nil {
 			return fmt.Errorf("open pebble store %s: %w", cfg.Store.Path, err)
+		}
+		if prof != nil {
+			prof.attachPebble(st.(*store.Pebble))
 		}
 	case "redis":
 		password := cfg.Store.Password

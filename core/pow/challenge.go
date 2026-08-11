@@ -459,7 +459,8 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	// box every argument), and the HMAC state comes from the per-secret pool:
 	// this runs once per issued challenge, which under a flood is the hottest
 	// write path in the product.
-	bucket := m.now().Unix() / 3600
+	issuedAt := m.now()
+	bucket := issuedAt.Unix() / 3600
 	// 384 covers the realistic maximum without a heap allocation: a 253-byte
 	// DNS name, a 45-byte IPv6 text form, a 19-digit bucket, the 32-byte id and
 	// three separators. A longer (attacker-supplied) Host is not a correctness
@@ -492,7 +493,7 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 		Difficulty:      difficulty,
 		URI:             uri,
 		NoJS:            allowNoJS,
-		IssuedAt:        m.now().UnixMilli(),
+		IssuedAt:        issuedAt.UnixMilli(),
 	})
 	if err != nil {
 		m.records.put(recordBuf)

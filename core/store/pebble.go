@@ -46,6 +46,25 @@ type Pebble struct {
 	closeOnce sync.Once
 }
 
+// PebbleStats is a stable, compact view of Pebble's runtime state. It is
+// intended for opt-in diagnostic recording, not as a replacement for Pebble's
+// full Metrics API.
+type PebbleStats struct {
+	MemTableBytes        uint64  `json:"memtable_bytes"`
+	MemTableCount        int64   `json:"memtable_count"`
+	FlushCount           int64   `json:"flush_count"`
+	FlushInProgress      int64   `json:"flush_in_progress"`
+	CompactionCount      int64   `json:"compaction_count"`
+	CompactionDebtBytes  uint64  `json:"compaction_debt_bytes"`
+	CompactionInProgress int64   `json:"compaction_in_progress"`
+	L0Tables             int64   `json:"l0_tables"`
+	L0Bytes              int64   `json:"l0_bytes"`
+	DiskBytes            uint64  `json:"disk_bytes"`
+	WALBytes             uint64  `json:"wal_bytes"`
+	WALBytesWritten      uint64  `json:"wal_bytes_written"`
+	WriteAmplification   float64 `json:"write_amplification"`
+}
+
 // PebbleOptions selects the durability profile.
 type PebbleOptions struct {
 	// Sync fsyncs the WAL on every write (durable, slower). When false, writes
@@ -68,6 +87,29 @@ func NewPebble(dir string, opts PebbleOptions) (*Pebble, error) {
 	p.janitorWG.Add(1)
 	go p.janitor()
 	return p, nil
+}
+
+// Stats returns a point-in-time Pebble health snapshot. Calling it is cheap
+// enough for a deliberately enabled, low-frequency profiler, but it is not on
+// Guardian's request path.
+func (p *Pebble) Stats() PebbleStats {
+	m := p.db.Metrics()
+	total := m.Total()
+	return PebbleStats{
+		MemTableBytes:        m.MemTable.Size,
+		MemTableCount:        m.MemTable.Count,
+		FlushCount:           m.Flush.Count,
+		FlushInProgress:      m.Flush.NumInProgress,
+		CompactionCount:      m.Compact.Count,
+		CompactionDebtBytes:  m.Compact.EstimatedDebt,
+		CompactionInProgress: m.Compact.NumInProgress,
+		L0Tables:             m.Levels[0].TablesCount,
+		L0Bytes:              m.Levels[0].TablesSize,
+		DiskBytes:            m.DiskSpaceUsage(),
+		WALBytes:             m.WAL.Size,
+		WALBytesWritten:      m.WAL.BytesWritten,
+		WriteAmplification:   total.WriteAmp(),
+	}
 }
 
 // pebbleJanitorInterval paces the expired-record sweep. Each sweep is a full
