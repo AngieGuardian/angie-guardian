@@ -80,8 +80,8 @@ store):
 | Store backend | Allow requests/s | Returning-client requests/s | Challenges issued/s |
 |---|---:|---:|---:|
 | In-memory store (ephemeral) | 180,000 | 173,000 | 160,000 |
-| Pebble (async, default) | 182,000 | 171,000 | 81,000 |
-| Pebble (sync, fully durable) | 179,000 | 170,000 | 34,000 |
+| Pebble (async, default) | 185,000 | 172,000 | 152,000 |
+| Pebble (sync, fully durable) | 183,000 | 172,000 | 35,000 |
 | BuntDB (async) | 182,000 | 170,000 | 56,000 |
 | Redis/Valkey | 94,000 | 93,000 | 49,000 |
 
@@ -243,9 +243,10 @@ write-heavy path):
 | `challenge` | issue a fresh PoW challenge per request | normally 1 **write** (challenge CAS); under [attack mode](https://angieguardian.org/guide/attack-mode), or when that stateful write fails, issuance is stateless: no write at issue, the single-spend write moves to redemption. Rate-limit and escalation counters are counted in-process and flushed in the background either way |
 
 **Results** (single node, loopback, 64 connections, load generator sharing the
-same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17; Go 1.26.5;
-Valkey 9 for the redis backend; fresh daemon and wiped store per run; median of
-3 runs per cell). Reads use `-warmup 50000 -n 500000`; challenge uses
+same CPU: AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17 for the non-Pebble
+rows and Linux 7.0.0 for the refreshed Pebble rows; Go 1.26.5; Valkey 9 for the
+redis backend; fresh daemon and wiped store per run; median of 3 runs per
+cell). Reads use `-warmup 50000 -n 500000`; challenge uses
 `-warmup 150000 -n 150000`, so its warmup pushes both 131k-entry counter caches
 past capacity and the measured window is the loaded steady state, not the fast
 cold start an empty store serves. Each cell is **throughput / p50 / p99**
@@ -254,8 +255,8 @@ cold start an empty store serves. Each cell is **throughput / p50 / p99**
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
 | `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **81k / 0.67ms / 2.7ms** |
-| `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
+| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
+| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
@@ -274,11 +275,11 @@ The **write** path is where the backend matters. Issuing a challenge writes one
 CAS record, and the durable backends absorb that far better than a synchronous
 single-writer store:
 
-- **`pebble`** (default durable) sustains ~81k challenge writes/s in async mode,
-  and even in fully-durable `sync: true` mode still does ~34k/s. Both are far above
+- **`pebble`** (default durable) sustains ~152k challenge writes/s in async mode,
+  and in fully-durable `sync: true` mode does ~35k/s. Both are far above
   a synchronously-fsync'd single-writer store. It is an LSM engine, so writes hit
   the WAL and memtable and are flushed in the background.
-- **`buntdb`** lands close to Pebble in async mode (~56k/s) and stores everything
+- **`buntdb`** sustains ~56k/s in async mode and stores everything
   in one file, which is simpler to back up. It is single-writer, so `sync: true`
   would fsync every commit and collapse to ~600/s, so guardiand **refuses to
   start** in that configuration and points you to Pebble for synchronous

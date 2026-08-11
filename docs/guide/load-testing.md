@@ -72,9 +72,10 @@ a falling line means the run was measuring store growth and only a fixed-work
 
 Methodology, recorded here because the numbers are meaningless without it:
 single node, loopback, 64 connections, load generator sharing the same CPU
-(AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17; Go 1.26.5; Valkey 9 for the
-redis backend; fresh daemon and wiped store per run; median of 3 runs per
-cell). Reads use `-warmup 50000 -n 500000`; **challenge uses
+(AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17 for the non-Pebble rows and
+Linux 7.0.0 for the refreshed Pebble rows; Go 1.26.5; Valkey 9 for the redis
+backend; fresh daemon and wiped store per run; median of 3 runs per cell).
+Reads use `-warmup 50000 -n 500000`; **challenge uses
 `-warmup 150000 -n 150000`**, pushing both 131k-entry counter caches past
 capacity so the measured window is the loaded steady state a sustained flood of
 new clients actually produces, not the fast cold start of an empty store. Each
@@ -83,8 +84,8 @@ cell is **throughput / p50 / p99** (req/s and per-request latency):
 | Backend | allow | token | deny | challenge (write) |
 |---|---|---|---|---|
 | `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 182k / 0.13ms / 1.8ms | 171k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **81k / 0.67ms / 2.7ms** |
-| `pebble` (sync, fully durable)    | 179k / 0.13ms / 1.8ms | 170k / 0.15ms / 1.8ms | 154k / 0.14ms / 2.4ms | **34k / 1.5ms / 5.3ms** |
+| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
+| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
 | `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
 | `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
 
@@ -94,7 +95,7 @@ so the per-request store read is gone on allow/token (redis keeps one read for
 cross-replica correctness, so its reads land lower). The takeaway is the
 **write** path, one CAS record per issued challenge. The durable
 LSM/append-only backends absorb it far better than a synchronously-fsync'd
-single writer (`pebble` ~81k/s async, ~34k/s fully durable; `buntdb` ~56k/s
+single writer (`pebble` ~152k/s async, ~35k/s fully durable; `buntdb` ~56k/s
 async; `buntdb` + `sync: true` is rejected at startup, since its single writer
 makes fsync-per-commit ~100x slower, so use `pebble` for synchronous
 durability), and [attack mode](/guide/attack-mode)'s stateless issuance lifts
