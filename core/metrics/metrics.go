@@ -9,6 +9,8 @@
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -36,6 +38,7 @@ type Metrics struct {
 	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
 	storeOps            *prometheus.CounterVec // by backend, op, status
 	storeLatency        *prometheus.HistogramVec
+	storeHandles        sync.Map               // map[op]storeMetricHandles, populated lazily
 	storeUp             *prometheus.GaugeVec   // by backend; 1 = reachable, 0 = failing open
 	storeProbe          *prometheus.CounterVec // by backend, status
 	evalLatency         prometheus.Histogram
@@ -56,6 +59,15 @@ type Metrics struct {
 	shed              *prometheus.CounterVec // load-shed decisions by outcome
 	unproxiedRejects  prometheus.Counter     // require_proxied gate rejections
 	storeClockSkew    *prometheus.GaugeVec   // store server clock minus local, by backend
+}
+
+type storeMetricHandles struct {
+	okOnce      sync.Once
+	errOnce     sync.Once
+	latencyOnce sync.Once
+	ok          prometheus.Counter
+	err         prometheus.Counter
+	latency     prometheus.Observer
 }
 
 // New builds the collector set for a process using the named store backend.
@@ -298,12 +310,21 @@ func (m *Metrics) StoreOp(op string, seconds float64, err error) {
 	if m == nil {
 		return
 	}
-	status := "ok"
-	if err != nil {
-		status = "error"
+	value, ok := m.storeHandles.Load(op)
+	if !ok {
+		actual, _ := m.storeHandles.LoadOrStore(op, &storeMetricHandles{})
+		value = actual
 	}
-	m.storeOps.WithLabelValues(m.backend, op, status).Inc()
-	m.storeLatency.WithLabelValues(m.backend, op).Observe(seconds)
+	h := value.(*storeMetricHandles)
+	if err == nil {
+		h.okOnce.Do(func() { h.ok = m.storeOps.WithLabelValues(m.backend, op, "ok") })
+		h.ok.Inc()
+	} else {
+		h.errOnce.Do(func() { h.err = m.storeOps.WithLabelValues(m.backend, op, "error") })
+		h.err.Inc()
+	}
+	h.latencyOnce.Do(func() { h.latency = m.storeLatency.WithLabelValues(m.backend, op) })
+	h.latency.Observe(seconds)
 }
 
 // StoreProbe records one completed store health probe: the gauge follows the

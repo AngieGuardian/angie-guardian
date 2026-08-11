@@ -133,6 +133,16 @@ func TestStoreOpBackendComesFromTheProcess(t *testing.T) {
 	}
 }
 
+func BenchmarkStoreOp(b *testing.B) {
+	m := New("pebble")
+	m.StoreOp("cas", 0.001, nil) // create the lazy series outside the timer
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		m.StoreOp("cas", 0.001, nil)
+	}
+}
+
 // TestStoreUpGaugeTransitions walks the sequence an operator actually sees: a
 // healthy start, an outage, and recovery without a daemon restart.
 func TestStoreUpGaugeTransitions(t *testing.T) {
