@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/bloom"
 )
 
 // Pebble is a store.Store backed by CockroachDB's Pebble LSM engine. Pebble has
@@ -73,9 +74,43 @@ type PebbleOptions struct {
 	Sync bool
 }
 
+const (
+	pebbleCacheSize                   = 512 << 20
+	pebbleMemTableSize                = 64 << 20
+	pebbleMemTableStopWritesThreshold = 3
+)
+
 // NewPebble opens (or creates) a Pebble store at dir.
 func NewPebble(dir string, opts PebbleOptions) (*Pebble, error) {
-	db, err := pebble.Open(dir, &pebble.Options{Logger: pebbleNoopLogger{}})
+	cache := pebble.NewCache(pebbleCacheSize)
+	// Release the adapter's owner reference when this constructor returns.
+	// On a successful Open, the DB keeps its own reference until DB.Close;
+	// on any failure, no cache reference remains owned by this adapter.
+	defer cache.Unref()
+	dbOpts := &pebble.Options{
+		Logger:                     pebbleNoopLogger{},
+		Cache:                      cache,
+		L0CompactionThreshold:      2,
+		L0StopWritesThreshold:      24,
+		CompactionConcurrencyRange: func() (int, int) { return 2, 4 },
+		BytesPerSync:               1 << 20,
+		Levels:                     [7]pebble.LevelOptions{},
+	}
+	// Pebble preallocates each WAL to 110% of MemTableSize. Large memtables nearly
+	// double the default async challenge-write rate, but their large preallocated
+	// WAL extents make fsync-per-write roughly half as fast on the reference
+	// filesystem. Keep Pebble's 4 MiB x2 defaults for the fully durable profile.
+	if !opts.Sync {
+		dbOpts.MemTableSize = pebbleMemTableSize
+		dbOpts.MemTableStopWritesThreshold = pebbleMemTableStopWritesThreshold
+	}
+	for i := range dbOpts.Levels {
+		dbOpts.Levels[i].FilterPolicy = bloom.FilterPolicy(10)
+	}
+	dbOpts.ApplyCompressionSettings(func() pebble.DBCompressionSettings {
+		return pebble.DBCompressionFastest
+	})
+	db, err := pebble.Open(dir, dbOpts)
 	if err != nil {
 		return nil, err
 	}

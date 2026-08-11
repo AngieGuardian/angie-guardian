@@ -385,8 +385,8 @@ lists exactly which changed fields would require a restart.
 ## Challenge issuance is slow / the store can't keep up
 
 Under a very high rate of *new* clients (each triggering a challenge write),
-the embedded writer becomes the ceiling: ~81k issuances/s on `pebble` async,
-~56k/s on `buntdb` async, and ~34k/s on `pebble` with `sync: true`
+the embedded writer becomes the ceiling: ~152k issuances/s on `pebble` async,
+~56k/s on `buntdb` async, and ~35k/s on `pebble` with `sync: true`
 (fsync-per-write) on the reference machine. Symptoms: rising challenge latency,
 `guardian_store_op` latency climbing. Remedies: set `store.sync: false` (the
 default) if you had turned fsync on; move to the `redis`/`valkey` backend to

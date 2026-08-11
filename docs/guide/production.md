@@ -355,12 +355,12 @@ verdicts) in a pluggable store. Signing keys remain in
 - **pebble**: single instance, persistent, and the **recommended durable
   backend**. Pebble is an LSM engine (CockroachDB's), so a write hits the WAL and
   an in-memory memtable and is flushed to disk in the background rather than
-  fsync'ing every commit. It sustains ~81k challenge writes/s with `sync: false`
-  (the default), and ~34k/s with `sync: true` (fsync every write, fully durable).
+  fsync'ing every commit. It sustains ~152k challenge writes/s with `sync: false`
+  (the default), and ~35k/s with `sync: true` (fsync every write, fully durable).
   Its state lives in a directory (set `store.path` to a directory).
 - **buntdb**: single instance, persistent, stored in a **single file** (simpler
-  to back up or copy). In its async default (`sync: false`) it matches Pebble
-  (~56k challenge writes/s). It is a single-writer store, so `sync: true`
+  to back up or copy). Its async default (`sync: false`) sustains ~56k challenge
+  writes/s. It is a single-writer store, so `sync: true`
   (fsync-per-commit) would collapse it to a few hundred writes/s, so guardiand
   **refuses to start** with `backend: buntdb` + `sync: true` and points
   you to Pebble for synchronous durability. Set `store.path` to a file.

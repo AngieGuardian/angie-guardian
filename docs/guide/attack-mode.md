@@ -67,9 +67,9 @@ suspicion mode, so a brief spike never walls a suspicion-mode site.
 
 ### Stateless issuance (`stateless_issuance`, default on)
 
-Normally each issued challenge writes an issuance record to the store, and
-even the fast durable embedded backends top out around 81k/s (pebble async)
-to 56k/s (buntdb async), or ~34k/s with `pebble` fsync-per-write (see
+Normally each issued challenge writes an issuance record to the store. On the
+reference machine, that path sustains ~152k/s with `pebble` async, ~56k/s with
+`buntdb` async, or ~35k/s with `pebble` fsync-per-write (see
 [load testing](/guide/load-testing)). Under attack, Guardian issues
 **stateless** challenges instead: an HMAC-signed, self-authenticating ID
 (`s1.` prefix) that carries its own state, so issuance performs no store
