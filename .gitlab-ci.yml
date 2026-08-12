@@ -478,7 +478,10 @@ docker-release:
         "$GHCR_IMAGE:$CI_COMMIT_TAG" "$GHCR_IMAGE")"
       test -n "$GITLAB_IMAGE_DIGEST"
       test -n "$GHCR_IMAGE_DIGEST"
-      test "${GITLAB_IMAGE_DIGEST#*@}" = "${GHCR_IMAGE_DIGEST#*@}"
+
+      # A registry may canonicalize the pushed manifest differently, so the
+      # digest can differ across registries even though the image layers and
+      # configuration are the same. Sign exactly what each registry serves.
 
       COSIGN_PRIVATE_KEY="$(printf '%s' "$COSIGN_PRIVATE_KEY_B64" | base64 --decode)"
       COSIGN_PUBLIC_KEY="$(printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode)"

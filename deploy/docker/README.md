@@ -64,10 +64,11 @@ cosign verify --key cosign.pub \
   ghcr.io/angieguardian/angie-guardian:1.0.0
 ```
 
-Each registry carries its own signature for the shared image manifest. Cosign
-resolves the tag to a digest and verifies that the attached signature claims
-that digest. For a deployment manifest, pin a verified digest rather than the
-mutable `latest` tag.
+Each registry carries its own signature for the image digest it serves. The
+digest can differ across registries because a registry may canonicalize the
+manifest differently. Cosign resolves the tag and verifies that the attached
+signature claims that registry's digest. For a deployment manifest, pin a
+verified digest rather than the mutable `latest` tag.
 
 The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist

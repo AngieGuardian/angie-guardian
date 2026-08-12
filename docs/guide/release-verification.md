@@ -108,10 +108,12 @@ cosign verify --key cosign.pub "$IMAGE_DIGEST"
 ```
 
 Cosign must report that the signature, image claims, and transparency-log
-evidence verified. Both registries must resolve to the same image-manifest
-digest, but each registry has its own signature attachment. Production
-manifests should use the resulting `...@sha256:...` reference so a later move
-of `latest` cannot change what gets deployed.
+evidence verified. A registry may canonicalize the manifest differently, so
+the GitLab and GHCR digest values can differ even though they serve the same
+built image. Each registry therefore has its own digest and signature
+attachment. Production manifests should use the verified `...@sha256:...`
+reference for the chosen registry so a later move of `latest` cannot change
+what gets deployed.
 
 ## Older releases
 
