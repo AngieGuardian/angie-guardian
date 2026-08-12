@@ -12,8 +12,7 @@ disclosure before a fix is available puts every deployment at risk.
 Instead, report it privately:
 
 - **Email:** melroy@melroy.org, with `[angie-guardian security]` in the subject.
-- Optionally, open a [confidential issue](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/new)
-  on GitLab (tick **This issue is confidential** when creating it).
+- **Matrix/Telegram:** PM me via [Matrix](https://matrix.to/#/@melroy:melroy.org) or [Telegram](https://t.me/melroyvandenberg).
 
 Please include, as far as you can:
 
