@@ -1,6 +1,6 @@
 [Unit]
 Description=Train and promote the Angie Guardian anomaly model
-Documentation=https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/docs/guide/production.md#running-the-anomaly-trainer
+Documentation=https://angieguardian.org/guide/production#running-the-anomaly-trainer
 After=angie.service
 # Create this sentinel during an attack, load test, launch or outage to keep
 # exceptional traffic out of the learned baseline. Remove it to resume.

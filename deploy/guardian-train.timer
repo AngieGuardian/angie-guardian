@@ -1,6 +1,6 @@
 [Unit]
 Description=Weekly Angie Guardian anomaly-model training
-Documentation=https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/docs/guide/production.md#running-the-anomaly-trainer
+Documentation=https://angieguardian.org/guide/production#running-the-anomaly-trainer
 
 [Timer]
 # A weekly default is deliberate: use a representative retained-log window,
