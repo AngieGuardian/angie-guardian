@@ -37,9 +37,22 @@ that follows this policy.
 
 ## Supported versions
 
-Guardian is pre-1.0 and moving quickly. Security fixes land on `main` and in the
-next release; only the **latest release** is supported. Once 1.0 ships, this
-section will state the supported release line.
+Guardian's stable support policy begins with 1.0.0. From that release onward,
+only the latest stable release in the current major line receives security
+fixes. Pre-1.0 releases and development snapshots are not supported.
+
+| Version | Supported |
+| --- | --- |
+| Latest `1.x` release | Yes, from 1.0.0 |
+| `< 1.0` | No |
+
+Security fixes land on `main` first and are released as soon as their severity
+warrants. If a report affects an older release, reproduce it against the latest
+stable release before reporting when practical.
+
+Release archives and container images from 1.0 onward are cryptographically
+signed. Follow the [release verification guide](https://angieguardian.org/guide/release-verification)
+before installing production artifacts.
 
 ## Scope
 

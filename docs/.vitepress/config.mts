@@ -32,6 +32,7 @@ export default defineConfig({
           items: [
             { text: 'What is Angie Guardian?', link: '/guide/what-is-guardian' },
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Verify a Release', link: '/guide/release-verification' },
           ],
         },
         {

@@ -81,13 +81,15 @@ id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
   --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
 ```
 
-### Verify the download (optional)
+### Verify the download
 
 Every release publishes a `SHA256SUMS` file next to the archives, listing the
-SHA-256 digest of each one. Downloading it alongside the archive lets you
-confirm the file arrived intact and matches what the release pipeline built.
-If you want this check, run it right after downloading the archive, before the
-`install` step above.
+SHA-256 digest of each one. Releases from 1.0.0 onward also publish an armored
+detached signature (`SHA256SUMS.asc`) and the release public key
+(`RELEASE-KEY.asc`). Verify the key fingerprint and signature before trusting
+the checksums; run all of these commands before the `install` step above. The
+[release verification guide](/guide/release-verification) explains the trust
+chain, expected output, failure cases, and Cosign container verification.
 
 ::: warning Download SHA256SUMS into the same directory as the archive
 `sha256sum` looks for the archives in the current working directory, under the
@@ -97,37 +99,41 @@ directories, it verifies nothing at all and reports
 ending in `OK` before installing.
 :::
 
-Run both commands from the directory holding the archive you downloaded above:
+Run these commands from the directory holding the archive. Replace `1.0.0`
+with the release you selected:
 
 ```sh
-# Same directory as angie-guardian-0.18.0-linux-amd64.tar.gz
-wget https://github.com/AngieGuardian/angie-guardian/releases/download/0.18.0/SHA256SUMS
+VERSION=1.0.0
+wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS"
+wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS.asc"
+wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/RELEASE-KEY.asc"
+
+# The attached key is trusted only after this exact fingerprint matches.
+gpg --show-keys --with-colons RELEASE-KEY.asc \
+  | awk -F: '$1 == "fpr" { print $10; exit }'
+# E0C7C029005B0CE6A7438BD571D11FF23454B9D7
+
+gpg --import RELEASE-KEY.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ```
-angie-guardian-0.18.0-linux-amd64.tar.gz: OK
+angie-guardian-1.0.0-linux-amd64.tar.gz: OK
 ```
 
-`SHA256SUMS` lists both architectures, so `--ignore-missing` is what lets you
-verify just the one you downloaded. Without it, `sha256sum` reports the archive
-you did not download as `FAILED open or read` and exits non-zero, which looks
-like a verification failure but is not one.
+The signature must report a good signature from fingerprint
+`E0C7 C029 005B 0CE6 A743 8BD5 71D1 1FF2 3454 B9D7`. The human-readable name or
+email on a key is not sufficient. `SHA256SUMS` lists both architectures and the
+Cosign public key, so `--ignore-missing` lets you verify only the files you
+downloaded. Without it, absent files are reported as `FAILED open or read`.
 
-A file that does not match reports `FAILED` instead of `OK` (and the command
-exits non-zero); do not install it. The same `SHA256SUMS` is attached to the
-[GitHub release](https://github.com/AngieGuardian/angie-guardian/releases) and
-verifies identically.
-
-::: warning Checksums detect corruption, not tampering
-A checksum only proves the archive matches the `SHA256SUMS` you downloaded. It
-is not a signature: anyone able to replace the archive could replace the
-checksum file with it. Releases are not yet signed, and the container images
-are not yet attested, so treat this as an integrity check rather than proof of
-origin. [Issue #7](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/7)
-tracks signing the checksums and the images. Do not substitute an unpinned
-`latest` download for the explicit version above.
-:::
+A file that does not match reports `FAILED` instead of `OK` and exits non-zero;
+do not install it. The GitLab and
+[GitHub](https://github.com/AngieGuardian/angie-guardian/releases) releases
+publish the same archives, checksums, signature and keys. Releases before
+1.0.0 have checksums but no detached signature and therefore provide corruption
+detection, not cryptographic proof of origin.
 
 ### Build from source (optional)
 

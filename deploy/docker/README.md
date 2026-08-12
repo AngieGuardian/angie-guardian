@@ -44,8 +44,25 @@ Every release publishes the sidecar image to the project's container registry
 (built by the `docker-release` CI job from this directory's Dockerfile):
 
 ```sh
-docker pull registry.melroy.org/melroy/angie-guardian:latest   # or a tag, e.g. :0.7.0
+docker pull registry.melroy.org/melroy/angie-guardian:1.0.0
 ```
+
+Images from 1.0.0 onward are signed by Cosign. Download `SHA256SUMS`,
+`SHA256SUMS.asc`, `RELEASE-KEY.asc`, and `cosign.pub` from the matching GitLab
+or GitHub release. First verify the GPG fingerprint and signature exactly as in
+the [release verification guide](https://angieguardian.org/guide/release-verification),
+then authenticate the Cosign key through the signed checksum list and verify
+the image:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS  # must report cosign.pub: OK
+cosign verify --key cosign.pub \
+  registry.melroy.org/melroy/angie-guardian:1.0.0
+```
+
+Cosign resolves the tag to a digest and verifies that the attached signature
+claims that digest. For a deployment manifest, pin the verified digest rather
+than the mutable `latest` tag.
 
 The image runs `guardiand -config /etc/guardian/guardian.yaml` as a nonroot
 user; mount your config read-only at that path and persist

@@ -4,23 +4,11 @@ Guardian follows [semantic versioning](https://semver.org/). This page states
 exactly what a version number promises, so you can upgrade with confidence and
 know what a major bump may change.
 
-::: warning Pre-1.0
-Until 1.0, any release may change any of the surfaces below. The policy here
-describes what will hold **from 1.0 onward**; it is published now so the naming
-is settled before the freeze.
-:::
+Version numbers use `MAJOR.MINOR.PATCH`: patch releases contain compatible
+fixes, minor releases may add compatible functionality, and major releases may
+contain breaking changes. The guarantees below apply from 1.0 onward.
 
-::: warning Compact challenge-record migration
-The pre-1.0 release introducing compact binary `challenge:` records
-intentionally invalidates outstanding **stateful** challenges from older
-versions. Affected clients receive the ordinary expired/unknown-challenge
-response and must request a new challenge. Existing signed PoW cookies, blocks,
-other stored state, and stateless attack-mode challenges are unaffected. There
-is no legacy JSON reader, so replicas sharing Redis/Valkey must not run old and
-new versions concurrently during this upgrade; use a coordinated rollout.
-:::
-
-## What a stable (1.x) release guarantees
+## What the 1.x line guarantees
 
 Within a `1.x` line, these do not change in a breaking way (new fields,
 routes, metrics and values may be *added*, but existing ones keep working):
@@ -69,7 +57,7 @@ These may change in any release, including a patch:
   under `core/…` carry no compatibility promise.
 - **The dashboard HTML/JS and the challenge interstitial markup.**
 
-## What a major (2.0) release may change
+## What a major release may change
 
 A breaking change to anything in the guaranteed list ships only in a major
 version, with an upgrade note. Where practical, a removed or renamed config
@@ -86,14 +74,3 @@ warning, rather than failing to load outright.
   during the rollout.
 - **Major (`1.x` → `2.0`):** read the release notes first; there will be an
   explicit migration section.
-
-## Notes on the naming (settled at 1.0)
-
-A deliberate pass over the config surface before the freeze kept it as-is: it
-is uniform `snake_case`, TTLs are consistently `*_ttl`, feature toggles are
-consistently `enabled`, and the grouping (`waf.*`, `pow.*`, `geo.*`,
-`store.*`, `admin.*`) matches how operators reason about it. Two names were
-weighed and deliberately kept: `pow` (short, and the term of art) over a
-spelled-out `proof_of_work`, and `ip_behaviour` (British spelling, consistent
-with the rest of the prose): renaming either would churn a stable, clear name
-for no real gain.

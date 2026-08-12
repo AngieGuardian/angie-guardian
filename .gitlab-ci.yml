@@ -33,6 +33,12 @@ variables:
   GH_REPO: "Angie-Guardian/angie-guardian"
   # Pinned like govulncheck below; bump deliberately.
   GH_CLI_VERSION: "2.96.0"
+  # Public trust anchor for release checksums. The matching signing-only secret
+  # subkey is supplied to protected tag jobs through CI/CD variables; never
+  # store the primary private key in GitLab.
+  RELEASE_GPG_FINGERPRINT: "E0C7C029005B0CE6A7438BD571D11FF23454B9D7"
+  # Official multi-architecture Cosign image, pinned by manifest digest.
+  COSIGN_IMAGE: "ghcr.io/sigstore/cosign/cosign:v3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
 
 # Branch pipelines only. Without this, the `rules:` on the docs job makes
 # GitLab also attempt a (job-less, thus failed) merge-request pipeline for
@@ -282,23 +288,63 @@ upload_and_release:
           -e "s#/var/lib/guardian/#$RUNTIME_ROOT/var/lib/guardian/#g" \
           "$PKG/guardian.example.yaml" > "$RUNTIME_ROOT/guardian.yaml"
       "$PKG/guardiand" -config "$RUNTIME_ROOT/guardian.yaml" -t
-    # Checksums over the exact archives being published, so downloads from
-    # either host can be verified with `sha256sum -c SHA256SUMS`.
+    # Export the Cosign public key supplied to the protected tag pipeline. It
+    # is covered by the GPG-signed checksum list below, forming one trust chain
+    # from the published GPG fingerprint to the container image.
+    - printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode > cosign.pub
+    - grep -q '^-----BEGIN PUBLIC KEY-----$' cosign.pub
+    # Checksums over the exact archives and Cosign key being published.
     - sha256sum angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz
-      angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz > SHA256SUMS
+      angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz
+      cosign.pub > SHA256SUMS
     - cat SHA256SUMS
-    # Upload each archive to the generic package registry.
-    - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
-      --upload-file angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz
-      ${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz'
-    - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
-      --upload-file angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz
-      ${PACKAGE_REGISTRY_URL}/angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz'
-    - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
-      --upload-file SHA256SUMS
-      ${PACKAGE_REGISTRY_URL}/SHA256SUMS'
+    # Sign with a dedicated signing subkey chained to the public fingerprint
+    # above. A throwaway GNUPGHOME prevents the runner image's keyring from
+    # influencing the result or retaining the imported secret after the job.
+    - |
+      GNUPGHOME="$(mktemp -d)"
+      export GNUPGHOME
+      trap 'rm -rf "$GNUPGHOME"' EXIT
+      chmod 700 "$GNUPGHOME"
+      printf '%s' "$RELEASE_GPG_PRIVATE_KEY_B64" | base64 --decode > "$GNUPGHOME/release-secret.asc"
+      chmod 600 "$GNUPGHOME/release-secret.asc"
+      gpg --batch --import "$GNUPGHOME/release-secret.asc"
+      gpg --batch --with-colons --fingerprint "$RELEASE_GPG_FINGERPRINT" \
+        | grep -Fq "fpr:::::::::${RELEASE_GPG_FINGERPRINT}:"
+      gpg --batch --list-secret-keys "$RELEASE_GPG_FINGERPRINT"
+      gpg --batch --yes \
+        --local-user "$RELEASE_GPG_FINGERPRINT" \
+        --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+      gpg --batch --armor --export "$RELEASE_GPG_FINGERPRINT" > RELEASE-KEY.asc
+      gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+      gpg --batch --show-keys --with-colons RELEASE-KEY.asc \
+        | grep -Fq "fpr:::::::::${RELEASE_GPG_FINGERPRINT}:"
+    # Upload all release files to the generic package registry.
+    - |
+      for ASSET in \
+        angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
+        angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
+        SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub; do
+        curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+          --upload-file "$ASSET" "${PACKAGE_REGISTRY_URL}/${ASSET}"
+      done
     # Attach the archives to the (already created) release as asset links.
     # !! In the reverse order of how they should be displayed !!
+    - 'curl --fail --request POST
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --header "Content-Type: application/json"
+      --data "{\"name\":\"Angie Guardian release GPG public key\",\"url\":\"${PACKAGE_REGISTRY_URL}/RELEASE-KEY.asc\",\"link_type\":\"other\"}"
+      ${RELEASE_LINKS_URL}'
+    - 'curl --fail --request POST
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --header "Content-Type: application/json"
+      --data "{\"name\":\"Angie Guardian Cosign public key\",\"url\":\"${PACKAGE_REGISTRY_URL}/cosign.pub\",\"link_type\":\"other\"}"
+      ${RELEASE_LINKS_URL}'
+    - 'curl --fail --request POST
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --header "Content-Type: application/json"
+      --data "{\"name\":\"Angie Guardian ${CI_COMMIT_TAG} - GPG signature\",\"url\":\"${PACKAGE_REGISTRY_URL}/SHA256SUMS.asc\",\"link_type\":\"other\"}"
+      ${RELEASE_LINKS_URL}'
     - 'curl --fail --request POST
       --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --header "Content-Type: application/json"
@@ -333,7 +379,7 @@ upload_and_release:
       gh release create "$CI_COMMIT_TAG" \
         angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
         angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
-        SHA256SUMS \
+        SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
         --repo "$GH_REPO" \
         --target "$CI_COMMIT_SHA" \
         --title "v$CI_COMMIT_TAG" \
@@ -341,7 +387,7 @@ upload_and_release:
       gh release upload "$CI_COMMIT_TAG" \
         angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
         angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
-        SHA256SUMS \
+        SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
         --repo "$GH_REPO" \
         --clobber
   # Keep the built archives downloadable from the pipeline for a short while,
@@ -351,6 +397,9 @@ upload_and_release:
     paths:
       - angie-guardian-*.tar.gz
       - SHA256SUMS
+      - SHA256SUMS.asc
+      - RELEASE-KEY.asc
+      - cosign.pub
     expire_in: 1 month
 
 # --- Container image (tags only) --------------------------------------------
@@ -370,8 +419,6 @@ docker-release:
   interruptible: false
   rules:
     - if: $CI_PROJECT_NAMESPACE == "melroy" && $CI_COMMIT_TAG
-  before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     # Pre-pull the base images through the daemon and build WITHOUT --pull:
     # BuildKit's own registry resolver reliably stalls on this host fetching
@@ -379,17 +426,61 @@ docker-release:
     # attestation manifests reference; the daemon's classic pull path never
     # requests it, and without --pull the FROMs resolve from the local store.
     # The images are read from the Dockerfile so they can never drift.
-    - awk '/^FROM /{print $2}' deploy/docker/Dockerfile | xargs -n1 docker pull
-    - docker build
-      -f deploy/docker/Dockerfile
-      --build-arg VERSION=$CI_COMMIT_TAG
-      -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
-      -t "$CI_REGISTRY_IMAGE:latest"
-      .
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
-    - docker push "$CI_REGISTRY_IMAGE:latest"
-  after_script:
-    - docker logout "$CI_REGISTRY"
+    - |
+      COSIGN_WORK_DIR="$(mktemp -d)"
+      trap 'rm -rf "$COSIGN_WORK_DIR"' EXIT
+      export DOCKER_CONFIG="$COSIGN_WORK_DIR/docker"
+      mkdir -p "$DOCKER_CONFIG"
+      printf '%s' "$CI_REGISTRY_PASSWORD" \
+        | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+      awk '/^FROM /{print $2}' deploy/docker/Dockerfile | xargs -n1 docker pull
+      docker build \
+        -f deploy/docker/Dockerfile \
+        --build-arg VERSION="$CI_COMMIT_TAG" \
+        -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" \
+        -t "$CI_REGISTRY_IMAGE:latest" \
+        .
+      docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+      docker push "$CI_REGISTRY_IMAGE:latest"
+
+      # Resolve and sign the immutable digest, never the mutable tag. The same
+      # manifest backs :latest, so one digest signature covers both names.
+      docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+      IMAGE_DIGEST="$(docker image inspect \
+        --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+        "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" \
+        | grep -F "${CI_REGISTRY_IMAGE}@sha256:" | head -n1)"
+      test -n "$IMAGE_DIGEST"
+
+      printf '%s' "$COSIGN_PRIVATE_KEY_B64" | base64 --decode > "$COSIGN_WORK_DIR/cosign.key"
+      printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode > "$COSIGN_WORK_DIR/cosign.pub"
+      chmod 600 "$COSIGN_WORK_DIR/cosign.key"
+
+      cosign() {
+        # Cosign encrypts even a passwordless generated key and otherwise
+        # tries to prompt on a non-interactive runner. This is an explicit
+        # empty value, not a GitLab secret variable.
+        docker run --rm \
+          --user 0:0 \
+          --env COSIGN_PASSWORD= \
+          --env DOCKER_CONFIG=/docker \
+          --volume "$DOCKER_CONFIG:/docker:ro" \
+          --volume "$COSIGN_WORK_DIR:/keys:ro" \
+          "$COSIGN_IMAGE" "$@"
+      }
+      cosign public-key --key /keys/cosign.key > "$COSIGN_WORK_DIR/derived.pub"
+      cmp "$COSIGN_WORK_DIR/derived.pub" "$COSIGN_WORK_DIR/cosign.pub"
+      cosign sign --yes \
+        --key /keys/cosign.key \
+        -a "git_sha=$CI_COMMIT_SHA" \
+        -a "version=$CI_COMMIT_TAG" \
+        "$IMAGE_DIGEST"
+      cosign verify --key /keys/cosign.pub \
+        -a "git_sha=$CI_COMMIT_SHA" \
+        -a "version=$CI_COMMIT_TAG" \
+        "$IMAGE_DIGEST"
+      docker logout "$CI_REGISTRY"
 
 # --- Documentation site (angieguardian.org) ---------------------------------
 # Builds the VitePress site from docs/ and publishes it as a `public/`

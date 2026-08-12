@@ -365,9 +365,100 @@ Releases are cut as GitLab Releases, never by pushing a tag by hand: creating
 the release makes the tag, and the tag pipeline is what cross-compiles amd64
 and arm64, bundles `guardian.wasm`, the example config, the rules file and
 `deploy/`, smoke-tests the exact archive it is about to publish (including
-`guardiand -t` against the packaged example config), writes `SHA256SUMS`,
-uploads everything to the package registry, attaches the release asset links,
-mirrors the archives to GitHub, and builds and pushes the container image.
+`guardiand -t` against the packaged example config), writes and GPG-signs
+`SHA256SUMS`, uploads everything to the package registry, attaches the release
+asset links, mirrors the artifacts to GitHub, and builds, pushes and
+Cosign-signs the container image by immutable digest.
+
+### Release signing setup
+
+The published GPG trust anchor is
+`E0C7 C029 005B 0CE6 A743 8BD5 71D1 1FF2 3454 B9D7`. Do not put its primary
+private key in GitLab. Add a dedicated signing-only subkey locally, then export
+only that subkey (the export carries a non-secret primary-key stub so verifiers
+can build the certification chain):
+
+```sh
+PRIMARY=E0C7C029005B0CE6A7438BD571D11FF23454B9D7
+gpg --quick-add-key "$PRIMARY" ed25519 sign 2y
+gpg --with-subkey-fingerprint --list-secret-keys "$PRIMARY"
+
+# Replace this with the new signing subkey fingerprint, including the !.
+gpg --armor --export-secret-subkeys 'SIGNING_SUBKEY_FINGERPRINT!' \
+  > guardian-release-signing-subkey.asc
+base64 -w0 guardian-release-signing-subkey.asc; printf '\n'
+```
+
+Paste that entire single-line Base64 output into the GitLab variable
+`RELEASE_GPG_PRIVATE_KEY_B64`. It is normal for the value to be long. Do not
+paste the armored `.asc` contents directly, and do not use the primary private
+key export.
+
+Generate a separate passwordless Cosign key pair with `cosign
+generate-key-pair`; it is not the GPG key. At both password prompts, press
+Enter without entering a value. Configure these GitLab CI/CD variables as
+**protected**, **masked and hidden**, with expansion off:
+
+| Variable | Value |
+|---|---|
+| `RELEASE_GPG_PRIVATE_KEY_B64` | Single-line base64 output of the signing-subkey export |
+| `COSIGN_PRIVATE_KEY_B64` | `base64 -w0 cosign.key` |
+| `COSIGN_PUBLIC_KEY_B64` | `base64 -w0 cosign.pub` |
+
+Do not create a `COSIGN_PASSWORD` CI/CD variable. The tag job supplies an
+explicit empty value internally so Cosign does not try to open an interactive
+password prompt for this passwordless key.
+
+#### Key lifetime and rotation
+
+The Base64 CI/CD variables are only storage and do not expire by themselves.
+The keys encoded in them have different lifetime rules:
+
+- The GPG signing subkey created with `2y` expires two years after creation.
+  GPG then refuses to make new release signatures with it. Signatures made
+  while it was valid remain cryptographically verifiable, and the primary
+  fingerprint does not change.
+- A self-managed Cosign key pair has no built-in expiration date. It remains
+  usable until it is deliberately rotated or no longer trusted.
+
+The current release signing subkey is
+`FE4C 7419 8FE6 E66E ADB3 31BF 41B8 4FC6 1861 DA1B`; it expires on
+2028-08-11 at 21:08:13 UTC. The primary key and its fingerprint do not expire.
+
+Check the GPG subkey expiry periodically and set a reminder at least 60 days
+before it expires:
+
+```sh
+gpg --with-subkey-fingerprint --list-secret-keys "$PRIMARY"
+```
+
+To extend the same signing subkey for another two years, use its full
+fingerprint without `!`, then export it again:
+
+```sh
+SIGNING_SUBKEY=REPLACE_WITH_FULL_SIGNING_SUBKEY_FINGERPRINT
+gpg --quick-set-expire "$PRIMARY" 2y "$SIGNING_SUBKEY"
+gpg --armor --export-secret-subkeys "${SIGNING_SUBKEY}!" \
+  > guardian-release-signing-subkey.asc
+base64 -w0 guardian-release-signing-subkey.asc; printf '\n'
+```
+
+Replace `RELEASE_GPG_PRIVATE_KEY_B64` with that new Base64 output. The secret
+key material is unchanged, but the new export carries the updated expiration
+metadata. Alternatively, create a new signing-only subkey and replace the
+variable with its export.
+
+To rotate Cosign, generate a new passwordless pair and replace
+`COSIGN_PRIVATE_KEY_B64` and `COSIGN_PUBLIC_KEY_B64` together before creating a
+release. Each existing release keeps its matching `cosign.pub`, authenticated
+by that release's GPG-signed `SHA256SUMS`, so older signatures remain
+verifiable with their original public key.
+
+Delete the plaintext secret exports after the variables are configured and a
+test signature succeeds; retain encrypted offline backups. Protected tag jobs
+fail rather than publish an unsigned release when any signing material is
+missing or mismatched. The release contains `SHA256SUMS.asc`, `RELEASE-KEY.asc`
+and `cosign.pub`; `cosign.pub` is itself listed in the GPG-signed checksum file.
 
 ## Documentation
 
