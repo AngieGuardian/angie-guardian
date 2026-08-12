@@ -217,8 +217,10 @@ For a complete, runnable example (including Angie and a demo backend) see
 because the e2e suite exercises the working tree, but swapping `build:` for
 `image:` gives the production shape above.
 
-## Running the anomaly trainer
+## Optional: running the anomaly trainer
 
+The anomaly trainer is optional; Guardian's core request protection does not
+require it. Use it only when you want model-based anomaly scoring.
 `guardian-train` is an offline batch job, not a second daemon. It reads a
 representative window of Angie JSON access logs, builds a complete replacement
 baseline for every domain with enough usable requests, writes one model
