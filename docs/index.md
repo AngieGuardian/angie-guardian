@@ -16,8 +16,8 @@ hero:
       text: What is Guardian?
       link: /guide/what-is-guardian
     - theme: alt
-      text: View on GitLab
-      link: https://gitlab.melroy.org/melroy/angie-guardian
+      text: View on GitHub
+      link: https://github.com/AngieGuardian/angie-guardian
 
 features:
   - icon: 🛡️
