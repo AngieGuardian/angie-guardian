@@ -139,25 +139,23 @@ load-bearing rather than decorative:
 
 #### Startup readiness and watchdog
 
-The shipped unit is `Type=notify`: guardiand speaks
+The shipped unit is `Type=notify`: guardiand uses
 [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html)
-with no extra dependency, signalling `READY=1` only once every configured
-listener answers `/healthz`. That is *liveness* on purpose: Guardian serves
-fail-open, so a store outage must not stop the unit from starting (for "is the
-store actually working" see [`/readyz`](#probes-liveness-vs-readiness)).
-`systemctl start` therefore blocks until the service is genuinely serving and
-`systemctl status` reflects real readiness rather than "the process forked",
-which matters precisely because Guardian fails open: a daemon wedged before it
-binds would otherwise look active while every request sails through unchecked.
+with no extra dependency and signals `READY=1` once every configured listener
+answers `/healthz`. This is intentional *liveness*: Guardian serves fail-open,
+so a store outage must not prevent startup (use [`/readyz`](#probes-liveness-vs-readiness)
+to check the store). `systemctl start` consequently waits for real service
+availability, and `systemctl status` does not report a pre-bind, wedged daemon
+as ready while requests pass through unchecked.
 
-`WatchdogSec=30s` arms the watchdog: guardiand pings it at half that interval,
-so a hung daemon is killed and restarted instead of sitting there looking
-healthy. Loosen the interval if you run with an aggressive `GOGC` and very long
-GC pauses, or drop the line to disable the watchdog while keeping readiness.
+`WatchdogSec=30s` arms the watchdog; guardiand pings at half that interval, so
+a hung daemon is killed and restarted instead of appearing healthy. Loosen the
+interval for aggressive `GOGC` settings with very long GC pauses, or remove the
+line to disable the watchdog while keeping readiness.
 
-This is systemd-only. The daemon auto-detects `$NOTIFY_SOCKET`, so running it
-by hand or under Docker (where the Compose healthcheck gates readiness instead)
-needs no change.
+The watchdog is systemd-only. The daemon auto-detects `$NOTIFY_SOCKET`, so
+running it by hand or under Docker needs no change; Docker uses the Compose
+healthcheck to gate readiness instead.
 
 ### Docker
 
