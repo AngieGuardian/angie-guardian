@@ -39,8 +39,31 @@ config file described above.
 
 ### systemd
 
-For the complete first-install sequence, start with the release-first
-[Getting Started guide](/guide/getting-started). 
+#### Recommended: one-command installer
+
+On a supported Debian or Ubuntu systemd host, install the latest GitHub release
+with the host installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
+```
+
+The installer downloads and verifies the release archive, installs
+`guardiand`, creates the `guardian` service account and configuration layout,
+installs the systemd unit and Angie snippets, validates the configuration, and
+enables and starts the service. Existing local configuration, rules, unit, and
+Angie snippet files are preserved; mismatches are reported for manual review.
+
+It does not edit Angie virtual hosts or reload Angie. After reviewing
+`/etc/guardian/guardian.yaml`, add the snippets and `guardian` upstream to
+Angie as described in the [Getting Started guide](/guide/getting-started),
+then run `angie -t` and reload Angie yourself.
+
+#### Optional: manual installation
+
+Use the manual procedure below when you need to install a pinned release or
+want to perform each installation step yourself. For the complete first-install
+sequence, start with the release-first [Getting Started guide](/guide/getting-started).
 
 In short, choose a pinned
 release archive from the
