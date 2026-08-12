@@ -395,42 +395,32 @@ verdicts) in a pluggable store. Signing keys remain in
   shared store that lets replicas behind a load balancer see each other's blocks
   and single-spend markers; the embedded backends above are single-node only.
 
-Both durable embedded backends take a `store.sync` flag: `false` (default) is
-fast and loses only the unflushed tail on a power/OS crash (a bounded,
-≤`challenge_ttl` replay window), while `true` fsyncs every write (only worth it
-on Pebble).
+For durable embedded backends, `store.sync: false` (default) is fastest but can
+lose only the unflushed tail after a power/OS crash (a bounded,
+≤`challenge_ttl` replay window). Set it to `true` for fsync-per-write
+durability; that is practical only with Pebble.
 
-Guardian's Redis client currently uses plaintext TCP and its keys are not
-prefixed per deployment. Put Redis/Valkey on loopback or a private,
-authenticated network (or reach it through a verified TLS/mTLS tunnel), and
-allocate a fresh, dedicated logical database on a Redis/Valkey server to each
-Guardian deployment. Never point unrelated staging/production sites at the
-same database: blocks, challenges, counters, bot verdicts, and fleet posture
-would collide.
+Redis/Valkey is multi-instance, but the current client uses plaintext TCP and
+does not prefix keys. Use loopback, a private authenticated network, or a
+verified TLS/mTLS tunnel, and give each deployment a fresh dedicated logical
+database. Never share a database between unrelated staging/production sites:
+blocks, challenges, counters, bot verdicts, and fleet posture would collide.
 
 `store.addr` uses the standalone Redis protocol client; Redis Cluster is not
-currently supported. Guardian's atomic active-block maintenance touches a
-block key and the shared index in one script, which is not a cross-slot Cluster
-operation. Use a stable TCP endpoint in front of your replicated Redis/Valkey
-service when you need server failover.
+supported because active-block maintenance updates a block key and shared index
+in one non-cross-slot script. Use a stable TCP endpoint in front of replicated
+Redis/Valkey when you need server failover.
 
-The rule of thumb from the
-[measured numbers](/guide/what-is-guardian#performance): the backend choice only
-affects your *new-client* rate, the clients that trigger a challenge write.
-The read paths (`allow`/`token`/`deny`) are backend-independent at ~150–176k
-req/s, because the [block mirror](/guide/block-offload) makes every embedded
-backend authoritative (zero store reads on the allow/token path after the seed
-scan). redis is the exception: it stays read-through, keeping one network read
-per request so a block placed by another replica applies immediately, the
-price of multi-instance correctness.
-
-So the challenge-write rates quoted per backend above are the deciding factor,
-and they bound your *sustained, normal-mode* new-client rate, not the flood
-case: under [attack mode](/guide/attack-mode), issuance switches to a
-stateless path with no write at issue time. Verified tokens are cached
-in-process (~35 ns, allocation-free, vs ~40 µs for a full Ed25519
-verification), so a returning client's request stays on the fast read path
-regardless of backend.
+The practical performance rule from the [measured
+numbers](/guide/what-is-guardian#performance) is that backend choice mainly
+sets the *new-client* challenge-write rate. Embedded read paths are
+backend-independent at roughly 150–176k req/s because the
+[block mirror](/guide/block-offload) serves allow/token/deny decisions after
+the seed scan; Redis remains read-through, with one network read per request so
+blocks placed by another replica apply immediately. Challenge-write rates bound
+the sustained normal-mode new-client rate, not the flood case: [attack mode](/guide/attack-mode)
+uses stateless issuance with no write at issue time. Returning clients remain on
+the fast path because verified tokens are cached in-process.
 
 ### Multi-instance (Redis/Valkey)
 
@@ -449,19 +439,17 @@ signing_key_file: /var/lib/guardian/ed25519.key   # same file on every replica
 previous_key_dir: /var/lib/guardian/keys.d        # same lock-capable shared filesystem
 ```
 
-Both key paths must be on one filesystem that provides cross-host advisory
-locking and atomic rename semantics (verify both properties for your NFS or
-distributed filesystem). Asynchronous copies such as rsync or Syncthing are
-not safe with multiple rotators: replicas do not share Guardian's `flock` and
-can create competing keys. If files must be distributed asynchronously,
-designate exactly one instance as the rotator and complete distribution before
-allowing another rotation.
+Both key paths need one filesystem with cross-host advisory locking and atomic
+rename; verify both properties for NFS or other distributed filesystems.
+Asynchronous rsync/Syncthing copies are unsafe with multiple rotators because
+replicas do not share Guardian's `flock` and can create competing keys. If
+asynchronous distribution is unavoidable, designate one rotator and finish
+distribution before another rotation.
 
-Key refresh and token minting deliberately fail closed while either key path
-is unreadable. Prefer local disk for a single host; for multiple hosts, use a
-low-latency, reliably mounted shared filesystem and include mount
-interruption/recovery in the soak, since a flaky mount can cause a brief
-fleet-wide challenge/token outage.
+Key refresh and token minting fail closed if either path is unreadable. Prefer
+local disk on one host; for multiple hosts, use a low-latency, reliably mounted
+shared filesystem and test mount interruption/recovery, since a flaky mount can
+briefly interrupt challenges and tokens across the fleet.
 
 ## GC tuning for peak throughput
 
