@@ -23,10 +23,8 @@ WatchdogSec=30s
 # clear reason instead of crash-looping the daemon (and, with fail-open, 500ing
 # the site during the restart window).
 #
-# `guardiand -t` alone would default to this same path, but keep -config
-# explicit here: ExecStartPre must validate exactly the file ExecStart runs.
-# If you point ExecStart at a different config, the line below has to follow it,
-# and relying on the default would silently preflight the wrong file instead.
+# Keep the packaged path explicit: if a drop-in changes ExecStart to another
+# config, it must change this preflight path too.
 ExecStartPre=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml -t
 ExecStart=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml
 # `systemctl reload guardiand` hot-applies config edits via SIGHUP (domains,

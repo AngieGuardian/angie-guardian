@@ -2,10 +2,10 @@
 
 ## Configuration
 
-Guardian is driven by a single YAML file. There is no auto-detected default
-location: `guardiand` requires `-config <path>`, and everything on this page
-(the systemd unit, the Docker mounts, the healthcheck) uses the conventional
-path **`/etc/guardian/guardian.yaml`**. Keep it root-owned and merely
+Guardian is driven by a single YAML file. Unless `-config <path>` overrides
+it, `guardiand` uses the conventional path **`/etc/guardian/guardian.yaml`**.
+The systemd unit, Docker mounts, and healthcheck state that path explicitly.
+Keep it root-owned and merely
 *readable* by the service (`root:guardian`, mode `0640`), never writable: the
 config is policy, and a compromised daemon must not be able to rewrite its own
 policy. The file holds no secrets by default; the signing key and admin token
@@ -20,8 +20,8 @@ Two references cover the file itself, so this guide does not repeat them:
   [full annotated example](/examples#the-full-annotated-example) you can copy as
   a starting point, alongside smaller task-focused snippets.
 
-Validate an edit before applying it with `guardiand -config
-/etc/guardian/guardian.yaml -t` (the systemd unit does this on every start).
+Validate an edit before applying it with `guardiand -t` (the systemd unit does
+this on every start).
 Most of the file hot-reloads on `systemctl reload guardiand` (domains, lists,
 thresholds, difficulty); listeners, the store and keys need a restart.
 
