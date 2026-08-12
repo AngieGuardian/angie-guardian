@@ -1,6 +1,7 @@
 # Development
 
-This page is about working on Guardian itself rather than running it.
+This page is about working on Guardian itself rather than running it. Development is done on GitLab, ask me to get an account on my GitLab instance if you wish to collaborate.
+
 Everything here needs a repository checkout and the Go toolchain selected by
 `go.mod`, and the development tools are never installed on a server: they live
 under `test/`, are run with `go run`, and are not compiled into `guardiand`.
