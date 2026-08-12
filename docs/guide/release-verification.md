@@ -91,23 +91,27 @@ sha256sum -c --ignore-missing SHA256SUMS
 # cosign.pub: OK
 ```
 
-Pull the versioned image, resolve the registry-provided immutable digest, and
-verify that digest rather than trusting a mutable tag:
+The same image is published to GitLab's registry and GHCR. Pull the versioned
+image from your preferred registry, resolve its immutable digest, and verify
+that digest rather than trusting a mutable tag:
 
 ```sh
 IMAGE="registry.melroy.org/melroy/angie-guardian:${VERSION}"
+# Or: IMAGE="ghcr.io/angieguardian/angie-guardian:${VERSION}"
 docker pull "$IMAGE"
+REPOSITORY="${IMAGE%:*}"
 IMAGE_DIGEST=$(docker image inspect \
   --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" \
-  | grep '/melroy/angie-guardian@sha256:' | head -n1)
+  | grep -F "${REPOSITORY}@sha256:" | head -n1)
 
 cosign verify --key cosign.pub "$IMAGE_DIGEST"
 ```
 
 Cosign must report that the signature, image claims, and transparency-log
-evidence verified. Production manifests should use the resulting
-`registry.melroy.org/melroy/angie-guardian@sha256:...` reference so a later
-move of `latest` cannot change what gets deployed.
+evidence verified. Both registries must resolve to the same image-manifest
+digest, but each registry has its own signature attachment. Production
+manifests should use the resulting `...@sha256:...` reference so a later move
+of `latest` cannot change what gets deployed.
 
 ## Older releases
 

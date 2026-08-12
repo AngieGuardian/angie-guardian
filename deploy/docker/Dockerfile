@@ -22,6 +22,9 @@ RUN mkdir -p /seed/var/lib/guardian /seed/etc/guardian/keys
 
 # gcr.io/distroless/static-debian12:nonroot
 FROM gcr.io/distroless/static-debian12@sha256:b7bb25d9f7c31d2bdd1982feb4dafcaf137703c7075dbe2febb41c24212b946f
+LABEL org.opencontainers.image.source="https://github.com/AngieGuardian/angie-guardian"
+LABEL org.opencontainers.image.description="WAF and proof-of-work bot firewall for Angie"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 COPY --from=build /out/guardiand /usr/local/bin/guardiand
 COPY --from=build --chown=65532:65532 /seed/var/lib/guardian /var/lib/guardian
 COPY --from=build --chown=65532:65532 /seed/etc/guardian /etc/guardian

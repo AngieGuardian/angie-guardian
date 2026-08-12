@@ -28,9 +28,14 @@ variables:
   RELEASE_LINKS_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}/assets/links"
   # GitHub mirror. The repository itself is push-mirrored by GitLab; the release
   # job additionally publishes the built archives there as a GitHub release.
-  # $GH_TOKEN (a fine-grained PAT with Contents: read+write) comes from the
-  # masked+protected CI/CD variable, and is read implicitly by the gh CLI.
-  GH_REPO: "Angie-Guardian/angie-guardian"
+  # $GH_TOKEN (with Contents and Packages write access) comes from the
+  # masked+protected CI/CD variable. The gh CLI reads it implicitly; the
+  # container release job also uses it to authenticate to GHCR.
+  GH_REPO: "AngieGuardian/angie-guardian"
+  # GitHub Container Registry mirror.
+  GHCR_REGISTRY: "ghcr.io"
+  GHCR_USERNAME: "melroy89"
+  GHCR_IMAGE: "ghcr.io/angieguardian/angie-guardian"
   # Pinned like govulncheck below; bump deliberately.
   GH_CLI_VERSION: "2.96.0"
   # Public trust anchor for release checksums. The matching signing-only secret
@@ -403,8 +408,8 @@ upload_and_release:
     expire_in: 1 month
 
 # --- Container image (tags only) --------------------------------------------
-# Builds the sidecar image from deploy/docker/Dockerfile and pushes it to the
-# project's container registry as $CI_REGISTRY_IMAGE:<tag> plus :latest. Runs
+# Builds the sidecar image from deploy/docker/Dockerfile and pushes the same
+# versioned and latest tags to the GitLab registry and GHCR. Runs
 # on the shell-executor runner (tag `shell`), which has a real Docker daemon,
 # because the shared runners cannot run docker builds (no privileged dind).
 docker-release:
@@ -431,8 +436,13 @@ docker-release:
       trap 'rm -rf "$COSIGN_WORK_DIR"' EXIT
       export DOCKER_CONFIG="$COSIGN_WORK_DIR/docker"
       mkdir -p "$DOCKER_CONFIG"
-      printf '%s' "$CI_REGISTRY_PASSWORD" \
-        | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+      registry_login() {
+        printf '%s' "$CI_REGISTRY_PASSWORD" \
+          | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+        printf '%s' "$GH_TOKEN" \
+          | docker login -u "$GHCR_USERNAME" --password-stdin "$GHCR_REGISTRY"
+      }
 
       awk '/^FROM /{print $2}' deploy/docker/Dockerfile | xargs -n1 docker pull
       docker build \
@@ -440,18 +450,35 @@ docker-release:
         --build-arg VERSION="$CI_COMMIT_TAG" \
         -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" \
         -t "$CI_REGISTRY_IMAGE:latest" \
+        -t "$GHCR_IMAGE:$CI_COMMIT_TAG" \
+        -t "$GHCR_IMAGE:latest" \
         .
+
+      # Match the established dual-registry release pattern: authenticate
+      # immediately before pushing so a long build cannot leave stale sessions.
+      registry_login
       docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
       docker push "$CI_REGISTRY_IMAGE:latest"
+      docker push "$GHCR_IMAGE:$CI_COMMIT_TAG"
+      docker push "$GHCR_IMAGE:latest"
 
-      # Resolve and sign the immutable digest, never the mutable tag. The same
-      # manifest backs :latest, so one digest signature covers both names.
-      docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
-      IMAGE_DIGEST="$(docker image inspect \
-        --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-        "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" \
-        | grep -F "${CI_REGISTRY_IMAGE}@sha256:" | head -n1)"
-      test -n "$IMAGE_DIGEST"
+      # Resolve and sign immutable registry-specific references, never mutable
+      # tags. The same manifest backs :latest in each registry.
+      resolve_digest() {
+        local tagged_image="$1" repository="$2"
+        docker pull "$tagged_image" >&2
+        docker image inspect \
+          --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+          "$tagged_image" \
+          | grep -F "${repository}@sha256:" | head -n1
+      }
+      GITLAB_IMAGE_DIGEST="$(resolve_digest \
+        "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" "$CI_REGISTRY_IMAGE")"
+      GHCR_IMAGE_DIGEST="$(resolve_digest \
+        "$GHCR_IMAGE:$CI_COMMIT_TAG" "$GHCR_IMAGE")"
+      test -n "$GITLAB_IMAGE_DIGEST"
+      test -n "$GHCR_IMAGE_DIGEST"
+      test "${GITLAB_IMAGE_DIGEST#*@}" = "${GHCR_IMAGE_DIGEST#*@}"
 
       COSIGN_PRIVATE_KEY="$(printf '%s' "$COSIGN_PRIVATE_KEY_B64" | base64 --decode)"
       COSIGN_PUBLIC_KEY="$(printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode)"
@@ -470,21 +497,29 @@ docker-release:
       }
       DERIVED_PUBLIC_KEY="$(cosign public-key --key env://COSIGN_PRIVATE_KEY)"
       test "$DERIVED_PUBLIC_KEY" = "$COSIGN_PUBLIC_KEY"
-      cosign sign --yes \
-        --key env://COSIGN_PRIVATE_KEY \
-        --registry-username "$CI_REGISTRY_USER" \
-        --registry-password "$CI_REGISTRY_PASSWORD" \
-        -a "git_sha=$CI_COMMIT_SHA" \
-        -a "version=$CI_COMMIT_TAG" \
-        "$IMAGE_DIGEST"
-      cosign verify --key env://COSIGN_PUBLIC_KEY \
-        --registry-username "$CI_REGISTRY_USER" \
-        --registry-password "$CI_REGISTRY_PASSWORD" \
-        -a "git_sha=$CI_COMMIT_SHA" \
-        -a "version=$CI_COMMIT_TAG" \
-        "$IMAGE_DIGEST"
+      sign_and_verify() {
+        local image_digest="$1" registry_user="$2" registry_password="$3"
+        cosign sign --yes \
+          --key env://COSIGN_PRIVATE_KEY \
+          --registry-username "$registry_user" \
+          --registry-password "$registry_password" \
+          -a "git_sha=$CI_COMMIT_SHA" \
+          -a "version=$CI_COMMIT_TAG" \
+          "$image_digest"
+        cosign verify --key env://COSIGN_PUBLIC_KEY \
+          --registry-username "$registry_user" \
+          --registry-password "$registry_password" \
+          -a "git_sha=$CI_COMMIT_SHA" \
+          -a "version=$CI_COMMIT_TAG" \
+          "$image_digest"
+      }
+      sign_and_verify "$GITLAB_IMAGE_DIGEST" \
+        "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD"
+      sign_and_verify "$GHCR_IMAGE_DIGEST" \
+        "$GHCR_USERNAME" "$GH_TOKEN"
       unset COSIGN_PRIVATE_KEY COSIGN_PUBLIC_KEY
       docker logout "$CI_REGISTRY"
+      docker logout "$GHCR_REGISTRY"
 
 # --- Documentation site (angieguardian.org) ---------------------------------
 # Builds the VitePress site from docs/ and publishes it as a `public/`

@@ -368,7 +368,8 @@ and arm64, bundles `guardian.wasm`, the example config, the rules file and
 `guardiand -t` against the packaged example config), writes and GPG-signs
 `SHA256SUMS`, uploads everything to the package registry, attaches the release
 asset links, mirrors the artifacts to GitHub, and builds, pushes and
-Cosign-signs the container image by immutable digest.
+Cosign-signs the container image by immutable digest in both the GitLab
+registry and `ghcr.io/angieguardian/angie-guardian`.
 
 ### Release signing setup
 
@@ -453,10 +454,17 @@ Enter without entering a value. Configure these GitLab CI/CD variables as
 | `RELEASE_GPG_PRIVATE_KEY_B64` | Single-line Base64 output of the verified passwordless signing-subkey export |
 | `COSIGN_PRIVATE_KEY_B64` | `base64 -w0 cosign.key` |
 | `COSIGN_PUBLIC_KEY_B64` | `base64 -w0 cosign.pub` |
+| `GH_TOKEN` | GitHub token for `melroy89` with Contents and Packages write access |
 
 Do not create a `COSIGN_PASSWORD` CI/CD variable. The tag job supplies an
 explicit empty value internally so Cosign does not try to open an interactive
 password prompt for this passwordless key.
+
+The same `GH_TOKEN` publishes the GitHub Release and authenticates to GHCR.
+Configure it as protected, masked and hidden, with expansion off. The image's
+OCI source label connects the new GHCR package to the public
+`AngieGuardian/angie-guardian` repository; after its first publication, confirm
+the package visibility is public in the GitHub organization settings.
 
 #### Key lifetime and rotation
 
