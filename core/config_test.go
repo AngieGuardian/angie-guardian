@@ -127,8 +127,8 @@ func TestBuiltinDifficultyDefaults(t *testing.T) {
 		if dc.PoW.BaseBits() != 20 || dc.PoW.MaxBits() != 24 {
 			t.Errorf("default bits = %d/%d, want 20/24", dc.PoW.BaseBits(), dc.PoW.MaxBits())
 		}
-		if dc.PoW.TokenTTL.Std() != 24*time.Hour || dc.PoW.ChallengeTTL.Std() != 30*time.Minute {
-			t.Errorf("default PoW TTLs = %v/%v, want 24h/30m", dc.PoW.TokenTTL.Std(), dc.PoW.ChallengeTTL.Std())
+		if dc.PoW.TokenTTL.Std() != 7*24*time.Hour || dc.PoW.ChallengeTTL.Std() != 30*time.Minute {
+			t.Errorf("default PoW TTLs = %v/%v, want 168h/30m", dc.PoW.TokenTTL.Std(), dc.PoW.ChallengeTTL.Std())
 		}
 	}
 }

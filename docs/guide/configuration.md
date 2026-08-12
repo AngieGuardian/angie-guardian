@@ -17,7 +17,7 @@ domains:
   # the backend). Difficulty takes quarter steps: 5.25 is exactly 2x the
   # work of 5 (see the difficulty table below).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 24h
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 7d
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:
@@ -273,7 +273,7 @@ Which value fires:
 
 - **`mode: always` (the default):** every unvouched request, regardless of
   HTTP method or User-Agent,
-  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie (by default 24 hours).
+  pays exactly `base_difficulty`, once, then rides a `token_ttl` cookie (by default 7 days).
   The cookie token lifetime must be at least one second and at most thirty days. An issued
   challenge remains solvable for `challenge_ttl`, which defaults to 30 minutes.
 - **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits

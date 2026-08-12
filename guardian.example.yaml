@@ -250,7 +250,7 @@ defaults:
                               # not this value. Farming is scored per host+IP,
                               # so a clean visitor behind the same CGNAT/proxy
                               # IP as a farmer can inherit above-base work.
-    token_ttl: 24h            # 1s minimum, 30d maximum
+    token_ttl: 7d             # 1s minimum, 30d maximum
     challenge_ttl: 30m        # must be positive; 24h maximum
     # Per-IP challenge issuance throttle (the default). PoW taxes clients that
     # solve; a raw flood that never solves still costs Angie an auth_request
@@ -329,7 +329,7 @@ domains:
     # Clean visitors normally pay base once per token_ttl; suspicious traffic
     # and challenge farming may escalate toward max. Attack mode shifts that
     # window up to difficulty_cap (default 7). Each +0.25 doubles work, so
-    # 5.25 is 2x the default 5. token_ttl inherits the 24h default.
+    # 5.25 is 2x the default 5. token_ttl inherits the 7d default.
     pow: { enabled: true, base_difficulty: 5.25, max_difficulty: 6 }
     # Crawlers allowlisted by PROVEN identity, not by their UA string: a
     # client claiming a listed bot's User-Agent is admitted only if its IP

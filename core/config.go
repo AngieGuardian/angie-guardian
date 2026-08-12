@@ -1272,7 +1272,7 @@ func (c *Config) finalize() error {
 		c.Defaults.PoW.MaxDifficulty = 6
 	}
 	if c.Defaults.PoW.TokenTTL == 0 {
-		c.Defaults.PoW.TokenTTL = Duration(24 * time.Hour)
+		c.Defaults.PoW.TokenTTL = Duration(7 * 24 * time.Hour)
 	}
 	if c.Defaults.PoW.ChallengeTTL == 0 {
 		c.Defaults.PoW.ChallengeTTL = Duration(30 * time.Minute)

@@ -68,7 +68,7 @@ domains:
   # WAF (request bodies never reach Guardian; payload validation stays with
   # the backend). Difficulty takes quarter steps: each +0.25 doubles the
   # work, so 5.25 is 2x the default 5 (see the difficulty table below).
-  # token_ttl inherits the 24h default.
+  # token_ttl inherits the 7d default.
   example.com:
     pow: { enabled: true, base_difficulty: 5.25 }
     # Honeypot: no generic trap path is safe to copy (one hit persistently
@@ -192,7 +192,7 @@ Which value fires:
 - **`mode: always` (the default):** every unvouched request, regardless of HTTP
   method or User-Agent, pays exactly `base_difficulty`, once, then rides a
   `token_ttl` cookie. The token lifetime must be at least one second and at
-  most thirty days; the default is 24 hours. An issued challenge remains
+  most thirty days; the default is 7 days. An issued challenge remains
   solvable for `challenge_ttl`, which defaults to 30 minutes and is capped at
   24 hours.
 - **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits =

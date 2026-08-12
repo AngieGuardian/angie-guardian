@@ -55,7 +55,7 @@ domains:
   # Difficulty takes quarter steps: each +0.25 doubles the work (so 5.25 is
   # 2x the work of 5).
   example.com:
-    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 24h
+    pow: { enabled: true, base_difficulty: 5.25 }   # token_ttl inherits 7d
     # Honeypot: no generic trap path is safe to copy (one hit persistently
     # blocks the source IP when ip_behaviour is on). Invent a path specific
     # to YOUR site that nothing links to, then enable:
