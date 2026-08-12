@@ -23,8 +23,9 @@ WatchdogSec=30s
 # clear reason instead of crash-looping the daemon (and, with fail-open, 500ing
 # the site during the restart window).
 #
-# Keep the packaged path explicit: if a drop-in changes ExecStart to another
-# config, it must change this preflight path too.
+# The packaged service names its config path explicitly. To use a different
+# file, change the path in both lines: ExecStartPre validates it, then
+# ExecStart starts Guardian with it.
 ExecStartPre=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml -t
 ExecStart=/usr/local/bin/guardiand -config /etc/guardian/guardian.yaml
 # `systemctl reload guardiand` hot-applies config edits via SIGHUP (domains,
