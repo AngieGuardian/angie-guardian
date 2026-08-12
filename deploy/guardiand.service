@@ -1,6 +1,6 @@
 [Unit]
 Description=Angie Guardian sidecar (WAF + proof-of-work bot firewall)
-Documentation=https://github.com/melroy89/angie-guardian
+Documentation=https://angieguardian.org/
 After=network.target
 Before=angie.service
 

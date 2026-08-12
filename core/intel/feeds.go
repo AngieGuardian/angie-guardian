@@ -158,7 +158,7 @@ func (f *feed) fetch(ctx context.Context, client *http.Client, cacheDir string, 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "angie-guardian feed fetcher (+https://github.com/melroy89/angie-guardian)")
+	req.Header.Set("User-Agent", "angie-guardian feed fetcher (+https://angieguardian.org/)")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

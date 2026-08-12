@@ -1,6 +1,7 @@
 # Binaries
 /guardiand
 /guardian-train
+/guardian-loadtest
 /bin/
 /dist/
 
