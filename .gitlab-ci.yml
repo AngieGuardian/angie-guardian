@@ -453,9 +453,9 @@ docker-release:
         | grep -F "${CI_REGISTRY_IMAGE}@sha256:" | head -n1)"
       test -n "$IMAGE_DIGEST"
 
-      printf '%s' "$COSIGN_PRIVATE_KEY_B64" | base64 --decode > "$COSIGN_WORK_DIR/cosign.key"
-      printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode > "$COSIGN_WORK_DIR/cosign.pub"
-      chmod 600 "$COSIGN_WORK_DIR/cosign.key"
+      COSIGN_PRIVATE_KEY="$(printf '%s' "$COSIGN_PRIVATE_KEY_B64" | base64 --decode)"
+      COSIGN_PUBLIC_KEY="$(printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 --decode)"
+      export COSIGN_PRIVATE_KEY COSIGN_PUBLIC_KEY
 
       cosign() {
         # Cosign encrypts even a passwordless generated key and otherwise
@@ -464,22 +464,26 @@ docker-release:
         docker run --rm \
           --user 0:0 \
           --env COSIGN_PASSWORD= \
-          --env DOCKER_CONFIG=/docker \
-          --volume "$DOCKER_CONFIG:/docker:ro" \
-          --volume "$COSIGN_WORK_DIR:/keys:ro" \
+          --env COSIGN_PRIVATE_KEY \
+          --env COSIGN_PUBLIC_KEY \
           "$COSIGN_IMAGE" "$@"
       }
-      cosign public-key --key /keys/cosign.key > "$COSIGN_WORK_DIR/derived.pub"
-      cmp "$COSIGN_WORK_DIR/derived.pub" "$COSIGN_WORK_DIR/cosign.pub"
+      DERIVED_PUBLIC_KEY="$(cosign public-key --key env://COSIGN_PRIVATE_KEY)"
+      test "$DERIVED_PUBLIC_KEY" = "$COSIGN_PUBLIC_KEY"
       cosign sign --yes \
-        --key /keys/cosign.key \
+        --key env://COSIGN_PRIVATE_KEY \
+        --registry-username "$CI_REGISTRY_USER" \
+        --registry-password "$CI_REGISTRY_PASSWORD" \
         -a "git_sha=$CI_COMMIT_SHA" \
         -a "version=$CI_COMMIT_TAG" \
         "$IMAGE_DIGEST"
-      cosign verify --key /keys/cosign.pub \
+      cosign verify --key env://COSIGN_PUBLIC_KEY \
+        --registry-username "$CI_REGISTRY_USER" \
+        --registry-password "$CI_REGISTRY_PASSWORD" \
         -a "git_sha=$CI_COMMIT_SHA" \
         -a "version=$CI_COMMIT_TAG" \
         "$IMAGE_DIGEST"
+      unset COSIGN_PRIVATE_KEY COSIGN_PUBLIC_KEY
       docker logout "$CI_REGISTRY"
 
 # --- Documentation site (angieguardian.org) ---------------------------------

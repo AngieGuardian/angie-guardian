@@ -374,18 +374,67 @@ Cosign-signs the container image by immutable digest.
 
 The published GPG trust anchor is
 `E0C7 C029 005B 0CE6 A743 8BD5 71D1 1FF2 3454 B9D7`. Do not put its primary
-private key in GitLab. Add a dedicated signing-only subkey locally, then export
-only that subkey (the export carries a non-secret primary-key stub so verifiers
-can build the certification chain):
+private key in GitLab. Add a dedicated signing-only subkey locally:
 
 ```sh
 PRIMARY=E0C7C029005B0CE6A7438BD571D11FF23454B9D7
 gpg --quick-add-key "$PRIMARY" ed25519 sign 2y
 gpg --with-subkey-fingerprint --list-secret-keys "$PRIMARY"
+```
 
-# Replace this with the new signing subkey fingerprint, including the !.
-gpg --armor --export-secret-subkeys 'SIGNING_SUBKEY_FINGERPRINT!' \
+Set `SIGNING_SUBKEY` to the full fingerprint of the new `[S]` subkey, without
+`!`. A normal secret-subkey export preserves the passphrase protection inherited
+from the primary key; Base64 encoding does not remove it. CI has no terminal in
+which to unlock that key, so make a passwordless copy of only this release
+subkey in an isolated RAM-backed keyring. This does not change the primary key,
+the original subkey, or the normal GnuPG keyring:
+
+```sh
+SIGNING_SUBKEY=REPLACE_WITH_FULL_SIGNING_SUBKEY_FINGERPRINT
+CI_KEY_DIR="$(mktemp -d --tmpdir=/dev/shm guardian-release-key.XXXXXX)"
+chmod 700 "$CI_KEY_DIR"
+mkdir -m 700 "$CI_KEY_DIR/gnupg"
+
+gpg --armor --export-secret-subkeys "${SIGNING_SUBKEY}!" \
+  > "$CI_KEY_DIR/protected-subkey.asc"
+GNUPGHOME="$CI_KEY_DIR/gnupg" gpg --import \
+  "$CI_KEY_DIR/protected-subkey.asc"
+
+KEYGRIP=$(GNUPGHOME="$CI_KEY_DIR/gnupg" \
+  gpg --batch --with-colons --with-keygrip --list-secret-keys \
+    "$SIGNING_SUBKEY" \
+  | awk -F: -v fpr="$SIGNING_SUBKEY" \
+      '$1 == "fpr" { selected = ($10 == fpr); next }
+       selected && $1 == "grp" { print $10; exit }')
+test -n "$KEYGRIP"
+
+# This is a local interactive step. Enter the current key passphrase, then
+# leave the new passphrase empty and confirm the unprotected temporary copy.
+export GPG_TTY=$(tty)
+GNUPGHOME="$CI_KEY_DIR/gnupg" \
+  gpg-connect-agent "PASSWD $KEYGRIP" /bye
+
+GNUPGHOME="$CI_KEY_DIR/gnupg" gpg --armor \
+  --export-secret-subkeys "${SIGNING_SUBKEY}!" \
   > guardian-release-signing-subkey.asc
+chmod 600 guardian-release-signing-subkey.asc
+```
+
+Prove that the final export signs non-interactively before putting it in
+GitLab. Any pinentry prompt or signing error means the export is still
+protected and must not be used:
+
+```sh
+mkdir -m 700 "$CI_KEY_DIR/verify"
+GNUPGHOME="$CI_KEY_DIR/verify" gpg --batch --import \
+  guardian-release-signing-subkey.asc
+printf 'Angie Guardian release signing test\n' > "$CI_KEY_DIR/probe.txt"
+GNUPGHOME="$CI_KEY_DIR/verify" gpg --batch --yes \
+  --local-user "${SIGNING_SUBKEY}!" --armor --detach-sign \
+  --output "$CI_KEY_DIR/probe.txt.asc" "$CI_KEY_DIR/probe.txt"
+GNUPGHOME="$CI_KEY_DIR/verify" gpg --batch --verify \
+  "$CI_KEY_DIR/probe.txt.asc" "$CI_KEY_DIR/probe.txt"
+
 base64 -w0 guardian-release-signing-subkey.asc; printf '\n'
 ```
 
@@ -401,7 +450,7 @@ Enter without entering a value. Configure these GitLab CI/CD variables as
 
 | Variable | Value |
 |---|---|
-| `RELEASE_GPG_PRIVATE_KEY_B64` | Single-line base64 output of the signing-subkey export |
+| `RELEASE_GPG_PRIVATE_KEY_B64` | Single-line Base64 output of the verified passwordless signing-subkey export |
 | `COSIGN_PRIVATE_KEY_B64` | `base64 -w0 cosign.key` |
 | `COSIGN_PUBLIC_KEY_B64` | `base64 -w0 cosign.pub` |
 
@@ -433,20 +482,18 @@ gpg --with-subkey-fingerprint --list-secret-keys "$PRIMARY"
 ```
 
 To extend the same signing subkey for another two years, use its full
-fingerprint without `!`, then export it again:
+fingerprint without `!`:
 
 ```sh
 SIGNING_SUBKEY=REPLACE_WITH_FULL_SIGNING_SUBKEY_FINGERPRINT
 gpg --quick-set-expire "$PRIMARY" 2y "$SIGNING_SUBKEY"
-gpg --armor --export-secret-subkeys "${SIGNING_SUBKEY}!" \
-  > guardian-release-signing-subkey.asc
-base64 -w0 guardian-release-signing-subkey.asc; printf '\n'
 ```
 
-Replace `RELEASE_GPG_PRIVATE_KEY_B64` with that new Base64 output. The secret
-key material is unchanged, but the new export carries the updated expiration
-metadata. Alternatively, create a new signing-only subkey and replace the
-variable with its export.
+Then repeat the isolated passwordless export and non-interactive signing test
+above, and replace `RELEASE_GPG_PRIVATE_KEY_B64` with the new Base64 output.
+The secret key material is unchanged, but the new export carries the updated
+expiration metadata. Alternatively, create a new signing-only subkey and use
+the same isolated export procedure for it.
 
 To rotate Cosign, generate a new passwordless pair and replace
 `COSIGN_PRIVATE_KEY_B64` and `COSIGN_PUBLIC_KEY_B64` together before creating a
@@ -454,8 +501,9 @@ release. Each existing release keeps its matching `cosign.pub`, authenticated
 by that release's GPG-signed `SHA256SUMS`, so older signatures remain
 verifiable with their original public key.
 
-Delete the plaintext secret exports after the variables are configured and a
-test signature succeeds; retain encrypted offline backups. Protected tag jobs
+Delete `guardian-release-signing-subkey.asc` and the temporary `CI_KEY_DIR`
+after the variables are configured and the test signature succeeds; retain an
+encrypted offline backup of the original protected key. Protected tag jobs
 fail rather than publish an unsigned release when any signing material is
 missing or mismatched. The release contains `SHA256SUMS.asc`, `RELEASE-KEY.asc`
 and `cosign.pub`; `cosign.pub` is itself listed in the GPG-signed checksum file.
