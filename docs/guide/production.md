@@ -40,10 +40,12 @@ config file described above.
 ### systemd
 
 For the complete first-install sequence, start with the release-first
-[Getting Started guide](/guide/getting-started). In short, choose a pinned
+[Getting Started guide](/guide/getting-started). 
+
+In short, choose a pinned
 release archive from the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
-(under **Assets -> Packages**) and unpack it; it contains the binaries,
+[GitLab releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
+(under **Assets -> Packages**) or at [GitHub Releases](https://github.com/AngieGuardian/angie-guardian/releases) and unpack it; it contains the binaries,
 `guardian.example.yaml`, and the `deploy/` directory (unit file and starter
 WAF rules) used below. Then install it as a service:
 
