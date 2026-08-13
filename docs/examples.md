@@ -128,7 +128,8 @@ WAF rules are not auto-discovered: one or more rules files must be installed on
 disk and named by `waf.rules.files`, with `enabled: true`, or no
 WAF rule matching happens at all. The install recipe in the
 [production guide](/guide/production#systemd) copies the shipped starter file
-`deploy/rules-common.yaml` to `/etc/guardian/rules.d/common.yaml`; a
+[`deploy/rules-common.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/rules-common.yaml)
+to `/etc/guardian/rules.d/common.yaml`; a
 configured file that is missing fails validation (and so startup) rather than
 silently matching nothing.
 
@@ -290,8 +291,9 @@ domains:
 
 ## The full annotated example
 
-The complete `guardian.example.yaml` shipped with every release, every option
-annotated. It is the **host/systemd profile**: loopback listeners, root-owned
+The complete
+[`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml)
+shipped with every release, every option annotated. It is the **host/systemd profile**: loopback listeners, root-owned
 read-only config under `/etc/guardian`, generated keys and state under
 `/var/lib/guardian` (see
 [Filesystem layout and ownership](/guide/production#filesystem-layout-and-ownership)).
@@ -301,7 +303,8 @@ For containers, follow the
 [Docker section of the production guide](/guide/production#docker), which
 adapts the listeners (`0.0.0.0` + `trusted_proxy` behind loopback-only port
 bindings) and puts keys and state on named volumes. The repo's
-`deploy/docker/guardian.docker.yaml` is the runnable **demo harness only**; it
+[`deploy/docker/guardian.docker.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.docker.yaml)
+is the runnable **demo harness only**; it
 contains a fixed admin token and demo-only exceptions, so don't copy it into
 production.
 
@@ -309,6 +312,10 @@ production.
 <<< ../guardian.example.yaml
 
 ## Angie: full wiring
+
+For the JSON access-log format used below, install the shipped
+[`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf)
+in Angie's `http {}` context.
 
 ```nginx
 # http {} context: keepalive upstream (REQUIRED for throughput) + rate limits.
@@ -342,7 +349,7 @@ server {
         proxy_pass http://my_application;
     }
 
-    # JSON access log feeding guardian-train (format from deploy/angie-json-log.conf).
+    # JSON access log feeding guardian-train.
     access_log /var/log/angie/example.com.access.json guardian_json;
 
 }
