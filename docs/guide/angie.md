@@ -408,7 +408,7 @@ Content-Security-Policy: The page's settings blocked a worker script
 violates the following directive: "script-src 'unsafe-inline' 'self'"
 ```
 
-The shipped `deploy/angie-guardian.conf` therefore gives `@guardian_challenge`
+The shipped [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) therefore gives `@guardian_challenge`
 and `@guardian_denied` their own `add_header Content-Security-Policy`, fitted
 to exactly what each page uses and nothing more. That one directive does two
 jobs: Guardian's pages carry a strict policy of their own, and, by the
@@ -443,8 +443,8 @@ subrequest that decides, and again through `@guardian_challenge` that serves
 the interstitial. They are separate HTTP requests, so anything the second hop
 works out for itself can contradict what the first already recorded in the
 decision log, `/admin/decisions` and `guardian_decisions_total`.
-`auth_request_set` is what stops that: `deploy/angie-guardian-location.conf`
-captures the auth response and `deploy/angie-guardian.conf` replays it:
+`auth_request_set` is what stops that: [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
+captures the auth response and [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) replays it:
 
 | Variable | Relayed as | Why the second hop cannot work it out itself |
 |---|---|---|

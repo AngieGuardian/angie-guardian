@@ -167,7 +167,7 @@ pipeline is the one that matters).
 | `test` | `go test -race -count=1 ./...` | |
 | `bench-allocs` | `make bench-regress` | A new hot-path allocation fails here in seconds. |
 | `govulncheck` | A pinned `govulncheck ./...` | Call-graph aware, so it only flags vulnerabilities the code actually reaches. |
-| `alerts` | `promtool check rules` and `promtool test rules` over `deploy/alerts.yaml` | Those rules ship to operators verbatim, so a typo'd expression has to fail here. |
+| `alerts` | `promtool check rules` and `promtool test rules` over [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) | Those rules ship to operators verbatim, so a typo'd expression has to fail here. |
 | `docs` | The VitePress build, on branches that touch `docs/**` | Dead-link checking is part of the build. |
 | `e2e` | `make e2e` on the shell-executor runner | **Protected refs only.** |
 | `build`, `wasm` | The three binaries plus the WASM guest | Tag pipelines additionally cross-compile, package, checksum, smoke-test and publish. |
@@ -202,7 +202,7 @@ Two gaps to plan around:
   not recognise serves a 200 and logs it, rather than falling through to an
   accidental allow. Keep new code in that shape.
 - **A config key is never just a struct field.** Adding one touches
-  `core/config.go` (parse, validate, defaults), `guardian.example.yaml`,
+  `core/config.go` (parse, validate, defaults), [`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml),
   `core/config_test.go`, and the docs that claim to be complete:
   [Configuration Options](/reference/configuration), the relevant guide page,
   and `USAGE.md`. `challenge_farm` is a good worked example to grep for.
@@ -210,7 +210,7 @@ Two gaps to plan around:
   [the metrics reference](/reference/metrics)**, and needs a label-cardinality
   answer before it lands: a label must come from a bounded set (a config key,
   for instance), never from a request header. If it deserves alerting, it also
-  belongs in `deploy/alerts.yaml` with a case in `deploy/alerts.test.yaml`.
+  belongs in [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) with a case in [`deploy/alerts.test.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.test.yaml).
 - **An Admin API change updates
   [the Admin API reference](/reference/admin-api)**, which is written to match
   the handlers field for field.
@@ -308,7 +308,7 @@ never that it does the right thing.
 
 ## The end-to-end suite
 
-`test/e2e` boots the real stack from `deploy/docker/compose.yaml` with
+`test/e2e` boots the real stack from [`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml) with
 [testcontainers-go](https://golang.testcontainers.org/), drives traffic
 **through Angie**, and asserts on decisions, `/metrics` and the Admin API:
 
@@ -323,8 +323,8 @@ go test -tags e2e -run TestWAFRuleDeny ./test/e2e/          # one scenario
 
 The suite picks three free host ports, brings the stack up, and tears it (and
 its volumes) down again. The daemon's config for the run is
-`deploy/docker/guardian.e2e.yaml`, with `guardian.e2e-chaos.yaml` and
-`guardian.e2e-nft.yaml` for the store-outage and offload variants.
+[`deploy/docker/guardian.e2e.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e.yaml), with [`deploy/docker/guardian.e2e-chaos.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e-chaos.yaml) and
+[`deploy/docker/guardian.e2e-nft.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e-nft.yaml) for the store-outage and offload variants.
 
 Two things about it repeatedly surprise people:
 
@@ -337,7 +337,7 @@ Two things about it repeatedly surprise people:
   is designed behaviour, not a flake, and the harness retries around it.
 
 For poking at the stack by hand rather than through Go, bring the same compose
-file up yourself; `deploy/docker/README.md` covers the topology and ports.
+file up yourself; [`deploy/docker/README.md`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/README.md) covers the topology and ports.
 
 ## Store backends
 

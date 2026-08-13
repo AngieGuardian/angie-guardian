@@ -6,7 +6,7 @@ listener](/reference/admin-api); no token needed unless
 format under the `guardian_` namespace. The standard Go runtime and process
 collectors are registered too, so GC, goroutine and RSS panels come for free.
 
-Import `deploy/grafana-dashboard.json` for a ready-made dashboard over these
+Import [`deploy/grafana-dashboard.json`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/grafana-dashboard.json) for a ready-made dashboard over these
 series.
 
 ## Decisions
@@ -49,7 +49,7 @@ Label values are bounded by construction:
 | `guardian_anomaly_score` | histogram | `domain` | Distribution of scores for requests that reach the anomaly stage, for tuning `challenge_at` / `deny_at`. Earlier terminal decisions and requests with valid PoW tokens are not observed. |
 | `guardian_anomaly_baseline_selections_total` | counter | `domain`, `level` | Selected baseline specificity: `exact`, `route`, `method`, domain-wide fallback, or `missing`. |
 | `guardian_anomaly_baseline_misses_total` | counter | `domain` | Alert-friendly mirror of the `missing` selection level: requests that reached an enabled anomaly stage but had no domain baseline, so that stage made no decision. |
-| `guardian_anomaly_model_trained_timestamp_seconds` | gauge | `model` | Unix time the loaded model artifact was trained, set on load and every hot swap. A stalling value means retraining or promotion is silently failing; `deploy/alerts.yaml` ships `GuardianAnomalyModelStale` (warns after 14 days, two missed weekly runs). |
+| `guardian_anomaly_model_trained_timestamp_seconds` | gauge | `model` | Unix time the loaded model artifact was trained, set on load and every hot swap. A stalling value means retraining or promotion is silently failing; [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) ships `GuardianAnomalyModelStale` (warns after 14 days, two missed weekly runs). |
 
 ## Blocking and bots
 
@@ -71,7 +71,7 @@ Label values are bounded by construction:
 |---|---|---|---|
 | `guardian_store_ops_total` | counter | `backend`, `op`, `status` | Store operations by op (`get`, `set`, `cas`, `incr`, `delete`, `scan`, `block_index_scan`, `posture_set`, `posture_delete`, `posture_max`) and status (`ok` or `error`). A rising `error` rate on a Redis/Valkey backend usually means connectivity trouble; a failing stage abstains while later stages continue. |
 | `guardian_store_op_seconds` | histogram | `backend`, `op` | Store operation latency. On a durable embedded backend with `store.sync: true`, watch `set` and `cas`: they pay an fsync. |
-| `guardian_store_up` | gauge | `backend` | `1` = the store answered the last write/read-back probe, `0` = Guardian is failing open. **The single most important series to alert on**: at `0` the process is still serving every request while single-spend, scoreboards and blocks have quietly stopped working, and `/healthz` stays green. `deploy/alerts.yaml` ships the rule. |
+| `guardian_store_up` | gauge | `backend` | `1` = the store answered the last write/read-back probe, `0` = Guardian is failing open. **The single most important series to alert on**: at `0` the process is still serving every request while single-spend, scoreboards and blocks have quietly stopped working, and `/healthz` stays green. [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) ships the rule. |
 | `guardian_store_probe_total` | counter | `backend`, `status` | Completed store health probes by `status` (`ok`, `error`). A staleness event (a wedged probe loop) drives `guardian_store_up` to `0` without incrementing this, since no probe finished. |
 | `guardian_store_clock_skew_seconds` | gauge | `backend` | Store server clock minus local clock, probed on remote backends (redis/valkey) each health round. Skew beyond a counter window (60s) silently voids deadline-based counter flushes; the daemon logs a warning above 10s. Embedded backends share the process clock and never emit it. |
 

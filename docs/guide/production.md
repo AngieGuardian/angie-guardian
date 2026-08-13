@@ -68,7 +68,7 @@ sequence, start with the release-first [Getting Started guide](/guide/getting-st
 In short, choose a pinned release archive from
 [GitHub Releases](https://github.com/AngieGuardian/angie-guardian/releases)
 (under **Assets**) and unpack it; it contains the binaries,
-`guardian.example.yaml`, and the `deploy/` directory (unit file and starter
+[`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml), and the `deploy/` directory (unit file and starter
 WAF rules) used below. Then install it as a service:
 
 ```sh
@@ -99,7 +99,7 @@ curl -s localhost:8072/readyz          # readiness -> {"ready":true,...}
 ```
 
 `guardian.yaml` here is your edited copy of the shipped
-`guardian.example.yaml`. Nothing under `/var/lib/guardian` needs manual setup:
+[`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml). Nothing under `/var/lib/guardian` needs manual setup:
 the unit's `StateDirectory=` creates it owned by the service user, and
 guardiand generates the signing key and admin token there on first start.
 
@@ -212,7 +212,7 @@ a volume is regenerated when the container is replaced. Hot reload works as
 usual: `docker kill -s HUP <container>` or `POST /admin/reload`.
 
 For a complete, runnable example (including Angie and a demo backend) see
-`deploy/docker/compose.yaml` in the repo; it builds the image from source
+[`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml) in the repo; it builds the image from source
 because the e2e suite exercises the working tree, but swapping `build:` for
 `image:` gives the production shape above.
 
@@ -554,7 +554,7 @@ scrape the Prometheus metrics at `/metrics` on the admin listener (open to
 scrapers by default, no token needed): decisions by action/reason/domain, challenge
 lifecycle, PoW solve-time and anomaly-score histograms, blocks placed, store op
 latency, and end-to-end `Evaluate()` latency. Import
-`deploy/grafana-dashboard.json` for a ready-made Grafana dashboard. This
+[`deploy/grafana-dashboard.json`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/grafana-dashboard.json) for a ready-made Grafana dashboard. This
 complements the built-in dashboard rather than replacing it: the built-in view
 is per-instance and live, while Prometheus retains history and sums across a
 fleet.
@@ -576,7 +576,7 @@ scrape_configs:
 
 ### Alerting
 
-`deploy/alerts.yaml` ships ready-made Prometheus rules. Point your `rule_files`
+[`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) ships ready-made Prometheus rules. Point your `rule_files`
 at it:
 
 ```yaml
@@ -588,7 +588,7 @@ rule_files:
 Every rule selects `job="angie-guardian"`. If you scrape Guardian under a
 different job name, search/replace it in the file or nothing will ever fire.
 Validate after editing with `promtool check rules` and `promtool test rules`
-(the shipped `deploy/alerts.test.yaml` covers the rules and their sample
+(the shipped [`deploy/alerts.test.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.test.yaml) covers the rules and their sample
 floors; CI runs both on every pipeline).
 
 | Alert | Fires on | Severity |

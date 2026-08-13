@@ -100,7 +100,7 @@ exactly what that page uses, plus `X-Content-Type-Options: nosniff`,
 | Denied page | inline style only, no script, no subresources; framing limited to same-origin |
 | Admin dashboard | inline script and style, same-origin vendored chart libraries, `data:` favicon, same-origin `fetch`; framing refused outright |
 
-The Angie glue (`deploy/angie-guardian.conf`) also adds the interstitial and
+The Angie glue ([`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)) also adds the interstitial and
 denied policies with `add_header`, not as duplication: an Angie location that
 sets any `add_header` stops inheriting the server-level ones, which is what
 keeps a vhost's own site CSP (typically lacking `worker-src blob:`) from

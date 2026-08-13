@@ -87,7 +87,7 @@ solver runs in a `blob:` Web Worker that a normal site policy (rightly)
 forbids. In Angie, a server-level `add_header Content-Security-Policy ...` in
 the vhost is inherited by every location that defines no `add_header` of its
 own, so it lands on the interstitial when the challenge location does not set
-headers itself. This happens with a `deploy/angie-guardian.conf` copied before
+headers itself. This happens with a [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) copied before
 the snippet set a location CSP, or with hand-written glue.
 
 **Fix:** update `/etc/angie/angie-guardian.conf` to the current shipped
@@ -303,12 +303,12 @@ until Guardian returns.
 
 **Don't mistake this for health.** Alert on it: watch the systemd unit
 (`Type=notify` marks the service failed if it wedges), the `/metrics` endpoint,
-and store connectivity via `guardian_store_up`. `deploy/alerts.yaml` ships the
+and store connectivity via `guardian_store_up`. [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) ships the
 rules; see [Alerting](/guide/production#alerting).
 
 To verify fail-open is wired correctly, stop guardiand and confirm the site
 still serves. If it returns 500 instead, check the 5xx `error_page` and
-`@guardian_fail_open` target in `deploy/angie-guardian.conf`. To deliberately
+`@guardian_fail_open` target in [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf). To deliberately
 fail closed, comment out that `error_page`; you may then also comment out the
 unused named location, but removing only the still-referenced target makes the
 Angie configuration invalid.

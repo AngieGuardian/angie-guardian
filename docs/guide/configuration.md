@@ -114,7 +114,7 @@ headers. Getting from the shipped starter file to a running configuration
 takes three explicit steps; none of them happen automatically:
 
 1. **Install the starter rules file.** The release archive (and the repo) ships
-   `deploy/rules-common.yaml`, a commented starter set (dotfile probes,
+   [`deploy/rules-common.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/rules-common.yaml), a commented starter set (dotfile probes,
    path traversal, SQLi heuristics, scanner UAs). The
    [production install recipe](/guide/production#systemd) copies it to
    `/etc/guardian/rules.d/common.yaml`; nothing is auto-discovered from that

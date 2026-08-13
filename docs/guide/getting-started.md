@@ -68,7 +68,7 @@ archive name, and directory name.
 
 The extracted directory contains `guardiand`, the `guardian-train` and
 `guardian-loadtest` companion tools, the optional `guardian.wasm`, the
-canonical `guardian.example.yaml`, and the complete `deploy/` directory. The
+canonical [`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml), and the complete `deploy/` directory. The
 installation below uses the binary, systemd unit, Angie snippets, and starter
 rules directly from that directory.
 

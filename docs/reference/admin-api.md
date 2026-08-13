@@ -89,7 +89,7 @@ Prometheus metrics: decisions by action/reason/domain, challenge lifecycle,
 PoW solve-time and anomaly-score histograms, blocks placed, bot verification
 outcomes, reputation feed entries and refreshes, store op latency, and
 end-to-end `Evaluate()` latency. Every series is listed in the
-[Metrics reference](/reference/metrics). Import `deploy/grafana-dashboard.json`
+[Metrics reference](/reference/metrics). Import [`deploy/grafana-dashboard.json`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/grafana-dashboard.json)
 for a ready-made dashboard.
 
 ## Blocks
