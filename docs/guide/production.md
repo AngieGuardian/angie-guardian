@@ -65,10 +65,9 @@ Use the manual procedure below when you need to install a pinned release or
 want to perform each installation step yourself. For the complete first-install
 sequence, start with the release-first [Getting Started guide](/guide/getting-started).
 
-In short, choose a pinned
-release archive from the
-[GitLab releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases)
-(under **Assets -> Packages**) or at [GitHub Releases](https://github.com/AngieGuardian/angie-guardian/releases) and unpack it; it contains the binaries,
+In short, choose a pinned release archive from
+[GitHub Releases](https://github.com/AngieGuardian/angie-guardian/releases)
+(under **Assets**) and unpack it; it contains the binaries,
 `guardian.example.yaml`, and the `deploy/` directory (unit file and starter
 WAF rules) used below. Then install it as a service:
 
@@ -232,9 +231,9 @@ threshold-tuning workflow.
 ### Preferred systemd timer
 
 On a systemd installation, use the shipped
-[`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
+[`guardian-train.service`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardian-train.service)
 and
-[`guardian-train.timer`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.timer)
+[`guardian-train.timer`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardian-train.timer)
 templates. The timer runs weekly with up to 30 minutes of random delay; the
 one-shot service trains at low CPU/I/O priority in a hardened, networkless
 sandbox. Its update helper reads plain and gzip-compressed rotations and
@@ -492,7 +491,7 @@ memory). When using systemd `MemoryMax=` or a container memory limit, base the
 calculation on that service limit, not on the host's total RAM.
 
 Set these in the systemd unit's `Environment=` (see
-[`deploy/guardiand.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardiand.service))
+[`deploy/guardiand.service`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardiand.service))
 and measure with `guardian-loadtest`; at typical production rates leaving both
 settings at their defaults is fine.
 

@@ -136,5 +136,5 @@ bypass.
 ## Reporting a vulnerability
 
 Found a hole in the above? See
-[SECURITY.md](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/SECURITY.md)
+[SECURITY.md](https://github.com/AngieGuardian/angie-guardian/blob/main/SECURITY.md)
 for the private disclosure process.

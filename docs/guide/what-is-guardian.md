@@ -138,5 +138,5 @@ your own hardware.
 ## License
 
 Angie Guardian is free software, released under the
-[AGPL-3.0](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/LICENSE)
+[AGPL-3.0](https://github.com/AngieGuardian/angie-guardian/blob/main/LICENSE)
 license, copyright Melroy van den Berg.

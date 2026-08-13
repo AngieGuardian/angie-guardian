@@ -45,7 +45,7 @@ requires one JSON object per line with `host`, `method`, `uri`, `status`,
 `user_agent`, and `guardian_action`. Extra fields are allowed, but missing,
 duplicate, wrongly typed, malformed, or invalid required fields are counted as
 bad input. A line over the 1 MiB input limit aborts the scan instead of being
-silently skipped. [`deploy/angie-json-log.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf) defines the matching
+silently skipped. [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf) defines the matching
 `guardian_json` format.
 
 A `log_format` has to be declared in the `http {}` context, and can then be
@@ -61,7 +61,7 @@ include angie-json-log.conf;   # from deploy/angie-json-log.conf
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
-Copy [the file](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf)
+Copy [the file](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf)
 into place alongside the other snippets, then reload:
 
 ```sh
@@ -76,7 +76,7 @@ combined log also works: every record carries its own `host` field, and
 ::: warning `$guardian_action` needs the Guardian protection include
 The format logs `$guardian_action`, which is set by
 `auth_request_set $guardian_action $upstream_http_x_guardian_action;` in
-[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf).
+[`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf).
 For a request location that does not include the Guardian protection snippet,
 the variable is empty and the strict trainer rejects that record. Wire up
 [Angie](/guide/angie) first and confirm the log contains a Guardian action
@@ -143,9 +143,9 @@ the candidate. The reports make filtering, coverage, segment selection and
 drift reviewable by automation and operators.
 
 For production automation, prefer the shipped
-[`guardian-train.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.service)
+[`guardian-train.service`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardian-train.service)
 and
-[`guardian-train.timer`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardian-train.timer)
+[`guardian-train.timer`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardian-train.timer)
 over a bare cron entry: weekly training from your retained log window, strict
 input and expected-domain verification, candidate comparison, a kept last-good
 artifact, and atomic promotion. See

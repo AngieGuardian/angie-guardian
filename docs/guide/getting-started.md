@@ -142,7 +142,7 @@ custom build. They require a repository checkout and the Go toolchain selected
 by `go.mod` (currently Go 1.26.5):
 
 ```sh
-git clone https://gitlab.melroy.org/melroy/angie-guardian.git
+git clone https://github.com/AngieGuardian/angie-guardian.git
 cd angie-guardian
 go build -o guardiand ./cmd/guardiand
 ```
@@ -153,7 +153,7 @@ commands use `/usr/local/bin/guardiand`, so the installation path is identical.
 ## 2. Configure Guardian
 
 The release archive already contains the
-[canonical `guardian.example.yaml`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/guardian.example.yaml).
+[canonical `guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml).
 It is the recommended, thoroughly annotated host/systemd profile; the same
 file is rendered as the [full annotated example](/examples#the-full-annotated-example).
 Install it together with the starter WAF rules it actively references:
@@ -240,9 +240,9 @@ recommended annotated profile instead.
 ## 3. Install and wire the Angie configuration
 
 Install the two shipped Angie snippets,
-[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf)
+[`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 and
-[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf),
+[`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf),
 at the paths used by the examples:
 
 ```sh

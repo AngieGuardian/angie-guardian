@@ -497,7 +497,7 @@ server {
 ```
 
 A ready-to-include version of this is in
-[`deploy/angie-status.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-status.conf).
+[`deploy/angie-status.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-status.conf).
 
 Then point guardiand at it:
 

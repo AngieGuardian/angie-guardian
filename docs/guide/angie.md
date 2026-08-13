@@ -60,9 +60,9 @@ location / {
 }
 ```
 
-[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf) documents the fail-open toggle (what happens when
+[`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) documents the fail-open toggle (what happens when
 the sidecar is down) and the challenge/pass/denied routes. The companion
-[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf)
+[`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
 contains only directives valid in `server` or `location` context.
 
 An `include` path is relative to Angie's **prefix**, not to the file holding
@@ -288,7 +288,7 @@ in the server snippet itself.
 ## JSON access logs (for the anomaly trainer)
 
 To feed the anomaly trainer, switch protected vhosts to the JSON access log
-format from [`deploy/angie-json-log.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-json-log.conf):
+format from [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf):
 
 ```nginx
 access_log /var/log/angie/example.com.access.json guardian_json;

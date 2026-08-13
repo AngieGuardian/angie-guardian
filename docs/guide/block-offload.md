@@ -138,7 +138,7 @@ is not necessarily guardiand's own.
 
 - **Bare metal / host-network Angie**: guardiand on the host is already in the
   right namespace. Grant the capability in the systemd unit (commented lines
-  in [`deploy/guardiand.service`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/guardiand.service)):
+  in [`deploy/guardiand.service`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardiand.service)):
 
   ```ini
   AmbientCapabilities=CAP_NET_ADMIN
@@ -148,7 +148,7 @@ is not necessarily guardiand's own.
 
 - **Docker Compose**: client traffic arrives in Angie's namespace, so run
   guardiand there. See
-  [`deploy/docker/compose.nft.yaml`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/docker/compose.nft.yaml):
+  [`deploy/docker/compose.nft.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.nft.yaml):
   `network_mode: "service:angie"` plus `cap_add: [NET_ADMIN]`, with Angie
   reaching the sidecar at `127.0.0.1:8071`.
 

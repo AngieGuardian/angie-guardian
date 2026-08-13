@@ -61,9 +61,9 @@ fail-open) and keeps a watchdog alive. See
 ### Hot-path endpoints (on `listen`)
 
 These are Angie's side of the integration, wired by the reusable
-[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf)
+[`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 server endpoints and
-[`deploy/angie-guardian-location.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian-location.conf)
+[`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
 authorization directives; you never call them directly.
 
 | Endpoint | Purpose |

@@ -63,7 +63,7 @@ when Angie tells it the connection is plain HTTP.
 
 **Fix:** make sure Angie passes the scheme through. The solution endpoint must
 carry `X-Guardian-Proto: $scheme` (it's in the shipped
-[`deploy/angie-guardian.conf`](https://gitlab.melroy.org/melroy/angie-guardian/-/blob/main/deploy/angie-guardian.conf)). If you serve the site over plain HTTP on purpose,
+[`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)). If you serve the site over plain HTTP on purpose,
 that header lets Guardian drop `Secure` so the cookie sticks; if you serve
 HTTPS, the header should be `https` and the loop shouldn't happen. Terminating
 TLS upstream? Ensure `$scheme` reflects the *client's* scheme, not the

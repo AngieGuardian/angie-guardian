@@ -52,7 +52,7 @@ features:
 ## Quick start
 
 For a normal Linux host, install a pinned `amd64` or `arm64` archive from the
-[releases page](https://gitlab.melroy.org/melroy/angie-guardian/-/releases).
+[releases page](https://github.com/AngieGuardian/angie-guardian/releases).
 It includes the binaries, canonical annotated config, starter WAF rules, Angie
 snippets, and systemd unit; no repository checkout or Go toolchain is required.
 

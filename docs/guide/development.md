@@ -7,7 +7,7 @@ Everything here needs a repository checkout and the Go toolchain selected by
 under `test/`, are run with `go run`, and are not compiled into `guardiand`.
 
 ```sh
-git clone https://gitlab.melroy.org/melroy/angie-guardian.git
+git clone https://github.com/AngieGuardian/angie-guardian.git
 cd angie-guardian
 make test        # the whole tree under -race
 ```
