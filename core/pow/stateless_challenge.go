@@ -27,14 +27,17 @@ import (
 // can induce costs them real compute first.
 //
 // The ID is self-describing and versioned so it coexists with the 32-hex
-// stateful ID forever: Redeem dispatches on the "s1." prefix and both formats
-// are accepted unconditionally, so a challenge issued seconds before or after
-// a posture flip still redeems.
+// stateful ID forever: Redeem dispatches on the "s1." and "s2." prefixes and
+// all formats are accepted unconditionally, so a challenge issued seconds
+// before or after a posture or algorithm flip still redeems.
 
 const (
-	statelessPrefix      = "s1."
-	statelessAuthDomain  = "guardian-stateless-v1\x00"
-	statelessSolveDomain = "guardian-stateless-chal-v1\x00"
+	statelessPrefix        = "s1."
+	statelessPrefixV2      = "s2."
+	statelessAuthDomain    = "guardian-stateless-v1\x00"
+	statelessSolveDomain   = "guardian-stateless-chal-v1\x00"
+	statelessAuthDomainV2  = "guardian-stateless-v2\x00"
+	statelessSolveDomainV2 = "guardian-stateless-chal-v2\x00"
 )
 
 // statelessMaxURI caps the redirect URI carried in the payload, so a crafted
@@ -54,14 +57,34 @@ const statelessRetirementGrace = statelessSkew + keyRefreshInterval + time.Secon
 // statelessPayload is the authenticated content of a stateless challenge ID.
 // Field names are short because the whole thing is base64'd into the ID.
 type statelessPayload struct {
-	V    int    `json:"v"`
-	Host string `json:"h"`
-	IP   string `json:"i"`
-	Bits int    `json:"d"`
-	URI  string `json:"u"`
-	NoJS int    `json:"n"` // 0/1
-	TS   int64  `json:"t"` // issued-at unix millis
-	Rand string `json:"r"` // 96-bit hex, so identical requests differ
+	V    int       `json:"v"`
+	Host string    `json:"h"`
+	IP   string    `json:"i"`
+	Bits int       `json:"d"`
+	URI  string    `json:"u"`
+	NoJS int       `json:"n"` // 0/1
+	TS   int64     `json:"t"` // issued-at unix millis
+	Rand string    `json:"r"` // 96-bit hex, so identical requests differ
+	Alg  Algorithm `json:"a,omitempty"`
+	Mem  uint32    `json:"m,omitempty"`
+	Iter uint32    `json:"p,omitempty"`
+	Salt string    `json:"s,omitempty"`
+}
+
+func (p *statelessPayload) proofSpec() (ProofSpec, error) {
+	spec := ProofSpec{Algorithm: p.Alg, Difficulty: p.Bits, MemoryKiB: p.Mem, Iterations: p.Iter}
+	if spec.algorithm() == AlgorithmArgon2ID {
+		if len(p.Salt) != hex.EncodedLen(argon2SaltSize) {
+			return ProofSpec{}, ErrChallengeUnknown
+		}
+		if _, err := hex.Decode(spec.Salt[:], []byte(p.Salt)); err != nil {
+			return ProofSpec{}, ErrChallengeUnknown
+		}
+	}
+	if err := spec.validate(); err != nil {
+		return ProofSpec{}, ErrChallengeUnknown
+	}
+	return spec, nil
 }
 
 var b64 = base64.RawURLEncoding
@@ -70,6 +93,13 @@ var b64 = base64.RawURLEncoding
 // self-authenticating; the solve string is derived from the same secret and
 // returned for the client's solver but never embedded in the ID.
 func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS bool) (*Challenge, error) {
+	return m.IssueStatelessWithSpec(host, ip, uri, ProofSpec{Algorithm: AlgorithmSHA256, Difficulty: difficulty}, allowNoJS)
+}
+
+func (m *Manager) IssueStatelessWithSpec(host, ip, uri string, spec ProofSpec, allowNoJS bool) (*Challenge, error) {
+	if err := spec.validate(); err != nil {
+		return nil, err
+	}
 	// A quiet file-backed replica may not have observed a peer's rotation yet.
 	// Refresh before taking the issue timestamp and selecting the secret. If
 	// disk refresh fails, fail closed instead of minting indefinitely with a
@@ -84,6 +114,11 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
 	}
+	if spec.algorithm() == AlgorithmArgon2ID {
+		if _, err := rand.Read(spec.Salt[:]); err != nil {
+			return nil, err
+		}
+	}
 	var randomHex [2 * len(random)]byte
 	hex.Encode(randomHex[:], random[:])
 	nojs := 0
@@ -91,16 +126,21 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 		nojs = 1
 	}
 	p := statelessPayload{
-		V: 1, Host: strings.ToLower(host), IP: ip, Bits: difficulty,
+		V: 1, Host: strings.ToLower(host), IP: ip, Bits: spec.Difficulty,
 		URI: uri, NoJS: nojs, TS: m.now().UnixMilli(), Rand: string(randomHex[:]),
+	}
+	prefix, authDomain, solveDomain := statelessPrefix, statelessAuthDomain, statelessSolveDomain
+	if spec.algorithm() == AlgorithmArgon2ID {
+		p.V, p.Alg, p.Mem, p.Iter, p.Salt = 2, AlgorithmArgon2ID, spec.MemoryKiB, spec.Iterations, hex.EncodeToString(spec.Salt[:])
+		prefix, authDomain, solveDomain = statelessPrefixV2, statelessAuthDomainV2, statelessSolveDomainV2
 	}
 	payload, err := json.Marshal(&p)
 	if err != nil {
 		return nil, err
 	}
 	secret := m.issuingSecret()
-	id, solve := m.encodeStatelessChallenge(secret, payload)
-	return &Challenge{ID: id, Challenge: solve, Difficulty: difficulty}, nil
+	id, solve := m.encodeStatelessChallengeFor(secret, payload, prefix, authDomain, solveDomain)
+	return challengeFromSpec(id, solve, spec), nil
 }
 
 // encodeStatelessChallenge builds the existing s1 wire representation using
@@ -110,16 +150,20 @@ func (m *Manager) IssueStateless(host, ip, uri string, difficulty int, allowNoJS
 // already marshalled payload so the authenticated bytes and format remain
 // identical to statelessMAC/statelessSolve.
 func (m *Manager) encodeStatelessChallenge(secret, payload []byte) (id, solve string) {
+	return m.encodeStatelessChallengeFor(secret, payload, statelessPrefix, statelessAuthDomain, statelessSolveDomain)
+}
+
+func (m *Manager) encodeStatelessChallengeFor(secret, payload []byte, prefix, authDomain, solveDomain string) (id, solve string) {
 	km := m.macs.get(secret)
-	copy(km.msg[:], statelessAuthDomain)
-	km.mac.Write(km.msg[:len(statelessAuthDomain)])
+	copy(km.msg[:], authDomain)
+	km.mac.Write(km.msg[:len(authDomain)])
 	km.mac.Write(payload)
 	var auth [16]byte
 	copy(auth[:], km.mac.Sum(km.sum[:0]))
 
 	km.mac.Reset()
-	copy(km.msg[:], statelessSolveDomain)
-	km.mac.Write(km.msg[:len(statelessSolveDomain)])
+	copy(km.msg[:], solveDomain)
+	km.mac.Write(km.msg[:len(solveDomain)])
 	km.mac.Write(payload)
 	var solveHex [2 * sha256.Size]byte
 	hex.Encode(solveHex[:], km.mac.Sum(km.sum[:0]))
@@ -128,8 +172,8 @@ func (m *Manager) encodeStatelessChallenge(secret, payload []byte) (id, solve st
 	payloadLen := b64.EncodedLen(len(payload))
 	authLen := b64.EncodedLen(len(auth))
 	var idBuilder strings.Builder
-	idBuilder.Grow(len(statelessPrefix) + payloadLen + 1 + authLen)
-	idBuilder.WriteString(statelessPrefix)
+	idBuilder.Grow(len(prefix) + payloadLen + 1 + authLen)
+	idBuilder.WriteString(prefix)
 	writeStatelessBase64(&idBuilder, payload)
 	idBuilder.WriteByte('.')
 	writeStatelessBase64(&idBuilder, auth[:])
@@ -174,6 +218,10 @@ type statelessVerifySecret struct {
 // payload equals gotMAC, including its retirement boundary. It walks the
 // immutable key slices under the read lock to avoid allocating on redemption.
 func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) (statelessVerifySecret, bool) {
+	return m.matchStatelessSecretFor(gotMAC, payload, statelessAuthDomain)
+}
+
+func (m *Manager) matchStatelessSecretFor(gotMAC, payload []byte, authDomain string) (statelessVerifySecret, bool) {
 	now := m.now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -185,7 +233,7 @@ func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) (statelessVerifyS
 		if !retiredAt.IsZero() && now.After(retiredAt.Add(maxAcceptedTokenLifetime)) {
 			continue
 		}
-		if hmac.Equal(gotMAC, statelessMAC(secret, payload)) {
+		if hmac.Equal(gotMAC, statelessMACFor(secret, payload, authDomain)) {
 			return statelessVerifySecret{secret: secret, retiredAt: retiredAt}, true
 		}
 	}
@@ -195,8 +243,12 @@ func (m *Manager) matchStatelessSecret(gotMAC, payload []byte) (statelessVerifyS
 // statelessMAC authenticates the payload (16-byte truncated HMAC is ample for
 // a short-lived, client-bound token).
 func statelessMAC(secret, payload []byte) []byte {
+	return statelessMACFor(secret, payload, statelessAuthDomain)
+}
+
+func statelessMACFor(secret, payload []byte, domain string) []byte {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(statelessAuthDomain))
+	mac.Write([]byte(domain))
 	mac.Write(payload)
 	return mac.Sum(nil)[:16]
 }
@@ -204,22 +256,33 @@ func statelessMAC(secret, payload []byte) []byte {
 // statelessSolve derives the string the client hashes against, from the same
 // secret, so it need not be transmitted inside the ID.
 func statelessSolve(secret, payload []byte) string {
+	return statelessSolveFor(secret, payload, statelessSolveDomain)
+}
+
+func statelessSolveFor(secret, payload []byte, domain string) string {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(statelessSolveDomain))
+	mac.Write([]byte(domain))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // IsStatelessID reports whether an ID is the stateless format.
-func IsStatelessID(id string) bool { return strings.HasPrefix(id, statelessPrefix) }
+func IsStatelessID(id string) bool {
+	return strings.HasPrefix(id, statelessPrefix) || strings.HasPrefix(id, statelessPrefixV2)
+}
 
 // redeemStateless verifies a stateless challenge and mints a token. Cheap
 // checks (MAC, freshness, binding, solution) run before the single-spend
 // store write, so an attacker only induces a store op by actually paying the
 // proof of work.
 func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*RedeemResult, error) {
+	prefix, authDomain, solveDomain, version := statelessPrefix, statelessAuthDomain, statelessSolveDomain, 1
 	rest, ok := strings.CutPrefix(req.ChallengeID, statelessPrefix)
 	if !ok {
+		rest, ok = strings.CutPrefix(req.ChallengeID, statelessPrefixV2)
+		prefix, authDomain, solveDomain, version = statelessPrefixV2, statelessAuthDomainV2, statelessSolveDomainV2, 2
+	}
+	if !ok || !strings.HasPrefix(req.ChallengeID, prefix) {
 		return nil, ErrChallengeUnknown
 	}
 	payloadB64, macB64, ok := strings.Cut(rest, ".")
@@ -243,7 +306,7 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	// Try every live key's secret (current + retired), so a challenge issued
 	// by a peer that has since rotated to a different current key still
 	// verifies. The matching secret is reused for the solve-string check.
-	matched, ok := m.matchStatelessSecret(gotMAC, payload)
+	matched, ok := m.matchStatelessSecretFor(gotMAC, payload, authDomain)
 	if !ok {
 		// A peer may have rotated to a key this file-backed instance has not
 		// yet re-read (rolling restart). Do the same rate-limited disk refresh
@@ -254,14 +317,18 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 			return nil, fmt.Errorf("refresh stateless verification keys after MAC miss: %w", refreshErr)
 		}
 		if refreshed {
-			matched, ok = m.matchStatelessSecret(gotMAC, payload)
+			matched, ok = m.matchStatelessSecretFor(gotMAC, payload, authDomain)
 		}
 	}
 	if !ok {
 		return nil, ErrChallengeUnknown
 	}
 	var p statelessPayload
-	if err := json.Unmarshal(payload, &p); err != nil || p.V != 1 {
+	if err := json.Unmarshal(payload, &p); err != nil || p.V != version {
+		return nil, ErrChallengeUnknown
+	}
+	spec, err := p.proofSpec()
+	if err != nil {
 		return nil, ErrChallengeUnknown
 	}
 
@@ -285,13 +352,30 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		return nil, ErrBindingMismatch
 	}
 
-	challenge := statelessSolve(matched.secret, payload)
+	challenge := statelessSolveFor(matched.secret, payload, solveDomain)
 	if req.NoJS {
 		if p.NoJS != 1 {
 			return nil, ErrNoJSDisabled
 		}
+		if req.AcquireNoJS != nil {
+			if err := req.AcquireNoJS(p.URI); err != nil {
+				return nil, err
+			}
+		}
 		if now.Sub(issued) < m.NoJSMinDelay {
 			return nil, ErrTooFast
+		}
+	} else if spec.algorithm() == AlgorithmArgon2ID {
+		if req.AcquireArgon != nil {
+			if err := req.AcquireArgon(); err != nil {
+				return nil, err
+			}
+		}
+		if req.ReleaseArgon != nil {
+			defer req.ReleaseArgon()
+		}
+		if !verifyArgon2ID(challenge, spec, req.Proof) {
+			return nil, ErrBadSolution
 		}
 	} else {
 		sum := sha256.Sum256([]byte(challenge + req.Nonce))
@@ -331,27 +415,28 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		if !m.spent.claim(spentDigest, now.Add(remaining), now) {
 			return nil, ErrChallengeUnknown
 		}
-		return m.finishStateless(&p, req, tokenTTL, errSpentCASFailed)
+		return m.finishStateless(&p, spec, req, tokenTTL, errSpentCASFailed)
 	}
 	if !swapped {
 		return nil, ErrChallengeUnknown // already spent (replay)
 	}
 	_ = m.spent.claim(spentDigest, now.Add(remaining), now)
-	return m.finishStateless(&p, req, tokenTTL, nil)
+	return m.finishStateless(&p, spec, req, tokenTTL, nil)
 }
 
 // errSpentCASFailed signals that the single-spend write failed but a token was
 // minted anyway; the transport counts it without treating it as an error.
 var errSpentCASFailed = fmt.Errorf("stateless spend cas failed; token minted fail-open")
 
-func (m *Manager) finishStateless(p *statelessPayload, req *RedeemRequest, tokenTTL time.Duration, softErr error) (*RedeemResult, error) {
+func (m *Manager) finishStateless(p *statelessPayload, spec ProofSpec, req *RedeemRequest, tokenTTL time.Duration, softErr error) (*RedeemResult, error) {
 	m.ForgetEscalation(p.Host, p.IP)
-	token, err := m.mintToken(p.Host, Fingerprint(req.IP, req.UserAgent), "", p.Bits, tokenTTL)
+	token, err := m.mintTokenWithSpec(p.Host, Fingerprint(req.IP, req.UserAgent), "", spec, tokenTTL)
 	if err != nil {
 		return nil, err
 	}
 	return &RedeemResult{
 		Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr,
-		Difficulty: p.Bits, IssuedAt: time.UnixMilli(p.TS),
+		Difficulty: p.Bits, Algorithm: spec.algorithm(), MemoryKiB: spec.MemoryKiB,
+		Iterations: spec.Iterations, IssuedAt: time.UnixMilli(p.TS),
 	}, nil
 }

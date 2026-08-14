@@ -88,6 +88,19 @@ test:
     - go test -race -count=1 ./...
     - make install-test
 
+# Rebuild the pinned PHC Argon2 reference source with the pinned Emscripten
+# toolchain, verify the content-addressed artifacts byte-for-byte, and reject a
+# WASM payload over 300 KiB. This keeps a dependency or flag change from
+# quietly turning the challenge page into a flood bandwidth amplifier.
+argon2-wasm:
+  stage: test
+  image:
+    name: emscripten/emsdk:4.0.10@sha256:90b757eb11fa9a0e3ce4d2d9f76d932a56018e4accc37b5a28b2783751e60eb7
+    entrypoint: [""]
+  cache: []
+  script:
+    - ./scripts/build-argon2-wasm.sh
+
 # Hot-path allocation regression gate. allocs/op at a fixed iteration count is
 # deterministic and machine-independent, so it can gate a pipeline where ns/op
 # cannot (CI machines are far too noisy). A commit that adds an allocation to

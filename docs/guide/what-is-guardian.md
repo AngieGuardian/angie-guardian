@@ -42,7 +42,10 @@ pipeline. Everything is per-domain configurable.
 ### 2. The proof-of-work challenge layer, only for suspicious or new clients
 
 - SHA-256 leading-zero-bits challenge with a parallel pure-JS solver (works
-  on plain-http origins too); difficulty tunes in 2x quarter steps
+  on plain-http origins too) by default, or optional bounded Argon2id WASM
+  work as the fleet default or for domains where memory hardness is worth
+  heavier server verification;
+  SHA-256 difficulty tunes in 2x quarter steps
   (`base_difficulty: 5.25`) and escalates with suspicion.
 - Per-host-and-IP escalation against challenge farming: a client that keeps
   requesting challenges without solving them pays one extra bit (2x) per two
@@ -53,8 +56,9 @@ pipeline. Everything is per-domain configurable.
 - A **persistent shared signing key**, so restarts don't log everyone out,
   and replicas behind a load balancer can share one key.
 - Spent-challenge tracking from day one (no mint-twice replay).
-- An optional no-JS meta-refresh fallback: a five-second minimum wait instead
-  of hash work, so it has a weaker, more parallelizable cost model.
+- An optional no-JS meta-refresh fallback, disabled by default: a five-second
+  minimum wait instead of work, with an independent pre-redemption IP/ASN rate
+  limit. This fallback has a weaker, more parallelizable cost model.
 
 ## Integration paths
 

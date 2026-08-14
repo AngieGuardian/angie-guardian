@@ -161,7 +161,8 @@ func TestRecordSolve(t *testing.T) {
 	e := &Engine{recent: newRecentRing(8)}
 	e.RecordSolve(SolveRecord{
 		Host: "shop.test", IP: "198.51.100.7", URI: "/checkout",
-		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400, Bits: 20,
+		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400,
+		Algorithm: "sha256", Bits: 20,
 	})
 	got := e.recent.list(0)
 	if len(got) != 1 {
@@ -175,6 +176,9 @@ func TestRecordSolve(t *testing.T) {
 		t.Errorf("solve = %dms / round trip %dms / %d bits, want 1900/2400/20",
 			d.SolveMS, d.RoundTripMS, d.Bits)
 	}
+	if d.PoWAlgorithm != "sha256" || d.Argon2MemoryKiB != 0 || d.Argon2Iterations != 0 {
+		t.Errorf("proof = %q/%d/%d, want sha256/0/0", d.PoWAlgorithm, d.Argon2MemoryKiB, d.Argon2Iterations)
+	}
 	if d.Host != "shop.test" || d.IP != "198.51.100.7" || d.URI != "/checkout" {
 		t.Errorf("attribution = %s %s %s, want shop.test 198.51.100.7 /checkout", d.Host, d.IP, d.URI)
 	}
@@ -185,6 +189,20 @@ func TestRecordSolve(t *testing.T) {
 	}
 	if d.Time.IsZero() {
 		t.Error("solve row has no timestamp")
+	}
+}
+
+func TestRecordArgon2IDSolve(t *testing.T) {
+	e := &Engine{recent: newRecentRing(8)}
+	e.RecordSolve(SolveRecord{
+		Host: "shop.test", IP: "198.51.100.8", URI: "/checkout",
+		Algorithm: "argon2id", MemoryKiB: 8192, Iterations: 2,
+		SolveMS: 120, RoundTripMS: 300,
+	})
+	d := e.recent.list(1)[0]
+	if d.PoWAlgorithm != "argon2id" || d.Argon2MemoryKiB != 8192 || d.Argon2Iterations != 2 || d.Bits != 0 {
+		t.Errorf("proof = %q/%d/%d/%d bits, want argon2id/8192/2/0",
+			d.PoWAlgorithm, d.Argon2MemoryKiB, d.Argon2Iterations, d.Bits)
 	}
 }
 
@@ -208,9 +226,9 @@ func TestRecordRedeemFailure(t *testing.T) {
 	}
 	// No verified challenge record exists on the failure path, so the solve
 	// fields must read as "unknown", never as an instant solve at difficulty 0.
-	if d.SolveMS != 0 || d.RoundTripMS != 0 || d.Bits != 0 {
-		t.Errorf("solve fields = %d/%d/%d, want all zero on a failure row",
-			d.SolveMS, d.RoundTripMS, d.Bits)
+	if d.SolveMS != 0 || d.RoundTripMS != 0 || d.Bits != 0 || d.PoWAlgorithm != "" || d.Argon2MemoryKiB != 0 || d.Argon2Iterations != 0 {
+		t.Errorf("solve fields = %d/%d/%q/%d/%d/%d, want all zero on a failure row",
+			d.SolveMS, d.RoundTripMS, d.PoWAlgorithm, d.Bits, d.Argon2MemoryKiB, d.Argon2Iterations)
 	}
 	if d.URI != "" || d.Method != "" {
 		t.Errorf("uri/method = %q/%q, want empty on a failure row", d.URI, d.Method)
@@ -220,7 +238,7 @@ func TestRecordRedeemFailure(t *testing.T) {
 	}
 }
 
-// A no-JS redemption waited out the meta refresh instead of hashing, so it has
+// A no-JS redemption waited out the meta refresh instead of computing, so it has
 // no solve time to report and must not be recorded as an instant solve.
 func TestRecordSolveNoJS(t *testing.T) {
 	e := &Engine{recent: newRecentRing(8)}
@@ -230,7 +248,7 @@ func TestRecordSolveNoJS(t *testing.T) {
 		t.Errorf("reason = %s, want %s", d.Reason, ReasonNoJS)
 	}
 	if d.SolveMS != 0 {
-		t.Errorf("solve_ms = %d, want 0 (nothing was hashed)", d.SolveMS)
+		t.Errorf("solve_ms = %d, want 0 (no proof was computed)", d.SolveMS)
 	}
 	if d.RoundTripMS != 5000 {
 		t.Errorf("round_trip_ms = %d, want 5000", d.RoundTripMS)

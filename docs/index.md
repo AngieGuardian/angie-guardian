@@ -25,7 +25,7 @@ features:
     details: Hot-reloadable WAF rules with literal/regex matchers (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
-    details: SHA-256 leading-zero-bits challenge with a parallel pure-JS solver, difficulty tunable in 2x quarter steps and escalating per host and IP against challenge farming (persistent farmers are blocked), Ed25519-signed JWT cookie on success, replay protection, and a no-JS fallback.
+    details: SHA-256 leading-zero-bits challenge by default, with optional fleet-default or per-domain Argon2id memory-hard work, per-host/IP escalation, bounded verification, Ed25519-signed JWT cookies, replay protection, and an opt-in no-JS fallback.
   - icon: 🌍
     title: Origin intelligence
     details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.

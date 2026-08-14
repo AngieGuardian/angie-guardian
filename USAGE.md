@@ -37,7 +37,7 @@ store:
   path: /var/lib/guardian/pebble
 
 defaults:
-  pow: { enabled: true, base_difficulty: 5 }
+  pow: { enabled: true, algorithm: sha256, base_difficulty: 5 }
   waf:
     ip_behaviour: { enabled: true }
   # Fleet-wide per-path overlays, inherited by every host: a crawler cannot
@@ -173,6 +173,16 @@ an exact or prefix trap still deny immediately and, when behavioural scoring
 is enabled, persist an IP block.
 
 ### base_difficulty and max_difficulty
+
+These keys tune the default `algorithm: sha256` leading-zero search. Guardian
+also supports fleet-default or per-domain `algorithm: argon2id`: one bounded 8–32 MiB,
+1–3-iteration computation, without a second leading-zero loop. It reduces the
+relative advantage of highly parallel SHA-256 hardware, but costs the server
+the same memory-hard computation to verify and needs Worker/WASM support. Use
+SHA-256 unless that trade-off is useful and measured. See
+[`docs/guide/pow-algorithms.md`](docs/guide/pow-algorithms.md) for configuration,
+server admission limits, N+2 CPU sizing, hot-reload behavior, supply-chain
+pins, and the explicit non-quantum-proof boundary.
 
 `base_difficulty` is the baseline for an issued challenge; `max_difficulty` is
 the normal-operation ceiling. Anomaly score, WAF/reputation policy, and
@@ -317,9 +327,9 @@ Which value fires:
   refusal needs no Fetch metadata, so it is the only one that does work over
   plain HTTP, and equally the only one whose false-positive risk is higher there.
 
-#### Measured solve times and recommended values
+#### Measured SHA-256 solve times and recommended values
 
-The interstitial solves in parallel web workers (up to 8) with a pure-JS
+For SHA-256, the interstitial solves in parallel web workers (up to 8) with a pure-JS
 SHA-256. Measured throughput in Chrome on a fast desktop is ~1.1 million
 hashes/s per worker, ~9 MH/s with 8 workers; scale down for weaker devices.
 For comparison, a native (Go) solver does ~7.6 MH/s **per core**, so a bot
@@ -350,6 +360,9 @@ waits ~0.7x the mean, but ~5% wait 3x and ~1% wait 4.6x. Budget for the tail,
 not the mean.
 
 Recommendations:
+
+These recommendations apply to SHA-256. Argon2id uses its bounded memory and
+iteration settings instead; see the [PoW algorithm guide](docs/guide/pow-algorithms.md).
 
 - **`base_difficulty: 5`** (the default): imperceptible on desktop, about a
   second on a mid-range phone. A sensible tax for `mode: always`, paid once
@@ -737,8 +750,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
-# how long the client says it hashed (solve_ms), how long this daemon measured
-# between issuing and redeeming (round_trip_ms), and the difficulty in bits.
+# how long the client reports computing (solve_ms), how long this daemon
+# measured between issuing and redeeming (round_trip_ms), and the algorithm's
+# work parameters.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit=20"
 
 # A small "right now" rollup: active blocks, recent counts by action and

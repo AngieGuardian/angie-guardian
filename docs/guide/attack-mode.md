@@ -52,6 +52,11 @@ clamped to `difficulty_cap`. Elevated adds `elevated_difficulty_raise` (default
 0.5 = +2 bits); attack adds `attack_difficulty_raise` (default 1.0 = +4 bits).
 Per-IP escalation and anomaly scaling still operate, inside the shifted window.
 
+That numeric bit window applies to the default SHA-256 algorithm. An Argon2id
+domain never wraps its memory-hard computation in a leading-zero search:
+elevated posture selects `argon2id.max_iterations`, and attack posture selects
+`argon2id.attack_iterations_cap`. See [proof-of-work algorithms](/guide/pow-algorithms).
+
 ::: tip Existing tokens are never invalidated
 The raise applies only to **new** challenges. A visitor who already solved and
 holds a token keeps passing at the difficulty they solved for. Raising the
@@ -72,8 +77,9 @@ reference machine, that path sustains ~152k/s with `pebble` async, ~56k/s with
 `buntdb` async, or ~35k/s with `pebble` fsync-per-write (see
 [load testing](/guide/load-testing)). Under attack, Guardian issues
 **stateless** challenges instead: an HMAC-signed, self-authenticating ID
-(`s1.` prefix) that carries its own state, so issuance performs no store
-write. Single-spend moves to redeem time, keyed by the solved challenge and
+(`s1.` for SHA-256, `s2.` for Argon2id) that carries its own state, so issuance
+performs no store write. Single-spend moves to redeem time, keyed by the solved
+challenge and
 written only after the client has actually paid the proof of work, so the only
 store write an attacker can induce costs them real compute first.
 
@@ -83,8 +89,9 @@ challenge instead of a `503`. The fallback is counted as both
 `issued_stateless` and `issued_stateless_fallback`, so an unexpected store
 outage remains visible even though challenge service stays available.
 
-Redemption accepts both formats forever, so a challenge issued moments before
-or after a posture flip still redeems and a rolling fleet restart is safe.
+Redemption accepts both stateless formats, so a challenge issued moments before
+or after a posture or algorithm flip still redeems and a rolling fleet restart
+is safe.
 Instances sharing the signing key verify each other's stateless challenges:
 file-backed issuers refresh the shared key set before signing, still-live
 retired secrets keep challenges redeemable during a rolling rotation, and JWT

@@ -28,7 +28,7 @@ func TestGuardPagesCarryOwnSecurityHeaders(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, csp, frame string
 	}{
-		{"challenge", "/challenge", "worker-src blob:", "SAMEORIGIN"},
+		{"challenge", "/challenge", "worker-src 'self' blob:", "SAMEORIGIN"},
 		{"denied", "/denied", "default-src 'none'", "SAMEORIGIN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

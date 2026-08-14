@@ -25,18 +25,28 @@ const CookieName = "guardian_token"
 // bound to {host, client fingerprint} so it cannot be replayed cross-domain
 // or from a different client.
 type TokenClaims struct {
-	Host        string `json:"host"`
-	ChallengeID string `json:"cid"`
-	Difficulty  int    `json:"dif"`
+	Host        string    `json:"host"`
+	ChallengeID string    `json:"cid"`
+	Difficulty  int       `json:"dif"`
+	Algorithm   Algorithm `json:"alg,omitempty"`
+	MemoryKiB   uint32    `json:"argon_m,omitempty"`
+	Iterations  uint32    `json:"argon_t,omitempty"`
 	jwt.RegisteredClaims
 }
 
 func (m *Manager) mintToken(host, fingerprint, challengeID string, difficulty int, ttl time.Duration) (string, error) {
+	return m.mintTokenWithSpec(host, fingerprint, challengeID, ProofSpec{Algorithm: AlgorithmSHA256, Difficulty: difficulty}, ttl)
+}
+
+func (m *Manager) mintTokenWithSpec(host, fingerprint, challengeID string, spec ProofSpec, ttl time.Duration) (string, error) {
 	now := m.now()
 	claims := &TokenClaims{
 		Host:        strings.ToLower(host),
 		ChallengeID: challengeID,
-		Difficulty:  difficulty,
+		Difficulty:  spec.Difficulty,
+		Algorithm:   spec.algorithm(),
+		MemoryKiB:   spec.MemoryKiB,
+		Iterations:  spec.Iterations,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fingerprint,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -167,7 +177,11 @@ func (m *Manager) VerifyToken(token, host, ip, userAgent string, minBits int, ma
 	if err != nil {
 		return err
 	}
-	if claims.Difficulty < minBits {
+	// Algorithm changes are issuance policy, not a token-revocation event. An
+	// Argon2id token carries no SHA leading-zero count, so a later switch back
+	// to SHA-256 must not compare its zero value with the SHA path floor. Legacy
+	// tokens omit Algorithm and remain SHA-256 tokens.
+	if claims.Algorithm != AlgorithmArgon2ID && claims.Difficulty < minBits {
 		return fmt.Errorf("%w: solved at %d bits, path requires %d", ErrTokenUnderDifficulty, claims.Difficulty, minBits)
 	}
 	// The target path may demand a shorter lifetime than the path that issued
@@ -246,6 +260,18 @@ func (m *Manager) verifyTokenOnce(token, host, ip, userAgent string) (*TokenClai
 		}
 		if claims.IssuedAt == nil || claims.ExpiresAt == nil {
 			return nil, fmt.Errorf("%w: requires issued-at and expiration claims", ErrTokenInvalid)
+		}
+		switch claims.Algorithm {
+		case "", AlgorithmSHA256:
+			if claims.Difficulty < 0 || claims.Difficulty > 32 {
+				return nil, fmt.Errorf("%w: invalid SHA-256 difficulty", ErrTokenInvalid)
+			}
+		case AlgorithmArgon2ID:
+			if err := (ProofSpec{Algorithm: AlgorithmArgon2ID, MemoryKiB: claims.MemoryKiB, Iterations: claims.Iterations}).validate(); err != nil {
+				return nil, fmt.Errorf("%w: invalid Argon2id work parameters", ErrTokenInvalid)
+			}
+		default:
+			return nil, fmt.Errorf("%w: unknown proof algorithm %q", ErrTokenInvalid, claims.Algorithm)
 		}
 		if !claims.ExpiresAt.Time.After(claims.IssuedAt.Time) ||
 			claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > maxAcceptedTokenLifetime {

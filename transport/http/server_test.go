@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,9 +27,11 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
+	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
+	"golang.org/x/crypto/argon2"
 )
 
 const testYAML = `
@@ -345,8 +348,12 @@ func fetchChallenge(t *testing.T, ts *httptest.Server, ip, ua string) (id, chall
 }
 
 func fetchChallengeOn(t *testing.T, ts *httptest.Server, host, ip, ua string) (id, challenge string, difficulty int) {
+	return fetchChallengeForURI(t, ts, host, ip, ua, "/original?q=1")
+}
+
+func fetchChallengeForURI(t *testing.T, ts *httptest.Server, host, ip, ua, uri string) (id, challenge string, difficulty int) {
 	t.Helper()
-	resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders(host, ip, "/original?q=1", ua), nil)
+	resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders(host, ip, uri, ua), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("challenge page: status = %d, want 200", resp.StatusCode)
 	}
@@ -395,6 +402,286 @@ func solve(t *testing.T, challenge string, difficulty int) string {
 	}
 	t.Fatal("no nonce found")
 	return ""
+}
+
+type argonChallengeData struct {
+	ChallengeID string        `json:"challenge_id"`
+	Challenge   string        `json:"challenge"`
+	Algorithm   pow.Algorithm `json:"algorithm"`
+	MemoryKiB   uint32        `json:"memory_kib"`
+	Iterations  uint32        `json:"iterations"`
+	Salt        string        `json:"salt"`
+	WorkerURL   string        `json:"worker_url"`
+	WASMURL     string        `json:"wasm_url"`
+	PassURL     string        `json:"pass_url"`
+}
+
+func fetchArgonChallenge(t *testing.T, ts *httptest.Server, host, ip, ua string) argonChallengeData {
+	t.Helper()
+	resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders(host, ip, "/original?q=1", ua), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("challenge page: status = %d, want 200", resp.StatusCode)
+	}
+	page, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := dataRe.FindSubmatch(page)
+	if m == nil {
+		t.Fatal("no guardian-data JSON found")
+	}
+	var data argonChallengeData
+	if err := json.Unmarshal(m[1], &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func solveArgonChallenge(t *testing.T, data argonChallengeData) string {
+	t.Helper()
+	salt, err := hex.DecodeString(data.Salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(argon2.IDKey([]byte(data.Challenge), salt, data.Iterations, data.MemoryKiB, 1, 32))
+}
+
+const argonTestYAML = `
+store: { backend: memory }
+signing_key_file: test-signing.key
+argon2_verifier: { max_concurrent: 1, verification_rate_limit: 20/min }
+defaults:
+  pow: { enabled: false }
+domains:
+  argon.test:
+    pow:
+      enabled: true
+      algorithm: argon2id
+      base_difficulty: 1
+      max_difficulty: 2
+      argon2id: { memory_kib: 8192, base_iterations: 1, max_iterations: 1, attack_iterations_cap: 1 }
+`
+
+func TestArgon2IDHTTPFlowAndVerifierSaturation(t *testing.T) {
+	ts, srv := testServerAndHandler(t, argonTestYAML)
+	ip, ua := "198.51.100.27", "Mozilla/5.0"
+	data := fetchArgonChallenge(t, ts, "argon.test", ip, ua)
+	if data.Algorithm != pow.AlgorithmArgon2ID || data.MemoryKiB != 8192 || data.Iterations != 1 || data.WorkerURL != argonWorkerURL || data.WASMURL != argonWASMURL {
+		t.Fatalf("argon challenge payload = %+v", data)
+	}
+	proof := solveArgonChallenge(t, data)
+	body, _ := json.Marshal(map[string]any{"challenge_id": data.ChallengeID, "proof": proof, "elapsed_ms": 10})
+
+	// Saturation is explicitly retriable and must leave the challenge unspent.
+	srv.argonInflight.Store(1)
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("argon.test", ip, "/original?q=1", ua), body)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("saturated redeem: status=%d Retry-After=%q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	srv.argonInflight.Store(0)
+	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("argon.test", ip, "/original?q=1", ua), body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("same-proof retry: status=%d body=%s", resp.StatusCode, b)
+	}
+	rows := solveRows(srv)
+	if len(rows) != 1 || rows[0].PoWAlgorithm != "argon2id" || rows[0].Argon2MemoryKiB != 8192 || rows[0].Argon2Iterations != 1 || rows[0].Bits != 0 {
+		t.Fatalf("Argon2id solve record = %+v", rows)
+	}
+}
+
+func TestArgon2IDRateLimitReturnsWindowResetAndPreservesChallenge(t *testing.T) {
+	yaml := strings.Replace(argonTestYAML, "verification_rate_limit: 20/min", "verification_rate_limit: 1/min", 1)
+	ts, srv := testServerAndHandler(t, yaml)
+	ip, ua := "198.51.100.29", "Mozilla/5.0"
+	first := fetchArgonChallenge(t, ts, "argon.test", ip, ua)
+	second := fetchArgonChallenge(t, ts, "argon.test", ip, ua)
+
+	requestBody := func(data argonChallengeData) []byte {
+		body, _ := json.Marshal(map[string]any{
+			"challenge_id": data.ChallengeID,
+			"proof":        solveArgonChallenge(t, data),
+			"elapsed_ms":   10,
+		})
+		return body
+	}
+	redeem := func(body []byte) *http.Response {
+		return do(t, "POST", ts.URL+"/pass", guardianHeaders("argon.test", ip, "/original?q=1", ua), body)
+	}
+	firstBody, secondBody := requestBody(first), requestBody(second)
+	if resp := redeem(firstBody); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first redeem: status=%d, want 200", resp.StatusCode)
+	}
+	resp := redeem(secondBody)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited redeem: status=%d, want 429", resp.StatusCode)
+	}
+	retryAfter, err := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if err != nil || retryAfter < 1 || retryAfter > 60 {
+		t.Fatalf("rate-limited redeem: Retry-After=%q, want seconds remaining in the current minute", resp.Header.Get("Retry-After"))
+	}
+
+	// A rate-limited proof remains valid. Relaxing the live admission limit lets
+	// the exact same challenge through without solving or issuing it again.
+	if err := srv.engine.Reload(loadConfigFromYAML(t, argonTestYAML)); err != nil {
+		t.Fatal(err)
+	}
+	if resp = redeem(secondBody); resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("same-proof retry: status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestArgon2IDDifficultySignalsSelectBoundedIterations(t *testing.T) {
+	yaml := strings.Replace(argonTestYAML,
+		"base_iterations: 1, max_iterations: 1, attack_iterations_cap: 1",
+		"base_iterations: 1, max_iterations: 2, attack_iterations_cap: 3", 1)
+	ts, srv := testServerAndHandler(t, yaml)
+	srv.engine.SetAttackDetector(attackmode.New(srv.engine.Config().AttackModeSettings(), nil, slog.Default()))
+	ua := "Mozilla/5.0"
+
+	if got := fetchArgonChallenge(t, ts, "argon.test", "198.51.100.40", ua).Iterations; got != 1 {
+		t.Fatalf("normal iterations = %d, want 1", got)
+	}
+	srv.engine.AttackDetector().Pin(attackmode.Elevated, 0)
+	if got := srv.engine.AttackDetector().State().Level; got != attackmode.Elevated {
+		t.Fatalf("pinned posture = %s, want elevated", got)
+	}
+	if got := fetchArgonChallenge(t, ts, "argon.test", "198.51.100.41", ua).Iterations; got != 2 {
+		t.Fatalf("elevated iterations = %d, want 2", got)
+	}
+	srv.engine.AttackDetector().Pin(attackmode.Attack, 0)
+	if got := fetchArgonChallenge(t, ts, "argon.test", "198.51.100.42", ua).Iterations; got != 3 {
+		t.Fatalf("attack iterations = %d, want 3", got)
+	}
+}
+
+func TestArgon2IDAssetsAreImmutableAndBounded(t *testing.T) {
+	ts := testServerWithYAML(t, argonTestYAML)
+	for _, asset := range []struct{ path, contentType string }{
+		{argonWorkerURL, "text/javascript"},
+		{argonRuntimeURL, "text/javascript"},
+		{argonWASMURL, "application/wasm"},
+	} {
+		resp := do(t, "GET", ts.URL+asset.path, nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status=%d", asset.path, resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), asset.contentType) {
+			t.Errorf("GET %s Content-Type=%q", asset.path, resp.Header.Get("Content-Type"))
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Errorf("GET %s Cache-Control=%q", asset.path, got)
+		}
+		if len(body) > 300*1024 {
+			t.Errorf("GET %s size=%d, exceeds 300 KiB", asset.path, len(body))
+		}
+	}
+}
+
+func TestNoScriptFallbackUsesAuthenticatedPathRateLimit(t *testing.T) {
+	yaml := strings.Replace(testYAML,
+		"pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, noscript_fallback: true }",
+		"pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, noscript_fallback: true, noscript_redemption_rate_limit: 6/min }\n    paths:\n      \"/strict/\":\n        pow: { noscript_redemption_rate_limit: 1/h }", 1)
+	ts := testServerWithYAML(t, yaml)
+	ip, ua := "198.51.100.30", "nojs"
+	ids := make([]string, 2)
+	for i := range ids {
+		ids[i], _, _ = fetchChallengeForURI(t, ts, "html.test", ip, ua, "/strict/page")
+	}
+	time.Sleep(100 * time.Millisecond)
+	headers := guardianHeaders("html.test", ip, "/pass", ua)
+	resp := do(t, "GET", fmt.Sprintf("%s/pass?cid=%s&nojs=1", ts.URL, ids[0]), headers, nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first strict-path redemption: status=%d, want 303", resp.StatusCode)
+	}
+	resp = do(t, "GET", fmt.Sprintf("%s/pass?cid=%s&nojs=1", ts.URL, ids[1]), headers, nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second strict-path redemption: status=%d, want 429", resp.StatusCode)
+	}
+	retryAfter, err := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if err != nil || retryAfter < 1 || retryAfter > 3600 {
+		t.Fatalf("second strict-path redemption: Retry-After=%q, want seconds remaining in the current hour", resp.Header.Get("Retry-After"))
+	}
+}
+
+func TestArgon2IDNoScriptFallbackUsesMandatoryDelay(t *testing.T) {
+	yaml := strings.Replace(argonTestYAML, "enabled: true\n      algorithm: argon2id", "enabled: true\n      noscript_fallback: true\n      algorithm: argon2id", 1)
+	ts, _ := testServerAndHandler(t, yaml)
+	ip, ua := "198.51.100.33", "Mozilla/5.0 nojs"
+	data := fetchArgonChallenge(t, ts, "argon.test", ip, ua)
+	url := fmt.Sprintf("%s%s?cid=%s&nojs=1", ts.URL, PassPath, data.ChallengeID)
+
+	resp := do(t, "GET", url, guardianHeaders("argon.test", ip, "/", ua), nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("instant Argon2id no-JS: status=%d, want 403", resp.StatusCode)
+	}
+	time.Sleep(100 * time.Millisecond)
+	resp = do(t, "GET", url, guardianHeaders("argon.test", ip, "/", ua), nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("Argon2id no-JS redeem: status=%d, want 303", resp.StatusCode)
+	}
+}
+
+func TestRedemptionRateLimitAlsoAggregatesByASN(t *testing.T) {
+	_, srv := testServerAndHandler(t, testYAML)
+	limit := core.Rate{Count: 1, Per: time.Minute}
+	now := time.Unix(121, 0)
+	if exceeded, _ := srv.redemptionRateLimitExceededAt("asn-test", "html.test", "198.51.100.31", 64500, limit, now); exceeded {
+		t.Fatal("first address in ASN was unexpectedly limited")
+	}
+	if exceeded, _ := srv.redemptionRateLimitExceededAt("asn-test", "html.test", "198.51.100.32", 64500, limit, now); !exceeded {
+		t.Fatal("second address should exhaust the shared ASN bucket")
+	}
+}
+
+func TestRedemptionRateLimitRetryAfterUsesFixedWindowBoundary(t *testing.T) {
+	_, srv := testServerAndHandler(t, testYAML)
+	limit := core.Rate{Count: 10, Per: time.Minute}
+	now := time.Unix(121, 0) // one second into a Unix-aligned minute
+	for i := 0; i < limit.Count; i++ {
+		if exceeded, _ := srv.redemptionRateLimitExceededAt("retry-test", "html.test", "198.51.100.40", 0, limit, now); exceeded {
+			t.Fatalf("attempt %d was limited before the configured allowance", i+1)
+		}
+	}
+	exceeded, retryAfter := srv.redemptionRateLimitExceededAt("retry-test", "html.test", "198.51.100.40", 0, limit, now)
+	if !exceeded || retryAfter != 59*time.Second {
+		t.Fatalf("exceeded=%t Retry-After=%s, want true and 59s", exceeded, retryAfter)
+	}
+}
+
+func TestChallengeAlgorithmSurvivesHotReload(t *testing.T) {
+	ts, srv := testServerAndHandler(t, testYAML)
+	ip, ua := "198.51.100.28", "Mozilla/5.0"
+	id, challenge, difficulty := fetchChallenge(t, ts, ip, ua)
+	nonce := solve(t, challenge, difficulty)
+
+	nextYAML := strings.Replace(argonTestYAML, "argon.test", "html.test", 1)
+	if err := srv.engine.Reload(loadConfigFromYAML(t, nextYAML)); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"challenge_id": id, "nonce": nonce, "elapsed_ms": 10})
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/original?q=1", ua), body)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("pre-reload SHA-256 challenge after reload: status=%d body=%s", resp.StatusCode, b)
+	}
+
+	argonData := fetchArgonChallenge(t, ts, "html.test", "198.51.100.29", ua)
+	argonProof := solveArgonChallenge(t, argonData)
+	if err := srv.engine.Reload(loadConfigFromYAML(t, testYAML)); err != nil {
+		t.Fatal(err)
+	}
+	argonBody, _ := json.Marshal(map[string]any{"challenge_id": argonData.ChallengeID, "proof": argonProof, "elapsed_ms": 10})
+	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", "198.51.100.29", "/original?q=1", ua), argonBody)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("pre-reload Argon2id challenge after reload: status=%d body=%s", resp.StatusCode, b)
+	}
 }
 
 // TestPoWFlowEndToEnd walks the full browser journey: challenged, solves,

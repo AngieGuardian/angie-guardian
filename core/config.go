@@ -164,13 +164,14 @@ type Config struct {
 	// isolation (see TrustedProxy) remains the only control that prevents
 	// spoofing. Off by default so probing Guardian directly (dev, tests, curl)
 	// keeps working; healthz and the denied page are never gated.
-	RequireProxied bool              `yaml:"require_proxied"`
-	Admin          AdminConfig       `yaml:"admin"`
-	Store          StoreConfig       `yaml:"store"`
-	Enforcement    EnforcementConfig `yaml:"enforcement"`
-	AttackMode     AttackModeConfig  `yaml:"attack_mode"`
-	GeoIP          GeoIPConfig       `yaml:"geoip"`
-	Reputation     ReputationFeeds   `yaml:"reputation"`
+	RequireProxied bool                 `yaml:"require_proxied"`
+	Admin          AdminConfig          `yaml:"admin"`
+	Store          StoreConfig          `yaml:"store"`
+	Enforcement    EnforcementConfig    `yaml:"enforcement"`
+	AttackMode     AttackModeConfig     `yaml:"attack_mode"`
+	Argon2Verifier Argon2VerifierConfig `yaml:"argon2_verifier"`
+	GeoIP          GeoIPConfig          `yaml:"geoip"`
+	Reputation     ReputationFeeds      `yaml:"reputation"`
 	// DefaultsNode is the raw defaults: mapping. It is captured as a node, not
 	// decoded straight into a DomainConfig, so its paths: key can be split off
 	// before the struct decode exactly like a domain's (see splitPathsNode):
@@ -186,6 +187,15 @@ type Config struct {
 	Defaults DomainConfig `yaml:"-"`
 
 	resolved map[string]*DomainConfig
+}
+
+// Argon2VerifierConfig bounds the expensive server-side half of Argon2id
+// challenge redemption. It is global because all domains share one Go
+// scheduler, heap and memory bus; per-domain limits could each admit their
+// maximum concurrently and defeat the bound.
+type Argon2VerifierConfig struct {
+	MaxConcurrent         int  `yaml:"max_concurrent"`
+	VerificationRateLimit Rate `yaml:"verification_rate_limit"`
 }
 
 // AdminConfig configures the admin + metrics listener. It is separate from
@@ -957,6 +967,10 @@ type ToggleConfig struct {
 
 type PoWConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// Algorithm selects the challenge issued for this scope. It is deliberately
+	// limited to defaults and domain scope; paths may tune whether PoW applies,
+	// but cannot switch the browser runtime underneath one host.
+	Algorithm string `yaml:"algorithm"`
 	// Mode "always" challenges every unvouched request; "suspicion" only
 	// challenges clients the anomaly scorer flags (requires waf.anomaly).
 	Mode string `yaml:"mode"`
@@ -974,7 +988,12 @@ type PoWConfig struct {
 	// Promoted from a compile-time constant so operators can tune it under
 	// attack. Default 60/min preserves the historical behaviour.
 	IssuanceRateLimit Rate `yaml:"issuance_rate_limit"`
-	NoScriptFallback  bool `yaml:"noscript_fallback"`
+	// NoScriptRedemptionRateLimit bounds the deliberately work-free fallback
+	// before a token is minted. The challenge is authenticated first so its
+	// original URI can select a path-specific limit.
+	NoScriptRedemptionRateLimit Rate           `yaml:"noscript_redemption_rate_limit"`
+	NoScriptFallback            bool           `yaml:"noscript_fallback"`
+	Argon2ID                    Argon2IDConfig `yaml:"argon2id"`
 	// RefuseUnchallengeable withholds a challenge from a request classified as
 	// unable to complete one (a declared subresource, which provably cannot run
 	// the interstitial, or a request whose destination is unrecognized or
@@ -999,9 +1018,39 @@ type PoWConfig struct {
 	RefuseUnchallengeable *bool `yaml:"refuse_unchallengeable"`
 }
 
+// Argon2IDConfig is a fixed-result proof: one Argon2id invocation, never a
+// second leading-zero search. Memory is KiB, matching RFC 9106 and x/crypto.
+// The iteration ladder is selected from existing suspicion/escalation state.
+type Argon2IDConfig struct {
+	MemoryKiB           uint32 `yaml:"memory_kib"`
+	BaseIterations      uint32 `yaml:"base_iterations"`
+	MaxIterations       uint32 `yaml:"max_iterations"`
+	AttackIterationsCap uint32 `yaml:"attack_iterations_cap"`
+}
+
+const (
+	PoWAlgorithmSHA256   = "sha256"
+	PoWAlgorithmArgon2ID = "argon2id"
+	minArgon2MemoryKiB   = 8 * 1024
+	maxArgon2MemoryKiB   = 32 * 1024
+)
+
 // RefusesUnchallengeable resolves the *bool default (true).
 func (p *PoWConfig) RefusesUnchallengeable() bool {
 	return p.RefuseUnchallengeable == nil || *p.RefuseUnchallengeable
+}
+
+func (p *PoWConfig) UsesArgon2ID() bool { return p.Algorithm == PoWAlgorithmArgon2ID }
+
+// TokenMinBits preserves the existing per-path SHA strength check. Argon2id
+// challenges carry their actual memory/pass cost for audit, but algorithm
+// selection is issuance policy: changing it does not stampede every holder of
+// a still-live token back through the challenge page.
+func (p *PoWConfig) TokenMinBits() int {
+	if p.UsesArgon2ID() {
+		return 0
+	}
+	return p.BaseBits()
 }
 
 // maxTokenTTL caps token_ttl so a mistyped unit (e.g. a value meant as minutes
@@ -1244,6 +1293,15 @@ func (c *Config) finalize() error {
 	if err := c.AttackMode.validate(); err != nil {
 		return err
 	}
+	if c.Argon2Verifier.MaxConcurrent == 0 {
+		c.Argon2Verifier.MaxConcurrent = 1
+	}
+	if c.Argon2Verifier.MaxConcurrent < 1 || c.Argon2Verifier.MaxConcurrent > 16 {
+		return fmt.Errorf("argon2_verifier.max_concurrent must be 1..16, got %d", c.Argon2Verifier.MaxConcurrent)
+	}
+	if c.Argon2Verifier.VerificationRateLimit.Count == 0 {
+		c.Argon2Verifier.VerificationRateLimit = Rate{Count: 10, Per: time.Minute}
+	}
 	if err := c.Reputation.validate(); err != nil {
 		return err
 	}
@@ -1279,6 +1337,24 @@ func (c *Config) finalize() error {
 	}
 	if c.Defaults.PoW.IssuanceRateLimit.Count == 0 {
 		c.Defaults.PoW.IssuanceRateLimit = Rate{Count: 60, Per: time.Minute}
+	}
+	if c.Defaults.PoW.NoScriptRedemptionRateLimit.Count == 0 {
+		c.Defaults.PoW.NoScriptRedemptionRateLimit = Rate{Count: 6, Per: time.Minute}
+	}
+	if c.Defaults.PoW.Algorithm == "" {
+		c.Defaults.PoW.Algorithm = PoWAlgorithmSHA256
+	}
+	if c.Defaults.PoW.Argon2ID.MemoryKiB == 0 {
+		c.Defaults.PoW.Argon2ID.MemoryKiB = 32 * 1024
+	}
+	if c.Defaults.PoW.Argon2ID.BaseIterations == 0 {
+		c.Defaults.PoW.Argon2ID.BaseIterations = 1
+	}
+	if c.Defaults.PoW.Argon2ID.MaxIterations == 0 {
+		c.Defaults.PoW.Argon2ID.MaxIterations = 2
+	}
+	if c.Defaults.PoW.Argon2ID.AttackIterationsCap == 0 {
+		c.Defaults.PoW.Argon2ID.AttackIterationsCap = 3
 	}
 	// The two ends of the repeat-offender ladder are chosen together: blocks
 	// double from BlockTTL up to MaxBlockTTL, so 30m/12h walks
@@ -1494,6 +1570,26 @@ func splitPathsNode(node *yaml.Node) *yaml.Node {
 	return nil
 }
 
+// yamlMappingHasPath reports whether a mapping contains the exact nested key
+// path. It is used for scope rules that cannot be recovered after inheritance:
+// once an overlay is decoded, an explicitly written algorithm is
+// indistinguishable from the inherited value.
+func yamlMappingHasPath(node *yaml.Node, path ...string) bool {
+	if node == nil || len(path) == 0 || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != path[0] {
+			continue
+		}
+		if len(path) == 1 {
+			return true
+		}
+		return yamlMappingHasPath(node.Content[i+1], path[1:]...)
+	}
+	return false
+}
+
 // validatePathKey checks one paths: map key. Keys are matched against the
 // percent-decoded request path, so an encoded key could never match and is
 // refused rather than silently dead.
@@ -1580,6 +1676,9 @@ func (c *Config) resolvePaths(label string, dc *DomainConfig, inherited, own map
 			if !ok || node.Kind == 0 || node.Tag == "!!null" {
 				continue
 			}
+			if yamlMappingHasPath(&node, "pow", "algorithm") || yamlMappingHasPath(&node, "pow", "argon2id") {
+				return fmt.Errorf("%s path %s: pow.algorithm and pow.argon2id are domain-scoped and cannot be overridden by a path", label, key)
+			}
 			inheritedRuleFiles := append([]string(nil), pc.WAF.Rules.Files...)
 			if err := decodeStrict(&node, pc); err != nil {
 				return fmt.Errorf("%s path %s: %w", label, key, err)
@@ -1638,6 +1737,24 @@ func (c *Config) validateFeatureDependencies() error {
 
 func (dc *DomainConfig) validate() error {
 	p := &dc.PoW
+	switch p.Algorithm {
+	case PoWAlgorithmSHA256, PoWAlgorithmArgon2ID:
+	default:
+		return fmt.Errorf("pow.algorithm must be sha256 or argon2id, got %q", p.Algorithm)
+	}
+	argon := p.Argon2ID
+	if argon.MemoryKiB < minArgon2MemoryKiB || argon.MemoryKiB > maxArgon2MemoryKiB {
+		return fmt.Errorf("pow.argon2id.memory_kib must be %d..%d, got %d", minArgon2MemoryKiB, maxArgon2MemoryKiB, argon.MemoryKiB)
+	}
+	if argon.BaseIterations < 1 || argon.BaseIterations > 3 {
+		return fmt.Errorf("pow.argon2id.base_iterations must be 1..3, got %d", argon.BaseIterations)
+	}
+	if argon.MaxIterations < argon.BaseIterations || argon.MaxIterations > 3 {
+		return fmt.Errorf("pow.argon2id.max_iterations must be %d..3, got %d", argon.BaseIterations, argon.MaxIterations)
+	}
+	if argon.AttackIterationsCap < argon.MaxIterations || argon.AttackIterationsCap > 3 {
+		return fmt.Errorf("pow.argon2id.attack_iterations_cap must be %d..3, got %d", argon.MaxIterations, argon.AttackIterationsCap)
+	}
 	switch p.Mode {
 	case "":
 		p.Mode = "always"

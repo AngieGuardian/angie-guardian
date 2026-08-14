@@ -446,7 +446,8 @@ func TestAdminDecisionsIncludeSolves(t *testing.T) {
 	}
 	engine.RecordSolve(core.SolveRecord{
 		Host: "site.test", IP: "198.51.100.7", URI: "/checkout",
-		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400, Bits: 20,
+		UA: "Mozilla/5.0", SolveMS: 1900, RoundTripMS: 2400,
+		Algorithm: "sha256", Bits: 20,
 	})
 
 	all := decodeJSON(t, adminReq(t, ts, "GET", "/admin/decisions", adminToken, ""))
@@ -457,7 +458,10 @@ func TestAdminDecisionsIncludeSolves(t *testing.T) {
 	// and a deny row is byte-identical to what it was before solves shared the
 	// ring.
 	deny := all["decisions"].([]any)[1].(map[string]any)
-	for _, key := range []string{"solve_ms", "round_trip_ms", "bits"} {
+	for _, key := range []string{
+		"solve_ms", "round_trip_ms", "pow_algorithm", "bits",
+		"argon2_memory_kib", "argon2_iterations",
+	} {
 		if value, ok := deny[key]; ok {
 			t.Errorf("deny row carries %s=%v", key, value)
 		}
@@ -471,7 +475,7 @@ func TestAdminDecisionsIncludeSolves(t *testing.T) {
 	if solve["reason"] != core.ReasonSolved || solve["ip"] != "198.51.100.7" || solve["uri"] != "/checkout" {
 		t.Errorf("solve row = %v, want the checkout solve", solve)
 	}
-	if solve["solve_ms"] != float64(1900) || solve["round_trip_ms"] != float64(2400) || solve["bits"] != float64(20) {
+	if solve["solve_ms"] != float64(1900) || solve["round_trip_ms"] != float64(2400) || solve["pow_algorithm"] != "sha256" || solve["bits"] != float64(20) {
 		t.Errorf("solve row timings = %v", solve)
 	}
 	// The lookup card filters the whole ring by IP, and a client's solves are

@@ -421,9 +421,13 @@ func (m *Manager) refreshKeys(afterVerificationFailure bool) (bool, error) {
 // Difficulty is the required number of leading zero bits of
 // SHA-256(challenge + nonce); each bit doubles the expected work.
 type Challenge struct {
-	ID         string `json:"challenge_id"`
-	Challenge  string `json:"challenge"`
-	Difficulty int    `json:"difficulty_bits"`
+	ID         string    `json:"challenge_id"`
+	Challenge  string    `json:"challenge"`
+	Algorithm  Algorithm `json:"algorithm"`
+	Difficulty int       `json:"difficulty_bits,omitempty"`
+	MemoryKiB  uint32    `json:"memory_kib,omitempty"`
+	Iterations uint32    `json:"iterations,omitempty"`
+	Salt       string    `json:"salt,omitempty"`
 }
 
 const challengeKeyPrefix = "challenge:"
@@ -434,6 +438,16 @@ func challengeKey(id string) string { return challengeKeyPrefix + id }
 // issuance record with the given TTL. allowNoJS enables the meta-refresh
 // redemption path for this specific challenge.
 func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty int, ttl time.Duration, allowNoJS bool) (*Challenge, error) {
+	return m.IssueWithSpec(ctx, host, ip, uri, ProofSpec{Algorithm: AlgorithmSHA256, Difficulty: difficulty}, ttl, allowNoJS)
+}
+
+// IssueWithSpec issues a stateful challenge whose proof policy is persisted
+// and therefore survives config reloads. The historical Issue wrapper keeps
+// the SHA-256 API stable for embedders and tests.
+func (m *Manager) IssueWithSpec(ctx context.Context, host, ip, uri string, spec ProofSpec, ttl time.Duration, allowNoJS bool) (*Challenge, error) {
+	if err := spec.validate(); err != nil {
+		return nil, err
+	}
 	var idRaw [16]byte
 	if _, err := rand.Read(idRaw[:]); err != nil {
 		return nil, err
@@ -483,6 +497,11 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	hex.Encode(chalHex[:], challengeDigest[:])
 	challenge := string(chalHex[:])
 	m.macs.put(km)
+	if spec.algorithm() == AlgorithmArgon2ID {
+		if _, err := rand.Read(spec.Salt[:]); err != nil {
+			return nil, err
+		}
+	}
 
 	recordBuf := m.records.get()
 	rec, err := encodeChallengeRecord(recordBuf, &record{
@@ -490,7 +509,11 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 		Host:            normalizedHost,
 		IP:              ip,
 		ChallengeDigest: challengeDigest,
-		Difficulty:      difficulty,
+		Algorithm:       spec.algorithm(),
+		Difficulty:      spec.Difficulty,
+		MemoryKiB:       spec.MemoryKiB,
+		Iterations:      spec.Iterations,
+		Salt:            spec.Salt,
 		URI:             uri,
 		NoJS:            allowNoJS,
 		IssuedAt:        issuedAt.UnixMilli(),
@@ -507,7 +530,19 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 	if !created {
 		return nil, errors.New("challenge id collision")
 	}
-	return &Challenge{ID: id, Challenge: challenge, Difficulty: difficulty}, nil
+	return challengeFromSpec(id, challenge, spec), nil
+}
+
+func challengeFromSpec(id, challenge string, spec ProofSpec) *Challenge {
+	c := &Challenge{ID: id, Challenge: challenge, Algorithm: spec.algorithm()}
+	if c.Algorithm == AlgorithmArgon2ID {
+		c.MemoryKiB = spec.MemoryKiB
+		c.Iterations = spec.Iterations
+		c.Salt = hex.EncodeToString(spec.Salt[:])
+	} else {
+		c.Difficulty = spec.Difficulty
+	}
+	return c
 }
 
 // RedeemRequest carries a solution (or a no-JS wait) plus the caller-supplied
@@ -515,6 +550,7 @@ func (m *Manager) Issue(ctx context.Context, host, ip, uri string, difficulty in
 type RedeemRequest struct {
 	ChallengeID string
 	Nonce       string // ignored for NoJS redemptions
+	Proof       string // 32-byte lowercase hex Argon2id result
 	NoJS        bool
 	Host        string
 	IP          string
@@ -530,6 +566,17 @@ type RedeemRequest struct {
 	// redemption (the solve POST itself does not carry the original URI).
 	// When nil, TokenTTL and ChallengeTTL are used as given.
 	TTLs func(uri string) (token, challenge time.Duration)
+
+	// AcquireNoJS is called after the challenge and its original URI have
+	// been authenticated and bound to this client. It lets the caller enforce
+	// policy resolved from that URI before the work-free fallback mints a token.
+	AcquireNoJS func(uri string) error
+
+	// AcquireArgon is called only after cheap format/authentication/freshness/
+	// binding checks. A false result returns ErrVerifierBusy without spending
+	// the challenge; a successful acquisition is paired with ReleaseArgon.
+	AcquireArgon func() error
+	ReleaseArgon func()
 }
 
 // RedeemResult is a minted token plus where to send the client afterwards.
@@ -550,6 +597,9 @@ type RedeemResult struct {
 	// time they cannot be chosen by the solver. Returned so the caller can
 	// attribute and sanity-check the solve without a second store read.
 	Difficulty int
+	Algorithm  Algorithm
+	MemoryKiB  uint32
+	Iterations uint32
 	IssuedAt   time.Time
 }
 
@@ -561,11 +611,14 @@ type RedeemResult struct {
 const ClockSkewAllowance = statelessSkew
 
 var (
-	ErrChallengeUnknown = errors.New("challenge unknown, expired or already spent")
-	ErrBadSolution      = errors.New("solution does not meet the required difficulty")
-	ErrBindingMismatch  = errors.New("challenge was issued to a different client")
-	ErrTooFast          = errors.New("no-JS redemption attempted too quickly")
-	ErrNoJSDisabled     = errors.New("no-JS redemption not allowed for this challenge")
+	ErrChallengeUnknown    = errors.New("challenge unknown, expired or already spent")
+	ErrBadSolution         = errors.New("solution does not meet the required difficulty")
+	ErrBindingMismatch     = errors.New("challenge was issued to a different client")
+	ErrTooFast             = errors.New("no-JS redemption attempted too quickly")
+	ErrNoJSDisabled        = errors.New("no-JS redemption not allowed for this challenge")
+	ErrNoJSRateLimited     = errors.New("no-JS redemption rate limit exceeded")
+	ErrVerifierBusy        = errors.New("argon2id verifier saturated")
+	ErrVerifierRateLimited = errors.New("argon2id verification rate limit exceeded")
 )
 
 // Redeem validates a challenge solution and mints a signed token. The spent
@@ -611,8 +664,25 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 		if !rec.NoJS {
 			return nil, ErrNoJSDisabled
 		}
+		if req.AcquireNoJS != nil {
+			if err := req.AcquireNoJS(rec.URI); err != nil {
+				return nil, err
+			}
+		}
 		if m.now().Sub(time.UnixMilli(rec.IssuedAt)) < m.NoJSMinDelay {
 			return nil, ErrTooFast
+		}
+	} else if rec.Algorithm == AlgorithmArgon2ID {
+		if req.AcquireArgon != nil {
+			if err := req.AcquireArgon(); err != nil {
+				return nil, err
+			}
+		}
+		if req.ReleaseArgon != nil {
+			defer req.ReleaseArgon()
+		}
+		if !verifyArgon2ID(hex.EncodeToString(rec.ChallengeDigest[:]), rec.proofSpec(), req.Proof) {
+			return nil, ErrBadSolution
 		}
 	} else {
 		// 64 hex bytes plus an ordinary decimal nonce fit in stack scratch.
@@ -647,13 +717,14 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
 	m.ForgetEscalation(rec.Host, rec.IP)
 
-	token, err := m.mintToken(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.Difficulty, tokenTTL)
+	token, err := m.mintTokenWithSpec(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.proofSpec(), tokenTTL)
 	if err != nil {
 		return nil, err
 	}
 	return &RedeemResult{
 		Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI,
-		Difficulty: rec.Difficulty, IssuedAt: time.UnixMilli(rec.IssuedAt),
+		Difficulty: rec.Difficulty, Algorithm: rec.Algorithm, MemoryKiB: rec.MemoryKiB,
+		Iterations: rec.Iterations, IssuedAt: time.UnixMilli(rec.IssuedAt),
 	}, nil
 }
 

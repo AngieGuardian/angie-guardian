@@ -82,9 +82,10 @@ Content-Security-Policy: The page's settings blocked a worker script
 violates the following directive: "script-src 'unsafe-inline' 'self'"
 ```
 
-**Cause:** the site's CSP is being applied to the challenge page, whose PoW
-solver runs in a `blob:` Web Worker that a normal site policy (rightly)
-forbids. In Angie, a server-level `add_header Content-Security-Policy ...` in
+**Cause:** the site's CSP is being applied to the challenge page. SHA-256 uses
+a `blob:` worker; Argon2id uses same-origin worker/runtime/WASM assets. A normal
+site policy (rightly) need not allow either. In Angie, a server-level
+`add_header Content-Security-Policy ...` in
 the vhost is inherited by every location that defines no `add_header` of its
 own, so it lands on the interstitial when the challenge location does not set
 headers itself. This happens with a [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) copied before
@@ -98,6 +99,10 @@ from being inherited there. The site-wide CSP needs no change; with
 hand-written glue, add the same `add_header` line to your challenge location.
 Do **not** fix it by adding `worker-src blob:` to the site-wide policy: that
 weakens the whole site for one internal page.
+
+For Argon2id, also confirm that the current snippet's public
+`/__guardian/assets/` location exists and that the worker, runtime, and WASM
+requests return 200 with `Cache-Control: public, max-age=31536000, immutable`.
 
 If the vhost sets other server-wide headers (`Strict-Transport-Security` is the
 one that matters), re-add them in those two locations; see

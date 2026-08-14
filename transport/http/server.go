@@ -32,6 +32,12 @@ import (
 // Angie glue; the challenge page posts here.
 const PassPath = "/__guardian/pass"
 
+const (
+	argonWorkerURL  = "/__guardian/assets/argon2id-worker-db57362e2dddfb66.js"
+	argonRuntimeURL = "/__guardian/assets/argon2id-runtime-1b3aa08f6d118ad6.js"
+	argonWASMURL    = "/__guardian/assets/argon2id-4507b469b9b103a5.wasm"
+)
+
 // The X-Guardian-* header names the glue sets, spelled in canonical MIME form
 // ("Uri", not "URI"). That casing is not cosmetic. Header.Get canonicalizes its
 // argument, and it can only do so allocation-free when the string is ALREADY
@@ -66,10 +72,17 @@ type Server struct {
 	// hot reload of that bound takes effect immediately. When over the bound,
 	// token holders still pass (a cheap stateless check) and everyone else
 	// gets a fast 503; the backend sees only vouched traffic under saturation.
-	inflight atomic.Int64
+	inflight      atomic.Int64
+	argonInflight atomic.Int64
 
-	challengePage challengeRenderer
-	deniedHTML    []byte
+	challengePage   challengeRenderer
+	deniedHTML      []byte
+	challengeAssets map[string]challengeAsset
+}
+
+type challengeAsset struct {
+	data        []byte
+	contentType string
 }
 
 // New builds the auth-path server. Domain config is read through the engine
@@ -82,6 +95,18 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		challengePage: newChallengeRenderer(),
 	}
 	s.deniedHTML, _ = web.FS.ReadFile("denied.html")
+	s.challengeAssets = make(map[string]challengeAsset, 3)
+	for _, asset := range []struct{ url, file, contentType string }{
+		{argonWorkerURL, "argon2id-worker-db57362e2dddfb66.js", "text/javascript; charset=utf-8"},
+		{argonRuntimeURL, "argon2id-runtime-1b3aa08f6d118ad6.js", "text/javascript; charset=utf-8"},
+		{argonWASMURL, "argon2id-4507b469b9b103a5.wasm", "application/wasm"},
+	} {
+		data, err := web.FS.ReadFile("vendor/guardian-argon2/" + asset.file)
+		if err == nil {
+			s.challengeAssets[asset.url] = challengeAsset{data: data, contentType: asset.contentType}
+		}
+		s.mux.HandleFunc("GET "+asset.url, s.handleChallengeAsset)
+	}
 
 	// The endpoints that trust X-Guardian-* identity headers sit behind the
 	// require_proxied gate; /healthz (probed headerless by the systemd
@@ -98,6 +123,21 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		s.mux.HandleFunc("GET "+p, s.proxiedOnly(s.handlePassNoJS))
 	}
 	return s
+}
+
+func (s *Server) handleChallengeAsset(w http.ResponseWriter, r *http.Request) {
+	asset, ok := s.challengeAssets[r.URL.Path]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	securityHeaders(w, "", "")
+	w.Header().Set("Content-Type", asset.contentType)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.Header().Set("Content-Length", strconv.Itoa(len(asset.data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(asset.data)
 }
 
 // proxiedOnly enforces require_proxied: when enabled, a guard request without
@@ -286,10 +326,19 @@ func (s *Server) logDecision(req *core.RequestContext, d core.Decision) {
 // challengePayload is the JSON embedded in the interstitial for the solver.
 // Field names are the page's contract (web/challenge.html.tmpl reads them).
 type challengePayload struct {
-	ChallengeID string `json:"challenge_id"`
-	Challenge   string `json:"challenge"`
-	Difficulty  int    `json:"difficulty_bits"`
-	PassURL     string `json:"pass_url"`
+	ChallengeID         string        `json:"challenge_id"`
+	Challenge           string        `json:"challenge"`
+	Algorithm           pow.Algorithm `json:"algorithm"`
+	Difficulty          int           `json:"difficulty_bits"`
+	MemoryKiB           uint32        `json:"memory_kib,omitempty"`
+	Iterations          uint32        `json:"iterations,omitempty"`
+	Salt                string        `json:"salt,omitempty"`
+	PassURL             string        `json:"pass_url"`
+	WorkerURL           string        `json:"worker_url,omitempty"`
+	WASMURL             string        `json:"wasm_url,omitempty"`
+	NoScriptFallback    bool          `json:"noscript_fallback,omitempty"`
+	NoScriptURL         string        `json:"noscript_url,omitempty"`
+	NoScriptWaitSeconds int           `json:"noscript_wait_seconds,omitempty"`
 }
 
 // refuseChallenge writes a challenge refusal: a plain 403 with an explanation,
@@ -512,12 +561,24 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// both formats, so this can flip per request with no coordination.
 	var ch *pow.Challenge
 	var err error
+	spec := pow.ProofSpec{Algorithm: pow.AlgorithmSHA256, Difficulty: difficulty}
+	if dcfg.PoW.UsesArgon2ID() {
+		iterations := dcfg.PoW.Argon2ID.BaseIterations
+		if difficulty > base || attack.Level == attackmode.Elevated {
+			iterations = dcfg.PoW.Argon2ID.MaxIterations
+		}
+		if attack.Level == attackmode.Attack {
+			iterations = dcfg.PoW.Argon2ID.AttackIterationsCap
+		}
+		spec = pow.ProofSpec{Algorithm: pow.AlgorithmArgon2ID,
+			MemoryKiB: dcfg.PoW.Argon2ID.MemoryKiB, Iterations: iterations}
+	}
 	issuedStateless := attack.Stateless
 	if attack.Stateless {
-		ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)
+		ch, err = s.pow.IssueStatelessWithSpec(host, ip, uri, spec, dcfg.PoW.NoScriptFallback)
 	} else {
-		ch, err = s.pow.Issue(r.Context(), host, ip, uri,
-			difficulty, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
+		ch, err = s.pow.IssueWithSpec(r.Context(), host, ip, uri,
+			spec, dcfg.PoW.ChallengeTTL.Std(), dcfg.PoW.NoScriptFallback)
 		if err != nil {
 			// Stateful issuance is the only challenge-page operation that needs a
 			// store write. If the store is unavailable, falling back to the
@@ -526,7 +587,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 			// unvouched client on a 503 until Redis/the store backend recovers.
 			s.log.Warn("stateful challenge issuance failed; falling back to stateless",
 				"host", host, "ip", ip, "err", err)
-			ch, err = s.pow.IssueStateless(host, ip, uri, difficulty, dcfg.PoW.NoScriptFallback)
+			ch, err = s.pow.IssueStatelessWithSpec(host, ip, uri, spec, dcfg.PoW.NoScriptFallback)
 			if err == nil {
 				issuedStateless = true
 				s.metrics.Challenge("issued_stateless_fallback")
@@ -555,12 +616,22 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	payload := &challengePayload{
 		ChallengeID: ch.ID,
 		Challenge:   ch.Challenge,
+		Algorithm:   ch.Algorithm,
 		Difficulty:  ch.Difficulty,
+		MemoryKiB:   ch.MemoryKiB,
+		Iterations:  ch.Iterations,
+		Salt:        ch.Salt,
 		PassURL:     PassPath,
+	}
+	if ch.Algorithm == pow.AlgorithmArgon2ID {
+		payload.WorkerURL, payload.WASMURL = argonWorkerURL, argonWASMURL
 	}
 	refreshSeconds := ""
 	if dcfg.PoW.NoScriptFallback {
 		refreshSeconds = strconv.Itoa(int(s.pow.NoJSMinDelay/time.Second) + 1)
+		payload.NoScriptFallback = true
+		payload.NoScriptURL = PassPath + "?cid=" + ch.ID + "&nojs=1"
+		payload.NoScriptWaitSeconds = int(s.pow.NoJSMinDelay / time.Second)
 	}
 	err = s.challengePage.RenderChallenge(w, payload, dcfg.PoW.NoScriptFallback, refreshSeconds)
 	if err != nil {
@@ -574,13 +645,14 @@ func (s *Server) handlePassSolve(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ChallengeID string `json:"challenge_id"`
 		Nonce       string `json:"nonce"`
+		Proof       string `json:"proof"`
 		ElapsedMS   int64  `json:"elapsed_ms"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "malformed request"})
 		return
 	}
-	s.redeem(w, r, &pow.RedeemRequest{ChallengeID: body.ChallengeID, Nonce: body.Nonce}, body.ElapsedMS)
+	s.redeem(w, r, &pow.RedeemRequest{ChallengeID: body.ChallengeID, Nonce: body.Nonce, Proof: body.Proof}, body.ElapsedMS)
 }
 
 // handlePassNoJS is the meta-refresh fallback: no work was done, but the
@@ -638,9 +710,66 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		pc := cfg.ConfigFor(host, uri)
 		return pc.PoW.TokenTTL.Std(), pc.PoW.ChallengeTTL.Std()
 	}
+	asn := s.engine.OriginASN(ip)
+	noJSRetryAfter := time.Second
+	req.AcquireNoJS = func(uri string) error {
+		limit := cfg.ConfigFor(host, uri).PoW.NoScriptRedemptionRateLimit
+		exceeded, retryAfter := s.redemptionRateLimitExceeded("njsrl", host, ip, asn, limit)
+		if exceeded {
+			noJSRetryAfter = retryAfter
+			return pow.ErrNoJSRateLimited
+		}
+		return nil
+	}
+	var argonStarted time.Time
+	argonRetryAfter := time.Second
+	req.AcquireArgon = func() error {
+		live := s.engine.Config().Argon2Verifier
+		for {
+			current := s.argonInflight.Load()
+			if current >= int64(live.MaxConcurrent) {
+				s.metrics.ArgonVerifier("saturated", 0, current)
+				return pow.ErrVerifierBusy
+			}
+			if s.argonInflight.CompareAndSwap(current, current+1) {
+				break
+			}
+		}
+		exceeded, retryAfter := s.redemptionRateLimitExceeded("argrl", host, ip, asn, live.VerificationRateLimit)
+		if exceeded {
+			s.argonInflight.Add(-1)
+			s.metrics.ArgonVerifier("rate_limited", 0, s.argonInflight.Load())
+			argonRetryAfter = retryAfter
+			return pow.ErrVerifierRateLimited
+		}
+		argonStarted = time.Now()
+		s.metrics.ArgonVerifier("started", 0, s.argonInflight.Load())
+		return nil
+	}
+	req.ReleaseArgon = func() {
+		elapsed := time.Since(argonStarted).Seconds()
+		current := s.argonInflight.Add(-1)
+		s.metrics.ArgonVerifier("completed", elapsed, current)
+	}
 
 	res, err := s.pow.Redeem(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, pow.ErrNoJSRateLimited) {
+			s.metrics.Challenge("nojs_rate_limited")
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(noJSRetryAfter)))
+			http.Error(w, "too many no-JS redemption attempts", http.StatusTooManyRequests)
+			return
+		}
+		if errors.Is(err, pow.ErrVerifierBusy) {
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "challenge verifier busy"})
+			return
+		}
+		if errors.Is(err, pow.ErrVerifierRateLimited) {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(argonRetryAfter)))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "too many verification attempts"})
+			return
+		}
 		s.metrics.Challenge("failed")
 		// The ring row and the per-reason counter keep what the funnel
 		// counter drops: who failed, on which host, and why. Recorded on the
@@ -723,11 +852,13 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 	s.engine.RecordSolve(core.SolveRecord{
 		Host: host, IP: ip, URI: res.RedirectURI, UA: req.UserAgent,
 		SolveMS: elapsedMS, RoundTripMS: roundTripMS,
-		Bits: res.Difficulty, NoJS: req.NoJS,
+		Algorithm: string(res.Algorithm), Bits: res.Difficulty,
+		MemoryKiB: res.MemoryKiB, Iterations: res.Iterations, NoJS: req.NoJS,
 	})
 	s.log.Info("challenge solved",
 		"host", host, "ip", ip, "nojs", req.NoJS, "elapsed_ms", elapsedMS,
-		"round_trip_ms", roundTripMS, "bits", res.Difficulty)
+		"round_trip_ms", roundTripMS, "algorithm", res.Algorithm,
+		"bits", res.Difficulty, "memory_kib", res.MemoryKiB, "iterations", res.Iterations)
 	// Secure by default; dropped only when Angie says the client connection is
 	// plain http (X-Guardian-Proto, $scheme), because a browser will not send
 	// a Secure cookie back over http and the client would loop on the
@@ -746,6 +877,47 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) rateLimitExceeded(prefix, host, ip string, limit core.Rate) bool {
+	return s.rateLimitExceededAt(prefix, host, ip, limit, time.Now())
+}
+
+func (s *Server) rateLimitExceededAt(prefix, host, ip string, limit core.Rate, now time.Time) bool {
+	window := max(limit.Per, time.Second)
+	windowSeconds := int64(window / time.Second)
+	var b strings.Builder
+	b.Grow(len(prefix) + len(host) + len(ip) + 32)
+	b.WriteString(prefix)
+	b.WriteByte(':')
+	b.WriteString(strings.ToLower(host))
+	b.WriteByte(':')
+	b.WriteString(ip)
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatInt(now.Unix()/windowSeconds, 10))
+	return int(s.counters.Incr(b.String(), 2*window)) > limit.Count
+}
+
+func (s *Server) redemptionRateLimitExceeded(prefix, host, ip string, asn uint32, limit core.Rate) (bool, time.Duration) {
+	return s.redemptionRateLimitExceededAt(prefix, host, ip, asn, limit, time.Now())
+}
+
+func (s *Server) redemptionRateLimitExceededAt(prefix, host, ip string, asn uint32, limit core.Rate, now time.Time) (bool, time.Duration) {
+	ipExceeded := s.rateLimitExceededAt(prefix+":ip", host, ip, limit, now)
+	asnExceeded := false
+	if asn != 0 {
+		asnExceeded = s.rateLimitExceededAt(prefix+":asn", host, strconv.FormatUint(uint64(asn), 10), limit, now)
+	}
+	if !ipExceeded && !asnExceeded {
+		return false, 0
+	}
+	windowSeconds := int64(max(limit.Per, time.Second) / time.Second)
+	remainingSeconds := windowSeconds - now.Unix()%windowSeconds
+	return true, time.Duration(remainingSeconds) * time.Second
+}
+
+func retryAfterSeconds(d time.Duration) int {
+	return max(1, int((d+time.Second-1)/time.Second))
 }
 
 func (s *Server) handleDenied(w http.ResponseWriter, _ *http.Request) {

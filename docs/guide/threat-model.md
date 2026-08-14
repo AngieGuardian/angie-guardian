@@ -54,10 +54,11 @@ tools that own these problems.
   a verified crawler is admitted with reduced scrutiny.
   Allowlist deliberately; an allowlisted attacker is an allowlisted attacker.
 - **A native solver outpacing browsers.** Proof-of-work is a *cost* mechanism,
-  not a bypass-proof gate. A determined attacker with native SHA-256 hardware
-  solves challenges faster than a browser's JavaScript does; difficulty tuning
-  raises their cost, it does not stop them. PoW buys economics, not certainty.
-  See [difficulty tuning](/guide/configuration#base-difficulty-and-max-difficulty).
+  not a bypass-proof gate. GPUs and ASICs can solve SHA-256 much faster than a
+  browser; Argon2id reduces that hardware advantage by requiring memory, but
+  does not eliminate it. Work tuning raises an attacker's cost, it does not
+  stop them. PoW buys economics, not certainty. See
+  [proof-of-work algorithms](/guide/pow-algorithms).
 - **Vulnerabilities in the protected application.** Guardian filters who gets
   through; it does not fix the app behind it. A logic flaw reachable by a
   vouched, well-behaved client is still reachable.
@@ -96,14 +97,14 @@ exactly what that page uses, plus `X-Content-Type-Options: nosniff`,
 
 | Page | Policy |
 | --- | --- |
-| PoW interstitial | inline script and style, a `blob:` worker for the solver, same-origin `fetch`; framing limited to same-origin |
+| PoW interstitial | inline script and style, a `blob:` SHA-256 worker or same-origin Argon2id worker/runtime/WASM, same-origin `fetch`; framing limited to same-origin |
 | Denied page | inline style only, no script, no subresources; framing limited to same-origin |
 | Admin dashboard | inline script and style, same-origin vendored chart libraries, `data:` favicon, same-origin `fetch`; framing refused outright |
 
 The Angie glue ([`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)) also adds the interstitial and
 denied policies with `add_header`, not as duplication: an Angie location that
 sets any `add_header` stops inheriting the server-level ones, which is what
-keeps a vhost's own site CSP (typically lacking `worker-src blob:`) from
+keeps a vhost's own site CSP (typically lacking the required worker sources) from
 breaking the solver. Keep both; a browser enforces every policy it receives,
 and the two intersect to exactly the policy in the table. Guardian sending
 them itself keeps the pages self-protecting when Angie is not in the path at

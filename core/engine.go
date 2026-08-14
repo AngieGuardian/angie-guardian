@@ -306,6 +306,24 @@ func (e *Engine) acquireSnapshot() *engineSnapshot {
 	}
 }
 
+// OriginASN returns the active snapshot's ASN for an address. It is used only
+// on expensive redemption paths, where an ASN-wide admission bucket prevents
+// an attacker rotating across many addresses from multiplying the no-script
+// or Argon2id verification allowance. The lookup is in-memory and returns zero
+// when no ASN database or record is available.
+func (e *Engine) OriginASN(ip string) uint32 {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return 0
+	}
+	snap := e.acquireSnapshot()
+	if snap == nil {
+		return 0
+	}
+	defer snap.release()
+	return snap.intel.Lookup(addr).ASN
+}
+
 // Evaluate resolves the effective config for the request's host and path and
 // runs the pipeline. Stage errors fail open: Guardian degrades to "allow"
 // rather than taking a site down with it.
@@ -412,7 +430,10 @@ type SolveRecord struct {
 	UA          string
 	SolveMS     int64
 	RoundTripMS int64
+	Algorithm   string
 	Bits        int
+	MemoryKiB   uint32
+	Iterations  uint32
 	NoJS        bool
 }
 
@@ -436,11 +457,16 @@ func (e *Engine) RecordSolve(rec SolveRecord) {
 	if rec.NoJS {
 		reason = ReasonNoJS
 	}
+	algorithm := rec.Algorithm
+	if algorithm == "" {
+		algorithm = string(pow.AlgorithmSHA256)
+	}
 	e.recent.add(RecentDecision{
 		Time: time.Now(), Host: rec.Host, IP: rec.IP, URI: rec.URI, UA: rec.UA,
 		Action: ActionSolve, Reason: reason,
 		SolveMS: clampMS(rec.SolveMS), RoundTripMS: clampMS(rec.RoundTripMS),
-		Bits: clampBits(rec.Bits),
+		PoWAlgorithm: algorithm, Bits: clampBits(rec.Bits),
+		Argon2MemoryKiB: rec.MemoryKiB, Argon2Iterations: rec.Iterations,
 	})
 }
 

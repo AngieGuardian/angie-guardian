@@ -45,14 +45,14 @@ type RecentDecision struct {
 	Action string    `json:"action"`
 	Reason string    `json:"reason"`
 
-	// The three below are set only on ActionSolve rows and omitted everywhere
+	// The fields below are set only on ActionSolve rows and omitted everywhere
 	// else, so a deny row is byte-identical on the wire to what it was before
 	// solves shared this ring, and absent reads as "unknown" rather than zero.
 
-	// SolveMS is what the client said its solver spent hashing (a
+	// SolveMS is what the client said its solver spent computing (a
 	// performance.now() delta around the workers). UNAUTHENTICATED telemetry,
-	// kept because it is the only measurement of pure hashing cost, which is
-	// the number base_difficulty is tuned against. 0 means "not reported": a
+	// kept because it is the only measurement of pure client work used to tune
+	// SHA-256 difficulty or Argon2id parameters. 0 means "not reported": a
 	// no-JS redemption, or a value rejected as physically impossible. It never
 	// means "instant".
 	SolveMS int32 `json:"solve_ms,omitempty"`
@@ -63,9 +63,16 @@ type RecentDecision struct {
 	// within pow.ClockSkewAllowance, since the challenge may carry a peer's
 	// clock. Never a substitute for SolveMS.
 	RoundTripMS int32 `json:"round_trip_ms,omitempty"`
-	// Bits is the leading-zero-bit difficulty this challenge actually required
-	// after any escalation, so a slow solve reads against what was asked for.
+	// PoWAlgorithm identifies how the solve was produced. RecordSolve maps an
+	// omitted value from older/internal callers to SHA-256.
+	PoWAlgorithm string `json:"pow_algorithm,omitempty"`
+	// Bits is set for SHA-256 and is the leading-zero-bit difficulty this
+	// challenge actually required after any escalation.
 	Bits uint8 `json:"bits,omitempty"`
+	// Argon2MemoryKiB and Argon2Iterations are the authenticated fixed-result
+	// work parameters for an Argon2id solve. They are zero for SHA-256.
+	Argon2MemoryKiB  uint32 `json:"argon2_memory_kib,omitempty"`
+	Argon2Iterations uint32 `json:"argon2_iterations,omitempty"`
 }
 
 // The vocabulary for outcome rows. ActionSolve and ActionRedeemFail are

@@ -21,16 +21,17 @@ import "net/http"
 // never exercise, so the intersection is exactly this policy.
 const (
 	// cspChallenge fits the interstitial exactly: one inline script, one inline
-	// style, a blob: Web Worker for the solver, and a same-origin fetch to post
-	// the solution. Keep in sync with deploy/angie-guardian.conf.
+	// style, a blob: SHA-256 worker or same-origin Argon2id worker, and
+	// same-origin fetches for the solver assets and solution submission. Keep in
+	// sync with deploy/angie-guardian.conf.
 	//
 	// frame-ancestors is 'self', not 'none': a protected page may legitimately
 	// be embedded by the same site, and the interstitial has to be solvable
 	// wherever the page it guards renders. Cross-origin framing is refused,
 	// which is the clickjacking case that matters and is already broken anyway
 	// (the token cookie is SameSite=Lax, so it would never come back).
-	cspChallenge = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
-		"worker-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+	cspChallenge = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; " +
+		"worker-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 
 	// cspStatic fits an inline-styled static page with no script and no
 	// subresources (the denied page). Keep in sync with the glue.

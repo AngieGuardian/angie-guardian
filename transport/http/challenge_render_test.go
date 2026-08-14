@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/web"
 )
 
@@ -99,6 +100,28 @@ func TestChallengeRendererStreamingJSONMatchesMarshal(t *testing.T) {
 		}
 		if !bytes.Equal(got.Bytes(), want.Bytes()) {
 			t.Fatalf("noScript=%t: Encoder output differs from Marshal renderer\nwant %q\n got %q", noScript, want.Bytes(), got.Bytes())
+		}
+	}
+}
+
+func TestChallengePageContainsBoundedArgonRetryAndFallbackLogic(t *testing.T) {
+	renderer := newChallengeRenderer()
+	data := &challengePayload{
+		ChallengeID: "id", Challenge: "challenge", Algorithm: pow.AlgorithmArgon2ID,
+		MemoryKiB: 8192, Iterations: 1, Salt: strings.Repeat("a", 32),
+		PassURL: PassPath, WorkerURL: argonWorkerURL, WASMURL: argonWASMURL,
+		NoScriptFallback: true, NoScriptURL: PassPath + "?cid=id&nojs=1", NoScriptWaitSeconds: 5,
+	}
+	var page bytes.Buffer
+	if err := renderer.RenderChallenge(&page, data, true, "6"); err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{
+		`resp.status !== 429 && resp.status !== 503`, `Math.random() * 1500`, `body[solution.kind]`,
+		`new Worker(data.worker_url)`, `data.noscript_wait_seconds * 1000`,
+	} {
+		if !strings.Contains(page.String(), contract) {
+			t.Errorf("challenge page missing %q", contract)
 		}
 	}
 }

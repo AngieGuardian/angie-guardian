@@ -20,6 +20,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/enforce"
 	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
+	"golang.org/x/crypto/argon2"
 )
 
 const benchYAML = `
@@ -201,6 +202,49 @@ func BenchmarkEvaluatePoWTokenCached(b *testing.B) {
 		&RequestContext{Host: "html.test", Method: "GET", URI: "/page", RemoteAddr: "198.51.100.7",
 			UserAgent: "Mozilla/5.0", Cookie: "cookie"},
 		"pow:token")
+}
+
+// BenchmarkEvaluatePoWTokenCachedWithOneArgon2IDVerifier is the mixed-load
+// isolation check: the production cached-token path runs while one bounded
+// 32 MiB verifier continuously does real Argon2id work. Compare it with
+// BenchmarkEvaluatePoWTokenCached on the deployment machine; the acceptance
+// budget is at most 5% throughput loss for the ~150k req/s target. It is a
+// manual benchmark because CI CPU topology and noise cannot produce a stable
+// timing gate.
+func BenchmarkEvaluatePoWTokenCachedWithOneArgon2IDVerifier(b *testing.B) {
+	st := store.NewMemory()
+	defer st.Close()
+	e, mgr := benchEngine(b, st)
+	tmpl := &RequestContext{Host: "html.test", Method: "GET", URI: "/page", RemoteAddr: "198.51.100.7", UserAgent: "Mozilla/5.0"}
+	tmpl.Cookie = pow.CookieName + "=" + benchToken(b, mgr, tmpl.Host, tmpl.RemoteAddr, tmpl.UserAgent)
+	ctx := context.Background()
+	if d := e.Evaluate(ctx, cloneRequest(tmpl)); d.Reason != "pow:token" {
+		b.Fatalf("sanity: reason = %q, want pow:token", d.Reason)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				proof := argon2.IDKey([]byte("guardian mixed-load verifier"), []byte("0123456789abcdef"), 1, 32*1024, 1, 32)
+				clear(proof)
+			}
+		}
+	}()
+	b.Cleanup(func() { close(stop); <-done })
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			e.Evaluate(ctx, cloneRequest(tmpl))
+		}
+	})
 }
 
 func BenchmarkEvaluateChallengeDecision(b *testing.B) {

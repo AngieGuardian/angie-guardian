@@ -26,7 +26,11 @@ routes, metrics and values may be *added*, but existing ones keep working):
   backend without joining against another metric.
 - **The PoW token format and signing.** A token minted by one `1.x` verifies
   on any other `1.x` sharing the key, so a rolling upgrade never logs clients
-  out. Signing-key and rotation file layout is stable.
+  out. Signing-key and rotation file layout is stable. SHA-256 stateful
+  challenge records use version 1 and stateless IDs use `s1.`; Argon2id
+  challenge records use version 2 and stateless IDs use `s2.`. A verifier
+  accepts all four formats until their normal
+  expiry, including while a domain hot-reloads between algorithms.
 - **The on-disk / store key format.** A `1.(x+1)` daemon reads a store
   (buntdb/pebble data or redis/valkey keyspace) written by `1.x`: blocks, spent
   challenges and cached verdicts survive the upgrade. Store key prefixes
