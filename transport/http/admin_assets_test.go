@@ -399,6 +399,37 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 	}
 }
 
+// Optional endpoint failures must not put old registry/offender data under a
+// fresh page timestamp without qualification. The behavioural transitions are
+// exercised in web/dashboard_script_test.go; these needles pin the markup and
+// the render-loop wiring that make those helpers visible in the shipped page.
+func TestDashboardOptionalPanelStaleSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, needle := range []string{
+		`id="distributions-stale"`, `id="offenders-stale"`,
+		`setOptionalStatus("distributions-stale", "Registry charts", !!dist, !!lastDist)`,
+		`setOptionalStatus("offenders-stale", "Offenders", false, haveOffenders)`,
+		`if (dist) lastDist = dist`,
+		`renderAnomalyHealth(anomaly, dist)`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard optional-panel stale surface missing %q", needle)
+		}
+	}
+	if bytes.Contains(page, []byte(`render(true)`)) {
+		t.Error("a post-action handler bypasses the refresh coordinator with render(true)")
+	}
+	if got := bytes.Count(page, []byte(`refreshAfterAction();`)); got != 5 {
+		t.Errorf("post-action refresh bindings = %d, want 5 (reload plus two block and two unblock paths)", got)
+	}
+	if bytes.Contains(page, []byte(`const misses = lastDist ?`)) {
+		t.Error("the current anomaly banner still consumes retained distribution counters")
+	}
+}
+
 // TestDashboardOffenderSurface pins the six-card markup and API bindings. The
 // server tests own the counts; this catches a response-field or DOM-ID rename
 // that would otherwise leave a shipped table silently blank.
