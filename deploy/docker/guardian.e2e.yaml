@@ -135,6 +135,13 @@ domains:
       # challenge while handing the client a real one.
       "/rollback-refusal":
         pow: { refuse_unchallengeable: false }
+  # Memory-hard browser solver and server verifier path. Kept at the minimum
+  # supported 8 MiB for suite speed; production defaults to 32 MiB.
+  argon.localhost:
+    pow:
+      enabled: true
+      algorithm: argon2id
+      argon2id: { memory_kib: 8192, base_iterations: 1, max_iterations: 1, attack_iterations_cap: 1 }
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }

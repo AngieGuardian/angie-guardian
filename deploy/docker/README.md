@@ -27,8 +27,9 @@ make e2e                              # or: go test -tags e2e ./test/e2e/...
 
 The suite picks three free host ports, brings the stack up, runs every scenario,
 and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
-PoW challenge issuance, a **full PoW solve through Angie** (challenge → solve →
-cookie → vouched request → spent-challenge replay), the no-JS meta-refresh
+PoW challenge issuance, **full SHA-256 and Argon2id solves through Angie**
+(challenge → solve → cookie → vouched request, plus SHA-256 spent-challenge
+replay), the no-JS meta-refresh
 fallback, WAF `allow`/`deny`/`block`/`challenge` actions, scanner-UA blocking, per-domain
 policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped, and
 the `/metrics` + `/admin/*` report surface.

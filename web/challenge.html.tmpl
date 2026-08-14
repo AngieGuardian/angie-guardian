@@ -18,6 +18,9 @@
   h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
   p { margin: 0.25rem 0; color: #71717a; font-size: 0.9rem; }
   #status { min-height: 1.2rem; }
+  #retry { display: none; margin: 1rem auto 0; padding: 0.55rem 0.9rem;
+           border: 0; border-radius: 0.4rem; background: #2563eb; color: white;
+           font: inherit; cursor: pointer; }
   footer { margin-top: 2rem; font-size: 0.8rem; color: #52525b; line-height: 1.5; }
   footer a { color: #2563eb; font-weight: 600; text-decoration: none; }
   footer a:hover { text-decoration: underline; }
@@ -39,6 +42,7 @@
   <p>This site verifies visitors with a short proof-of-work computation.
      No personal data is collected.</p>
   <p id="status" role="status">Starting…</p>
+  <button id="retry" type="button">Try verification again</button>
   <noscript>
     {{if .NoScript}}
     <p>JavaScript is disabled. You will be let through automatically in
@@ -58,6 +62,7 @@
   "use strict";
   const data = JSON.parse(document.getElementById("guardian-data").textContent);
   const status = document.getElementById("status");
+  const retry = document.getElementById("retry");
   const bar = document.getElementById("bar");
   const fill = document.getElementById("fill");
   // Expected hashes for this difficulty (one per required leading zero bit).
@@ -65,7 +70,6 @@
   // attempts is 1 - e^(-tried/expected), so we fill the bar by that curve and
   // cap it below 100% until a nonce is actually found. It gives a rough "how
   // far along" feel without claiming a false ETA.
-  const expected = Math.pow(2, data.difficulty_bits);
   const setProgress = (pct) => {
     fill.style.width = pct + "%";
     bar.setAttribute("aria-valuenow", Math.round(pct));
@@ -148,43 +152,115 @@
       }
     };
   `;
-  const blobURL = URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
-  const threads = Math.min(navigator.hardwareConcurrency || 2, 8);
   const workers = [];
   const started = performance.now();
   let total = 0;
-  let done = false;
+  let solution = null;
+  let redeeming = false;
 
-  const finish = async (nonce) => {
-    if (done) return;
-    done = true;
-    workers.forEach((w) => w.terminate());
+  const stopWorkers = () => workers.splice(0).forEach((w) => w.terminate());
+  const retryAfterMS = (value) => {
+    if (!value) return 0;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+    const date = Date.parse(value);
+    return Number.isNaN(date) ? 0 : Math.max(0, date - Date.now());
+  };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const redeem = async () => {
+    if (!solution || redeeming) return;
+    redeeming = true;
+    retry.style.display = "none";
     setProgress(100);
-    status.textContent = "Verifying…";
-    try {
-      const resp = await fetch(data.pass_url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          challenge_id: data.challenge_id,
-          nonce: nonce,
-          elapsed_ms: Math.round(performance.now() - started),
-        }),
-      });
-      if (resp.ok) { location.reload(); return; }
-    } catch (_) { /* fall through */ }
+    const body = {
+      challenge_id: data.challenge_id,
+      elapsed_ms: Math.round(performance.now() - started),
+    };
+    body[solution.kind] = solution.value;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      status.textContent = attempt ? "Verifier busy; retrying…" : "Verifying…";
+      try {
+        const resp = await fetch(data.pass_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (resp.ok) { location.reload(); return; }
+        if (resp.status !== 429 && resp.status !== 503) break;
+        // Keep the same proof and challenge: a busy or rate-limited verifier
+        // does not consume it. Retry-After is combined with capped exponential
+        // backoff and 0–1500 ms of jitter so many tabs do not retry in lock-step.
+        const serverDelay = retryAfterMS(resp.headers.get("Retry-After"));
+        const exponential = Math.min(250 * Math.pow(2, attempt), 8000);
+        await wait(Math.max(serverDelay, exponential) + Math.random() * 1500);
+      } catch (_) {
+        break;
+      }
+    }
+    redeeming = false;
     status.textContent = "Verification failed. Please reload this page.";
+    retry.style.display = "block";
+  };
+  retry.addEventListener("click", redeem);
+  const finish = (kind, value) => {
+    if (solution) return;
+    solution = { kind, value };
+    stopWorkers();
+    redeem();
+  };
+  const fallbackOrFail = () => {
+    stopWorkers();
+    if (data.noscript_fallback && data.noscript_url) {
+      status.textContent = "This browser cannot run the solver. Waiting for fallback…";
+      const remaining = Math.max(0, data.noscript_wait_seconds * 1000 - (performance.now() - started));
+      setTimeout(() => { location.href = data.noscript_url; }, remaining);
+      return;
+    }
+    status.textContent = "This browser cannot run the required solver.";
   };
 
+  if ((data.algorithm || "sha256") === "argon2id") {
+    if (!(window.Worker && window.WebAssembly && WebAssembly.instantiate)) {
+      fallbackOrFail();
+      return;
+    }
+    status.textContent = "Computing a memory-hard proof…";
+    setProgress(15);
+    try {
+      const w = new Worker(data.worker_url);
+      w.onmessage = (e) => {
+        if (e.data.proof) { setProgress(90); finish("proof", e.data.proof); return; }
+        status.textContent = "Solver error: " + (e.data.error || "unknown failure");
+        fallbackOrFail();
+      };
+      w.onerror = fallbackOrFail;
+      w.postMessage({
+        challenge: data.challenge,
+        salt: data.salt,
+        memory_kib: data.memory_kib,
+        iterations: data.iterations,
+        wasm_url: data.wasm_url,
+      });
+      workers.push(w);
+    } catch (_) {
+      fallbackOrFail();
+    }
+    return;
+  }
+
+  if (!window.Worker) { fallbackOrFail(); return; }
+  const expected = Math.pow(2, data.difficulty_bits);
+  const blobURL = URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
+  const threads = Math.min(navigator.hardwareConcurrency || 2, 8);
   for (let i = 0; i < threads; i++) {
     const w = new Worker(blobURL);
     w.onmessage = (e) => {
-      if (e.data.nonce !== undefined) { finish(e.data.nonce); return; }
+      if (e.data.nonce !== undefined) { finish("nonce", e.data.nonce); return; }
       total += e.data.tried;
       setProgress(Math.min((1 - Math.exp(-total / expected)) * 100, 90));
       status.textContent = "Computing… " + total.toLocaleString() + " hashes";
     };
-    w.onerror = () => { status.textContent = "Solver error. Please reload this page."; };
+    w.onerror = fallbackOrFail;
     w.postMessage({ challenge: data.challenge, bits: data.difficulty_bits, start: i, stride: threads });
     workers.push(w);
   }

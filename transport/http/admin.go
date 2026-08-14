@@ -1481,11 +1481,16 @@ func etagMatches(header, etag string) bool {
 // operator can confirm what is active without shell access to the box.
 func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	type domainView struct {
-		PoWEnabled bool    `json:"pow_enabled"`
-		PoWMode    string  `json:"pow_mode"`
-		PoWBase    float64 `json:"pow_base_difficulty"`
-		PoWMax     float64 `json:"pow_max_difficulty"`
-		Rules      bool    `json:"waf_rules"`
+		PoWEnabled           bool    `json:"pow_enabled"`
+		PoWMode              string  `json:"pow_mode"`
+		PoWAlgorithm         string  `json:"pow_algorithm"`
+		PoWBase              float64 `json:"pow_base_difficulty"`
+		PoWMax               float64 `json:"pow_max_difficulty"`
+		Argon2MemoryKiB      uint32  `json:"pow_argon2id_memory_kib"`
+		Argon2BaseIterations uint32  `json:"pow_argon2id_base_iterations"`
+		Argon2MaxIterations  uint32  `json:"pow_argon2id_max_iterations"`
+		Argon2AttackCap      uint32  `json:"pow_argon2id_attack_iterations_cap"`
+		Rules                bool    `json:"waf_rules"`
 		// RulesFiles and DisabledIDs expose the effective WAF rule selection
 		// together, so an operator can see the ordered files a scope uses and
 		// which rule IDs it excludes without shell access.
@@ -1504,8 +1509,10 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	base := func(dc *core.DomainConfig) domainView {
 		return domainView{
-			PoWEnabled: dc.PoW.Enabled, PoWMode: dc.PoW.Mode,
+			PoWEnabled: dc.PoW.Enabled, PoWMode: dc.PoW.Mode, PoWAlgorithm: dc.PoW.Algorithm,
 			PoWBase: dc.PoW.BaseDifficulty, PoWMax: dc.PoW.MaxDifficulty,
+			Argon2MemoryKiB: dc.PoW.Argon2ID.MemoryKiB, Argon2BaseIterations: dc.PoW.Argon2ID.BaseIterations,
+			Argon2MaxIterations: dc.PoW.Argon2ID.MaxIterations, Argon2AttackCap: dc.PoW.Argon2ID.AttackIterationsCap,
 			Rules: dc.WAF.Rules.Enabled, RulesFiles: dc.WAF.Rules.Files,
 			DisabledIDs: dc.WAF.Rules.DisabledIDs, Anomaly: dc.WAF.Anomaly.Enabled,
 			AnomalyObserve: dc.WAF.Anomaly.ObserveOnly,

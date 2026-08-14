@@ -275,21 +275,25 @@ attempts also score against the IP (`pow_fail` or `tamper`,
 [behaviour thresholds](/reference/configuration#waf-ip-behaviour)), so
 repetition earns a block; a lone row costs the client one page refresh.
 
-Solve rows carry three extra fields, absent on every other row (absent means
-unknown, not zero):
+Solve rows carry algorithm and work fields, absent on every other row (absent
+means unknown, not zero):
 
 | Field | Meaning |
 |---|---|
-| `solve_ms` | What the client reported spending on hashing, from a `performance.now()` delta around its workers. **Unauthenticated telemetry.** It is the only measurement of pure hashing cost, which is what `pow.base_difficulty` is tuned against, but a client can under-report it. Absent when nothing was hashed (a no-JS redemption) or when the reported value could not have been true, in which case `guardian_challenges_total{outcome="solve_time_implausible"}` counts it. |
+| `solve_ms` | What the client reported spending on the proof computation, from a `performance.now()` delta around its workers. **Unauthenticated telemetry.** It is the only measurement of pure client work, but a client can under-report it. Absent when no work was performed (a no-JS redemption) or when the reported value could not have been true, in which case `guardian_challenges_total{outcome="solve_time_implausible"}` counts it. |
 | `round_trip_ms` | Issue to redeem, measured by the daemon from the challenge's own issued-at. Not forgeable, but not solve time either: it includes page load, both network legs and any time the tab spent backgrounded, so read it as an upper bound. |
-| `bits` | The leading-zero-bit difficulty this challenge actually required after any escalation, so a slow solve reads against what was asked for. |
+| `pow_algorithm` | `sha256` or `argon2id`, authenticated by the issued challenge. |
+| `bits` | For SHA-256, the leading-zero-bit difficulty actually required after escalation. Absent for Argon2id. |
+| `argon2_memory_kib` | For Argon2id, the memory cost in KiB. Absent for SHA-256. |
+| `argon2_iterations` | For Argon2id, the iteration count. Absent for SHA-256. |
 
 Neither timing is evidence about a client, and neither should decide anything;
-they are inputs for tuning difficulty. When GeoIP/ASN databases are configured,
-each row may also contain `country`, `city`, `subdivision`,
-`accuracy_radius_km`, `asn`, and `as_org`. These optional fields are looked up
-when the feed is read, once per distinct IP in the response; they do not add
-work to the request decision path and are omitted when unavailable.
+they are inputs for tuning SHA-256 difficulty or Argon2id work parameters. When
+GeoIP/ASN databases are configured, each row may also contain `country`,
+`city`, `subdivision`, `accuracy_radius_km`, `asn`, and `as_org`. These optional
+fields are looked up when the feed is read, once per distinct IP in the
+response; they do not add work to the request decision path and are omitted
+when unavailable.
 
 Query parameters:
 
@@ -321,7 +325,7 @@ distinguish an empty covered interval from unavailable history.
   "decisions": [
     {"time":"2026-07-22T00:26:00Z","host":"shop.example.com","ip":"198.51.100.7",
      "uri":"/checkout","ua":"Mozilla/5.0 ...","action":"solve","reason":"pow:solved",
-     "solve_ms":1904,"round_trip_ms":2412,"bits":20},
+     "solve_ms":1904,"round_trip_ms":2412,"pow_algorithm":"sha256","bits":20},
     {"time":"2026-07-22T00:25:58Z","host":"shop.example.com","ip":"203.0.113.9",
      "method":"GET","uri":"/.env","ua":"python-requests/2.31",
      "action":"deny","reason":"waf:dotfile-probe"}
@@ -646,7 +650,8 @@ not automatically deleted from disk).
 ### `GET /admin/config`
 
 The active per-domain configuration: which features are enabled where,
-including PoW base/max difficulty, each scope's effective WAF rule
+including PoW algorithm, SHA-256 base/max difficulty, Argon2id work parameters,
+and each scope's effective WAF rule
 selection (`waf_rules_files` plus `waf_rules_disabled_ids`, both omitted when
 empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a scope defines
 [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths),
@@ -661,8 +666,13 @@ its effective overlays, inherited entries included:
   "domains": {
     "example.com": {
       "pow_enabled": true,
+      "pow_algorithm": "sha256",
       "pow_base_difficulty": 5,
       "pow_max_difficulty": 6,
+      "pow_argon2id_memory_kib": 32768,
+      "pow_argon2id_base_iterations": 1,
+      "pow_argon2id_max_iterations": 2,
+      "pow_argon2id_attack_iterations_cap": 3,
       "waf_rules": true,
       "waf_anomaly": true,
       "waf_anomaly_observe_only": true,

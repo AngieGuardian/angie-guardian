@@ -59,6 +59,9 @@ type Metrics struct {
 	shed              *prometheus.CounterVec // load-shed decisions by outcome
 	unproxiedRejects  prometheus.Counter     // require_proxied gate rejections
 	storeClockSkew    *prometheus.GaugeVec   // store server clock minus local, by backend
+	argonVerifier     *prometheus.CounterVec // by bounded outcome
+	argonDuration     prometheus.Histogram
+	argonInflight     prometheus.Gauge
 }
 
 type storeMetricHandles struct {
@@ -213,6 +216,19 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "unproxied_rejects_total",
 			Help: "Guard requests rejected by require_proxied for missing X-Guardian-* headers; nonzero means something reaches the guard port without going through Angie.",
 		}),
+		argonVerifier: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "argon2_verifier_total",
+			Help: "Argon2id verifier activity by outcome (started|completed|saturated|rate_limited).",
+		}, []string{"outcome"}),
+		argonDuration: f.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "guardian", Name: "argon2_verifier_seconds",
+			Help:    "Server-side Argon2id verification duration.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}),
+		argonInflight: f.NewGauge(prometheus.GaugeOpts{
+			Namespace: "guardian", Name: "argon2_verifier_inflight",
+			Help: "Argon2id verifications currently occupying bounded verifier slots.",
+		}),
 	}
 }
 
@@ -231,6 +247,17 @@ func (m *Metrics) Challenge(outcome string) {
 		return
 	}
 	m.challenge.WithLabelValues(outcome).Inc()
+}
+
+func (m *Metrics) ArgonVerifier(outcome string, seconds float64, inflight int64) {
+	if m == nil {
+		return
+	}
+	m.argonVerifier.WithLabelValues(outcome).Inc()
+	m.argonInflight.Set(float64(inflight))
+	if seconds > 0 {
+		m.argonDuration.Observe(seconds)
+	}
 }
 
 // ChallengeFailure records why a redemption failed. reason is the bare form

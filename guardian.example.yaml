@@ -82,7 +82,8 @@ store:
 # Fleet-wide attack posture. Off when absent. When aggregate signals (issuance
 # rate with a low solve ratio, store degradation) cross a threshold, Guardian
 # raises PoW difficulty fleet-wide and issues store-free challenges so a flood
-# of new clients stops saturating the store. Existing tokens stay valid. See
+# of new clients stops saturating the store. Algorithm changes and attack-mode
+# transitions do not revoke existing tokens. See
 # the "Attack Mode" guide before tuning; thresholds are per instance.
 #
 # CAUTION on the signals block: it is defaulted as a whole. Write ANY signal and
@@ -110,6 +111,14 @@ store:
 #     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
 #     difficulty_cap: 7               # ceiling of the SHIFTED window: during an attack this,
 #                                     # not the per-domain max_difficulty, bounds issued work
+
+# Global admission control for the expensive server-side half of Argon2id.
+# SHA-256 does not use this pool. Use one verifier unless mixed-load testing
+# proves more fit; each active default proof uses 32 MiB and CPU. The per-IP,
+# per-host limit runs after authenticated challenge checks and before verification.
+argon2_verifier:
+  max_concurrent: 1
+  verification_rate_limit: 10/min
 
 # Block enforcement offload. The in-process mirror is always on (it makes the
 # per-request block check a memory lookup, no store read) and needs no config;
@@ -218,6 +227,7 @@ defaults:
     signed_id: { enabled: false }
   pow:
     enabled: true
+    algorithm: sha256         # recommended default; set argon2id here or per domain
     # `always` challenges every unvouched request REGARDLESS of HTTP method,
     # and the challenge redirect cannot carry a request body: a first-contact
     # (or token-expired) POST/PUT/DELETE, a webhook, an upload or a direct
@@ -252,6 +262,14 @@ defaults:
                               # IP as a farmer can inherit above-base work.
     token_ttl: 7d             # 1s minimum, 30d maximum
     challenge_ttl: 30m        # must be positive; 24h maximum
+    # Used only when algorithm: argon2id. One fixed-result computation is
+    # performed: these are NOT multiplied by leading-zero search iterations.
+    # Defaults/domain scoped; path overlays cannot change the algorithm or this block.
+    argon2id:
+      memory_kib: 32768        # 32 MiB; allowed 8192..32768
+      base_iterations: 1       # ordinary visitor
+      max_iterations: 2        # suspicious/escalated visitor
+      attack_iterations_cap: 3 # hard cap under attack mode
     # Per-IP challenge issuance throttle (the default). PoW taxes clients that
     # solve; a raw flood that never solves still costs Angie an auth_request
     # each hit and can cost the store a write per issued challenge, and the
@@ -266,6 +284,10 @@ defaults:
     # wait substitutes for hash work. The wait costs an attacker no computation
     # and parallelizes cheaply, so leave it off (the default) unless no-JS
     # visitors matter more to you than that weakening.
+    # Authenticated attempts are independently limited before token issuance
+    # (default 6/min per host+IP). Domain/path overlays may tune the limit; the
+    # challenge's original URI selects it. This never bypasses global limits.
+    # noscript_redemption_rate_limit: 6/min
     # noscript_fallback: true
   geo:
     enabled: false            # needs the geoip: databases above

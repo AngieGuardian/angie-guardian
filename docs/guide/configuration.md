@@ -254,6 +254,11 @@ config guardian.yaml: store.backend must be memory, buntdb, pebble or redis, got
 
 ## base_difficulty and max_difficulty
 
+This section tunes the default `algorithm: sha256` leading-zero puzzle. The
+optional memory-hard algorithm uses a bounded memory/iteration ladder instead;
+see [Proof-of-work algorithms](/guide/pow-algorithms). Algorithm choice and
+Argon2id parameters may be set in `defaults` or per domain, but not per path.
+
 `base_difficulty` is the baseline for an issued challenge;
 `max_difficulty` is the normal-operation ceiling. Anomaly score,
 WAF/reputation policy, and challenge-farming escalation can raise work within
@@ -406,9 +411,9 @@ Which value fires:
   false-positive risk is higher there.
   :::
 
-### Measured solve times and recommended values
+### Measured SHA-256 solve times and recommended values
 
-The interstitial solves in parallel web workers (up to 8) with a pure-JS
+For SHA-256, the interstitial solves in parallel web workers (up to 8) with a pure-JS
 SHA-256. Measured throughput in Chrome on a fast desktop is ~1.1 million
 hashes/s per worker, ~9 MH/s with 8 workers; scale down for weaker devices.
 For comparison, a native (Go) solver does ~7.6 MH/s **per core**, so a bot
@@ -440,6 +445,9 @@ waits ~0.7x the mean, but ~5% wait 3x and ~1% wait 4.6x.
 :::
 
 Recommendations:
+
+These recommendations apply to SHA-256. Argon2id uses its bounded memory and
+iteration settings instead; see [Proof-of-work algorithms](/guide/pow-algorithms).
 
 - **`base_difficulty: 5`** (the default): imperceptible on desktop, about a
   second on a mid-range phone. A sensible tax for `mode: always`, paid once

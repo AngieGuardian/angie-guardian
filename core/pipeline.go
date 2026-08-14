@@ -476,7 +476,7 @@ func (env *stageEnv) powToken(req *RequestContext) tokenVerdict {
 	// get harder; tokens already held stay valid at the difficulty they were
 	// solved for.
 	env.token = classifyToken(env.pow.VerifyToken(token, req.Host, req.RemoteAddr, req.UserAgent,
-		env.domain.PoW.BaseBits(), env.domain.PoW.TokenTTL.Std()))
+		env.domain.PoW.TokenMinBits(), env.domain.PoW.TokenTTL.Std()))
 	return env.token
 }
 

@@ -516,7 +516,8 @@ func solve(ua string, solveMS int) map[string]any {
 	return map[string]any{
 		"time": "2026-07-30T12:00:00Z", "host": "mail.melroy.org", "ip": "203.0.113.7",
 		"uri": "/", "ua": ua, "action": "solve", "reason": "pow:solved",
-		"solve_ms": solveMS, "round_trip_ms": solveMS + 400, "bits": 18,
+		"solve_ms": solveMS, "round_trip_ms": solveMS + 400,
+		"pow_algorithm": "sha256", "bits": 18,
 	}
 }
 
@@ -840,28 +841,38 @@ func TestSolveCell(t *testing.T) {
 			name: "a fast solve",
 			row:  solve(firefoxLinux, 878),
 			want: cell{Cls: "num", Text: "878 ms",
-				Title: "client-reported 878 ms · issued to redeemed 1.3 s · 18 difficulty bits"},
+				Title: "client-reported 878 ms · issued to redeemed 1.3 s · algorithm sha256 · 18 difficulty bits"},
 		},
 		{
 			// Over the 2 s bucket bound, so the cell is flagged.
 			name: "a slow solve",
 			row:  solve(firefoxLinux, 3770),
 			want: cell{Cls: "num slow", Text: "3.8 s",
-				Title: "client-reported 3.8 s · issued to redeemed 4.2 s · 18 difficulty bits"},
+				Title: "client-reported 3.8 s · issued to redeemed 4.2 s · algorithm sha256 · 18 difficulty bits"},
 		},
 		{
 			// The Kindle Fire. Over 10 s, the histogram's next bound.
 			name: "the outlier",
 			row:  solve(kindleSilk, 27014),
 			want: cell{Cls: "num veryslow", Text: "27.0 s",
-				Title: "client-reported 27.0 s · issued to redeemed 27.4 s · 18 difficulty bits"},
+				Title: "client-reported 27.0 s · issued to redeemed 27.4 s · algorithm sha256 · 18 difficulty bits"},
 		},
 		{
 			// millis(0) would render "0", which reads as an instant solve.
 			name: "no time reported",
 			row:  solve(firefoxLinux, 0),
 			want: cell{Cls: "num", Text: "–",
-				Title: "solve time not reported (no-JS redemption, or a value that could not be true) · issued to redeemed 400 ms · 18 difficulty bits"},
+				Title: "solve time not reported (no-JS redemption, or a value that could not be true) · issued to redeemed 400 ms · algorithm sha256 · 18 difficulty bits"},
+		},
+		{
+			name: "an Argon2id solve",
+			row: map[string]any{
+				"action": "solve", "solve_ms": 120, "round_trip_ms": 350,
+				"pow_algorithm": "argon2id", "argon2_memory_kib": 8192,
+				"argon2_iterations": 2,
+			},
+			want: cell{Cls: "num", Text: "120 ms",
+				Title: "client-reported 120 ms · issued to redeemed 350 ms · algorithm argon2id · 8192 KiB, 2 iterations"},
 		},
 	}
 	for _, c := range cases {

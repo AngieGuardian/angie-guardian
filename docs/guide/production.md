@@ -452,6 +452,17 @@ briefly interrupt challenges and tokens across the fleet.
 
 ## GC tuning for peak throughput
 
+If any effective scope uses `pow.algorithm: argon2id`, budget CPU separately
+from the ordinary authorization path. Keep the `N` cores your measured hot path
+needs and provision at least two additional cores for Argon2id verification
+and runtime overhead (`N+2` total). Do not set systemd `CPUQuota=` or a
+container CPU limit below that budget. The verifier admission pool is bounded
+and is not entered by ordinary `/auth` traffic, but the work still runs in the
+same Go process. Validate simultaneous token traffic and Argon2id redemptions
+on the deployment hardware; a 5% maximum token-path throughput regression is
+the gate for a 150k req/s target. See
+[Proof-of-work algorithms](/guide/pow-algorithms).
+
 At tens of thousands of requests per second, guardiand's read paths are
 bound by Go's garbage collector, not the store: a freshly started daemon has
 a small heap, so at high allocation rates the GC runs almost continuously.

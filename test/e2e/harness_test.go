@@ -23,6 +23,7 @@ package e2e
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/compose"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/crypto/argon2"
 )
 
 const (
@@ -436,6 +438,12 @@ type challengeData struct {
 	Challenge   string `json:"challenge"`
 	Difficulty  int    `json:"difficulty_bits"`
 	PassURL     string `json:"pass_url"`
+	Algorithm   string `json:"algorithm"`
+	MemoryKiB   uint32 `json:"memory_kib"`
+	Iterations  uint32 `json:"iterations"`
+	Salt        string `json:"salt"`
+	WorkerURL   string `json:"worker_url"`
+	WASMURL     string `json:"wasm_url"`
 }
 
 // fetchChallenge GETs the interstitial through Angie and parses its embedded
@@ -515,6 +523,37 @@ func solvePoWThroughAngie(t *testing.T, path, host, ua string) string {
 		}
 	}
 	t.Fatal("no guardian_token cookie in /__guardian/pass response")
+	return ""
+}
+
+func solveArgon2ThroughAngie(t *testing.T, path, host, ua string) string {
+	t.Helper()
+	ch := fetchChallenge(t, path, host, ua)
+	if ch.Algorithm != "argon2id" || ch.MemoryKiB < 8*1024 || ch.Iterations < 1 || ch.Salt == "" || ch.WorkerURL == "" || ch.WASMURL == "" {
+		t.Fatalf("invalid Argon2id challenge payload: %+v", ch)
+	}
+	salt, err := hex.DecodeString(ch.Salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := hex.EncodeToString(argon2.IDKey([]byte(ch.Challenge), salt, ch.Iterations, ch.MemoryKiB, 1, 32))
+	payload, _ := json.Marshal(map[string]any{
+		"challenge_id": ch.ChallengeID,
+		"proof":        proof,
+		"elapsed_ms":   42,
+	})
+	resp := req(t, http.MethodPost, site+"/__guardian/pass", map[string]string{
+		"Host": host, "User-Agent": ua, "Content-Type": "application/json",
+	}, strings.NewReader(string(payload)))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Argon2id /__guardian/pass: status %d, body %s", resp.StatusCode, bodyOf(t, resp))
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "guardian_token" && c.Value != "" {
+			return c.Value
+		}
+	}
+	t.Fatal("Argon2id redemption did not set guardian_token")
 	return ""
 }
 

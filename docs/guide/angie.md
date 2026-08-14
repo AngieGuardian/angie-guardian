@@ -395,8 +395,9 @@ responses Angie proxies from Guardian, including the challenge interstitial.
 For most headers that is harmless. For a site CSP it is not: browsers enforce
 every `Content-Security-Policy` header on a response, and the interstitial
 needs things a good site policy has no reason to allow, namely an inline
-script and style, a `blob:` Web Worker running the PoW solver, and a
-same-origin `fetch` that submits the solution. Under a typical site policy
+script and style, a `blob:` SHA-256 worker or same-origin Argon2id
+worker/runtime/WASM, and a same-origin `fetch` that submits the solution. Under
+a typical site policy
 (no `worker-src`, so the worker falls back to a `script-src` without
 `blob:`), the solver is blocked: the page renders but reports "Solver error"
 (or, depending on the browser, sits at "Starting…" forever), and the browser

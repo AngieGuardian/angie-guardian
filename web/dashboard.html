@@ -467,7 +467,7 @@
             <thead><tr>
               <th title="Configured domain, or default">Domain</th>
               <th title="Solves with a reported time, since start">Solves</th>
-              <th title="Mean reported hashing time">Mean</th>
+              <th title="Mean reported proof time">Mean</th>
               <th title="Bucket 90% of solves fall within">p90</th>
             </tr></thead>
             <tbody id="solve-domains"></tbody>
@@ -482,7 +482,7 @@
             <thead><tr>
               <th title="Class guessed from the User-Agent">Client</th>
               <th title="Sampled solves in this class">Solves</th>
-              <th title="Median reported hashing time">Median</th>
+              <th title="Median reported proof time">Median</th>
               <th title="Slowest solve in the sample">Slowest</th>
             </tr></thead>
             <tbody id="solve-clients"></tbody>
@@ -615,7 +615,7 @@
           <th title="Local time; hover a cell for the date">Time</th>
           <th title="What Guardian did">Action</th>
           <th id="lu-dec-solve" hidden
-              title="Client-reported hashing time; hover a cell for the measured round trip and difficulty">Solve</th>
+              title="Client-reported proof time; hover a cell for the algorithm, work parameters, and measured round trip">Solve</th>
           <th title="Which policy decided, as category:detail">Reason</th>
           <th title="Request Host header">Host</th>
           <th title="Method and URI requested; a solve row names the page its challenge was for">Request</th>
@@ -653,7 +653,7 @@
         <th title="Local time; hover a cell for the date">Time</th>
         <th title="What Guardian did">Action</th>
         <th id="dec-solve" hidden
-            title="Client-reported hashing time; hover a cell for the measured round trip and difficulty">Solve</th>
+            title="Client-reported proof time; hover a cell for the algorithm, work parameters, and measured round trip">Solve</th>
         <th title="Which policy decided, as category:detail">Reason</th>
         <th title="Request Host header">Host</th>
         <th title="Client IP; click to look it up">IP</th>
@@ -1044,10 +1044,10 @@
   // method to name: the redemption itself is a POST to the pass endpoint, which
   // is not what an operator is looking at.
   const requestText = (d) => [d.method, d.uri].filter(Boolean).join(" ");
-  // The Solve cell. Only solve rows have one, and the cell carries all three
-  // numbers in its tooltip so the reported time is never read without the
-  // difficulty it was paid at or the server's own measurement of the round
-  // trip. SLOW/VERY_SLOW are the solve-time histogram's bucket bounds.
+  // The Solve cell. Only solve rows have one, and its tooltip pairs the
+  // reported time with the algorithm's authenticated work parameters and the
+  // server's own round-trip measurement. SLOW/VERY_SLOW are the solve-time
+  // histogram's bucket bounds.
   const SLOW_SOLVE_MS = 2000, VERY_SLOW_SOLVE_MS = 10000;
   const solveCell = (d) => {
     if (d.action !== "solve") return td(null, "");
@@ -1061,7 +1061,10 @@
       ms ? "client-reported " + millis(ms)
          : "solve time not reported (no-JS redemption, or a value that could not be true)",
       d.round_trip_ms ? "issued to redeemed " + millis(d.round_trip_ms) : null,
+      d.pow_algorithm ? "algorithm " + d.pow_algorithm : null,
       d.bits ? d.bits + " difficulty bits" : null,
+      d.argon2_memory_kib ? d.argon2_memory_kib + " KiB, " + d.argon2_iterations +
+        (d.argon2_iterations === 1 ? " iteration" : " iterations") : null,
     ].filter(Boolean).join(" · ");
     return cell;
   };
@@ -1691,7 +1694,7 @@
     const groups = new Map();
     for (const d of lastDecisions) {
       if (d.action !== "solve") continue;
-      // A no-JS redemption and a rejected report both measure no hashing.
+      // A no-JS redemption and a rejected report both measure no proof work.
       const ms = Number(d.solve_ms) || 0;
       if (!ms) continue;
       if (!groups.has(uaClass(d.ua))) groups.set(uaClass(d.ua), []);

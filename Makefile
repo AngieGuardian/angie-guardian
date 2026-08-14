@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test install-test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report seed dashboard-dev
+.PHONY: all build wasm test install-test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -93,6 +93,15 @@ bench-report:
 	@go run $(BENCHSTAT) current=$(BENCH_OUT)
 	@echo
 	@echo "raw run kept in $(BENCH_OUT)"
+
+# Manual mixed-load gate for optional Argon2id. It reports the cached-token
+# benchmark alone and beside one continuous 32 MiB verifier. Run on the target
+# CPU with a quiet machine; the latter must stay within 5% of baseline for the
+# 150k req/s objective. Timing is deliberately not a CI gate.
+bench-argon-isolation:
+	go test -run '^$$' \
+		-bench '^BenchmarkEvaluatePoWTokenCached(WithOneArgon2IDVerifier)?$$' \
+		-benchmem -benchtime 5s -count 6 ./core/
 
 # Hot-path allocation regression gate (also a CI job). allocs/op at a FIXED
 # iteration count is deterministic for these benchmarks, so it can gate a

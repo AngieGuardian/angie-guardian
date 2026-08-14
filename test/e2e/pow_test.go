@@ -68,14 +68,15 @@ func TestBrowserGetIsChallenged(t *testing.T) {
 	// the snippet's location-scoped add_header both re-states it and stops a
 	// vhost-level site CSP from applying to (and breaking) this page. A browser
 	// enforces EVERY policy it receives, so the invariant is that each one
-	// permits the blob: solver worker, not just the first.
+	// permits both the blob: SHA-256 worker and the same-origin Argon2id worker,
+	// not just the first.
 	policies := resp.Header.Values("Content-Security-Policy")
 	if len(policies) == 0 {
 		t.Fatal("interstitial carries no Content-Security-Policy")
 	}
 	for _, csp := range policies {
-		if !strings.Contains(csp, "worker-src blob:") {
-			t.Fatalf("interstitial Content-Security-Policy = %q, want worker-src blob:", csp)
+		if !strings.Contains(csp, "worker-src 'self' blob:") {
+			t.Fatalf("interstitial Content-Security-Policy = %q, want worker-src 'self' blob:", csp)
 		}
 	}
 	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
@@ -188,6 +189,19 @@ func TestPoWFullSolveThroughAngie(t *testing.T) {
 	// question over a Grafana horizon rather than a bounded ring.
 	if n := metric(t, "guardian_challenge_solve_seconds_count", `domain=`); n <= 0 {
 		t.Errorf("guardian_challenge_solve_seconds_count{domain=...} = %v, want a labelled series", n)
+	}
+}
+
+func TestArgon2IDFullSolveThroughAngie(t *testing.T) {
+	const host = "argon.localhost"
+	ua := browserUA + " argon2id"
+	token := solveArgon2ThroughAngie(t, "/memory-hard", host, ua)
+	resp := get(t, "/memory-hard", host, ua, map[string]string{"Cookie": "guardian_token=" + token})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Argon2id vouched request: status %d, want 200", resp.StatusCode)
+	}
+	if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
+		t.Fatalf("Argon2id vouched request did not reach backend; body:\n%s", body)
 	}
 }
 

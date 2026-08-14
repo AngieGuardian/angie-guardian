@@ -78,6 +78,14 @@ ConfigurationDirectoryMode=0710
 # memory that GOMEMLIMIT does not account for.
 # Environment=GOMEMLIMIT=2GiB
 
+# Optional Argon2id PoW capacity: allocate the N cores needed by ordinary auth
+# traffic and two more (N+2 total) for verification/runtime overhead.
+# Do not add CPUQuota=/AllowedCPUs= constraints below that measured budget.
+# Each admitted default verification also uses about 32 MiB; include
+# argon2_verifier.max_concurrent * memory_kib in MemoryMax/GOMEMLIMIT sizing.
+# See docs "Proof-of-work algorithms" and rerun mixed-load benchmarks after
+# changing either verifier concurrency or CPU constraints.
+
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict

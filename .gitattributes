@@ -1,0 +1,4 @@
+# Preserve vendored upstream and reproducibly generated browser artifacts
+# byte-for-byte. Their formatting is owned by the pinned sources/toolchain.
+web/argon2-reference/** -whitespace
+web/vendor/guardian-argon2/** -whitespace

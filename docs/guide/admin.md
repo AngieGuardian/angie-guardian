@@ -61,12 +61,17 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
-# how long the client says it hashed (solve_ms), how long this daemon measured
-# between issuing and redeeming (round_trip_ms), and the difficulty in bits.
+# how long the client reports computing (solve_ms), how long this daemon
+# measured between issuing and redeeming (round_trip_ms), and the algorithm's
+# work parameters.
 # The slowest solves first:
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit=all" \
   | jq -r '.decisions | sort_by(-.solve_ms)[:10]
-           | .[] | "\(.solve_ms)ms \(.bits)bits \(.host)\(.uri) \(.ua)"'
+           | .[] | "\(.solve_ms)ms \(.pow_algorithm) "
+             + (if .pow_algorithm == "argon2id"
+                then "\(.argon2_memory_kib)KiB x\(.argon2_iterations)"
+                else "\(.bits)bits" end)
+             + " \(.host)\(.uri) \(.ua)"'
 
 # Compact full-ring feed for live charting (still bounded by admin.recent_size).
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit=all"
@@ -367,7 +372,7 @@ The **Bars** control on that card switches what the segments measure:
 
 The choice is remembered for the browser session.
 
-#### Is my difficulty too high?
+#### Is my proof-of-work too demanding?
 
 Two cards answer that without reading individual rows:
 
@@ -379,8 +384,8 @@ Two cards answer that without reading individual rows:
   rather than the bounded ring.
 - **Solve time by client** groups solves into coarse classes (`mobile`,
   `desktop`, `bot`, `none` for an empty User-Agent, `other` for the rest) and
-  shows each class's median and slowest, slowest first, so a difficulty that is
-  fine on a laptop and punishing on a phone is visible. Three bounds on what it
+  shows each class's median and slowest, slowest first, so work that is fine on
+  a laptop and punishing on a phone is visible. Three bounds on what it
   can tell you: the class comes from the forgeable User-Agent header, so it is
   a guess; it samples the page's most recent 1024 decisions rather than every
   solve (the header says `5 of 6 solves sampled` whenever older solves have
@@ -393,7 +398,7 @@ Two cards answer that without reading individual rows:
 
 For a single visitor, the **Solve** column in the recent activity feed carries
 the client-reported time; hovering it shows the daemon's own issue-to-redeem
-measurement and the difficulty the challenge was paid at. Neither number is
+measurement, algorithm, and authenticated work parameters. Neither timing is
 authenticated evidence: the reported one is browser telemetry a client can
 under-report, and the measured one includes page load, both network legs and
 any time the tab spent backgrounded.
