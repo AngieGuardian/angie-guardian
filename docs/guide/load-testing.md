@@ -1,16 +1,18 @@
 # Load Testing
 
-`guardian-loadtest` drives the `/auth` hot path the way Angie does, over
-keepalive connections, and reports throughput + latency percentiles. Run it
-before relying on a deployment near its throughput budget.
+`guardian-loadtest` drives Guardian's HTTP hot paths directly, or the complete
+refusal route through Angie, over keepalive connections. It reports throughput
+and latency percentiles. Run it before relying on a deployment near its
+throughput budget.
 
 ## Scenarios
 
-`allow` and `token` are read-dominated; the [block mirror](/guide/block-offload)
-removes even that read on the embedded backends. A static denylist match
-terminates before the store. `challenge` is the write-heavy path (the only one
-whose throughput depends on the store backend) unless
-[attack mode](/guide/attack-mode) has switched issuance to the stateless path.
+`allow`, `token`, and the `/auth` half of `refuse` are read-dominated; the
+[block mirror](/guide/block-offload) removes even that read on the embedded
+backends. A static denylist match terminates before the store. `challenge` is
+the write-heavy path (the only one whose throughput depends on the store
+backend) unless [attack mode](/guide/attack-mode) has switched issuance to the
+stateless path.
 
 | Scenario | What it does | Store I/O per request |
 |---|---|---|
@@ -18,6 +20,9 @@ whose throughput depends on the store backend) unless
 | `token` | solve one PoW challenge, then hammer `/auth` with the cookie (the production common path) | same as `allow` |
 | `deny` | denylisted client IP (deny + decision logging path) | none |
 | `challenge` | issue a fresh PoW challenge per request | normally 1 synchronous **write** (CAS), plus coalesced background counter increments; under attack mode, or when that stateful write fails, issuance is stateless (no write at issue, the single-spend write moves to redemption) |
+| `refuse-auth` | directly measure `/auth` recording `ActionRefuse` and returning the 401 Angie routes onward | same as `allow` |
+| `refuse-challenge` | directly measure `/challenge` consuming the relayed refusal verdict and returning its small 403 | none |
+| `refuse-angie` | send one original request through Angie's real `/auth` → `@guardian_challenge` → 403 route | combines the two Guardian hops above |
 
 ## Run it
 
@@ -31,6 +36,16 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
 # Static deny path; the IP must appear in this host's denylist.
 guardian-loadtest -scenario deny -host example.com -ip 203.0.113.9 -c 64 -d 10s
+
+# Refusal split: the two Guardian subrequests made for one refused client
+# request. Accept: */* and the browser UA are supplied by these scenarios.
+guardian-loadtest -scenario refuse-auth      -host example.com -c 64 -warmup 50000 -n 500000
+guardian-loadtest -scenario refuse-challenge -host example.com -c 64 -warmup 50000 -n 500000
+
+# Optional topology measurement: point -url at Angie's public listener. This
+# counts original client requests, each of which makes both Guardian hops.
+# Angie supplies the real connection address, so -ip does not apply here.
+guardian-loadtest -scenario refuse-angie -url http://127.0.0.1:8080 -host example.com -c 64 -warmup 50000 -n 500000
 
 # Write path (requires PoW enabled): one synchronous challenge CAS per request;
 # per-IP counters are counted in-process and flushed to the store in background.
@@ -68,26 +83,49 @@ second. Read it before trusting the aggregate: a flat line is a steady state,
 a falling line means the run was measuring store growth and only a fixed-work
 (`-n`) comparison against another machine or commit is meaningful.
 
+The refusal scenarios also validate the headers that identify the intended
+route. Treat any non-zero `unexpected-status` or `unexpected-contract` count as
+an invalid run, even if its throughput looks plausible.
+
 ## Benchmark results
 
 Methodology, recorded here because the numbers are meaningless without it:
-single node, loopback, 64 connections, load generator sharing the same CPU
-(AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17 for the non-Pebble rows and
-Linux 7.0.0 for the refreshed Pebble rows; Go 1.26.5; Valkey 9 for the redis
-backend; fresh daemon and wiped store per run; median of 3 runs per cell).
+single node, native binaries over loopback, 64 connections, load generator
+sharing the same CPU (AMD Ryzen Threadripper 7960X, 24C/48T; Linux 6.17 for the
+existing non-Pebble rows and Linux 7.0.0 for the refreshed Pebble and refusal
+rows; Go 1.26.5; Valkey 9 for the redis backend; fresh daemon and store per run;
+median of 3 runs per cell).
 Reads use `-warmup 50000 -n 500000`; **challenge uses
 `-warmup 150000 -n 150000`**, pushing both 131k-entry counter caches past
 capacity so the measured window is the loaded steady state a sustained flood of
 new clients actually produces, not the fast cold start of an empty store. Each
 cell is **throughput / p50 / p99** (req/s and per-request latency):
 
-| Backend | allow | token | deny | challenge (write) |
-|---|---|---|---|---|
-| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
-| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
-| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
-| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
+| Backend | allow | token | deny | refuse auth | refuse 403 | challenge write |
+|---|---|---|---|---|---|---|
+| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | 172k / 0.15ms / 1.8ms | 179k / 0.15ms / 1.7ms | **160k / 0.29ms / 1.6ms** |
+| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | 173k / 0.15ms / 1.8ms | 180k / 0.15ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
+| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | 174k / 0.15ms / 1.8ms | 178k / 0.15ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
+| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | 179k / 0.16ms / 1.7ms | 173k / 0.14ms / 1.8ms | **56k / 1.2ms / 4.8ms** |
+| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | 97k / 0.62ms / 1.4ms | 184k / 0.15ms / 1.7ms | **49k / 1.2ms / 2.5ms** |
+
+Refusal is a two-hop production route, so the direct measurements remain
+separate columns: `refuse auth` is the `/auth` record + 401, while `refuse 403`
+is the small `/challenge` response.
+
+The `/auth` hop evaluates and records the refusal, updates decision metrics,
+and calls the decision logger (suppressed at the measured production-default
+`warn` level). The `/challenge` hop trusts the relayed refusal kind, increments
+the refusal outcome metric, and returns a plain-text 403. It does not render
+HTML or issue/store a challenge. The direct `/auth` refusal outpaced direct
+stateful challenge issuance on every measured backend, especially those
+limited by synchronous writes.
+
+Do **not** add the two direct rates or report either as client-facing capacity.
+One original request through Angie makes both Guardian subrequests and also
+pays Angie's routing and HTTP overhead. `refuse-angie` exists to measure that
+topology on the deployment being evaluated; the table deliberately makes no
+unmeasured DDoS-capacity claim.
 
 Read paths comfortably clear a 50k req/s budget on every backend: the
 [block mirror](/guide/block-offload) makes the embedded stores authoritative,

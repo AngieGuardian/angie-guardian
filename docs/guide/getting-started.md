@@ -139,7 +139,7 @@ detection, not cryptographic proof of origin.
 
 Source builds are for contributors or operators who intentionally need a
 custom build. They require a repository checkout and the Go toolchain selected
-by `go.mod` (currently Go 1.26.5):
+by `go.mod` (currently Go 1.26.6):
 
 ```sh
 git clone https://github.com/AngieGuardian/angie-guardian.git

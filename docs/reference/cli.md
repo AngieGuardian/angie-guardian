@@ -141,8 +141,9 @@ would be promoted without touching `/etc/guardian`.
 
 ## guardian-loadtest
 
-Drives the `/auth` hot path over keepalive connections and reports throughput
-and latency percentiles. See [Load Testing](/guide/load-testing).
+Drives Guardian directly, or the refusal route through Angie, over keepalive
+connections and reports throughput and latency percentiles. See
+[Load Testing](/guide/load-testing).
 
 ```sh
 guardian-loadtest -scenario token -host example.com -c 128 -d 10s
@@ -150,10 +151,10 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
 | Flag | Default | Description |
 |---|---|---|
-| `-url <base>` | `http://127.0.0.1:8071` | guardiand base URL. |
-| `-scenario <name>` | `allow` | One of `allow`, `token`, `deny`, `challenge`. |
-| `-host <host>` | `plain.test` | `X-Guardian-Host` to send. |
-| `-ip <addr>` | `198.51.100.7` | `X-Guardian-IP` to send. The `challenge` scenario rotates the IP itself to spread issuance. |
+| `-url <base>` | `http://127.0.0.1:8071` | Target base URL: guardiand normally, or Angie's public listener for `refuse-angie`. |
+| `-scenario <name>` | `allow` | One of `allow`, `token`, `deny`, `challenge`, `refuse-auth`, `refuse-challenge`, or `refuse-angie`. |
+| `-host <host>` | `plain.test` | Protected host: sent as `X-Guardian-Host` to guardiand or as the real HTTP `Host` for `refuse-angie`. |
+| `-ip <addr>` | `198.51.100.7` | `X-Guardian-IP` to send in direct Guardian scenarios. `challenge` rotates it to spread issuance; `refuse-angie` uses the real connection address instead. |
 | `-c <n>` | `64` | Concurrent connections. |
 | `-d <duration>` | `5s` | Test duration. Ignored when `-n` is set. |
 | `-n <requests>` | `0` (off) | Complete exactly this many measured requests instead of running for a duration. Every run then does identical work, which is what makes results comparable across machines and commits; use it for the `challenge` scenario, whose per-run store growth makes duration averages incomparable. |
@@ -164,3 +165,5 @@ The output ends with a `per-second:` line, one measured-completion count per
 elapsed second. A flat line means the run reached a steady state; a falling
 line means the aggregate above is blending a fast cold phase with a slower
 loaded one, and only a fixed-work (`-n`) comparison is meaningful.
+Refusal scenarios additionally report an `unexpected-contract` count when the
+status is correct but the response headers do not identify the intended hop.
