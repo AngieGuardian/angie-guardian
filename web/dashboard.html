@@ -1119,7 +1119,49 @@
   // --- Charts (Chart.js, vendored). Instances are created once and updated in
   // place each tick; never new Chart() per tick (that leaks + flickers). All
   // series come from data render() already fetched, no extra requests. ---
-  const charts = {}; // id -> Chart instance
+  const charts = {};
+
+  // Chart.js stores a legend click's visibility on the current dataset object.
+  // We replace those objects on every refresh, so keep the choice separately,
+  // keyed by chart and stable legend label. Keeping old labels in the maps is
+  // intentional: a reason series can disappear from the current window and
+  // should still be hidden if it returns on a later tick.
+  const chartVisibility = {};
+  const ITEM_LEGEND_TYPES = new Set(["doughnut", "pie", "polarArea"]);
+  const legendKey = (label, index) => label == null || label === "" ? "index:" + index : "label:" + label;
+
+  const rememberChartVisibility = (id, chart) => {
+    const state = chartVisibility[id] || (chartVisibility[id] = {
+      datasets: new Map(), items: new Map(),
+    });
+    if (ITEM_LEGEND_TYPES.has(chart.config.type)) {
+      (chart.data.labels || []).forEach((label, index) => {
+        state.items.set(legendKey(label, index), chart.getDataVisibility(index));
+      });
+    } else {
+      (chart.data.datasets || []).forEach((dataset, index) => {
+        state.datasets.set(legendKey(dataset.label, index), chart.isDatasetVisible(index));
+      });
+    }
+    return state;
+  };
+
+  const applyChartVisibility = (chart, cfg, state) => {
+    if (ITEM_LEGEND_TYPES.has(cfg.type)) {
+      (cfg.data.labels || []).forEach((label, index) => {
+        // An index hidden by a former label must not hide a newly introduced
+        // label that happens to take its place.
+        const key = legendKey(label, index);
+        const visible = state.items.has(key) ? state.items.get(key) : true;
+        if (chart.getDataVisibility(index) !== visible) chart.toggleDataVisibility(index);
+      });
+      return;
+    }
+    (cfg.data.datasets || []).forEach((dataset, index) => {
+      const key = legendKey(dataset.label, index);
+      if (state.datasets.has(key)) dataset.hidden = !state.datasets.get(key);
+    });
+  };
 
   // chartjs-plugin-zoom operates on Cartesian min/max ranges. The geo module's
   // projection scale instead exposes a multiplicative scale and pixel offset,
@@ -1328,8 +1370,10 @@
       charts[id] = new Chart($(id).getContext("2d"), cfg);
       return;
     }
+    const visibility = rememberChartVisibility(id, chart);
     chart.data = cfg.data;
     chart.options = cfg.options;
+    applyChartVisibility(chart, cfg, visibility);
     // "none" skips the transition on refresh. Animation is already off, so
     // this only avoids re-running layout work every tick.
     chart.update("none");

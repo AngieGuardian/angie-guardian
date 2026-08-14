@@ -108,6 +108,7 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 	    if (!nodes[id]) {
 	      nodes[id] = {
 	        id: id, hidden: false, textContent: "", title: "", children: [],
+	        getContext: function () { return {}; },
 	        replaceChildren: function () { this.children = Array.prototype.slice.call(arguments); },
 	      };
 	    }
@@ -132,6 +133,118 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 		}
 	}
 	return vm
+}
+
+// TestChartLegendVisibilitySurvivesRefresh covers the dashboard's five-second
+// update boundary. Chart.js keeps a legend click in metadata associated with
+// the current dataset objects; upsertChart replaces those objects, so the page
+// must carry the choice forward by stable label. The second chart proves that
+// identical labels do not leak visibility between cards, while removing and
+// restoring a series covers the dynamic reason chart.
+func TestChartLegendVisibilitySurvivesRefresh(t *testing.T) {
+	vm := jsRuntime(t, "charts", "chartVisibility", "ITEM_LEGEND_TYPES", "legendKey",
+		"rememberChartVisibility", "applyChartVisibility", "upsertChart")
+	if _, err := vm.RunString(`
+	  var themeColors = function () { return {}; };
+	  var Chart = function (ctx, cfg) {
+	    this.config = { type: cfg.type };
+	    this.data = cfg.data;
+	    this.options = cfg.options;
+	    this.datasetVisibility = {};
+	    this.dataVisibility = {};
+	    this.isDatasetVisible = function (i) {
+	      return Object.prototype.hasOwnProperty.call(this.datasetVisibility, i)
+	        ? this.datasetVisibility[i]
+	        : !this.data.datasets[i].hidden;
+	    };
+	    this.setDatasetVisibility = function (i, visible) { this.datasetVisibility[i] = visible; };
+	    this.getDataVisibility = function (i) { return this.dataVisibility[i] !== false; };
+	    this.toggleDataVisibility = function (i) { this.dataVisibility[i] = !this.getDataVisibility(i); };
+	    // Replacing dataset objects makes Chart.js build fresh metadata during
+	    // update; visibility must therefore come from each new dataset.hidden.
+	    this.update = function () { this.datasetVisibility = {}; };
+	  };
+	  var lineCfg = function (labels) { return function () { return {
+	    type: "line", data: { labels: ["now"], datasets: labels.map(function (label) {
+	      return { label: label, data: [1] };
+	    }) }, options: {}
+	  }; }; };
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		FirstDeny      bool `json:"firstDeny"`
+		FirstChallenge bool `json:"firstChallenge"`
+		SecondDeny     bool `json:"secondDeny"`
+		RestoredDeny   bool `json:"restoredDeny"`
+	}
+	call(t, vm, `(function () {
+	  upsertChart("first", lineCfg(["deny", "challenge"]));
+	  upsertChart("second", lineCfg(["deny", "challenge"]));
+	  charts.first.setDatasetVisibility(0, false); // the user's legend click
+	  upsertChart("first", lineCfg(["challenge"]));
+	  upsertChart("first", lineCfg(["challenge", "deny"]));
+	  upsertChart("second", lineCfg(["deny", "challenge"]));
+	  return {
+	    firstDeny: charts.first.data.datasets[1].hidden === true,
+	    firstChallenge: charts.first.data.datasets[0].hidden !== true,
+	    secondDeny: charts.second.data.datasets[0].hidden === true,
+	    restoredDeny: charts.first.isDatasetVisible(1),
+	  };
+	})()`, &got)
+	if !got.FirstDeny || !got.FirstChallenge {
+		t.Errorf("first chart lost or misapplied hidden series: %+v", got)
+	}
+	if got.SecondDeny {
+		t.Errorf("hidden state leaked into another chart: %+v", got)
+	}
+	if got.RestoredDeny {
+		t.Errorf("returning deny series is visible, want hidden: %+v", got)
+	}
+}
+
+// Doughnut legends toggle individual data items rather than whole datasets.
+// Keep that separate Chart.js contract covered as the response-mix card uses
+// it and upsertChart deliberately supports every dashboard legend.
+func TestChartItemLegendVisibilitySurvivesRefresh(t *testing.T) {
+	vm := jsRuntime(t, "charts", "chartVisibility", "ITEM_LEGEND_TYPES", "legendKey",
+		"rememberChartVisibility", "applyChartVisibility", "upsertChart")
+	if _, err := vm.RunString(`
+	  var themeColors = function () { return {}; };
+	  var Chart = function (ctx, cfg) {
+	    this.config = { type: cfg.type };
+	    this.data = cfg.data;
+	    this.options = cfg.options;
+	    this.dataVisibility = {};
+	    this.getDataVisibility = function (i) { return this.dataVisibility[i] !== false; };
+	    this.toggleDataVisibility = function (i) { this.dataVisibility[i] = !this.getDataVisibility(i); };
+	    this.update = function () {};
+	  };
+	  var doughnutCfg = function (labels) { return function () { return {
+	    type: "doughnut", data: { labels: labels, datasets: [{ data: labels.map(function () { return 1; }) }] },
+	    options: {}
+	  }; }; };
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Moved4xx bool `json:"moved4xx"`
+		New2xx   bool `json:"new2xx"`
+	}
+	call(t, vm, `(function () {
+	  upsertChart("mix", doughnutCfg(["2xx", "4xx"]));
+	  charts.mix.toggleDataVisibility(1); // hide 4xx
+	  upsertChart("mix", doughnutCfg(["4xx", "2xx"]));
+	  return {
+	    moved4xx: charts.mix.getDataVisibility(0),
+	    new2xx: charts.mix.getDataVisibility(1),
+	  };
+	})()`, &got)
+	if got.Moved4xx || !got.New2xx {
+		t.Errorf("item legend state not preserved by label: %+v", got)
+	}
 }
 
 // call evaluates an expression and decodes it as JSON, so assertions are made
