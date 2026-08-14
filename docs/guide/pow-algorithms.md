@@ -11,12 +11,12 @@ Use `sha256`. It is Angie Guardian's recommended choice today, including for
 high-traffic sites. Visitors' browsers do the work of finding a valid proof,
 while Angie Guardian can check it quickly with very little server work.
 
-`argon2id` is not a future-proof default. Consider it only after measurement
-shows that attackers are using GPUs or ASICs to solve SHA-256 puzzles much
-faster than visitors' browsers, and after you have capacity-tested its server
-verification cost. It requires memory bandwidth as well as CPU time, which
-reduces but does not eliminate that hardware advantage. Angie Guardian asks for
-exactly one result with a bounded memory and iteration cost.
+Consider `argon2id` only after measurement shows that attackers are using GPUs
+or ASICs to solve SHA-256 puzzles much faster than visitors' browsers, and
+after you have capacity-tested its server verification cost. It requires memory
+bandwidth as well as CPU time, which reduces but does not eliminate that
+hardware advantage. Angie Guardian asks for exactly one result with a bounded
+memory and iteration cost.
 
 That trade-off has real costs:
 
