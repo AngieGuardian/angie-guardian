@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Melroy van den Berg
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// guardian-loadtest stress-tests a running guardiand's /auth hot path over
-// real HTTP with keepalive, the way Angie drives it. It reports request
-// rate and latency percentiles so regressions against the ≥50k req/s
-// budget are caught before deployment.
+// guardian-loadtest stress-tests Guardian and its Angie integration over real
+// HTTP with keepalive. It reports request rate and latency percentiles so
+// regressions against the ≥50k req/s budget are caught before deployment.
 //
 // Scenarios:
 //
@@ -16,6 +15,10 @@
 //	challenge — hammers /challenge, issuing a fresh PoW challenge per request.
 //	            Each issuance is a store write (CAS), so this is the write-heavy
 //	            path that separates the store backends (embedded vs redis).
+//	refuse-auth      — directly measures the /auth half of a refusal.
+//	refuse-challenge — directly measures the small /challenge refusal response.
+//	refuse-angie     — measures one original request through Angie's production
+//	                   /auth → @guardian_challenge → 403 two-hop route.
 //
 // Two run modes. -d runs for a fixed wall-clock duration; -n completes a fixed
 // number of measured requests. For the write-heavy challenge scenario only -n
@@ -41,6 +44,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,11 +52,128 @@ import (
 
 var version = "dev" // set via -ldflags "-X main.version=..."
 
+const (
+	browserUA              = "Mozilla/5.0 (loadtest)"
+	refusalAccept          = "*/*"
+	refusalOutcome         = "accept_heuristic_refused"
+	guardianActionHeader   = "X-Guardian-Action"
+	guardianRefusalHeader  = "X-Guardian-Refusal"
+	guardianHostHeader     = "X-Guardian-Host"
+	guardianMethodHeader   = "X-Guardian-Method"
+	guardianURIHeader      = "X-Guardian-URI"
+	guardianIPHeader       = "X-Guardian-IP"
+	guardianUAHeader       = "X-Guardian-UA"
+	guardianCookieHeader   = "X-Guardian-Cookie"
+	loadtestRequestURI     = "/loadtest?x=1"
+	refusalContentType     = "text/plain"
+	refusalCacheControlKey = "no-store"
+)
+
+type scenarioSpec struct {
+	path               string
+	userAgent          string
+	wantStatus         int
+	rotateIP           bool
+	throughAngie       bool
+	extraHeaders       map[string]string
+	wantHeaders        map[string]string
+	wantHeaderPrefix   map[string]string
+	wantHeaderContains map[string]string
+}
+
+func scenarioByName(name string) (scenarioSpec, error) {
+	s := scenarioSpec{
+		path:       "/auth",
+		userAgent:  browserUA,
+		wantStatus: http.StatusOK,
+	}
+	switch name {
+	case "allow":
+		s.userAgent = "curl/8.0 (loadtest)" // avoid the challenge path
+	case "deny":
+		s.userAgent = "curl/8.0 (loadtest)" // avoid the challenge path
+		s.wantStatus = http.StatusForbidden
+	case "token":
+	case "challenge":
+		s.path = "/challenge"
+		s.rotateIP = true
+	case "refuse-auth":
+		s.extraHeaders = map[string]string{"Accept": refusalAccept}
+		s.wantStatus = http.StatusUnauthorized
+		s.wantHeaders = map[string]string{
+			guardianActionHeader:  "refuse",
+			guardianRefusalHeader: refusalOutcome,
+		}
+	case "refuse-challenge":
+		s.path = "/challenge"
+		s.extraHeaders = map[string]string{
+			"Accept":              refusalAccept,
+			guardianRefusalHeader: refusalOutcome,
+		}
+		s.wantStatus = http.StatusForbidden
+		s.wantHeaderPrefix = map[string]string{"Content-Type": refusalContentType}
+		s.wantHeaderContains = map[string]string{"Cache-Control": refusalCacheControlKey}
+	case "refuse-angie":
+		s.path = loadtestRequestURI
+		s.throughAngie = true
+		s.extraHeaders = map[string]string{"Accept": refusalAccept}
+		s.wantStatus = http.StatusForbidden
+		s.wantHeaderPrefix = map[string]string{"Content-Type": refusalContentType}
+		s.wantHeaderContains = map[string]string{"Cache-Control": refusalCacheControlKey}
+	default:
+		return scenarioSpec{}, fmt.Errorf("unknown scenario: %s", name)
+	}
+	return s, nil
+}
+
+func (s scenarioSpec) newRequest(baseURL, host, ip string, seq int64) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, baseURL+s.path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if s.throughAngie {
+		req.Host = host
+		req.Header.Set("User-Agent", s.userAgent)
+	} else {
+		req.Header.Set(guardianHostHeader, host)
+		req.Header.Set(guardianMethodHeader, http.MethodGet)
+		req.Header.Set(guardianURIHeader, loadtestRequestURI)
+		req.Header.Set(guardianIPHeader, ip)
+		req.Header.Set(guardianUAHeader, s.userAgent)
+	}
+	for k, v := range s.extraHeaders {
+		req.Header.Set(k, v)
+	}
+	if s.rotateIP {
+		req.Header.Set(guardianIPHeader, rotatingChallengeIP(seq))
+	}
+	return req, nil
+}
+
+func (s scenarioSpec) responseMatches(resp *http.Response) bool {
+	for k, want := range s.wantHeaders {
+		if resp.Header.Get(k) != want {
+			return false
+		}
+	}
+	for k, want := range s.wantHeaderPrefix {
+		if !strings.HasPrefix(resp.Header.Get(k), want) {
+			return false
+		}
+	}
+	for k, want := range s.wantHeaderContains {
+		if !strings.Contains(resp.Header.Get(k), want) {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
-	baseURL := flag.String("url", "http://127.0.0.1:8071", "guardiand base URL")
-	scenario := flag.String("scenario", "allow", "allow | deny | token | challenge")
-	host := flag.String("host", "plain.test", "X-Guardian-Host to send")
-	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send")
+	baseURL := flag.String("url", "http://127.0.0.1:8071", "target base URL (guardiand, or Angie for refuse-angie)")
+	scenario := flag.String("scenario", "allow", "allow | deny | token | challenge | refuse-auth | refuse-challenge | refuse-angie")
+	host := flag.String("host", "plain.test", "protected host (X-Guardian-Host, or HTTP Host for refuse-angie)")
+	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send (direct Guardian scenarios only)")
 	concurrency := flag.Int("c", 64, "concurrent connections")
 	duration := flag.Duration("d", 5*time.Second, "test duration (ignored when -n is set)")
 	requests := flag.Int("n", 0, "run exactly this many measured requests instead of a duration (comparable across machines and commits)")
@@ -69,9 +190,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	ua := "Mozilla/5.0 (loadtest)"
-	if *scenario == "allow" || *scenario == "deny" {
-		ua = "curl/8.0 (loadtest)" // avoid the challenge path
+	spec, err := scenarioByName(*scenario)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 
 	transport := &http.Transport{
@@ -81,52 +203,29 @@ func main() {
 	}
 	client := &http.Client{Transport: transport}
 
-	headers := map[string]string{
-		"X-Guardian-Host":   *host,
-		"X-Guardian-Method": "GET",
-		"X-Guardian-URI":    "/loadtest?x=1",
-		"X-Guardian-IP":     *ip,
-		"X-Guardian-UA":     ua,
-	}
-	// path is the endpoint each request hits; challenge is the only write-heavy
-	// scenario, so it targets /challenge instead of /auth.
-	path := "/auth"
-	wantStatus := http.StatusOK
-	switch *scenario {
-	case "allow":
-	case "deny":
-		wantStatus = http.StatusForbidden
-	case "token":
-		cookie, err := bootstrapToken(client, *baseURL, *host, *ip, ua)
+	if *scenario == "token" {
+		cookie, err := bootstrapToken(client, *baseURL, *host, *ip, spec.userAgent)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "token bootstrap failed:", err)
 			os.Exit(1)
 		}
-		headers["X-Guardian-Cookie"] = cookie
-	case "challenge":
-		path = "/challenge"
-		ua = "Mozilla/5.0 (loadtest)"
-		headers["X-Guardian-UA"] = ua
-		// Each issuance is rate-limited per IP (60/min); the worker rotates the
-		// IP per request (see below) so the limiter never trips.
-	default:
-		fmt.Fprintln(os.Stderr, "unknown scenario:", *scenario)
-		os.Exit(2)
+		spec.extraHeaders = map[string]string{guardianCookieHeader: cookie}
 	}
 
 	if *requests > 0 {
 		fmt.Printf("scenario=%s url=%s%s c=%d n=%d warmup=%d expect=%d\n",
-			*scenario, *baseURL, path, *concurrency, *requests, *warmup, wantStatus)
+			*scenario, *baseURL, spec.path, *concurrency, *requests, *warmup, spec.wantStatus)
 	} else {
 		fmt.Printf("scenario=%s url=%s%s c=%d d=%s warmup=%d expect=%d\n",
-			*scenario, *baseURL, path, *concurrency, *duration, *warmup, wantStatus)
+			*scenario, *baseURL, spec.path, *concurrency, *duration, *warmup, spec.wantStatus)
 	}
 
 	var (
-		wg        sync.WaitGroup
-		total     atomic.Int64 // measured completions
-		errored   atomic.Int64
-		badStatus atomic.Int64
+		wg          sync.WaitGroup
+		total       atomic.Int64 // measured completions
+		errored     atomic.Int64
+		badStatus   atomic.Int64
+		badContract atomic.Int64
 		// claimed hands out one globally unique sequence number per request
 		// before it runs: numbers below warmup are the discarded warmup phase,
 		// the rest are measured. Claiming also drives the challenge scenario's
@@ -154,7 +253,6 @@ func main() {
 		go func(w int) {
 			defer wg.Done()
 			lats := make([]time.Duration, 0, 1<<16)
-			rotateIP := *scenario == "challenge" // spread issuance across IPs to dodge the per-IP limiter
 			for {
 				seq := claimed.Add(1) - 1
 				measured := seq >= warmupN
@@ -170,12 +268,10 @@ func main() {
 						break // fixed duration elapsed (measured from warmup end)
 					}
 				}
-				req, _ := http.NewRequest(http.MethodGet, *baseURL+path, nil)
-				for k, v := range headers {
-					req.Header.Set(k, v)
-				}
-				if rotateIP {
-					req.Header.Set("X-Guardian-IP", rotatingChallengeIP(seq))
+				req, err := spec.newRequest(*baseURL, *host, *ip, seq)
+				if err != nil {
+					errored.Add(1)
+					continue
 				}
 				start := time.Now()
 				resp, err := client.Do(req)
@@ -185,8 +281,10 @@ func main() {
 				}
 				io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
-				if resp.StatusCode != wantStatus {
+				if resp.StatusCode != spec.wantStatus {
 					badStatus.Add(1)
+				} else if !spec.responseMatches(resp) {
+					badContract.Add(1)
 				}
 				if !measured {
 					continue
@@ -229,8 +327,8 @@ func main() {
 	if warmupN > 0 {
 		fmt.Printf("warmup:     %d requests discarded\n", warmupN)
 	}
-	fmt.Printf("requests:   %d in %.2fs (errors=%d, unexpected-status=%d)\n",
-		n, elapsed.Seconds(), errored.Load(), badStatus.Load())
+	fmt.Printf("requests:   %d in %.2fs (errors=%d, unexpected-status=%d, unexpected-contract=%d)\n",
+		n, elapsed.Seconds(), errored.Load(), badStatus.Load(), badContract.Load())
 	fmt.Printf("throughput: %.0f req/s\n", float64(n)/elapsed.Seconds())
 	fmt.Printf("latency:    p50=%v  p90=%v  p99=%v  max=%v\n",
 		pct(0.50), pct(0.90), pct(0.99), pct(0.9999))

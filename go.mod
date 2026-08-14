@@ -3,10 +3,10 @@ module github.com/melroy89/angie-guardian
 go 1.25.9
 
 // Build with a patched toolchain: govulncheck reports reachable stdlib
-// advisories (html/template XSS classes, net/url memory exhaustion) under
-// 1.25.5, all fixed in 1.26.5. CI and the release Docker image already pin
-// 1.26.5; this makes a plain `go build`/`go test` from source use it too.
-toolchain go1.26.5
+// advisories in older standard libraries, all fixed in 1.26.6. CI and the
+// release Docker image already pin 1.26.6; this makes a plain `go build`/`go
+// test` from source use it too.
+toolchain go1.26.6
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0

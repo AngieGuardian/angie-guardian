@@ -110,27 +110,30 @@ web/             challenge/denied pages (self-contained HTML + JS solver)
 
 ## Performance
 
-Guardian must never be the bottleneck behind Angie. On a single node
-(loopback, 64 connections, AMD Ryzen Threadripper 7960X, load generator on the
-same CPU; Valkey 9 for the redis backend; fixed-work runs, median of 3, fresh
-daemon and store each; challenge measured in its loaded steady state). Each
-cell is **throughput / p50 / p99** (req/s and per-request latency):
+Guardian must never be the bottleneck behind Angie. On a single node (native
+binaries over loopback, 64 connections, AMD Ryzen Threadripper 7960X, load
+generator on the same CPU; Valkey 9 for the redis backend; fixed-work runs,
+median of 3, fresh daemon and store each; challenge measured in its loaded
+steady state). Each cell is **throughput / p50 / p99** (req/s and per-request
+latency):
 
-| Backend | allow | token | deny | challenge (write) |
-|---|---|---|---|---|
-| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | **160k / 0.29ms / 1.6ms** |
-| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
-| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
-| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | **56k / 1.2ms / 4.8ms** |
-| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | **49k / 1.2ms / 2.5ms** |
+| Backend | allow | token | deny | refuse auth | refuse 403 | challenge write |
+|---|---|---|---|---|---|---|
+| `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | 172k / 0.15ms / 1.8ms | 179k / 0.15ms / 1.7ms | **160k / 0.29ms / 1.6ms** |
+| `pebble` (async, default durable) | 185k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 188k / 0.13ms / 1.7ms | 173k / 0.15ms / 1.8ms | 180k / 0.15ms / 1.7ms | **152k / 0.32ms / 1.6ms** |
+| `pebble` (sync, fully durable)    | 183k / 0.14ms / 1.7ms | 172k / 0.15ms / 1.8ms | 189k / 0.14ms / 1.7ms | 174k / 0.15ms / 1.8ms | 178k / 0.15ms / 1.7ms | **35k / 1.5ms / 5.1ms** |
+| `buntdb` (async, single-file)     | 182k / 0.13ms / 1.8ms | 170k / 0.14ms / 1.8ms | 155k / 0.13ms / 2.4ms | 179k / 0.16ms / 1.7ms | 173k / 0.14ms / 1.8ms | **56k / 1.2ms / 4.8ms** |
+| `redis`·`valkey` (fleet)          | 94k / 0.64ms / 1.3ms  | 93k / 0.64ms / 1.4ms  | 162k / 0.13ms / 2.3ms | 97k / 0.62ms / 1.4ms | 184k / 0.15ms / 1.7ms | **49k / 1.2ms / 2.5ms** |
 
 The read paths clear the 50k req/s budget comfortably on every backend: the
 embedded backends serve reads from the block mirror (no store I/O after the
-seed scan), which is why `allow`/`token` cluster at ~154–182k, while
-`redis`/`valkey` stays read-through for cross-replica correctness and lands
-lower. The backends only differ on the one write-heavy path, issuing a fresh
-challenge; under [attack mode](/guide/attack-mode) issuance goes stateless and
-skips that write entirely. See
+seed scan), while `redis`/`valkey` stays read-through for cross-replica
+correctness and lands lower. `refuse auth` and `refuse 403` are the two Guardian
+hops; one production request pays both plus Angie routing, so neither is an
+end-to-end DDoS capacity claim. The backends only differ materially on the
+write-heavy path, issuing a fresh challenge; under
+[attack mode](/guide/attack-mode) issuance goes stateless and skips that write
+entirely. See
 [choosing a store backend](/guide/production#choosing-a-store-backend) for how
 to pick, and [Load Testing](/guide/load-testing) to reproduce the numbers on
 your own hardware.
