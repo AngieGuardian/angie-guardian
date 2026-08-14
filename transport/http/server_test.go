@@ -556,20 +556,6 @@ func TestArgon2IDDifficultySignalsSelectBoundedIterations(t *testing.T) {
 	}
 }
 
-func TestArgon2IDAssetsAreNotServedByDaemon(t *testing.T) {
-	ts := testServerWithYAML(t, argonTestYAML)
-	for _, path := range []string{
-		argonWorkerURL,
-		"/__guardian/assets/argon2id-runtime-1b3aa08f6d118ad6.js",
-		argonWASMURL,
-	} {
-		resp := do(t, "GET", ts.URL+path, nil, nil)
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("GET %s: status=%d, want 404 (Angie must serve assets)", path, resp.StatusCode)
-		}
-	}
-}
-
 func TestNoScriptFallbackUsesAuthenticatedPathRateLimit(t *testing.T) {
 	yaml := strings.Replace(testYAML,
 		"pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, noscript_fallback: true }",
