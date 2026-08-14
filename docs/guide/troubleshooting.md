@@ -103,6 +103,10 @@ weakens the whole site for one internal page.
 For Argon2id, also confirm that the current snippet's public
 `/__guardian/assets/` location exists and that the worker, runtime, and WASM
 requests return 200 with `Cache-Control: public, max-age=31536000, immutable`.
+On the host, confirm that the three matching files exist under
+`/usr/share/guardian/assets/` (or under the directory configured by the
+snippet's `alias`). Missing files here are an Angie static-file deployment
+problem, not an Argon2id verifier problem in `guardiand`.
 
 If the vhost sets other server-wide headers (`Strict-Transport-Security` is the
 one that matters), re-add them in those two locations; see

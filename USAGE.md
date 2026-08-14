@@ -618,6 +618,14 @@ whether the token cookie may carry the `Secure` flag; without it a plain-http
 site would loop on the challenge. If you wrote your own glue before these
 lines existed, copy them over.
 
+The release installer places the immutable Argon2id worker, runtime and WASM
+files in `/usr/share/guardian/assets`. The shipped asset location uses Angie
+`alias` to serve them directly, so browser asset traffic does not consume
+guardiand request or verifier capacity. If you install the snippets manually,
+copy those three files to that directory (or change the `alias` to your own
+read-only asset directory). The Docker harness mounts the same files directly
+into Angie.
+
 If Angie is behind a CDN, ingress, or load balancer, restore the real client
 address before including Guardian (`set_real_ip_from` for only the proxy's
 trusted networks plus the provider's `real_ip_header`, or PROXY protocol).
