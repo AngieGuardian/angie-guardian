@@ -7,11 +7,11 @@ algorithm does not revoke existing tokens.
 
 ## Which algorithm should I use?
 
-Use `sha256` unless measurement shows that its economics are wrong for your
-site. Its browser solver searches for a nonce whose SHA-256 digest has enough
-leading zero bits. The client may need many hashes, while Angie Guardian
-verifies the answer with one cheap hash. This makes the server extremely
-inexpensive and is the safer choice for very high request rates.
+We recommend `sha256` for most sites, especially those handling high request
+rates. Visitors' browsers do the work of finding a valid proof, while Angie
+Guardian can check that proof quickly with very little server work. Choose
+`argon2id` only when you have measured evidence that it is a better fit for
+your site.
 
 Consider `argon2id` when attackers can use GPUs or ASICs to solve SHA-256
 puzzles much faster than visitors' browsers. Argon2id requires memory bandwidth
