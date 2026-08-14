@@ -70,6 +70,7 @@
   h2 { font-size: 0.85rem; font-weight: 600; color: var(--ink-2);
        text-transform: uppercase; letter-spacing: 0.04em; margin: 1.75rem 0 0.5rem; }
   .meta { color: var(--muted); font-size: 0.8rem; }
+  .meta.stale-note { color: var(--critical); }
   /* Docs pointers: a small circled "i" beside a section heading linking to the
      matching page on angieguardian.org. Muted, so it reads as a footnote on the
      heading rather than a control. Opens in a new tab: a click must never
@@ -441,6 +442,7 @@
     <div class="chart-group-head">
       <span class="title">Totals</span>
       <span class="meta">counted since daemon start</span>
+      <span class="meta stale-note" id="distributions-stale" role="status" hidden></span>
     </div>
     <div class="charts even">
       <div class="chart-card">
@@ -674,7 +676,8 @@
     </div>
   </div>
 
-  <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span><a class="help"
+  <h2>Top offenders <span class="meta">(recent window, non-allow decisions)</span>
+      <span class="meta stale-note" id="offenders-stale" role="status" hidden></span><a class="help"
       href="https://angieguardian.org/guide/admin#top-offenders"
       target="_blank" rel="noopener noreferrer"
       title="Docs: ranked sources, the world map and its controls"
@@ -977,6 +980,23 @@
     return tr;
   };
   const td = (cls, text) => el("td", cls, text);
+
+  // Optional panels keep their last useful render through a transient fetch
+  // failure, but must never sit under a fresh page timestamp without saying
+  // that they are stale. Before the first successful fetch there is no last
+  // render, so distinguish unavailable data from retained data.
+  const setOptionalStatus = (id, noun, ok, hasLast) => {
+    const status = $(id);
+    if (ok) {
+      status.textContent = "";
+      status.hidden = true;
+      return;
+    }
+    status.textContent = noun + (hasLast
+      ? " could not be refreshed; showing last known data"
+      : " could not be loaded");
+    status.hidden = false;
+  };
 
   const api = async (path, opts = {}) => {
     const r = await fetch(path, {
@@ -1871,7 +1891,7 @@
     }
   };
 
-  const renderAnomalyHealth = (data) => {
+  const renderAnomalyHealth = (data, currentDist) => {
     if (!data) {
       $("anomaly-health").hidden = true;
       $("anomaly-banner").hidden = true;
@@ -1900,7 +1920,11 @@
     }));
 
     const missingScopes = scopes.filter((scope) => scope.coverage === "missing");
-    const misses = lastDist ? Object.values(lastDist.anomaly_misses || {})
+    // Miss counters share /admin/distributions with the registry charts. Those
+    // charts may retain a clearly-labelled last-known payload, but this global
+    // red banner must only carry counters from the current tick: otherwise a
+    // transient failure or daemon restart presents old misses as a live alert.
+    const misses = currentDist ? Object.values(currentDist.anomaly_misses || {})
       .reduce((total, value) => total + value, 0) : 0;
     const banner = $("anomaly-banner");
     if (missingScopes.length || misses) {
@@ -1961,8 +1985,20 @@
   // Top offenders: six ranked-list tables from /admin/offenders. Text only
   // (attacker-controlled IPs/paths/UAs/hosts), so every cell lands via
   // td()'s textContent.
+  let haveOffenders = false;
   const renderOffenders = (data) => {
-    if (!data) return; // fetch failed; leave the last render in place
+    if (!data) {
+      setOptionalStatus("offenders-stale", "Offenders", false, haveOffenders);
+      // Do not show six empty tables on an initial failure. After a successful
+      // render, leave its tables and map in place under the stale warning.
+      if (!haveOffenders) {
+        $("offenders").hidden = true;
+        $("offenders-empty").hidden = true;
+      }
+      return;
+    }
+    haveOffenders = true;
+    setOptionalStatus("offenders-stale", "Offenders", true, true);
     const fill = (tbodyId, rows, cells) => {
       $(tbodyId).replaceChildren(...rows.map((r) => row(...cells(r))));
     };
@@ -2846,7 +2882,7 @@
         }
         $("block-err").textContent = resetWarning(res);
         lastBlocksAt = 0;
-        render(true).catch(() => {});
+        refreshAfterAction();
       });
       const act = td(null, ""); act.appendChild(btn);
       return row(ipCell(b.ip), td("wrap", b.reason),
@@ -3343,9 +3379,12 @@
     // the blocksRequest above (or kept from cache), so renderBlocks reads it.
     renderBlocks();
 
-    // Registry distributions (histograms + per-domain totals); null on failure.
-    lastDist = dist;
-    renderAnomalyHealth(anomaly);
+    // Registry distributions (histograms + per-domain totals). Retain the last
+    // successful payload through a transient failure, but label every card it
+    // feeds as stale so the fresh page timestamp cannot overstate its age.
+    if (dist) lastDist = dist;
+    setOptionalStatus("distributions-stale", "Registry charts", !!dist, !!lastDist);
+    renderAnomalyHealth(anomaly, dist);
 
     // Top offenders (exact top-K over the ring); null on failure.
     renderOffenders(offenders);
@@ -3419,18 +3458,48 @@
 
   // A render fans out to several endpoints (and /admin/angie does two sequential
   // upstream fetches), so on a short interval one render can still be in flight
-  // when the next tick fires. Guard it: skip overlapping ticks rather than
-  // starting a second render, which would double the admin/API traffic and let an
-  // older response land after a newer one. Dropping (not queueing) is fine: the
-  // next scheduled tick refreshes anyway.
-  let ticking = false;
-  const tick = () => {
-    if (paused || ticking) return Promise.resolve();
-    ticking = true;
-    return render()
-      .catch((e) => { if (e.message !== "unauthorized") console.error(e); })
-      .finally(() => { ticking = false; });
+  // when another refresh is requested. Scheduled overlaps may be dropped: the
+  // next timer tick will refresh anyway. A post-action refresh is different: it
+  // must run after the current render or an older response can overwrite the
+  // result of a block, unblock or config reload. Coalesce any number of those
+  // requests into one queued render and preserve the strongest blocks refresh.
+  const makeRefreshCoordinator = (renderFn, reportError) => {
+    let running = false;
+    let queued = false;
+    let queuedBlocks = false;
+    const run = (refreshBlocks, queueIfBusy) => {
+      if (running) {
+        if (queueIfBusy) {
+          queued = true;
+          queuedBlocks = queuedBlocks || refreshBlocks;
+        }
+        return Promise.resolve();
+      }
+      running = true;
+      return Promise.resolve()
+        .then(() => renderFn(refreshBlocks))
+        .catch(reportError)
+        .finally(() => {
+          running = false;
+          if (!queued) return;
+          const refreshQueuedBlocks = queuedBlocks;
+          queued = false;
+          queuedBlocks = false;
+          run(refreshQueuedBlocks, false);
+        });
+    };
+    return {
+      scheduled: () => run(false, false),
+      forced: (refreshBlocks = true) => run(refreshBlocks, true),
+    };
   };
+  const refreshes = makeRefreshCoordinator(render,
+    (e) => { if (e.message !== "unauthorized") console.error(e); });
+  const tick = () => {
+    if (paused) return Promise.resolve();
+    return refreshes.scheduled();
+  };
+  const refreshAfterAction = () => refreshes.forced(true);
   // Auto-refresh interval (ms), persisted per browser; 0 = off (manual only).
   // Validate the stored value against the actual options so a stale/garbage
   // entry can't leave the select blank or fall back silently.
@@ -3541,7 +3610,7 @@
     // The per-domain table and the health card are drawn from /admin/config and
     // /admin/stats on the tick, so pull one now rather than leave a pre-reload
     // view sitting under a message that says it changed.
-    render(true).catch(() => {});
+    refreshAfterAction();
   };
 
   $("reload").addEventListener("click", async () => {
@@ -3608,7 +3677,7 @@
       $("block-err").textContent = "";
       $("block-ip").value = "";
       lastBlocksAt = 0;
-      render(true).catch(() => {});
+      refreshAfterAction();
     } catch (err) {
       $("block-err").textContent = "block failed: " + err.message;
     }
@@ -3641,7 +3710,7 @@
     }
     $("lu-err").textContent = resetWarning(res);
     lastBlocksAt = 0;
-    render(true).catch(() => {});
+    refreshAfterAction();
   });
 
   // Inline block, the mirror image of the unblock above. Same PUT the Active
@@ -3668,7 +3737,7 @@
     $("lu-block-ttl").value = "";
     $("lu-block-reason").value = "";
     lastBlocksAt = 0;
-    render(true).catch(() => {});
+    refreshAfterAction();
   });
 
   // Decision filters re-render locally, no refetch. A filter change resets to

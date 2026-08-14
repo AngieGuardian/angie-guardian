@@ -115,7 +115,11 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 	    return nodes[id];
 	  };
 	  var el = function (tag, cls, text) {
-	    return { tag: tag, cls: cls || "", text: text === undefined ? "" : String(text), title: "" };
+	    return {
+	      tag: tag, cls: cls || "", className: cls || "",
+	      text: text === undefined ? "" : String(text), title: "", children: [],
+	      appendChild: function (child) { this.children.push(child); },
+	    };
 	  };
 	  var row = function () { return { tag: "tr", cells: Array.prototype.slice.call(arguments) }; };
 	  var td = function (cls, text) { return el("td", cls, text); };
@@ -133,6 +137,172 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 		}
 	}
 	return vm
+}
+
+// TestRefreshCoordinatorQueuesPostActionRefresh pins the distinction between
+// timer ticks and operator actions. A timer overlap is expendable, but a block,
+// unblock or reload must run once the older render finishes or that older
+// response can land last and roll the dashboard back to pre-action data.
+func TestRefreshCoordinatorQueuesPostActionRefresh(t *testing.T) {
+	vm := jsRuntime(t, "makeRefreshCoordinator")
+	if _, err := vm.RunString(`
+	  var calls = [], pending = [], active = 0, maxActive = 0, errors = [];
+	  var coordinator = makeRefreshCoordinator(function (refreshBlocks) {
+	    calls.push(refreshBlocks);
+	    active++;
+	    maxActive = Math.max(maxActive, active);
+	    return new Promise(function (resolve) {
+	      pending.push(function () { active--; resolve(); });
+	    });
+	  }, function (err) { errors.push(String(err)); });
+	  coordinator.scheduled();
+	  coordinator.scheduled(); // overlapping timer tick: drop it
+	  coordinator.forced(false);
+	  coordinator.forced(true); // coalesce and preserve refreshBlocks=true
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	var during struct {
+		Calls     []bool `json:"calls"`
+		Pending   int    `json:"pending"`
+		MaxActive int    `json:"maxActive"`
+	}
+	call(t, vm, `({ calls: calls, pending: pending.length, maxActive: maxActive })`, &during)
+	if fmt.Sprint(during.Calls) != "[false]" || during.Pending != 1 || during.MaxActive != 1 {
+		t.Fatalf("overlapping requests were not coalesced: %+v", during)
+	}
+
+	if _, err := vm.RunString(`pending.shift()();`); err != nil {
+		t.Fatal(err)
+	}
+	var queued struct {
+		Calls     []bool `json:"calls"`
+		Pending   int    `json:"pending"`
+		MaxActive int    `json:"maxActive"`
+	}
+	call(t, vm, `({ calls: calls, pending: pending.length, maxActive: maxActive })`, &queued)
+	if fmt.Sprint(queued.Calls) != "[false true]" || queued.Pending != 1 || queued.MaxActive != 1 {
+		t.Fatalf("forced follow-up did not run serially with block refresh: %+v", queued)
+	}
+}
+
+func TestOptionalStatusDistinguishesUnavailableAndStale(t *testing.T) {
+	vm := jsRuntime(t, "setOptionalStatus")
+	var got struct {
+		Hidden bool   `json:"hidden"`
+		Text   string `json:"text"`
+	}
+	call(t, vm, `(function () {
+	  setOptionalStatus("state", "Registry charts", false, false);
+	  return { hidden: $("state").hidden, text: $("state").textContent };
+	})()`, &got)
+	if got.Hidden || got.Text != "Registry charts could not be loaded" {
+		t.Errorf("initial failure status = %+v", got)
+	}
+	call(t, vm, `(function () {
+	  setOptionalStatus("state", "Registry charts", false, true);
+	  return { hidden: $("state").hidden, text: $("state").textContent };
+	})()`, &got)
+	if got.Hidden || got.Text != "Registry charts could not be refreshed; showing last known data" {
+		t.Errorf("stale status = %+v", got)
+	}
+	call(t, vm, `(function () {
+	  setOptionalStatus("state", "Registry charts", true, true);
+	  return { hidden: $("state").hidden, text: $("state").textContent };
+	})()`, &got)
+	if !got.Hidden || got.Text != "" {
+		t.Errorf("recovered status = %+v", got)
+	}
+}
+
+// The registry charts may deliberately retain lastDist through a failed
+// /admin/distributions tick. The global anomaly banner is a current alert,
+// though, so it must take miss counters only from that tick's payload while
+// continuing to report current missing-scope health from /admin/anomaly.
+func TestAnomalyBannerDoesNotUseStaleDistributionMisses(t *testing.T) {
+	vm := jsRuntime(t, "renderAnomalyHealth")
+	type banner struct {
+		Hidden bool   `json:"hidden"`
+		Text   string `json:"text"`
+	}
+	var got banner
+	call(t, vm, `(function () {
+	  var current = { anomaly_misses: { "example.test": 7 } };
+	  lastDist = current;
+	  renderAnomalyHealth({ scopes: [], models: [] }, current);
+	  return { hidden: $("anomaly-banner").hidden, text: $("anomaly-banner").textContent };
+	})()`, &got)
+	if got.Hidden || !strings.Contains(got.Text, "7 request(s)") {
+		t.Fatalf("current miss banner = %+v", got)
+	}
+
+	call(t, vm, `(function () {
+	  renderAnomalyHealth({ scopes: [], models: [] }, null);
+	  return { hidden: $("anomaly-banner").hidden, text: $("anomaly-banner").textContent };
+	})()`, &got)
+	if !got.Hidden {
+		t.Errorf("stale lastDist escaped into banner: %+v", got)
+	}
+
+	call(t, vm, `(function () {
+	  renderAnomalyHealth({
+	    scopes: [{ mode: "enforce", scope: "defaults", coverage: "missing", model: "missing.json" }],
+	    models: [],
+	  }, null);
+	  return { hidden: $("anomaly-banner").hidden, text: $("anomaly-banner").textContent };
+	})()`, &got)
+	if got.Hidden || !strings.Contains(got.Text, "1 configured scope(s) missing a baseline") ||
+		strings.Contains(got.Text, "request(s)") {
+		t.Errorf("current anomaly health was not isolated from stale misses: %+v", got)
+	}
+}
+
+// The offenders renderer deliberately keeps populated tables and the map when
+// its optional endpoint has one bad tick. Before any success, however, six
+// empty tables would look like a valid zero result, so they stay hidden.
+func TestOffendersFailureRetainsOnlyLastKnownData(t *testing.T) {
+	vm := jsRuntime(t, "setOptionalStatus", "renderOffenders")
+	if _, err := vm.RunString(`
+	  var haveOffenders = false;
+	  var hasGeoInfo = function () { return false; };
+	  var ipCell = function (ip) { return td("num", ip); };
+	  var geoCell = function () { return td("wrap", ""); };
+	  var countryName = function (code) { return code; };
+	  var renderGeoMap = function () {};
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		TablesHidden bool   `json:"tablesHidden"`
+		Status       string `json:"status"`
+		Rows         int    `json:"rows"`
+	}
+	call(t, vm, `(function () {
+	  renderOffenders(null);
+	  return {
+	    tablesHidden: $("offenders").hidden,
+	    status: $("offenders-stale").textContent,
+	    rows: $("off-reasons").children.length,
+	  };
+	})()`, &got)
+	if !got.TablesHidden || got.Status != "Offenders could not be loaded" || got.Rows != 0 {
+		t.Fatalf("initial offender failure = %+v", got)
+	}
+
+	call(t, vm, `(function () {
+	  renderOffenders({ window: 1, ips: [], reasons: [{key:"pow", count:3}] });
+	  renderOffenders(null);
+	  return {
+	    tablesHidden: $("offenders").hidden,
+	    status: $("offenders-stale").textContent,
+	    rows: $("off-reasons").children.length,
+	  };
+	})()`, &got)
+	if got.TablesHidden || got.Status != "Offenders could not be refreshed; showing last known data" || got.Rows != 1 {
+		t.Errorf("stale offender render = %+v", got)
+	}
 }
 
 // TestChartLegendVisibilitySurvivesRefresh covers the dashboard's five-second
