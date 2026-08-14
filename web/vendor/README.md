@@ -1,10 +1,11 @@
 # Vendored third-party assets
 
-These files are committed into the repository and embedded into the `guardiand`
-binary (`web/web.go`'s `//go:embed`) for direct/dev deployments. Release archives
-also ship the Argon2id files separately so Angie can serve them directly from
-`/usr/share/guardian/assets` without proxying public asset traffic through the
-daemon. They remain same-origin and have no runtime dependency on a CDN.
+These files are committed into the repository. Dashboard dependencies are
+embedded into `guardiand`; the Argon2id worker, runtime and WASM are instead
+shipped separately in release archives and served same-origin by Angie from
+`/usr/share/guardian/assets`. The daemon deliberately does not serve them, so
+public browser asset traffic cannot consume its request capacity. Nothing here
+is fetched from the network at build or run time.
 
 ## chart.umd.min.js
 

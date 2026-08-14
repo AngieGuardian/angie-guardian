@@ -556,29 +556,16 @@ func TestArgon2IDDifficultySignalsSelectBoundedIterations(t *testing.T) {
 	}
 }
 
-func TestArgon2IDAssetsAreImmutableAndBounded(t *testing.T) {
+func TestArgon2IDAssetsAreNotServedByDaemon(t *testing.T) {
 	ts := testServerWithYAML(t, argonTestYAML)
-	for _, asset := range []struct{ path, contentType string }{
-		{argonWorkerURL, "text/javascript"},
-		{argonRuntimeURL, "text/javascript"},
-		{argonWASMURL, "application/wasm"},
+	for _, path := range []string{
+		argonWorkerURL,
+		"/__guardian/assets/argon2id-runtime-1b3aa08f6d118ad6.js",
+		argonWASMURL,
 	} {
-		resp := do(t, "GET", ts.URL+asset.path, nil, nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: status=%d", asset.path, resp.StatusCode)
-		}
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.HasPrefix(resp.Header.Get("Content-Type"), asset.contentType) {
-			t.Errorf("GET %s Content-Type=%q", asset.path, resp.Header.Get("Content-Type"))
-		}
-		if got := resp.Header.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
-			t.Errorf("GET %s Cache-Control=%q", asset.path, got)
-		}
-		if len(body) > 300*1024 {
-			t.Errorf("GET %s size=%d, exceeds 300 KiB", asset.path, len(body))
+		resp := do(t, "GET", ts.URL+path, nil, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s: status=%d, want 404 (Angie must serve assets)", path, resp.StatusCode)
 		}
 	}
 }

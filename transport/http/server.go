@@ -33,9 +33,8 @@ import (
 const PassPath = "/__guardian/pass"
 
 const (
-	argonWorkerURL  = "/__guardian/assets/argon2id-worker-db57362e2dddfb66.js"
-	argonRuntimeURL = "/__guardian/assets/argon2id-runtime-1b3aa08f6d118ad6.js"
-	argonWASMURL    = "/__guardian/assets/argon2id-4507b469b9b103a5.wasm"
+	argonWorkerURL = "/__guardian/assets/argon2id-worker-db57362e2dddfb66.js"
+	argonWASMURL   = "/__guardian/assets/argon2id-4507b469b9b103a5.wasm"
 )
 
 // The X-Guardian-* header names the glue sets, spelled in canonical MIME form
@@ -75,14 +74,8 @@ type Server struct {
 	inflight      atomic.Int64
 	argonInflight atomic.Int64
 
-	challengePage   challengeRenderer
-	deniedHTML      []byte
-	challengeAssets map[string]challengeAsset
-}
-
-type challengeAsset struct {
-	data        []byte
-	contentType string
+	challengePage challengeRenderer
+	deniedHTML    []byte
 }
 
 // New builds the auth-path server. Domain config is read through the engine
@@ -95,18 +88,6 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		challengePage: newChallengeRenderer(),
 	}
 	s.deniedHTML, _ = web.FS.ReadFile("denied.html")
-	s.challengeAssets = make(map[string]challengeAsset, 3)
-	for _, asset := range []struct{ url, file, contentType string }{
-		{argonWorkerURL, "argon2id-worker-db57362e2dddfb66.js", "text/javascript; charset=utf-8"},
-		{argonRuntimeURL, "argon2id-runtime-1b3aa08f6d118ad6.js", "text/javascript; charset=utf-8"},
-		{argonWASMURL, "argon2id-4507b469b9b103a5.wasm", "application/wasm"},
-	} {
-		data, err := web.FS.ReadFile("vendor/guardian-argon2/" + asset.file)
-		if err == nil {
-			s.challengeAssets[asset.url] = challengeAsset{data: data, contentType: asset.contentType}
-		}
-		s.mux.HandleFunc("GET "+asset.url, s.handleChallengeAsset)
-	}
 
 	// The endpoints that trust X-Guardian-* identity headers sit behind the
 	// require_proxied gate; /healthz (probed headerless by the systemd
@@ -123,21 +104,6 @@ func New(engine *core.Engine, mgr *pow.Manager, st store.Store, m *metrics.Metri
 		s.mux.HandleFunc("GET "+p, s.proxiedOnly(s.handlePassNoJS))
 	}
 	return s
-}
-
-func (s *Server) handleChallengeAsset(w http.ResponseWriter, r *http.Request) {
-	asset, ok := s.challengeAssets[r.URL.Path]
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	securityHeaders(w, "", "")
-	w.Header().Set("Content-Type", asset.contentType)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-	w.Header().Set("Content-Length", strconv.Itoa(len(asset.data)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(asset.data)
 }
 
 // proxiedOnly enforces require_proxied: when enabled, a guard request without
