@@ -166,6 +166,22 @@ sudo install -o root -g guardian -m640 deploy/rules-common.yaml \
   /etc/guardian/rules.d/common.yaml
 ```
 
+If you use Argon2id, install its browser assets separately as well. The
+release archive contains them under `assets/`; the source tree keeps them in
+`web/vendor/guardian-argon2/`. Angie serves these files directly, so they must
+be present before reloading the vhost:
+
+```sh
+sudo install -d -m755 /usr/share/guardian/assets
+sudo install -m644 assets/argon2id-worker-db57362e2dddfb66.js \
+  assets/argon2id-runtime-1b3aa08f6d118ad6.js \
+  assets/argon2id-4507b469b9b103a5.wasm /usr/share/guardian/assets/
+```
+
+For a source checkout, use `web/vendor/guardian-argon2/` in place of
+`assets/`. The shipped Angie snippet's `/__guardian/assets/` location points
+to `/usr/share/guardian/assets/` by default.
+
 Every later command uses `/etc/guardian/guardian.yaml`. The rules file is
 equally required: the example enables it with fail-fast loading, so validation
 correctly fails if it was not installed.

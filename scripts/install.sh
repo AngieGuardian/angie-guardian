@@ -139,6 +139,9 @@ main() {
   [[ -f "$package_dir/deploy/guardiand.service" ]] || error 'release archive does not contain the systemd unit'
   [[ -f "$package_dir/deploy/angie-guardian.conf" ]] || error 'release archive does not contain the Angie endpoint snippet'
   [[ -f "$package_dir/deploy/angie-guardian-location.conf" ]] || error 'release archive does not contain the Angie location snippet'
+  [[ -f "$package_dir/assets/argon2id-worker-db57362e2dddfb66.js" ]] || error 'release archive does not contain Argon2id worker asset'
+  [[ -f "$package_dir/assets/argon2id-runtime-1b3aa08f6d118ad6.js" ]] || error 'release archive does not contain Argon2id runtime asset'
+  [[ -f "$package_dir/assets/argon2id-4507b469b9b103a5.wasm" ]] || error 'release archive does not contain Argon2id WASM asset'
 
   getent group guardian >/dev/null || groupadd --system guardian
   id guardian >/dev/null 2>&1 || useradd --system --gid guardian --home-dir "$STATE_DIR" --shell /usr/sbin/nologin guardian
@@ -162,6 +165,10 @@ main() {
   install_preserving_local "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
+  install -d -m 0755 /usr/share/guardian/assets
+  install -m 0644 "$package_dir/assets/argon2id-worker-db57362e2dddfb66.js" /usr/share/guardian/assets/
+  install -m 0644 "$package_dir/assets/argon2id-runtime-1b3aa08f6d118ad6.js" /usr/share/guardian/assets/
+  install -m 0644 "$package_dir/assets/argon2id-4507b469b9b103a5.wasm" /usr/share/guardian/assets/
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     was_active=true
   fi
