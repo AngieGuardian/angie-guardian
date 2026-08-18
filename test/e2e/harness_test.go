@@ -50,6 +50,11 @@ const (
 	powHost = "localhost"
 	// wafOnlyHost has pow disabled: WAF runs, but no interstitial.
 	wafOnlyHost = "api.localhost"
+	// admissionHost is a dedicated low-budget vhost used only by the
+	// server-scope admission regression; it must not throttle other tests.
+	admissionHost = "admission.localhost"
+	// baselineHost isolates the shipped Guardian control-plane admission tests.
+	baselineHost = "baseline.localhost"
 	// apiRulesHost appends an API rules file after the shared common file.
 	apiRulesHost = "rules.localhost"
 	// wpHost shares the common rules file but disables wp-cms-probe by id
@@ -62,9 +67,10 @@ const (
 // box; the compose file publishes them via ${GUARDIAN_SITE_PORT}/
 // ${GUARDIAN_ADMIN_PORT}).
 var (
-	site  string // the protected site, through Angie
-	admin string // guardiand admin API + /metrics
-	auth  string // guardiand auth hot path, published for the attack-mode test
+	site    string // the protected site, through Angie
+	admin   string // guardiand admin API + /metrics
+	auth    string // guardiand auth hot path, published for the attack-mode test
+	backend string // test-only backend counter listener
 )
 
 // stack is the running compose stack, shared by every test via TestMain.
@@ -108,12 +114,19 @@ func runSuite(m *testing.M) int {
 	site = fmt.Sprintf("http://127.0.0.1:%d", sitePort)
 	admin = fmt.Sprintf("http://127.0.0.1:%d", adminPort)
 	auth = fmt.Sprintf("http://127.0.0.1:%d", authPort)
+	backendPort, err := freePort()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: pick backend port:", err)
+		return 1
+	}
+	backend = fmt.Sprintf("http://127.0.0.1:%d", backendPort)
 	stack = stack.WithEnv(map[string]string{
 		"GUARDIAN_SITE_PORT":  strconv.Itoa(sitePort),
 		"GUARDIAN_ADMIN_PORT": strconv.Itoa(adminPort),
 		// The auth hot path is published so the attack-mode test can drive
 		// /challenge directly from synthetic client IPs (trusted_proxy: true).
-		"GUARDIAN_AUTH_PORT": strconv.Itoa(authPort),
+		"GUARDIAN_AUTH_PORT":    strconv.Itoa(authPort),
+		"GUARDIAN_BACKEND_PORT": strconv.Itoa(backendPort),
 		// The e2e config: identical to the manual harness's
 		// guardian.docker.yaml except for a low PoW difficulty, so the
 		// Go solver in this suite stays fast.
@@ -148,6 +161,27 @@ func runSuite(m *testing.M) int {
 	clearGatewayBlocks()
 
 	return m.Run()
+}
+
+// backendCount reads the exact number of requests that reached the origin
+// process. It is intentionally outside the public Angie path and exists only
+// to make overload regressions assert the backend-preservation invariant.
+func backendCount(t *testing.T) int64 {
+	t.Helper()
+	resp, err := noRedirect.Get(backend + "/count")
+	if err != nil {
+		t.Fatalf("backend counter: %v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read backend counter: %v", err)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		t.Fatalf("parse backend counter %q: %v", b, err)
+	}
+	return n
 }
 
 // freePort asks the OS for an unused TCP port on the loopback, then releases it

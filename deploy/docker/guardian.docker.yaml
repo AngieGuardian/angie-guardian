@@ -200,9 +200,10 @@ defaults:
     # each hit and can cost the store a write per issued challenge, and the
     # shipped Angie glue FAILS OPEN when the sidecar is unreachable. Always
     # pair Guardian with Angie's own limit_req/limit_conn ahead of the auth
-    # subrequest: ready-made snippets are in deploy/angie-guardian.conf,
-    # deploy/angie-guardian-location.conf, and the "Rate limiting" section of
-    # the Angie guide.
+    # subrequest: ready-made baseline and server snippets are in
+    # deploy/angie-guardian-limits.conf, deploy/angie-guardian.conf, and
+    # deploy/angie-guardian-location.conf. The "Rate limiting" section of the
+    # Angie guide covers the separate site-specific application budget.
     # issuance_rate_limit: 60/min
     #
     # noscript_fallback serves no-JS clients a meta-refresh page: a minimum 5s

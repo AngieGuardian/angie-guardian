@@ -36,7 +36,8 @@ routes, metrics and values may be *added*, but existing ones keep working):
   challenges and cached verdicts survive the upgrade. Store key prefixes
   (`block:`, `challenge:`, `chesc:`, `botdns:`) are part of this contract.
 - **Angie integration.** The `X-Guardian-*` header contract and the semantics
-  of [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
+  of [`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf),
+  [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
   plus
   [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
   (auth subrequest, the 401/403 divert, and fail-open continuation of the

@@ -25,14 +25,16 @@ root (Go and make are required; Docker is the only external service):
 make e2e                              # or: go test -tags e2e ./test/e2e/...
 ```
 
-The suite picks three free host ports, brings the stack up, runs every scenario,
+The suite picks four free host ports, brings the stack up, runs every scenario,
 and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
 PoW challenge issuance, **full SHA-256 and Argon2id solves through Angie**
 (challenge → solve → cookie → vouched request, plus SHA-256 spent-challenge
 replay), the no-JS meta-refresh
 fallback, WAF `allow`/`deny`/`block`/`challenge` actions, scanner-UA blocking, per-domain
-policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped, and
-the `/metrics` + `/admin/*` report surface.
+policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped,
+Guardian control-plane and operator-defined application admission shedding
+(each verified against an origin request counter), and the `/metrics` +
+`/admin/*` report surface.
 
 Because every request from the host shares one source IP (the Docker gateway), a
 WAF `block` blocks that IP; the harness clears such blocks via the admin API

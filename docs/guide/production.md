@@ -55,9 +55,10 @@ enables and starts the service. Existing local configuration, rules, unit, and
 Angie snippet files are preserved; mismatches are reported for manual review.
 
 It does not edit Angie virtual hosts or reload Angie. After reviewing
-`/etc/guardian/guardian.yaml`, add the snippets and `guardian` upstream to
-Angie as described in the [Getting Started guide](/guide/getting-started),
-then run `angie -t` and reload Angie yourself.
+`/etc/guardian/guardian.yaml`, install the three Angie snippets and update your
+Angie top-level configuration file (`/etc/angie/angie.conf`) as described in the
+[Getting Started guide](/guide/getting-started), then run `angie -t` and reload
+Angie yourself.
 
 #### Optional: manual installation
 

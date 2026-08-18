@@ -62,12 +62,16 @@ services:
       retries: 5
 
   backend:
-    # Stand-in origin: echoes request details so we can confirm a request
-    # actually reached the backend (i.e. Guardian allowed it).
-    image: traefik/whoami:latest
-    command: ["--port", "8080"]
+    # Stand-in origin: echoes request details and exposes a private test-only
+    # counter so e2e tests can assert the backend-preservation invariant.
+    build:
+      context: ../..
+      dockerfile: test/e2e/backend/Dockerfile
     expose:
       - "8080"
+      - "8081"
+    ports:
+      - "127.0.0.1:${GUARDIAN_BACKEND_PORT:-0}:8081"
 
   angie:
     image: docker.angie.software/angie:latest
@@ -78,6 +82,7 @@ services:
         condition: service_started
     volumes:
       - ./angie.docker.conf:/etc/angie/angie.conf:ro
+      - ../angie-guardian-limits.conf:/etc/angie/angie-guardian-limits.conf:ro
       - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
       - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
       - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro

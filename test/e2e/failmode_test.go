@@ -38,12 +38,16 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 
 	// With the sidecar down, the site must still serve the backend (fail-open).
 	// Use a normal path to prove the original backend handler resumes.
+	before := backendCount(t)
 	resp := get(t, "/still-up", powHost, browserUA, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("fail-open: status %d with guardiand down, want 200 (backend served)", resp.StatusCode)
 	}
 	if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
 		t.Fatalf("fail-open did not serve the backend; body:\n%s", body)
+	}
+	if after := backendCount(t); after != before+1 {
+		t.Errorf("fail-open backend delta = %d, want exactly 1", after-before)
 	}
 }
 
