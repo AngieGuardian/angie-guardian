@@ -251,7 +251,7 @@ The recent activity feed, newest first, from an in-process ring buffer (per
 instance, cleared on restart, capacity set by `admin.recent_size`). It holds
 three kinds of row: every non-allow decision, every redeemed proof-of-work
 challenge (action `solve`), and every failed redemption attempt (action
-`redeem_fail`). Allows—including explicit WAF allow rules—are never recorded;
+`redeem_fail`). Allows - including explicit WAF allow rules - are never recorded;
 their aggregate volume remains available through
 `guardian_decisions_total{action="allow"}` and the dashboard's per-domain
 traffic chart.

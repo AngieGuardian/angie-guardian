@@ -30,3 +30,5 @@ coverage.out
 
 # Claude Code agent worktrees (parallel sessions; never commit these)
 .claude/worktrees/
+.hermes
+

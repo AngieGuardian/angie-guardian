@@ -23,7 +23,7 @@ the host installation described here.
 On a Debian or Ubuntu host that already has Angie installed, this installer
 downloads the latest GitHub release, pins that run to the release's exact
 version, verifies `SHA256SUMS`, installs and starts `guardiand`, and places
-the two shipped Angie snippets in `/etc/angie`:
+the three shipped Angie snippets in `/etc/angie`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
@@ -33,15 +33,29 @@ It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
 binary but preserves `/etc/systemd/system/guardiand.service`,
 `/etc/guardian/guardian.yaml`, starter rules, existing Angie snippets, and all
 state under `/var/lib/guardian`. For the starter rules file, systemd unit, and
-the two Angie snippets, the installer compares SHA-256 checksums; if a local
+the three Angie snippets, the installer compares SHA-256 checksums; if a local
 file differs from the release, it prints an **ACTION REQUIRED** notice and
 leaves the file untouched so you can review and update it yourself. This keeps
 local WAF rules, `Environment=` settings, and Angie customizations intact.
 
 The installer deliberately does **not** edit any Angie vhost or reload Angie:
 review the example policy and replace its `example.com` domains, define the
-documented `upstream guardian` once in `http {}`, then add the following to
-each protected `server {}` block and validate/reload Angie yourself:
+`upstream guardian` in your top-level Angie configuration (`/etc/angie/angie.conf`),
+include the Guardian baseline, and then add the server-level snippets to each
+protected `server {}` block. Validate and reload Angie yourself:
+
+```nginx
+include angie-guardian-limits.conf;
+
+upstream guardian {
+    server 127.0.0.1:8071;
+    keepalive 64;
+}
+```
+
+**Place this once in Angie's top-level configuration (`/etc/angie/angie.conf` or a file it includes).**
+
+For each protected `server {}` block, add:
 
 ```nginx
 include angie-guardian.conf;
@@ -253,20 +267,23 @@ recommended annotated profile instead.
 
 ## 3. Install and wire the Angie configuration
 
-Install the two shipped Angie snippets,
+Install the three shipped Angie snippets,
+[`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf),
 [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 and
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf),
 at the paths used by the examples:
 
 ```sh
+sudo install -Dm644 deploy/angie-guardian-limits.conf \
+  /etc/angie/angie-guardian-limits.conf
 sudo install -Dm644 deploy/angie-guardian.conf \
   /etc/angie/angie-guardian.conf
 sudo install -Dm644 deploy/angie-guardian-location.conf \
   /etc/angie/angie-guardian-location.conf
 ```
 
-For the normal fail-open installation, do not edit either file.
+For the normal fail-open installation, do not edit any of the three files.
 `angie-guardian.conf` contains reusable internal Guardian endpoints and no
 site backend. `angie-guardian-location.conf` contains handler-neutral
 authorization directives that normally go beside it at `server {}` scope and
@@ -282,17 +299,19 @@ also stops other server-wide `add_header` directives from applying to those
 two pages, so re-add HSTS there if you rely on it. Details in
 [Site security headers and the challenge page](/guide/angie#site-security-headers-and-the-challenge-page).
 
-Add the keepalive upstream once inside Angie's `http {}` context (either in
+Add the baseline include and keepalive upstream once inside Angie's `http {}` context (either in
 `/etc/angie/angie.conf` or a file it includes there):
 
 ```nginx
+include angie-guardian-limits.conf;
+
 upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;
 }
 ```
 
-Then include both snippets once inside each protected `server {}` block. Every
+Then include the two server snippets once inside each protected `server {}` block. Every
 content location in that vhost inherits Guardian. Leave all existing static,
 FastCGI, or reverse-proxy locations unchanged:
 

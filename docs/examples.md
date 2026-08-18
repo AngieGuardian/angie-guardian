@@ -318,7 +318,12 @@ For the JSON access-log format used below, install the shipped
 in Angie's `http {}` context.
 
 ```nginx
-# http {} context: keepalive upstream (REQUIRED for throughput) + rate limits.
+# http {} context: shipped Guardian's control-plane admission (rate and connection limits) + keepalive upstream
+# (REQUIRED for throughput) + site-specific application capacity. The
+# application snippets remain capacity-neutral; choose these values for the
+# deployment.
+include angie-guardian-limits.conf;
+
 upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;

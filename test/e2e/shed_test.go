@@ -8,9 +8,65 @@ package e2e
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
+
+// TestGuardianBaselineControlPlaneAdmission verifies the shipped baseline at
+// the real Angie locations. These are Guardian-owned public endpoints, so the
+// limits are generic; each rejected request must stop before Guardian's
+// expensive work and can never reach the protected origin.
+func TestGuardianBaselineControlPlaneAdmission(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"challenge", http.MethodGet, "/baseline-challenge", ""},
+		{"pass", http.MethodPost, "/__guardian/pass", `{}`},
+		{"assets", http.MethodGet, "/__guardian/assets/argon2id-worker-db57362e2dddfb66.js", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const burst = 80
+			before := backendCount(t)
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			codes := map[int]int{}
+			for range burst {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					r, err := http.NewRequest(tt.method, site+tt.path, strings.NewReader(tt.body))
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					r.Host = baselineHost
+					resp, err := (&http.Client{}).Do(r)
+					if err != nil {
+						return
+					}
+					mu.Lock()
+					codes[resp.StatusCode]++
+					mu.Unlock()
+					resp.Body.Close()
+				}()
+			}
+			wg.Wait()
+
+			if codes[http.StatusTooManyRequests] == 0 {
+				t.Fatalf("Guardian baseline did not shed %s flood: %v", tt.name, codes)
+			}
+			if after := backendCount(t); after != before {
+				t.Errorf("backend received %d requests during %s control-plane flood; want 0 (statuses=%v)", after-before, tt.name, codes)
+			}
+		})
+	}
+}
 
 // TestLoadShedThroughAngie proves the shed path survives Angie's auth_request:
 // under saturation the sidecar answers the auth subrequest with 403 +
@@ -26,6 +82,7 @@ import (
 // 200 produced by fail-open continuation of the original handler.
 func TestLoadShedThroughAngie(t *testing.T) {
 	const burst = 200
+	backendBefore := backendCount(t)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	codes := map[int]int{}
@@ -37,7 +94,7 @@ func TestLoadShedThroughAngie(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			r, _ := http.NewRequest(http.MethodGet, site+"/shed-probe", nil)
-			r.Host = wafOnlyHost // PoW off: a normal request is a plain allow
+			r.Host = powHost // unvouched requests must challenge or shed, never reach the backend
 			r.Header.Set("User-Agent", "shed-test/1.0")
 			resp, err := client.Do(r)
 			if err != nil {
@@ -70,4 +127,47 @@ func TestLoadShedThroughAngie(t *testing.T) {
 		t.Skip("burst did not saturate max_inflight (timing); shed path not exercised this run")
 	}
 	t.Logf("shed e2e status distribution: %v", codes)
+	if backendAfter := backendCount(t); backendAfter != backendBefore {
+		t.Errorf("backend received %d requests during the unvouched shed burst; want 0 (before=%d after=%d)",
+			backendAfter-backendBefore, backendBefore, backendAfter)
+	}
+}
+
+// TestServerScopeAdmissionProtectsBackend proves the other half of the
+// overload boundary: Angie admission runs before Guardian and the origin.
+// The admission.localhost harness vhost has a deliberately tiny server-scope limit;
+// rejected requests must not increment the private origin counter.
+func TestServerScopeAdmissionProtectsBackend(t *testing.T) {
+	const burst = 20
+	before := backendCount(t)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for range burst {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, _ := http.NewRequest(http.MethodGet, site+"/admission-probe", nil)
+			r.Host = admissionHost
+			r.Header.Set("User-Agent", "admission-test/1.0")
+			resp, err := (&http.Client{}).Do(r)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			codes[resp.StatusCode]++
+			mu.Unlock()
+			resp.Body.Close()
+		}()
+	}
+	wg.Wait()
+
+	if codes[http.StatusTooManyRequests] == 0 {
+		t.Fatalf("server-scope admission did not reject the burst: %v", codes)
+	}
+	after := backendCount(t)
+	if delta := after - before; delta != int64(codes[http.StatusOK]) {
+		t.Errorf("backend request delta = %d, accepted 200s = %d, statuses=%v; rejected traffic reached the origin",
+			delta, codes[http.StatusOK], codes)
+	}
 }

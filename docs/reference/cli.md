@@ -61,6 +61,8 @@ fail-open) and keeps a watchdog alive. See
 ### Hot-path endpoints (on `listen`)
 
 These are Angie's side of the integration, wired by the reusable
+[`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf)
+HTTP-scope baseline plus
 [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 server endpoints and
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)

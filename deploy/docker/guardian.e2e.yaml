@@ -114,6 +114,9 @@ defaults:
   # defaults: a confirmed crawler identity is a terminal allow.
 
 domains:
+  admission.localhost:
+    pow: { enabled: false }
+  baseline.localhost: {}
   # The harness site. PoW on so we can exercise the challenge flow, with a
   # per-path overlay disabling PoW under /api/ (the WAF stays active there).
   localhost:

@@ -138,6 +138,7 @@ main() {
   [[ -f "$package_dir/deploy/rules-common.yaml" ]] || error 'release archive does not contain starter rules'
   [[ -f "$package_dir/deploy/guardiand.service" ]] || error 'release archive does not contain the systemd unit'
   [[ -f "$package_dir/deploy/angie-guardian.conf" ]] || error 'release archive does not contain the Angie endpoint snippet'
+  [[ -f "$package_dir/deploy/angie-guardian-limits.conf" ]] || error 'release archive does not contain the Angie baseline-limit snippet'
   [[ -f "$package_dir/deploy/angie-guardian-location.conf" ]] || error 'release archive does not contain the Angie location snippet'
   [[ -f "$package_dir/assets/argon2id-worker-db57362e2dddfb66.js" ]] || error 'release archive does not contain Argon2id worker asset'
   [[ -f "$package_dir/assets/argon2id-runtime-1b3aa08f6d118ad6.js" ]] || error 'release archive does not contain Argon2id runtime asset'
@@ -164,6 +165,7 @@ main() {
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
   install_preserving_local "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
+  install_preserving_local "$package_dir/deploy/angie-guardian-limits.conf" "$ANGIE_DIR/angie-guardian-limits.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
   install -d -m 0755 /usr/share/guardian/assets
   install -m 0644 "$package_dir/assets/argon2id-worker-db57362e2dddfb66.js" /usr/share/guardian/assets/
@@ -184,7 +186,8 @@ main() {
   printf '%s\n' "  Config:  ${CONFIG_DIR}/guardian.yaml (preserved on upgrades)"
   printf '%s\n' '  Health:  curl --fail http://127.0.0.1:8071/healthz'
   printf '%s\n' '           curl --fail http://127.0.0.1:8072/readyz'
-  printf '\n%s\n' 'Angie was not changed or reloaded. After reviewing guardian.yaml, add these inside each protected server block:'
+  printf '\n%s\n' 'Angie was not changed or reloaded. After reviewing guardian.yaml, include angie-guardian-limits.conf once in Angie http{}, then add these inside each protected server block:'
+  printf '%s\n' '  include angie-guardian-limits.conf;  # http{} only'
   printf '%s\n' '  include angie-guardian.conf;'
   printf '%s\n' '  include angie-guardian-location.conf;'
   printf '%s\n' 'Define the guardian upstream once in Angie http{} as documented, then run angie -t and reload Angie yourself.'

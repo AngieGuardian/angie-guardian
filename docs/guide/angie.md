@@ -13,12 +13,14 @@ explicit entry use `defaults`. One `guardiand` listener and one Angie
 `upstream guardian` can therefore protect many `server {}` blocks; you do not
 need one daemon or one edited Guardian snippet per domain.
 
-The Angie integration has three deliberately separate pieces:
+The Angie integration has four deliberately separate pieces:
 
-1. Define the keepalive `upstream guardian` once in `http {}`.
-2. Include `angie-guardian.conf` unchanged in each protected `server {}`. It
+1. Include `angie-guardian-limits.conf` once in `http {}`. It provides the
+   shipped baseline for Guardian-owned control-plane work.
+2. Define the keepalive `upstream guardian` once in `http {}`.
+3. Include `angie-guardian.conf` unchanged in each protected `server {}`. It
    owns only Guardian's internal auth/challenge/denied endpoints.
-3. Include `angie-guardian-location.conf` beside it at `server {}` scope. Its
+4. Include `angie-guardian-location.conf` beside it at `server {}` scope. Its
    handler-neutral directives are inherited by all of that vhost's locations.
 
 This separation makes the same server glue work for a reverse proxy, static
@@ -40,7 +42,10 @@ the server endpoints would force Guardian on for the entire vhost.)
   Guardian subrequest at all.
 
 ```nginx
-# http {} context, REQUIRED for throughput (connection reuse to the sidecar):
+# http {} context: Guardian's control-plane admission (rate and connection limits), then the REQUIRED
+# keepalive upstream (connection reuse to the sidecar).
+include angie-guardian-limits.conf;
+
 upstream guardian {
     server 127.0.0.1:8071;
     keepalive 64;
@@ -60,6 +65,8 @@ location / {
 }
 ```
 
+[`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf)
+defines Guardian's control-plane admission baseline. Then
 [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf) documents the fail-open toggle (what happens when
 the sidecar is down) and the challenge/pass/denied routes. The companion
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
@@ -69,7 +76,7 @@ An `include` path is relative to Angie's **prefix**, not to the file holding
 the `include`. On the official packages and container images that prefix is
 `/etc/angie` (`angie -V` prints `--prefix=/etc/angie`), which is where the
 [getting started guide](/guide/getting-started#_3-install-and-wire-the-angie-configuration)
-installs both snippets. Running under a different prefix, such as a source
+installs all three snippets. Running under a different prefix, such as a source
 build (`/usr/local/angie/` by default) or a `-p` override, write the paths out
 in full instead.
 
@@ -351,27 +358,43 @@ while its WAF and other Guardian checks remain enabled.
 
 ## Rate limiting (volumetric DDoS)
 
+Guardian adds three separate components to the Angie `http {}` context:
+
+1. **Guardian baseline** (`angie-guardian-limits.conf`) - shipped control-plane admission for challenge issuance, solution redemption, and assets
+2. **Operator application limits** (per `server {}`) - capacity-neutral limits for protected application content
+3. **Site-specific limits** - any additional rate or connection limits for the deployment
+
+The shipped baseline deliberately covers only Guardian's known public paths. It does not rate-limit `/__guardian/auth`, because that internal subrequest runs once for every protected application request and a fixed RPS there would secretly set a universal application budget. Instead it applies a per-host+IP budget to each public path and a single per-Angie-instance concurrent-work ceiling shared by those paths and `/__guardian/auth`.
+
+The shipped values are intentionally modest: `30r/m` with a burst of six for each host+IP challenge or redemption stream, `20r/s` with a burst of 40 for assets, and 128 concurrent control-plane requests across the Angie instance. A per-IP excess gets `429`; the shared concurrency ceiling gets `503` and is an explicit shed, never a fail-open continuation. These are a starting protection for Guardian's known work, not a promise about site capacity. Keep the defaults only after testing legitimate retries, no-JS clients, and your normal asset delivery pattern; override them by copying the small baseline file into your managed Angie configuration.
+
+Protected application content remains deliberately **capacity-neutral**. Its request and connection limits belong to the deployment: the site owner knows whether its backend can safely sustain 50, 500, or 50,000 requests per second. Add those selected limits at the protected `server {}` scope; they run before `auth_request`, so rejected requests reach neither Guardian nor the backend.
+
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
 raw flood. Every request still costs an `auth_request` subrequest, and a client
 that follows the challenge redirect also makes the sidecar issue a challenge
 (and persist it, unless [attack mode](/guide/attack-mode)'s stateless issuance
-has kicked in). Under enough load the sidecar saturates and fail-open (the
-default) sends the flood straight to your backend; attack mode's optional
-`max_inflight` load-shedding bound turns that into fast `503`s for unvouched
-clients instead.
+has kicked in). The shipped shared concurrency ceiling sheds excess
+control-plane work before it enters Guardian. Attack mode's optional
+`max_inflight` bound then limits evaluations that did enter the sidecar,
+returning fast `503`s for unvouched clients. Deliberate fail-open still applies
+when Guardian is genuinely unavailable or errors, which is why the separate
+application admission policy below remains necessary.
 
 Blocked clients add none of that cost inside the sidecar: an always-on
 in-process mirror answers the block lookup with no store read, and the optional
 [kernel offload](/guide/block-offload) can drop a blocked client's packets in
 nftables before Angie ever runs the subrequest. That keeps a flood from
-*already-known-bad* IPs cheap, but not a first-time flood from fresh IPs, which
-is what the rate limits below are for: volumetric DDoS is Angie's job, in front
-of the `auth_request`, so a flood is dropped before it reaches the sidecar at
-all. Rate limits absorb volume, PoW taxes the bots that get through. Tune the
-rates to your real traffic before enabling.
+*already-known-bad* IPs cheap, but not a first-time flood from fresh IPs. The
+shipped baseline protects Guardian's known control-plane work; the
+application-specific rate limits below protect the site's own content and
+remain Angie's front-door defence before `auth_request`. Tune those deployment
+limits to real traffic: rate limits absorb volume, while PoW taxes the bots
+that get through.
 
 ```nginx
-# http {} context: one shared zone per limiter.
+# http {} context: application-specific, separate from Guardian's shipped
+# control-plane admission (Guardian's rate and connection limits).
 limit_req_zone  $binary_remote_addr zone=guard:10m rate=30r/s;
 limit_conn_zone $binary_remote_addr zone=gconn:10m;
 

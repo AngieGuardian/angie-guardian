@@ -287,6 +287,7 @@ upload_and_release:
       test -f "$PKG/guardian.example.yaml"
       test -f "$PKG/deploy/rules-common.yaml"
       test -f "$PKG/deploy/angie-guardian.conf"
+      test -f "$PKG/deploy/angie-guardian-limits.conf"
       test -f "$PKG/deploy/angie-guardian-location.conf"
       test -f "$PKG/assets/argon2id-worker-db57362e2dddfb66.js"
       test -f "$PKG/assets/argon2id-runtime-1b3aa08f6d118ad6.js"
