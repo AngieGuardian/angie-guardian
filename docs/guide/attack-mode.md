@@ -130,6 +130,10 @@ ground between fail-open (continuing into the vhost's original handler) and
 silently weakening policy under pressure. Set the bound to a few times your
 core count and test it with your chosen mirror mode.
 
+::: tip Fast 403 optimization under volumetric attack
+When handling massive volumetric 403/deny floods, operators can uncomment `return 403;` inside `location @guardian_denied` in `angie-guardian.conf` to serve a bare 403 immediately from Angie memory without proxying `/denied` to the sidecar. See [Angie integration](/guide/angie#volumetric-403-floods-and-the-fast-403-optimization).
+:::
+
 ## Fleet coordination
 
 The detector is per-instance: each replica measures its own share of traffic.
