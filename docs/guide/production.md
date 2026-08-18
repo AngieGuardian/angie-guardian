@@ -160,48 +160,84 @@ healthcheck to gate readiness instead.
 ### Docker
 
 Every release publishes a prebuilt sidecar image (distroless, nonroot,
-version-stamped) to the project container registry, so you don't have to
+version-stamped) to both GitHub Packages and the GitLab container registry, so you don't have to
 build anything:
 
 ```sh
 export GUARDIAN_VERSION=REPLACE_WITH_RELEASE_TAG
+docker pull "ghcr.io/angieguardian/angie-guardian:${GUARDIAN_VERSION}"
+# or from GitLab:
 docker pull "registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION}"
 ```
 
-A minimal production compose service, with the store and signing key on
-named volumes so blocks and issued tokens survive restarts:
+#### Production Docker Compose stack
+
+A complete, production-ready reference Compose deployment is available in the repository at
+[`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml). It orchestrates:
+
+1. **Angie** (reverse proxy) fronting HTTP traffic, configured with the official Guardian integration snippets (`angie-guardian.conf`, `angie-guardian-location.conf`, `angie-guardian-limits.conf`).
+2. **`guardiand`** (sidecar daemon) performing auth requests, PoW challenge issuance, and WAF inspection.
+3. **`backend`** (application container) serving origin content.
 
 ```yaml
+name: angie-guardian
+
 services:
   guardiand:
-    image: registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION to a release tag}
+    image: ghcr.io/angieguardian/angie-guardian:${GUARDIAN_VERSION:-latest}
     restart: unless-stopped
-    # Publish the two listeners on the host loopback only: Angie (on the
-    # host or another container) talks to 8071; you talk to 8072.
-    ports:
-      - "127.0.0.1:8071:8071"
-      - "127.0.0.1:8072:8072"
+    command: ["-config", "/etc/guardian/guardian.yaml"]
     volumes:
-      - ./guardian.yaml:/etc/guardian/guardian.yaml:ro
+      - ./guardian.docker.yaml:/etc/guardian/guardian.yaml:ro
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
-      - guardian-state:/var/lib/guardian
+      - guardian-data:/var/lib/guardian
       - guardian-keys:/etc/guardian/keys
+    expose:
+      - "8071"
+    ports:
+      - "127.0.0.1:8072:8072"
     healthcheck:
       test: ["CMD", "/usr/local/bin/guardiand", "-config", "/etc/guardian/guardian.yaml", "-healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+  backend:
+    image: traefik/whoami:latest
+    command: ["--port", "8080"]
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  angie:
+    image: docker.angie.software/angie:latest
+    restart: unless-stopped
+    depends_on:
+      guardiand:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./angie.docker.conf:/etc/angie/angie.conf:ro
+      - ../angie-guardian-limits.conf:/etc/angie/angie-guardian-limits.conf:ro
+      - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
+      - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
+      - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro
+      - ./basic.htpasswd:/etc/angie/basic.htpasswd:ro
+    ports:
+      - "127.0.0.1:8080:80"
+
 volumes:
-  guardian-state:
+  guardian-data:
   guardian-keys:
 ```
 
-The built-in probe loads the mounted config and requires both configured
-listeners to answer `/healthz`; merely being able to launch the binary is not
-considered healthy. It is a **liveness** check on purpose: following the store
-would restart-loop a container that is still (fail-open) serving traffic.
-Point your orchestrator's readiness probe at
-[`/readyz`](#probes-liveness-vs-readiness) instead.
+#### Key architecture and security properties
+
+- **Network isolation:** The auth hot path (`8071`) is only exposed internally on the Docker network for Angie's `auth_request` subrequests; it is deliberately not published to host ports. The Admin API and metrics listener (`8072`) is bound strictly to `127.0.0.1`.
+- **State persistence:** Named volumes (`guardian-data` and `guardian-keys`) ensure behavioral blocks, store state (Pebble/BuntDB), and the Ed25519 signing keys persist across container recreation so issued client cookies remain valid after restarts and image updates.
+- **Liveness probe:** The distroless healthcheck uses `/usr/local/bin/guardiand -healthcheck` to verify that configured listeners respond with `/healthz`. Because Guardian serves fail-open, liveness checks do not crash-loop on transient store disruptions (use [`/readyz`](#probes-liveness-vs-readiness) for orchestrator readiness probes).
+- **Automated test separation:** Automated end-to-end testing uses a separate [`deploy/docker/compose.e2e.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.e2e.yaml) harness with dynamic ports and build-from-tree targets, keeping `compose.yaml` clean for production use.
 
 Inside the container, set `listen: 0.0.0.0:8071` plus `trusted_proxy: true`
 and `admin.listen: 0.0.0.0:8072` in `guardian.yaml` (the loopback-only
@@ -211,11 +247,6 @@ signing key and generated admin token at the persistent key volume:
 `admin.token_file: /etc/guardian/keys/admin.token`, since a token file outside
 a volume is regenerated when the container is replaced. Hot reload works as
 usual: `docker kill -s HUP <container>` or `POST /admin/reload`.
-
-For a complete, runnable example (including Angie and a demo backend) see
-[`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml) in the repo; it builds the image from source
-because the e2e suite exercises the working tree, but swapping `build:` for
-`image:` gives the production shape above.
 
 ## Optional: running the anomaly trainer
 

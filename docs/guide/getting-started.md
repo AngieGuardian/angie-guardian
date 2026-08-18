@@ -12,9 +12,10 @@ primary path needs no repository checkout or Go toolchain.
 - Root or `sudo` access, plus `wget` and `tar`.
 
 Running Guardian in containers instead? Follow the
-[production Docker guide](/guide/production#docker). The repository's Compose
-stack is a demo/developer harness that builds the current checkout; it is not
-the host installation described here.
+[production Docker guide](/guide/production#docker). The repository provides a
+production-ready reference Compose stack in
+[`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml),
+which wires Angie, the `guardiand` sidecar, and an upstream backend together.
 
 ## 1. Install a prebuilt release
 
