@@ -70,12 +70,12 @@ Choose a pinned version on the
 [GitHub releases page](https://github.com/AngieGuardian/angie-guardian/releases).
 Most Intel and AMD servers use `linux-amd64`; an
 ARM server uses `linux-arm64` instead. For example, to download and extract
-version `1.2.0` for amd64:
+version `1.3.0` for amd64:
 
 ```sh
-wget https://github.com/AngieGuardian/angie-guardian/releases/download/1.2.0/angie-guardian-1.2.0-linux-amd64.tar.gz
-tar -xzf angie-guardian-1.2.0-linux-amd64.tar.gz
-cd angie-guardian-1.2.0-linux-amd64
+wget https://github.com/AngieGuardian/angie-guardian/releases/download/1.3.0/angie-guardian-1.3.0-linux-amd64.tar.gz
+tar -xzf angie-guardian-1.3.0-linux-amd64.tar.gz
+cd angie-guardian-1.3.0-linux-amd64
 ```
 
 Substitute the version you selected. On ARM64, also replace `amd64` with `arm64` in the URL,
@@ -114,11 +114,11 @@ directories, it verifies nothing at all and reports
 ending in `OK` before installing.
 :::
 
-Run these commands from the directory holding the archive. Replace `1.2.0`
+Run these commands from the directory holding the archive. Replace `1.3.0`
 with the release you selected:
 
 ```sh
-VERSION=1.2.0
+VERSION=1.3.0
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS"
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS.asc"
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/RELEASE-KEY.asc"
@@ -134,7 +134,7 @@ sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ```
-angie-guardian-1.2.0-linux-amd64.tar.gz: OK
+angie-guardian-1.3.0-linux-amd64.tar.gz: OK
 ```
 
 The signature must report a good signature from fingerprint
