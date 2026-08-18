@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Angie Guardian
   text: WAF & proof-of-work bot firewall for Angie
-  tagline: Stop HTTP floods and AI scrapers at 180,000+ requests per second without slowing down real users. Ultra-fast, adaptive Proof-of-Work bot defense with no reverse-proxy bottleneck and zero required external databases.
+  tagline: Stop HTTP floods and AI scrapers at 180,000+ requests per second without slowing down real users. Ultra-fast, adaptive Proof-of-Work bot defense with no reverse-proxy bottleneck and no external database required.
   image:
     src: /logo.svg
     alt: Angie Guardian
