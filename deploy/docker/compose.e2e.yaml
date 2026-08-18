@@ -1,0 +1,62 @@
+# Angie Guardian — automated E2E test harness.
+#
+#   Angie (reverse proxy, auth_request) ──► guardiand (sidecar) ──► whoami backend
+#
+# This file is used exclusively by the automated e2e suite (test/e2e/, `make e2e`)
+# via testcontainers-go. It builds from the local working tree and exposes
+# dynamic ports via environment variables.
+name: angie-guardian-e2e
+
+services:
+  guardiand:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["-config", "/etc/guardian/guardian.yaml"]
+    volumes:
+      - ${GUARDIAN_CONFIG:-./guardian.e2e.yaml}:/etc/guardian/guardian.yaml:ro
+      - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
+      - ./rules-api.yaml:/etc/guardian/rules.d/api.yaml:ro
+      - guardian-e2e-data:/var/lib/guardian
+      - guardian-e2e-keys:/etc/guardian/keys
+    expose:
+      - "8071"
+    ports:
+      - "127.0.0.1:${GUARDIAN_ADMIN_PORT:-8072}:8072"
+      - "127.0.0.1:${GUARDIAN_AUTH_PORT:-0}:8071"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/guardiand", "-config", "/etc/guardian/guardian.yaml", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: test/e2e/backend/Dockerfile
+    expose:
+      - "8080"
+      - "8081"
+    ports:
+      - "127.0.0.1:${GUARDIAN_BACKEND_PORT:-0}:8081"
+
+  angie:
+    image: docker.angie.software/angie:latest
+    depends_on:
+      guardiand:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./angie.e2e.conf:/etc/angie/angie.conf:ro
+      - ./angie-guardian-limits.e2e.conf:/etc/angie/angie-guardian-limits.conf:ro
+      - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
+      - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
+      - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro
+      - ./basic.htpasswd:/etc/angie/basic.htpasswd:ro
+    ports:
+      - "127.0.0.1:${GUARDIAN_SITE_PORT:-8080}:80"
+
+volumes:
+  guardian-e2e-data:
+  guardian-e2e-keys:

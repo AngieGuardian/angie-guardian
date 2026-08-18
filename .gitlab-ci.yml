@@ -163,7 +163,7 @@ docs:
     - npm run build
 
 # End-to-end suite: boots the real Angie + guardiand + whoami compose stack
-# (deploy/docker/compose.yaml) via testcontainers-go and drives traffic
+# (deploy/docker/compose.e2e.yaml) via testcontainers-go and drives traffic
 # through Angie. It needs a real Docker daemon, so it runs on the
 # shell-executor runner (tag `shell`), not the unprivileged shared runners.
 # The suite itself runs in a golang container that shares the host's docker

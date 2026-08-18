@@ -1,8 +1,8 @@
 # Store-outage chaos overlay (issue #10): the same Path A topology as
-# compose.yaml, with the guardian state moved into a valkey container the test
+# compose.e2e.yaml, with the guardian state moved into a valkey container the test
 # can kill and restart mid-run. Boot it together with the base file:
 #
-#   docker compose -f compose.yaml -f compose.chaos.yaml up --build -d
+#   docker compose -f compose.e2e.yaml -f compose.chaos.yaml up --build -d
 #
 # The automated chaos e2e test (test/e2e/chaos_test.go, part of `make e2e`)
 # boots this pair with GUARDIAN_CONFIG=./guardian.e2e-chaos.yaml.

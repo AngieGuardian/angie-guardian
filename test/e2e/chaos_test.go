@@ -59,7 +59,7 @@ import (
 func TestStoreOutageFailOpen(t *testing.T) {
 	ctx := context.Background()
 	c, err := compose.NewDockerCompose(
-		"../../deploy/docker/compose.yaml",
+		"../../deploy/docker/compose.e2e.yaml",
 		"../../deploy/docker/compose.chaos.yaml",
 	)
 	if err != nil {

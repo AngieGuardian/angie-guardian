@@ -8,7 +8,7 @@
 //
 // Unlike the in-process tests in transport/http (which call the Go handler via
 // httptest, with Angie out of the loop), this suite boots the full Path A
-// topology from deploy/docker/compose.yaml:
+// topology from deploy/docker/compose.e2e.yaml:
 //
 //	Angie (reverse proxy, auth_request) ──► guardiand (sidecar) ──► whoami backend
 //
@@ -86,7 +86,7 @@ func TestMain(m *testing.M) {
 func runSuite(m *testing.M) int {
 	ctx := context.Background()
 
-	c, err := compose.NewDockerCompose("../../deploy/docker/compose.yaml")
+	c, err := compose.NewDockerCompose("../../deploy/docker/compose.e2e.yaml")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: compose parse:", err)
 		return 1

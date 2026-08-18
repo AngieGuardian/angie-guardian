@@ -38,7 +38,7 @@ install-test:
 	bash scripts/test-install.sh
 
 # End-to-end suite: boots the real Angie + guardiand + whoami stack from
-# deploy/docker/compose.yaml (via testcontainers-go) and drives it through
+# deploy/docker/compose.e2e.yaml (via testcontainers-go) and drives it through
 # Angie. Requires Docker. Gated behind the `e2e` build tag so it never runs in
 # the fast unit `test` target above.
 e2e:

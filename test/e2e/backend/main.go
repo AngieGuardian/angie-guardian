@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,17 @@ var requests atomic.Int64
 
 func main() {
 	public := http.NewServeMux()
+	public.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"hostname":              "e2e-backend",
+			"path":                  r.URL.Path,
+			"headers":               r.Header,
+			"backend_request_count": n,
+		})
+	})
 	public.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
 		body, _ := io.ReadAll(r.Body)

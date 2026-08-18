@@ -308,7 +308,7 @@ never that it does the right thing.
 
 ## The end-to-end suite
 
-`test/e2e` boots the real stack from [`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml) with
+`test/e2e` boots the real stack from [`deploy/docker/compose.e2e.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.e2e.yaml) with
 [testcontainers-go](https://golang.testcontainers.org/), drives traffic
 **through Angie**, and asserts on decisions, `/metrics` and the Admin API:
 

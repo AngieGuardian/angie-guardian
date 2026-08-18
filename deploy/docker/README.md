@@ -16,7 +16,7 @@ findings on a real Angie binary.
 ## The end-to-end suite
 
 The automated e2e tests live in `test/e2e/` (Go, `//go:build e2e`) and boot
-**this** compose stack with [testcontainers-go](https://golang.testcontainers.org/),
+`compose.e2e.yaml` with [testcontainers-go](https://golang.testcontainers.org/),
 drive traffic **through Angie**, and assert on the guardian's decisions and its
 report surface (Prometheus `/metrics` + the admin API). Run them from the repo
 root (Go and make are required; Docker is the only external service):
