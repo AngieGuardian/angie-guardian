@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Angie Guardian
   text: WAF & proof-of-work bot firewall for Angie
-  tagline: A sidecar daemon that answers allow, challenge, or deny for every request. Stock auth_request wiring, no custom Angie build, no C module.
+  tagline: Stop HTTP floods and AI scrapers at 180,000+ requests per second without slowing down real users. Ultra-fast, adaptive Proof-of-Work bot defense with no reverse-proxy bottleneck and zero required external databases.
   image:
     src: /logo.svg
     alt: Angie Guardian
@@ -22,46 +22,43 @@ hero:
 features:
   - icon: 🛡️
     title: WAF layer on every request
-    details: Hot-reloadable WAF rules with literal/regex matchers over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
+    details: Hot-reloadable WAF rules with literal/regex matchers over path, query, UA, and headers, honeypot trap paths, and <b>tamper detection</b> on single-spend challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
-    details: SHA-256 leading-zero-bits challenge by default, with optional fleet-default or per-domain Argon2id memory-hard work, per-host/IP escalation, bounded verification, Ed25519-signed JWT cookies, replay protection, and an opt-in no-JS fallback.
+    details: Default SHA-256 or optional fleet/domain <b>Argon2id memory-hard PoW</b>, featuring per-IP escalation, bounded verification, replay-protected Ed25519 JWT cookies, and an opt-in no-JS fallback.
   - icon: ⚡
     title: Built for speed
-    details: Write paths clear 150.000+ requests per second on a single node. Verified tokens are cached in-process (about 35 nanosecond, allocation-free) up 188k req/sec.
+    details: Write paths clear <b>150k+ req/sec</b> on a single node. Verified tokens are cached in-process (about 0.15ms, allocation-free) up to and including <b>188,000 requests per second</b>.
   - icon: 🌍
     title: Origin intelligence
-    details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
+    details: Verified crawler allowlisting by <b>rDNS identity</b> (never forgeable User-Agents), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
   - icon: 📈
     title: Statistical anomaly scoring
-    details: guardian-train learns domain and route/method baselines from Angie JSON access logs offline; the sub-microsecond online scorer rates unvouched requests and drives challenge, deny, and difficulty escalation.
+    details: <code>guardian-train</code> learns domain and route/method baselines offline; the <b>sub-microsecond online scorer</b> rates unvouched requests and drives dynamic challenge escalation.
   - icon: 🚫
     title: Behavioural IP blocking
-    details: When enabled, WAF rule hits, PoW failures, tamper events, bot spoofing, and challenge farming feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
+    details: Rule hits, PoW failures, tamper events, and honeypots feed per-IP scoreboards with <b>exponential backoff</b>. Honeypot traps immediately apply a persistent block.
   - icon: 🔭
     title: Observable by design
-    details: Prometheus /metrics, a bearer-token admin API, a **built-in reporting dashboard** with activity graphs and a world map of attack origins, and a ready-made Grafana dashboard.
+    details: Prometheus <code>/metrics</code>, a bearer-token admin API, a <b>built-in reporting dashboard</b> with real-time graphs and attack maps, plus ready-made Grafana templates.
   - icon: 🗄️
     title: Pluggable state stores
-    details: memory for dev, embedded pebble or buntdb for a durable single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.
+    details: In-memory for dev, <b>embedded Pebble or BuntDB</b> for durable single-node setups, and Redis/Valkey for high-availability cluster state sharing.
   - icon: 🕸️
     title: Optional WASM module
-    details: The store-free WAF checks compiled to WebAssembly and run in-process inside Angie, for operators who prefer that integration path.
+    details: Store-free WAF checks compiled directly to <b>WebAssembly</b> running in-process inside Angie for zero-latency, store-less integration.
 ---
 
 ## Quick start
 
-For a normal Linux host, install a pinned `amd64` or `arm64` archive from the
-[releases page](https://github.com/AngieGuardian/angie-guardian/releases).
-It includes the binaries, canonical annotated config, starter WAF rules, Angie
-snippets, and systemd unit; no repository checkout or Go toolchain is required.
+For a normal Linux host (running Ubuntu/Debian based systems), just run:
 
 ```sh
-# After selecting, downloading, and extracting a versioned release:
-sudo install -Dm755 guardiand /usr/local/bin/guardiand
+curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
 ```
 
-The [Getting Started guide](/guide/getting-started) gives the complete
+You need to manually adjust your Angie configuration after installation. Same command can be used for updates as well.
+
+The [Getting Started guide](/guide/getting-started) gives you more details as well as a complete manual
 copy/paste flow: choose the correct archive, install the config and rules,
-wire the existing Angie vhost, start systemd, and verify a real request. Source
-builds and the Docker demo are kept as explicitly separate paths.
+wire the existing Angie vhost, start systemd, and verify a real request.
