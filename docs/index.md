@@ -22,10 +22,13 @@ hero:
 features:
   - icon: 🛡️
     title: WAF layer on every request
-    details: Hot-reloadable WAF rules with literal/regex matchers (RE2, no ReDoS by construction) over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
+    details: Hot-reloadable WAF rules with literal/regex matchers over path, query, UA, and headers, honeypot trap paths, and tamper detection on single-spend proof-of-work challenge IDs. Per-domain configurable.
   - icon: 🧩
     title: Proof-of-work challenges
     details: SHA-256 leading-zero-bits challenge by default, with optional fleet-default or per-domain Argon2id memory-hard work, per-host/IP escalation, bounded verification, Ed25519-signed JWT cookies, replay protection, and an opt-in no-JS fallback.
+  - icon: ⚡
+    title: Built for speed
+    details: Write paths clear 150.000+ requests per second on a single node. Verified tokens are cached in-process (about 35 nanosecond, allocation-free) up 188k req/sec.
   - icon: 🌍
     title: Origin intelligence
     details: Verified crawler allowlisting by rDNS identity (never by forgeable User-Agent), GeoIP country/ASN scoping, and external IP reputation feeds with background refresh and fail-open semantics.
@@ -35,12 +38,9 @@ features:
   - icon: 🚫
     title: Behavioural IP blocking
     details: When enabled, WAF rule hits, PoW failures, tamper events, bot spoofing, and challenge farming feed per-IP scoreboards with exponential backoff. A honeypot hit denies immediately and places a persistent block when behavioural scoring is enabled.
-  - icon: ⚡
-    title: Built for the hot path
-    details: Read paths clear 90k+ req/s on a single node. Verified tokens are cached in-process (about 35 ns, allocation-free), so returning clients never leave the fast path.
   - icon: 🔭
-    title: Observable by default
-    details: Prometheus /metrics, a bearer-token admin API, a built-in reporting dashboard with activity graphs and a world map of attack origins, and a ready-made Grafana dashboard.
+    title: Observable by design
+    details: Prometheus /metrics, a bearer-token admin API, a **built-in reporting dashboard** with activity graphs and a world map of attack origins, and a ready-made Grafana dashboard.
   - icon: 🗄️
     title: Pluggable state stores
     details: memory for dev, embedded pebble or buntdb for a durable single box, Redis/Valkey for replicas sharing blocks, counters, spent challenges, and bot verdicts; signing-key files are shared separately.
