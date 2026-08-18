@@ -228,15 +228,6 @@ own page (cosmetic), but a shed response under
 Put the include above the site's own `403` rule, and give any index-less
 directory its own handling if that rule was catching the index module's `403`.
 
-### Volumetric 403 floods and the fast 403 optimization
-
-When Guardian denies a request (due to a WAF rule match, explicit denylist, or behavioural block), Angie receives a `403` subrequest status from `/__guardian/auth` and forwards the client to `@guardian_denied`. By default, `@guardian_denied` rewrites the request to `/denied` and proxies it to `guardiand` to render the user-friendly styled HTML denied page.
-
-Under massive volumetric floods (such as thousands of blocked bot requests per second), each blocked request results in two proxy hops: the internal auth check plus the `/denied` page fetch. To save connection overhead and sidecar capacity during large attacks:
-
-1. `@guardian_denied` participates in the shared control-plane concurrency ceiling (`limit_conn guardian_control_plane 512; limit_conn_status 503;`).
-2. Operators experiencing large-scale 403 floods can uncomment `return 403;` inside `location @guardian_denied` in `angie-guardian.conf`. Angie will then serve a fast, bare `403 Forbidden` response directly from memory without proxying to the sidecar.
-
 The `401` side of the same coin is handled for you. `error_page` matches on
 status, not on who produced it, so a `401` Angie itself raises reaches
 `@guardian_challenge` too. The commonest source is `auth_basic`: it runs before
@@ -414,6 +405,15 @@ limit_conn gconn 20;                       # cap concurrent connections per clie
 limit_req_status  429;
 limit_conn_status 429;
 ```
+
+### Volumetric 403 floods and the fast 403 optimization
+
+When Guardian denies a request (due to a WAF rule match, explicit denylist, or behavioural block), Angie receives a `403` subrequest status from `/__guardian/auth` and forwards the client to `@guardian_denied`. By default, `@guardian_denied` rewrites the request to `/denied` and proxies it to `guardiand` to render the user-friendly styled HTML denied page.
+
+Under massive volumetric floods (such as thousands of blocked bot requests per second), each blocked request results in two proxy hops: the internal auth check plus the `/denied` page fetch. To save connection overhead and sidecar capacity during large attacks:
+
+1. `@guardian_denied` participates in the shared control-plane concurrency ceiling (`limit_conn guardian_control_plane 512; limit_conn_status 503;`).
+2. Operators experiencing large-scale 403 floods can uncomment `return 403;` inside `location @guardian_denied` in `angie-guardian.conf`. Angie will then serve a fast, bare `403 Forbidden` response directly from memory without proxying to the sidecar.
 
 ## Site security headers and the challenge page
 
