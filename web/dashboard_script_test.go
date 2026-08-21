@@ -139,6 +139,51 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 	return vm
 }
 
+// TestPoWConfigCell keeps header exemptions visible without crossing the
+// config endpoint's redaction boundary. Root counts are rendered inline; path
+// counts are summarized inline and detailed in a stable, sorted tooltip.
+func TestPoWConfigCell(t *testing.T) {
+	vm := jsRuntime(t, "powConfigCell")
+	var got struct {
+		Title    string `json:"title"`
+		Children []struct {
+			Class string `json:"className"`
+			Text  string `json:"text"`
+		} `json:"children"`
+	}
+	call(t, vm, `powConfigCell({
+	  pow_enabled: true,
+	  pow_header_exemptions: 2,
+	  paths: {
+	    "/private/": {pow_header_exemptions: 3},
+	    "/api/": {pow_header_exemptions: 1},
+	    "/public/": {pow_header_exemptions: 0}
+	  }
+	})`, &got)
+	if got.Title != "Header-based PoW exemptions by path:\n/api/: 1\n/private/: 3" {
+		t.Errorf("title = %q, want sorted redacted path counts", got.Title)
+	}
+	texts := make([]string, len(got.Children))
+	for i, child := range got.Children {
+		texts[i] = child.Text
+	}
+	if fmt.Sprint(texts) != "[on  · 2 exemptions  · 2 path scopes]" {
+		t.Errorf("children = %q, want status and exemption summaries", texts)
+	}
+	if got.Children[0].Class != "chip on" {
+		t.Errorf("PoW status class = %q, want chip on", got.Children[0].Class)
+	}
+
+	var plain struct {
+		Title    string `json:"title"`
+		Children []any  `json:"children"`
+	}
+	call(t, vm, `powConfigCell({pow_enabled: false})`, &plain)
+	if plain.Title != "" || len(plain.Children) != 1 {
+		t.Errorf("legacy/no-exemption config rendered extra detail: %+v", plain)
+	}
+}
+
 // TestRefreshCoordinatorQueuesPostActionRefresh pins the distinction between
 // timer ticks and operator actions. A timer overlap is expendable, but a block,
 // unblock or reload must run once the older render finishes or that older

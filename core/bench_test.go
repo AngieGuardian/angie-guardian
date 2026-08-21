@@ -177,6 +177,58 @@ func BenchmarkEvaluateAllowDefault(b *testing.B) {
 		"default")
 }
 
+func BenchmarkEvaluateHeaderPoWExempt(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "guardian.yaml")
+	yaml := `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow:
+    enabled: true
+    base_difficulty: 1
+    max_difficulty: 6
+    header_exemptions:
+      - { header: X-Machine-Credential, prefix: "Machine ", require_value: true, max_length: 256 }
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	st := store.NewMemory()
+	b.Cleanup(func() { st.Close() })
+	key, err := pow.LoadOrCreateKey(filepath.Join(dir, "pow.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	e, err := NewEngine(cfg, st, pow.NewManager(key, st), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(e.Close)
+	headerValue := []string{"Machine opaque"}
+	header := func(name string) []string {
+		if name == "X-Machine-Credential" {
+			return headerValue
+		}
+		return nil
+	}
+	tmpl := &RequestContext{Host: "api.test", Method: "GET", URI: "/api/v1/items", RemoteAddr: "198.51.100.8", UserAgent: "machine/1", Header: header}
+	if d := e.Evaluate(context.Background(), cloneRequest(tmpl)); d.Action != ActionAllow || d.Reason != "default" {
+		b.Fatalf("sanity: decision = %s/%s", d.Action, d.Reason)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			e.Evaluate(context.Background(), cloneRequest(tmpl))
+		}
+	})
+}
+
 func BenchmarkEvaluateAllowlistIP(b *testing.B) {
 	st := store.NewMemory()
 	defer st.Close()

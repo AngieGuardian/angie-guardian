@@ -232,9 +232,9 @@ defaults:
     # and the challenge redirect cannot carry a request body: a first-contact
     # (or token-expired) POST/PUT/DELETE, a webhook, an upload or a direct
     # form submission gets diverted and its body is lost. It assumes a
-    # GET-first browser flow; exempt state-changing machine endpoints with a
-    # per-path `pow: { enabled: false }` overlay or a separate host (both
-    # shown below), or use `suspicion` there.
+    # GET-first browser flow. For machine endpoints, use a per-path
+    # header_exemptions classifier when requests already carry a credential,
+    # set `pow: { enabled: false }` for the path, or use a separate host.
     mode: always              # always: challenge every unvouched request
                               # suspicion: no catch-all; explicit anomaly/WAF/
                               # geo/reputation challenge policies still apply
@@ -393,16 +393,22 @@ domains:
     # on ambiguous routes. defaults.paths already applies; add host-specific
     # overrides only.
     paths:
-      # The machine-facing API could skip the interstitial while the WAF
-      # stays on (challenge-action rules degrade to deny, see the API host
-      # below), and the login area can demand harder work. Overlays inherit
+      # The machine-facing API can skip only PoW when a configured credential
+      # shape is present, while every deny/block rule stays active. Shape-only
+      # matching is forgeable: the backend MUST validate the credential
+      # immediately and cheaply, with invalid-credential rate/concurrency
+      # limits. It is classification, never authentication or authorization.
+      # Overlays inherit
       # everything else from the domain, INCLUDING verified_bots: clear it
       # with an empty list, or a verified crawler identity would terminally
       # allow past the API's blocks and WAF too. A separate host (like
       # api.example.com below) that never grants the bots stays the safer
       # pattern:
       # "/api/v1/":
-      #   pow: { enabled: false }
+      #   pow:
+      #     header_exemptions:
+      #       - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
+      #       - { header: X-API-Key, require_value: true, max_length: 256 }
       #   verified_bots: { bots: [] }  # do not inherit crawler authorization
       # "/account/login":
       #   pow: { base_difficulty: 6 }

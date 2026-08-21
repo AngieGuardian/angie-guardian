@@ -651,6 +651,8 @@ not automatically deleted from disk).
 
 The active per-domain configuration: which features are enabled where,
 including PoW algorithm, SHA-256 base/max difficulty, Argon2id work parameters,
+the count of configured header predicates (never their names, values, verifier
+claims or key material),
 and each scope's effective WAF rule
 selection (`waf_rules_files` plus `waf_rules_disabled_ids`, both omitted when
 empty), anomaly state (`waf_anomaly` and `waf_anomaly_observe_only`) and, when a scope defines
@@ -673,6 +675,7 @@ its effective overlays, inherited entries included:
       "pow_argon2id_base_iterations": 1,
       "pow_argon2id_max_iterations": 2,
       "pow_argon2id_attack_iterations_cap": 3,
+      "pow_header_exemptions": 0,
       "waf_rules": true,
       "waf_anomaly": true,
       "waf_anomaly_observe_only": true,

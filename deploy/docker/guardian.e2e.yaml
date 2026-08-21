@@ -130,6 +130,12 @@ domains:
     paths:
       "/api/":
         pow: { enabled: false }
+      # Header-shape PoW exemption under a path that otherwise keeps PoW on.
+      # The arbitrary header/scheme proves the matcher is configuration-driven.
+      "/machine-api/":
+        pow:
+          header_exemptions:
+            - { header: X-E2E-Machine-Proof, prefix: "Harness ", require_value: true, max_length: 64 }
       # The documented rollback for the unchallengeable-request refusal, scoped
       # to one path so the rest of the host keeps refusing. Exists because the
       # rollback is the case where the two Angie hops could disagree: the auth

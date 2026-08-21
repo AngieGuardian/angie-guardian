@@ -107,6 +107,39 @@ of crawling either way.
 See [per-path overrides](/reference/configuration#per-path-overrides-domains-host-paths)
 in the reference for the exact matching and inheritance rules.
 
+## Header-based PoW exemptions
+
+`pow.header_exemptions` lets requests matching a configured credential shape
+skip PoW while the remaining Guardian policy stays active. Configure it under
+defaults, a domain or a path overlay:
+
+```yaml
+domains:
+  example.com:
+    pow: { enabled: true }
+    paths:
+      "/api/v1/":
+        pow:
+          header_exemptions:
+            - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
+            - { header: X-API-Key, require_value: true, max_length: 256 }
+```
+
+This is narrower than `pow.enabled: false`: a matching header suppresses PoW
+challenges, including challenge-only WAF, anomaly and intelligence outcomes,
+while all deny/block policy still applies. It is also much narrower than a WAF
+`allow`, which terminates the pipeline.
+
+The default matcher checks shape, not truth. Anyone can send `Bearer anything`
+or invent an API-key value, so the backend must authenticate it cheaply and
+must have invalid-credential rate and concurrency limits. Guardian never treats
+the value as identity, never logs it, and does not let it bypass overload
+shedding. If the application already issues compatible Ed25519 JWTs, a
+predicate can explicitly opt into the local `jwt_eddsa` verifier. That pins the
+algorithm and issuer/audience/time/host/path claims using one or two public-only
+key files; it still does not interpret roles, scopes, subscriptions or quotas.
+See the [full schema and security boundary](/reference/configuration#header-based-pow-exemptions).
+
 ## WAF rules
 
 The `waf.rules` layer matches literal and regex rules against the request line and

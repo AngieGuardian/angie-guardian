@@ -24,7 +24,12 @@ defaults:
   pow: { enabled: false }
 domains:
   anom.test:
-    pow: { enabled: true, mode: suspicion, base_difficulty: 2, max_difficulty: 6 }
+    pow:
+      enabled: true
+      mode: suspicion
+      base_difficulty: 2
+      max_difficulty: 6
+      header_exemptions: [ { header: X-Machine-Credential, prefix: "Machine ", require_value: true } ]
     waf:
       anomaly: { enabled: true, model: %q, challenge_at: 0.4, deny_at: 0.8 }
   always.test:
@@ -109,6 +114,26 @@ func TestAnomalyStage(t *testing.T) {
 	d = e.Evaluate(ctx, req("anom.test", "198.51.100.43", scannerPath, "zgrab/0.x"))
 	if d.Action != ActionDeny || d.Reason != "anomaly:deny" {
 		t.Fatalf("fully anomalous: got %s/%s, want deny/anomaly:deny", d.Action, d.Reason)
+	}
+}
+
+func TestHeaderPoWExemptionSuppressesOnlyAnomalyChallenge(t *testing.T) {
+	e := anomalyEngine(t)
+	withHeader := func(uri, ua string) *RequestContext {
+		r := req("anom.test", "198.51.100.46", uri, ua)
+		r.Header = func(name string) []string {
+			if name == "X-Machine-Credential" {
+				return []string{"Machine opaque"}
+			}
+			return nil
+		}
+		return r
+	}
+	if d := e.Evaluate(t.Context(), withHeader(scannerPath, commonUA)); d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("anomaly challenge with exemption = %s/%s, want allow/default", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(t.Context(), withHeader(scannerPath, "zgrab/0.x")); d.Action != ActionDeny || d.Reason != "anomaly:deny" {
+		t.Fatalf("anomaly deny with exemption = %s/%s, want deny/anomaly:deny", d.Action, d.Reason)
 	}
 }
 

@@ -100,6 +100,10 @@ domains:
 Set `observe_only: false` after tuning the thresholds from
 `guardian_anomaly_score`.
 
+For header-based PoW exemptions, see the
+[configuration guide](https://angieguardian.org/guide/configuration#header-based-pow-exemptions).
+They skip PoW, not backend authentication or hard deny policy.
+
 Validate a config without starting the daemon with `-t` (like `angie -t`). It
 loads and validates the file (YAML syntax, trailing documents, unknown fields,
 and semantic checks) plus every startup-required local rules, anomaly-model,

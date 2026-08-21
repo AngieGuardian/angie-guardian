@@ -1490,6 +1490,7 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Argon2BaseIterations uint32  `json:"pow_argon2id_base_iterations"`
 		Argon2MaxIterations  uint32  `json:"pow_argon2id_max_iterations"`
 		Argon2AttackCap      uint32  `json:"pow_argon2id_attack_iterations_cap"`
+		PoWHeaderExemptions  int     `json:"pow_header_exemptions"`
 		Rules                bool    `json:"waf_rules"`
 		// RulesFiles and DisabledIDs expose the effective WAF rule selection
 		// together, so an operator can see the ordered files a scope uses and
@@ -1513,7 +1514,8 @@ func (s *AdminServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 			PoWBase: dc.PoW.BaseDifficulty, PoWMax: dc.PoW.MaxDifficulty,
 			Argon2MemoryKiB: dc.PoW.Argon2ID.MemoryKiB, Argon2BaseIterations: dc.PoW.Argon2ID.BaseIterations,
 			Argon2MaxIterations: dc.PoW.Argon2ID.MaxIterations, Argon2AttackCap: dc.PoW.Argon2ID.AttackIterationsCap,
-			Rules: dc.WAF.Rules.Enabled, RulesFiles: dc.WAF.Rules.Files,
+			PoWHeaderExemptions: len(dc.PoW.HeaderExemptions),
+			Rules:               dc.WAF.Rules.Enabled, RulesFiles: dc.WAF.Rules.Files,
 			DisabledIDs: dc.WAF.Rules.DisabledIDs, Anomaly: dc.WAF.Anomaly.Enabled,
 			AnomalyObserve: dc.WAF.Anomaly.ObserveOnly,
 			Honeypot:       dc.WAF.Honeypot.Enabled, IPBehaviour: dc.WAF.IPBehaviour.Enabled,

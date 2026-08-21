@@ -281,6 +281,12 @@ domains:
     paths:
       "/api/":
         pow: { enabled: false }
+      "/machine-api/":
+        pow:
+          # Shape-only classification is forgeable. The backend must validate
+          # the credential and Angie/backend limits must absorb invalid values.
+          header_exemptions:
+            - { header: X-Demo-Machine-Proof, prefix: "Demo ", require_value: true, max_length: 256 }
   # A WAF-only host to test the no-PoW path.
   api.localhost:
     pow: { enabled: false }

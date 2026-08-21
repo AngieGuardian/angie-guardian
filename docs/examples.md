@@ -80,9 +80,10 @@ Not every estate splits its API onto its own subdomain. A `paths` overlay
 scopes any setting to a URI prefix within one host: the most specific key
 wins, and each entry only overrides the fields it mentions (see the
 [reference](/reference/configuration#per-path-overrides-domains-host-paths)).
-Here machine clients under `/api/v1/` skip the interstitial while the WAF
-keeps covering them (note that challenge-action rules degrade to deny where
-PoW is off), and the login page demands harder work:
+Here machine clients with the configured credential shape under `/api/v1/`
+skip the interstitial while the WAF keeps covering them, and the login page
+demands harder work. Shape-only matching is forgeable, so the backend must
+validate the credential cheaply and rate limit invalid attempts:
 
 ```yaml
 domains:
@@ -90,7 +91,10 @@ domains:
     pow: { enabled: true }
     paths:
       "/api/v1/":
-        pow: { enabled: false }
+        pow:
+          header_exemptions:
+            - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
+            - { header: X-API-Key, require_value: true, max_length: 256 }
       "/account/login":
         pow: { base_difficulty: 6 }
 ```

@@ -743,7 +743,7 @@
       <div class="tablewrap scrolly">
         <table>
           <thead><tr><th title="Configured domain, or defaults">Domain</th>
-                     <th title="Proof of work">PoW</th>
+                     <th title="Proof of work and configured header-exemption counts">PoW</th>
                      <th title="When proof of work applies">Mode</th>
                      <th title="WAF rules; hover a cell for the rules file">Rules</th>
                      <th title="Anomaly scoring: enforce, observe or off">Anomaly</th>
@@ -3297,6 +3297,29 @@
     }
   };
 
+  // The config API deliberately exposes only exemption counts. Keep that
+  // redaction boundary here while still making root and path-scope coverage
+  // visible to an operator who does not inspect the raw JSON.
+  const powConfigCell = (dc) => {
+    const cell = td(null, "");
+    cell.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
+    const count = dc.pow_header_exemptions || 0;
+    if (count > 0) {
+      cell.appendChild(el("span", "meta", " · " + count + " exemption" + (count === 1 ? "" : "s")));
+    }
+    const paths = Object.entries(dc.paths || {})
+      .filter(([, path]) => (path.pow_header_exemptions || 0) > 0)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    if (paths.length > 0) {
+      cell.appendChild(el("span", "meta", " · " + paths.length + " path scope" + (paths.length === 1 ? "" : "s")));
+      cell.title = "Header-based PoW exemptions by path:\n" + paths.map(([name, path]) =>
+        name + ": " + path.pow_header_exemptions).join("\n");
+    } else if (count > 0) {
+      cell.title = "Header-based PoW exemptions: " + count;
+    }
+    return cell;
+  };
+
   const render = async (refreshBlocks = false) => {
     const blocksRequest = refreshBlocks || Date.now() - lastBlocksAt >= 60000
       ? api("/admin/blocks?limit=1000").then((blocks) => {
@@ -3415,8 +3438,7 @@
     const doms = Object.entries(config.domains || {}).sort((a, b) => a[0].localeCompare(b[0]));
     doms.push(["(defaults)", config.defaults]);
     $("domains").replaceChildren(...doms.map(([name, dc]) => {
-      const pow = td(null, "");
-      pow.appendChild(el("span", "chip" + (dc.pow_enabled ? " on" : ""), dc.pow_enabled ? "on" : "off"));
+      const pow = powConfigCell(dc);
       // Rules cell: flag rule-ID exclusions and expose the effective
       // ordered rules files + excluded IDs in the tooltip.
       const excluded = dc.waf_rules_disabled_ids || [];
