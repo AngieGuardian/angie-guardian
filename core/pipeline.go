@@ -15,6 +15,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/headerexempt"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -35,19 +36,22 @@ type Stage interface {
 // (DomainConfig.label, never the raw Host), not as a field here: stageEnv is
 // allocated once per request and a string header is 16 bytes on the hot path.
 type stageEnv struct {
-	store    store.Store
-	domain   *DomainConfig
-	pow      *pow.Manager
-	rules    *waf.RuleCache
-	models   *anomaly.ModelCache
-	intel    *intel.Provider // nil when no geoip/reputation is configured
-	metrics  *metrics.Metrics
-	bots     *botverify.Verifier
-	enforcer *enforce.Manager  // nil = store-only block enforcement
-	attack   *attackmode.State // never nil (Normal when attack mode is off)
+	store            store.Store
+	domain           *DomainConfig
+	pow              *pow.Manager
+	rules            *waf.RuleCache
+	models           *anomaly.ModelCache
+	intel            *intel.Provider // nil when no geoip/reputation is configured
+	headerExemptions *headerexempt.Cache
+	metrics          *metrics.Metrics
+	bots             *botverify.Verifier
+	enforcer         *enforce.Manager  // nil = store-only block enforcement
+	attack           *attackmode.State // never nil (Normal when attack mode is off)
 
 	origin *intel.Info  // memoized geo lookup: both intel stages share one
 	token  tokenVerdict // memoized PoW cookie check: up to three stages share one
+	// 0 unchecked, 1 no match, 2 matched. Kept byte-sized on the hot path.
+	headerExempt uint8
 }
 
 // effBits resolves the difficulty window for the resolved domain, shifted up
@@ -244,7 +248,7 @@ type intelChallengeStage struct{}
 func (intelChallengeStage) Name() string { return "intel_challenge" }
 
 func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.intel == nil || env.pow == nil || !env.domain.PoW.Enabled {
+	if env.intel == nil || env.pow == nil || !env.domain.PoW.Enabled || env.headerPoWExempt(req) {
 		return nil, nil
 	}
 	addr, err := netip.ParseAddr(req.RemoteAddr)
@@ -320,6 +324,9 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 		return &Decision{Action: ActionAllow, Reason: reason}, nil
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
+			if env.headerPoWExempt(req) {
+				return nil, nil
+			}
 			// A challenge-only WAF rule asks the client to prove work; a valid
 			// bound token is that proof. Deny/block rules still terminate above
 			// the ordinary token stage and can never be bypassed by a token.
@@ -355,6 +362,38 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	}
 }
 
+// headerPoWExemptionStage classifies after WAF evaluation without returning a
+// terminal allow. Later stages consult the request-local bit only to suppress
+// PoW-cookie validation and challenge-only outcomes.
+type headerPoWExemptionStage struct{}
+
+func (headerPoWExemptionStage) Name() string { return "header_pow_exemption" }
+
+func (headerPoWExemptionStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	env.headerPoWExempt(req)
+	return nil, nil
+}
+
+func (env *stageEnv) headerPoWExempt(req *RequestContext) bool {
+	if env.headerExempt != 0 {
+		return env.headerExempt == 2
+	}
+	if !env.domain.PoW.Enabled || len(env.domain.PoW.HeaderExemptions) == 0 || env.headerExemptions == nil {
+		env.headerExempt = 1
+		return false
+	}
+	result := env.headerExemptions.Match(env.domain.PoW.headerExemptionKey, headerexempt.Request{
+		Host: req.Host, Path: req.NormalizedPath(), Header: req.Header,
+	})
+	env.metrics.HeaderPoWExemption(string(result.Outcome), result.Verifier)
+	if result.Matched {
+		env.headerExempt = 2
+		return true
+	}
+	env.headerExempt = 1
+	return false
+}
+
 // powTokenStage — pipeline stage 3. A valid signed token vouches for the
 // client and short-circuits the expensive stages; this is the common fast
 // path. An invalid token is treated as absent for policy purposes: the client
@@ -372,6 +411,9 @@ func (powTokenStage) Name() string { return "pow_token" }
 var decisionPoWToken = &Decision{Action: ActionAllow, Reason: "pow:token"}
 
 func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
+	if env.headerPoWExempt(req) {
+		return nil, nil
+	}
 	if !hasValidPoWToken(req, env) {
 		return nil, nil
 	}
@@ -550,6 +592,9 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 			Events: []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
 		}, nil
 	case score >= a.ChallengeAt && env.pow != nil && env.domain.PoW.Enabled:
+		if env.headerPoWExempt(req) {
+			return nil, nil
+		}
 		base, maxDiff := env.effBits()
 		return &Decision{
 			Action:     ActionChallenge,
@@ -580,7 +625,7 @@ type powChallengeStage struct{}
 func (powChallengeStage) Name() string { return "pow_challenge" }
 
 func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.pow == nil || !env.domain.PoW.Enabled {
+	if env.pow == nil || !env.domain.PoW.Enabled || env.headerPoWExempt(req) {
 		return nil, nil
 	}
 	// In attack mode, force_always overrides suspicion so every unvouched

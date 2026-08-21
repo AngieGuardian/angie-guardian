@@ -303,11 +303,82 @@ the security and capacity trade-offs.
 | `pow.challenge_ttl` | Duration | `30m` | How long an issued challenge stays solvable. Must be greater than zero when PoW is enabled and no more than 24 hours. |
 | `pow.issuance_rate_limit` | rate | `60/min` | Per-IP cap on challenge issuance, so the interstitial cannot be used to flood the store. Inherited by domains and path overlays. The counter is per IP and host, **not** per path: a client cannot multiply its issuance budget by rotating across path overlays, so the value that applies is whichever overlay it happens to be challenged on. |
 | `pow.refuse_unchallengeable` | bool | `true` | Withhold a challenge from a request classified as unable to complete one (a declared subresource such as `Sec-Fetch-Dest: image`, or a request whose destination is unrecognized or absent, which is not a navigation by `Sec-Fetch-Mode` either, and whose `Accept` names neither `text/html` nor `text/*`), answering a terse `403` instead of an interstitial it would only drop. The `Accept` case is deliberately heuristic; see the [compatibility tradeoff](/guide/configuration#base-difficulty-and-max-difficulty). Without this an ordinary browser polling `/favicon.ico` escalates itself toward a `challenge_farm` block having abandoned nothing. Such requests are recorded as action `refuse`. No challenge is issued, so the refusal never escalates difficulty and can never produce a `challenge_farm` event; an event the request already earned still scores, so a WAF rule or anomaly challenge refused this way is counted against the IP for the rule or score that asked for it, which the request did trip. The reason becomes `pow:unchallengeable` only when it would otherwise have been a token failure, so a WAF, anomaly, GeoIP or reputation challenge aimed at the same client keeps its own reason. Set `false` to restore the older challenge-everything path. The auth subrequest resolves the key and relays its verdict to the challenge handler (`X-Guardian-Refusal`, see [Angie](/guide/angie#what-the-two-hops-relay)), which obeys it rather than deciding again, so the recorded decision and the served response agree even when a reload flips the key while a request sits between the two hops. Sidecar only: classifying whether a request can complete a challenge is protocol knowledge the stateless WASM guest does not supply, so the key is inert there. |
+| `pow.header_exemptions` | list | `[]` | Opt-in header predicates that classify a request as exempt from PoW only. See [Header-based PoW exemptions](#header-based-pow-exemptions). Sidecar only. |
 | `pow.noscript_redemption_rate_limit` | rate | `6/min` | Independent pre-redemption cap for the work-free fallback, per host+IP and, with an ASN database, per host+ASN. Defaults/domain/path scoped: redemption authenticates the challenge's stored original URI and resolves its path overlay before applying the limit. Counters remain keyed by host and client identity, not path, so rotating paths does not multiply the budget. It never replaces front-door/global rate limiting. |
 | `pow.noscript_fallback` | bool | `false` | Serve a fallback for clients without JavaScript or the Worker/WASM support required by the configured algorithm. It substitutes a minimum five-second wait for work and is strictly weaker. Defaults/domain/path scoped; leave it `false` unless this accessibility trade-off is deliberate. |
 
 See [base_difficulty and max_difficulty](/guide/configuration#base-difficulty-and-max-difficulty)
 for which value fires when.
+
+#### Header-based PoW exemptions
+
+`pow.header_exemptions` is a bounded list of at most eight generic header
+predicates. A match skips PoW and challenge-only outcomes; it is not an
+`allow`. Deny/block policy and load shedding still apply.
+
+```yaml
+domains:
+  example.com:
+    pow: { enabled: true }
+    paths:
+      "/api/v1/":
+        pow:
+          header_exemptions:
+            - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
+            - { header: X-API-Key, require_value: true, max_length: 256 }
+            - { header: X-Widget-Proof, prefix: "Widget ", require_value: true, max_length: 512 }
+```
+
+| Field | Behaviour |
+|---|---|
+| `header` | HTTP-token name, matched case-insensitively. `Host` and `X-Guardian-*` are rejected. |
+| `prefix` | Optional exact, case-sensitive prefix. |
+| `require_value` | Require at least one byte after the prefix. |
+| `max_length` | Maximum complete value length; defaults to 1024, range 1..4096. |
+
+Only one clean field value can match. Missing, empty, duplicate,
+control-containing, prefix-mismatched and oversized values do not. Header names
+and values are never logged or used as metric labels.
+
+The default matcher checks shape, not authenticity: a client can invent the
+header. The application must validate credentials cheaply and rate limit or
+bound concurrent invalid attempts.
+
+For compatible Ed25519 JWTs, opt into local signature and claim validation with
+`type: jwt_eddsa`:
+
+```yaml
+          header_exemptions:
+            - header: Authorization
+              prefix: "Bearer "
+              require_value: true
+              max_length: 2048
+              verifier:
+                type: jwt_eddsa
+                public_keys:
+                  - /etc/guardian/api-access-current.pub
+                  - /etc/guardian/api-access-previous.pub
+                issuer: https://issuer.example
+                audience: example-api
+                max_lifetime: 15m
+```
+
+The verifier:
+
+- pins `EdDSA` and verifies locally;
+- requires `iat`, `exp`, the configured issuer and audience, and checks `nbf`
+  when present;
+- rejects lifetimes above `max_lifetime` (at most 24 hours);
+- binds `guardian_host` to the normalized request host and `guardian_path` to
+  an exact path, or to a prefix and its bare form when the claim ends in `/`
+  (`/api/` matches both `/api` and `/api/items`).
+
+`public_keys` accepts one or two public-only Ed25519 PEM files for
+current/previous rotation. Guardian hot-reloads valid replacements and retains
+the last good set after an invalid update. An optional `kid` must be the
+base64url SHA-256 fingerprint of the raw public key. Guardian never accepts a
+private key or signs these tokens. Invalid tokens simply continue through
+normal policy without the exemption.
 
 ### geo
 

@@ -6,19 +6,104 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/intel/inteltest"
+	"github.com/melroy89/angie-guardian/core/pow"
 	"github.com/melroy89/angie-guardian/core/store"
 )
+
+func TestEngineReloadSwapsHeaderExemptionsAtomically(t *testing.T) {
+	base := `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: true, base_difficulty: 1, max_difficulty: 2 }
+`
+	enabled := `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow:
+    enabled: true
+    base_difficulty: 1
+    max_difficulty: 2
+    header_exemptions: [ { header: X-Machine-Key, require_value: true } ]
+`
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "pow.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEngine(loadTestConfig(t, base), st, pow.NewManager(key, st), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	r := req("x.test", "198.51.100.80", "/", "curl")
+	r.Header = func(name string) []string {
+		if name == "X-Machine-Key" {
+			return []string{"opaque"}
+		}
+		return nil
+	}
+	if d := e.Evaluate(t.Context(), r); d.Action != ActionChallenge {
+		t.Fatalf("before reload = %s/%s, want challenge", d.Action, d.Reason)
+	}
+	if err := e.Reload(loadTestConfig(t, enabled)); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Evaluate(t.Context(), r); d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("after reload = %s/%s, want allow/default", d.Action, d.Reason)
+	}
+
+	// A reload whose optional verifier key is private material fails before the
+	// snapshot swap, and the last good shape-only policy remains active.
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateFile := filepath.Join(t.TempDir(), "application-private.pem")
+	if err := os.WriteFile(privateFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalid := fmt.Sprintf(`
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow:
+    enabled: true
+    header_exemptions:
+      - header: X-Machine-Key
+        require_value: true
+        verifier: { type: jwt_eddsa, public_keys: [ %q ], issuer: issuer, audience: api, max_lifetime: 15m }
+`, privateFile)
+	if err := e.Reload(loadTestConfig(t, invalid)); err == nil {
+		t.Fatal("reload accepted application private key")
+	}
+	if d := e.Evaluate(t.Context(), r); d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("failed reload replaced active policy: %s/%s", d.Action, d.Reason)
+	}
+}
 
 // reloadedYAML flips the pipelineYAML policy: the old denylist is gone and
 // 198.51.100.0/24 (allowed before) is now denied.

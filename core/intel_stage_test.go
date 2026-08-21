@@ -67,7 +67,11 @@ defaults:
     challenge: { countries: [ CN ], asns: [ 64666 ] }
   reputation:
     enabled: true
-  pow: { enabled: true, base_difficulty: 1, max_difficulty: 6 }
+  pow:
+    enabled: true
+    base_difficulty: 1
+    max_difficulty: 6
+    header_exemptions: [ { header: X-Machine-Credential, require_value: true } ]
 domains:
   nopow.test:
     pow: { enabled: false }
@@ -180,6 +184,26 @@ func TestIntelStages(t *testing.T) {
 	})
 	if d.Action != ActionDeny || d.Reason != "geo:country:RU" {
 		t.Fatalf("token must not bypass geo deny: got %s/%s", d.Action, d.Reason)
+	}
+}
+
+func TestHeaderPoWExemptionSuppressesOnlyIntelChallenge(t *testing.T) {
+	e, _ := intelEngine(t)
+	request := func(ip string) *RequestContext {
+		r := req("x.test", ip, "/", "curl")
+		r.Header = func(name string) []string {
+			if name == "X-Machine-Credential" {
+				return []string{"opaque"}
+			}
+			return nil
+		}
+		return r
+	}
+	if d := e.Evaluate(t.Context(), request("192.0.2.5")); d.Action != ActionAllow || d.Reason != "default" {
+		t.Fatalf("geo challenge with exemption = %s/%s, want allow/default", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(t.Context(), request("203.0.113.5")); d.Action != ActionDeny || d.Reason != "geo:country:RU" {
+		t.Fatalf("geo deny with exemption = %s/%s, want deny/geo:country:RU", d.Action, d.Reason)
 	}
 }
 

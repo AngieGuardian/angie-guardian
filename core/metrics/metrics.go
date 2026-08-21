@@ -36,6 +36,7 @@ type Metrics struct {
 	anomalyModelAge     *prometheus.GaugeVec   // by model path (config-bounded)
 	blocksPlaced        *prometheus.CounterVec // by reason_category
 	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
+	headerPoWExemptions *prometheus.CounterVec // by bounded outcome and verifier type
 	storeOps            *prometheus.CounterVec // by backend, op, status
 	storeLatency        *prometheus.HistogramVec
 	storeHandles        sync.Map               // map[op]storeMetricHandles, populated lazily
@@ -134,6 +135,10 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "bot_verifications_total",
 			Help: "Verified-bot checks by bot name and result (verified|spoof|error).",
 		}, []string{"bot", "result"}),
+		headerPoWExemptions: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "guardian", Name: "pow_header_exemptions_total",
+			Help: "Header-based PoW classifications by bounded outcome and verifier type.",
+		}, []string{"outcome", "verifier"}),
 		storeOps: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "store_ops_total",
 			Help: "Store operations by backend, op and status (ok|error).",
@@ -331,6 +336,13 @@ func (m *Metrics) BotVerification(bot, result string) {
 		return
 	}
 	m.botVerify.WithLabelValues(bot, result).Inc()
+}
+
+func (m *Metrics) HeaderPoWExemption(outcome, verifier string) {
+	if m == nil {
+		return
+	}
+	m.headerPoWExemptions.WithLabelValues(outcome, verifier).Inc()
 }
 
 func (m *Metrics) StoreOp(op string, seconds float64, err error) {

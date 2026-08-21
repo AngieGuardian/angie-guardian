@@ -24,6 +24,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/headerexempt"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/stateless"
 	"github.com/melroy89/angie-guardian/core/waf"
@@ -1016,6 +1017,13 @@ type PoWConfig struct {
 	// not hide the header from WAF header:<name> rules. Scoped per domain and
 	// per path like the rest of PoW.
 	RefuseUnchallengeable *bool `yaml:"refuse_unchallengeable"`
+	// HeaderExemptions are forgeable request-shape classifiers that suppress
+	// only PoW outcomes. They never produce an allow verdict and never bypass
+	// hard denies, behavioural blocks, honeypots, WAF deny/block, anomaly deny,
+	// or overload shedding. Empty is the disabled default.
+	HeaderExemptions []headerexempt.PredicateConfig `yaml:"header_exemptions"`
+
+	headerExemptionKey string
 }
 
 // Argon2IDConfig is a fixed-result proof: one Argon2id invocation, never a
@@ -1737,6 +1745,10 @@ func (c *Config) validateFeatureDependencies() error {
 
 func (dc *DomainConfig) validate() error {
 	p := &dc.PoW
+	if err := headerexempt.NormalizeAndValidate(p.HeaderExemptions); err != nil {
+		return fmt.Errorf("pow.%w", err)
+	}
+	p.headerExemptionKey = headerexempt.VariantKey(p.HeaderExemptions)
 	switch p.Algorithm {
 	case PoWAlgorithmSHA256, PoWAlgorithmArgon2ID:
 	default:
@@ -2122,6 +2134,20 @@ func (c *Config) RuleVariants() []waf.VariantSpec {
 		specs = append(specs, *byKey[key])
 	}
 	return specs
+}
+
+// HeaderExemptionVariants returns each distinct effective predicate list.
+// Empty lists are the disabled default and need no matcher or key material.
+func (c *Config) HeaderExemptionVariants() map[string][]headerexempt.PredicateConfig {
+	variants := make(map[string][]headerexempt.PredicateConfig)
+	_ = c.eachScope(func(_, _ string, dc *DomainConfig) error {
+		p := &dc.PoW
+		if len(p.HeaderExemptions) > 0 {
+			variants[p.headerExemptionKey] = p.HeaderExemptions
+		}
+		return nil
+	})
+	return variants
 }
 
 // RuleFiles returns every distinct WAF rules file the rule cache would load

@@ -20,6 +20,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/attackmode"
 	"github.com/melroy89/angie-guardian/core/botverify"
 	"github.com/melroy89/angie-guardian/core/enforce"
+	"github.com/melroy89/angie-guardian/core/headerexempt"
 	"github.com/melroy89/angie-guardian/core/health"
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
@@ -85,11 +86,12 @@ type Engine struct {
 // reload swaps all of them together in one atomic pointer store and a request
 // never sees a new config paired with old caches or vice versa.
 type engineSnapshot struct {
-	cfg    *Config
-	rules  *waf.RuleCache
-	models *anomaly.ModelCache
-	intel  *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
-	refs   atomic.Int64    // engine ownership + in-flight evaluators
+	cfg              *Config
+	rules            *waf.RuleCache
+	models           *anomaly.ModelCache
+	intel            *intel.Provider // nil when no geoip/reputation is configured: intel stages inert
+	headerExemptions *headerexempt.Cache
+	refs             atomic.Int64 // engine ownership + in-flight evaluators
 }
 
 func (s *engineSnapshot) acquire() bool {
@@ -109,6 +111,7 @@ func (s *engineSnapshot) release() {
 		s.rules.Close()
 		s.models.Close()
 		s.intel.Close()
+		s.headerExemptions.Close()
 	}
 }
 
@@ -171,7 +174,14 @@ func loadSnapshot(cfg *Config, log *slog.Logger) (*engineSnapshot, error) {
 		models.Close()
 		return nil, err
 	}
-	snap := &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl}
+	headerExemptions, err := headerexempt.NewCache(cfg.HeaderExemptionVariants(), log)
+	if err != nil {
+		rules.Close()
+		models.Close()
+		itl.Close()
+		return nil, err
+	}
+	snap := &engineSnapshot{cfg: cfg, rules: rules, models: models, intel: itl, headerExemptions: headerExemptions}
 	snap.refs.Store(1) // ownership held by the engine or validation caller
 	return snap, nil
 }
@@ -190,6 +200,7 @@ func startSnapshot(snap *engineSnapshot) {
 	snap.rules.Start(reloadInterval)
 	snap.models.Start(reloadInterval)
 	snap.intel.Start()
+	snap.headerExemptions.Start(reloadInterval)
 }
 
 // ValidateConfigArtifacts eagerly loads every local artifact required to
@@ -223,17 +234,18 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			// decision wins and the rest are skipped. WAF rules run before the
 			// token stage so vouched clients keep paying the cheap WAF checks,
 			// which is what stops a stolen token riding past the WAF rules.
-			allowlistStage{},      // 0. static allowlist
-			denylistStage{},       // 1. static denylist
-			verifiedBotStage{},    //    rDNS-verified crawler allow / impostor deny
-			intelDenyStage{},      //    geo scoping + reputation feeds (deny half)
-			behaviourBlockStage{}, // 2. behavioural IP block (store-backed)
-			honeypotStage{},       //    trap paths: one hit blocks
-			wafRulesStage{},       // 4. WAF rules (literal/regex matchers)
-			powTokenStage{},       // 3. valid PoW token → allow
-			intelChallengeStage{}, //    geo scoping + reputation feeds (challenge half)
-			anomalyStage{},        // 5. anomaly score: deny / scaled challenge
-			powChallengeStage{},   // 6. challenge unvouched requests (mode "always")
+			allowlistStage{},          // 0. static allowlist
+			denylistStage{},           // 1. static denylist
+			verifiedBotStage{},        //    rDNS-verified crawler allow / impostor deny
+			intelDenyStage{},          //    geo scoping + reputation feeds (deny half)
+			behaviourBlockStage{},     // 2. behavioural IP block (store-backed)
+			honeypotStage{},           //    trap paths: one hit blocks
+			wafRulesStage{},           // 4. WAF rules (literal/regex matchers)
+			headerPoWExemptionStage{}, // request-local PoW-only classification
+			powTokenStage{},           // 3. valid PoW token → allow
+			intelChallengeStage{},     //    geo scoping + reputation feeds (challenge half)
+			anomalyStage{},            // 5. anomaly score: deny / scaled challenge
+			powChallengeStage{},       // 6. challenge unvouched requests (mode "always")
 		},
 	}
 	e.snap.Store(snap)
@@ -343,7 +355,7 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	dcfg := snap.cfg.scopeForRequest(req)
 	// One posture load per request, shared by every stage so a mid-request
 	// transition can't split the decision.
-	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
+	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, headerExemptions: snap.headerExemptions, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
