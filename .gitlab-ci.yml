@@ -2,7 +2,7 @@ default:
   # Pinned (not golang:latest) so builds are reproducible and the toolchain
   # picks up stdlib security fixes deliberately. Bump when a newer patch
   # release lands, especially when govulncheck flags a std vuln fixed in it.
-  image: golang:1.26.6-trixie@sha256:ab563819a16cfe5faff0f96a8bb598fbb0e400ab2ac751996e60abcb23b106a3
+  image: golang:1.27.0-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4
 
   # Every job is cancellable by default, so pushing again to a branch (or main)
   # frees the runners instead of finishing a pipeline for a commit nobody cares
@@ -206,7 +206,7 @@ e2e:
       -w "$CI_PROJECT_DIR"
       -v angie-guardian-e2e-gomod:/go/pkg/mod
       -v angie-guardian-e2e-gocache:/root/.cache
-      golang:1.26.6-trixie@sha256:ab563819a16cfe5faff0f96a8bb598fbb0e400ab2ac751996e60abcb23b106a3
+      golang:1.27.0-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4
       make e2e
 
 # NOTE: the fuzz targets (see `make fuzz`) are intentionally NOT a CI job.

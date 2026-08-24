@@ -173,7 +173,7 @@ publish the same archives, checksums, signature and keys.
 
 Source builds are for contributors or operators who intentionally need a
 custom build. They require a repository checkout and the Go toolchain selected
-by `go.mod` (currently Go 1.26.6):
+by `go.mod` (currently Go 1.27.0):
 
 ```sh
 git clone https://github.com/AngieGuardian/angie-guardian.git

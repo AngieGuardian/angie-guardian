@@ -1,16 +1,10 @@
 module github.com/melroy89/angie-guardian
 
-go 1.25.9
-
-// Build with a patched toolchain: govulncheck reports reachable stdlib
-// advisories in older standard libraries, all fixed in 1.26.6. CI and the
-// release Docker image already pin 1.26.6; this makes a plain `go build`/`go
-// test` from source use it too.
-toolchain go1.26.6
+go 1.27.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/cockroachdb/pebble/v2 v2.1.6
+	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/nftables v0.3.0
@@ -49,7 +43,7 @@ require (
 	github.com/cockroachdb/errors v1.11.3 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20230118201751-21c54148d20b // indirect
 	github.com/cockroachdb/redact v1.1.5 // indirect
-	github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b // indirect
+	github.com/cockroachdb/swiss v0.0.0-20260820225851-333444432258 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/compose-spec/compose-go/v2 v2.13.0 // indirect
 	github.com/containerd/console v1.0.5 // indirect
