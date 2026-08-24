@@ -76,6 +76,10 @@ func TestAttackModeTrips(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	// Flood requests deliberately tolerate transport errors and leave a large
+	// keep-alive pool behind. Do not let the strict assertions below reuse a
+	// connection that guardiand closed while saturated.
+	noRedirect.CloseIdleConnections()
 
 	if level != "attack" {
 		// Dump the last-observed window signals so a CI stall (rate below the
@@ -151,10 +155,27 @@ func floodChallenge(t *testing.T, ip string) {
 // authChallenge issues a challenge from the direct auth port as client ip.
 func authChallenge(t *testing.T, ip string) *http.Response {
 	t.Helper()
-	return req(t, http.MethodGet, auth+"/challenge", map[string]string{
-		"X-Guardian-Host": powHost, "X-Guardian-IP": ip,
-		"X-Guardian-UA": "Mozilla/5.0", "X-Guardian-URI": "/page",
-	}, nil)
+	const attempts = 5
+	for attempt := 1; attempt <= attempts; attempt++ {
+		r, err := http.NewRequest(http.MethodGet, auth+"/challenge", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("X-Guardian-Host", powHost)
+		r.Header.Set("X-Guardian-IP", ip)
+		r.Header.Set("X-Guardian-UA", "Mozilla/5.0")
+		r.Header.Set("X-Guardian-URI", "/page")
+		resp, err := noRedirect.Do(r)
+		if err == nil {
+			t.Cleanup(func() { resp.Body.Close() })
+			return resp
+		}
+		noRedirect.CloseIdleConnections()
+		t.Logf("issue auth challenge: attempt %d/%d: %v; retrying", attempt, attempts, err)
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("could not issue auth challenge after %d attempts", attempts)
+	return nil
 }
 
 func attackLevel(t *testing.T) string {
@@ -182,6 +203,12 @@ func attackSignals(t *testing.T) string {
 func parseChallenge(t *testing.T, resp *http.Response) (id, challenge string, difficulty int) {
 	t.Helper()
 	body := bodyOf(t, resp)
+	// Solving may outlive the server's keep-alive window on a loaded CI runner.
+	// Retire the challenge request's idle connection now so the non-idempotent
+	// /pass POST cannot race a server-side idle close (net/http deliberately
+	// does not transparently retry POSTs on a stale connection).
+	resp.Body.Close()
+	noRedirect.CloseIdleConnections()
 	m := dataRe.FindStringSubmatch(body)
 	if m == nil {
 		t.Fatalf("no challenge JSON in response (status %d)", resp.StatusCode)
@@ -208,18 +235,73 @@ func redeemAuth(t *testing.T, ip, id, nonce string) bool {
 // minted token cookie value.
 func solveThroughAuth(t *testing.T, ip string) string {
 	t.Helper()
-	id, challenge, difficulty := parseChallenge(t, authChallenge(t, ip))
-	nonce := solve(t, challenge, difficulty)
-	body := fmt.Sprintf(`{"challenge_id":%q,"nonce":%q}`, id, nonce)
-	resp := req(t, http.MethodPost, auth+"/pass", map[string]string{
-		"X-Guardian-Host": powHost, "X-Guardian-IP": ip, "X-Guardian-UA": "Mozilla/5.0",
-		"Content-Type": "application/json",
-	}, strings.NewReader(body))
-	for _, c := range resp.Cookies() {
+	const attempts = 5
+	for attempt := 1; attempt <= attempts; attempt++ {
+		token, err := trySolveThroughAuth(t, ip)
+		if err == nil {
+			return token
+		}
+		noRedirect.CloseIdleConnections()
+		t.Logf("mint pre-attack token: attempt %d/%d: %v; retrying", attempt, attempts, err)
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("could not mint pre-attack token after %d attempts", attempts)
+	return ""
+}
+
+// trySolveThroughAuth performs one complete challenge transaction. Callers
+// retry the whole transaction rather than replaying /pass: if a POST reached
+// guardiand before its connection reset, that challenge may already be spent.
+func trySolveThroughAuth(t *testing.T, ip string) (string, error) {
+	t.Helper()
+	h := map[string]string{
+		"X-Guardian-Host": powHost, "X-Guardian-IP": ip,
+		"X-Guardian-UA": "Mozilla/5.0", "X-Guardian-URI": "/page",
+	}
+	challengeReq, err := http.NewRequest(http.MethodGet, auth+"/challenge", nil)
+	if err != nil {
+		return "", err
+	}
+	for k, v := range h {
+		challengeReq.Header.Set(k, v)
+	}
+	challengeResp, err := noRedirect.Do(challengeReq)
+	if err != nil {
+		return "", err
+	}
+	body, err := io.ReadAll(challengeResp.Body)
+	challengeResp.Body.Close()
+	if err != nil {
+		return "", err
+	}
+	m := dataRe.FindStringSubmatch(string(body))
+	if m == nil {
+		return "", fmt.Errorf("no challenge JSON in response (status %d)", challengeResp.StatusCode)
+	}
+	var cd challengeData
+	if err := json.Unmarshal([]byte(m[1]), &cd); err != nil {
+		return "", fmt.Errorf("decode challenge json: %w", err)
+	}
+
+	nonce := solve(t, cd.Challenge, cd.Difficulty)
+	passBody := fmt.Sprintf(`{"challenge_id":%q,"nonce":%q}`, cd.ChallengeID, nonce)
+	passReq, err := http.NewRequest(http.MethodPost, auth+"/pass", strings.NewReader(passBody))
+	if err != nil {
+		return "", err
+	}
+	for k, v := range h {
+		passReq.Header.Set(k, v)
+	}
+	passReq.Header.Set("Content-Type", "application/json")
+	passResp, err := noRedirect.Do(passReq)
+	if err != nil {
+		return "", err
+	}
+	defer passResp.Body.Close()
+	for _, c := range passResp.Cookies() {
 		if c.Name == "guardian_token" {
-			return c.Value
+			return c.Value, nil
 		}
 	}
-	t.Fatalf("no token minted (status %d)", resp.StatusCode)
-	return ""
+	return "", fmt.Errorf("no token minted (status %d)", passResp.StatusCode)
 }
