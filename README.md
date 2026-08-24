@@ -89,7 +89,10 @@ store):
 Read paths stayed above 93,000 requests/s on every backend. The two refusal
 columns measure Guardian's hops separately, not end-to-end capacity. See the
 [load-testing guide](https://angieguardian.org/guide/load-testing)
-for methodology, latency, and reproduction commands.
+for methodology, latency, and reproduction commands. For same-host Angie and
+Guardian deployments, a Unix-socket upstream reduces local transport overhead;
+our Docker + Angie comparison measured roughly 1.5–3% higher throughput than
+loopback TCP, depending on the request path.
 
 ## Integration paths
 

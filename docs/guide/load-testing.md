@@ -101,6 +101,13 @@ capacity so the measured window is the loaded steady state a sustained flood of
 new clients actually produces, not the fast cold start of an empty store. Each
 cell is **throughput / p50 / p99** (req/s and per-request latency):
 
+A separate Docker + Angie comparison found that a Unix-socket Guardian
+upstream has less local transport overhead than loopback TCP. With
+`keepalive 64`, it delivered about 3% more throughput on the two-hop
+`refuse-angie` route and about 1.5% more on an allowed request through the
+backend. The exact gain is deployment-specific, but Unix sockets are the
+slightly faster same-host option.
+
 | Backend | allow | token | deny | refuse auth | refuse 403 | challenge write |
 |---|---|---|---|---|---|---|
 | `memory` (ephemeral)              | 180k / 0.13ms / 1.8ms | 173k / 0.16ms / 1.7ms | 157k / 0.14ms / 2.3ms | 172k / 0.15ms / 1.8ms | 179k / 0.15ms / 1.7ms | **160k / 0.29ms / 1.6ms** |
