@@ -5,7 +5,15 @@
 # Per-domain settings are merged over `defaults` field-by-field: a domain only
 # needs to mention what it changes. Unknown hosts fall back to `defaults`.
 
-listen: 127.0.0.1:8071  # the auth hot path (Angie's auth_request target)
+# The host/systemd profile opens both auth endpoints by default. Remove the
+# `listen` line for Unix-only operation, or `socket` for TCP-only operation.
+listen: 127.0.0.1:8071
+socket: /run/guardian/guardian.sock
+# The shipped unit creates /run/guardian guardian:guardian 0755. The socket is
+# guardian:guardian 0660 by default. To let any local user connect without a
+# group change, opt in to 0666; this also lets any local process forge the
+# X-Guardian-* identity headers that Guardian trusts from Angie.
+# socket_mode: "0666"
 # Log levels: debug, info, warn, error. Keep routine decision records out of
 # the production journal: `info` emits a line for every non-allow decision
 # (challenge, refuse, deny), which with pow.mode: always means most first
@@ -16,10 +24,11 @@ listen: 127.0.0.1:8071  # the auth hot path (Angie's auth_request target)
 log_level: warn
 
 # The sidecar trusts the X-Guardian-* headers Angie sets on the subrequest
-# (client IP, host, cookie). Keep `listen` on loopback so no client can reach
-# it directly and forge them. To bind a non-loopback address (Angie on another
-# host), isolate the listener to Angie (private network / firewall / mTLS) and
-# set the line below, otherwise guardiand refuses to start.
+# (client IP, host, cookie). Keep `listen` on loopback or use a filesystem-
+# protected Unix `socket` so no client can reach the endpoint and forge them.
+# To bind a non-loopback address (Angie on another host), isolate the listener
+# to Angie (private network / firewall / mTLS) and set the line below,
+# otherwise guardiand refuses to start.
 # trusted_proxy: true
 
 # require_proxied is a tripwire on top of that isolation: it rejects guard

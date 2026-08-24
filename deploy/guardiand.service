@@ -42,6 +42,12 @@ Group=guardian
 # StateDirectory. Mode 0700: the state dir holds the signing key.
 StateDirectory=guardian
 StateDirectoryMode=0700
+# Default host auth Unix socket. The example guardian.yaml enables
+# `/run/guardian/guardian.sock` alongside loopback TCP. The daemon creates the
+# socket guardian:guardian with the configured socket_mode (0660 by default).
+# Mode 0755 lets local clients traverse to it; the socket mode controls access.
+RuntimeDirectory=guardian
+RuntimeDirectoryMode=0755
 # /etc/guardian is immutable configuration: READ-ONLY for the service, so a
 # compromised daemon cannot rewrite its own policy. Mode 0710 gives the
 # service group traverse-only access (no listing, no writes); the files

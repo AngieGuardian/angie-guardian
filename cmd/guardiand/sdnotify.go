@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,34 +28,63 @@ import (
 // /healthz, or ctx/timeout elapses. It is what makes the systemd READY=1
 // signal honest: "active" then means the auth hot path (and admin listener,
 // if enabled) is actually accepting, not just that the process is alive.
-func waitListening(ctx context.Context, listen, adminListen string, timeout time.Duration) error {
+func waitListening(ctx context.Context, listen, socket, adminListen string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	targets := []string{"http://" + displayAddr(listen) + "/healthz"}
+	type target struct {
+		name   string
+		client *http.Client
+		url    string
+	}
+	var targets []target
+	if listen != "" {
+		targets = append(targets, target{
+			name:   "tcp " + listen,
+			client: &http.Client{Timeout: 2 * time.Second},
+			url:    "http://" + displayAddr(listen) + "/healthz",
+		})
+	}
+	if socket != "" {
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			},
+		}
+		defer transport.CloseIdleConnections()
+		targets = append(targets, target{
+			name:   "unix " + socket,
+			client: &http.Client{Transport: transport, Timeout: 2 * time.Second},
+			url:    "http://guardian/healthz",
+		})
+	}
 	if adminListen != "" {
-		targets = append(targets, "http://"+displayAddr(adminListen)+"/healthz")
+		targets = append(targets, target{
+			name:   "admin " + adminListen,
+			client: &http.Client{Timeout: 2 * time.Second},
+			url:    "http://" + displayAddr(adminListen) + "/healthz",
+		})
 	}
 
-	client := &http.Client{Timeout: 2 * time.Second}
-	probe := func(url string) bool {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	probe := func(t target) bool {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.url, nil)
 		if err != nil {
 			return false
 		}
-		resp, err := client.Do(req)
+		resp, err := t.client.Do(req)
 		if err != nil {
 			return false
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}
 
-	for _, url := range targets {
-		for !probe(url) {
+	for _, target := range targets {
+		for !probe(target) {
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("listener %s not ready: %w", url, ctx.Err())
+				return fmt.Errorf("listener %s not ready: %w", target.name, ctx.Err())
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
@@ -66,7 +96,7 @@ func waitListening(ctx context.Context, listen, adminListen string, timeout time
 // answers its health probe. Keeping the callback separate makes the failure
 // contract testable without a live systemd notification socket.
 func signalReadyWhenListening(ctx context.Context, cfg *core.Config, timeout time.Duration, ready func()) error {
-	if err := waitListening(ctx, cfg.Listen, cfg.Admin.Listen, timeout); err != nil {
+	if err := waitListening(ctx, cfg.Listen, cfg.Socket, cfg.Admin.Listen, timeout); err != nil {
 		return err
 	}
 	ready()

@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,11 +99,79 @@ func checkHealth(configPath string, timeout time.Duration) error {
 	// healthy running daemon must not fail just because the on-disk config was
 	// edited into an invalid state (that would crash-loop the service, an
 	// availability own-goal for a fail-open product).
-	listen, adminListen, err := core.ListenAddrs(configPath)
+	listen, socket, adminListen, err := core.ListenAddrs(configPath)
 	if err != nil {
 		return fmt.Errorf("read listen addresses: %w", err)
 	}
-	return waitListening(context.Background(), listen, adminListen, timeout)
+	return waitListening(context.Background(), listen, socket, adminListen, timeout)
+}
+
+// openGuardListeners opens the configured auth endpoints before either starts
+// serving. A Unix socket is created by the daemon (and therefore owned by the
+// service user/group) and tightened to the configured mode before Angie can
+// connect. An active socket is never displaced; only an orphan that refuses
+// connections is removed after an unclean shutdown.
+func openGuardListeners(tcpAddr, socketPath, socketMode string) (listeners []net.Listener, err error) {
+	defer func() {
+		if err != nil {
+			for _, listener := range listeners {
+				_ = listener.Close()
+			}
+		}
+	}()
+	if tcpAddr != "" {
+		listener, listenErr := net.Listen("tcp", tcpAddr)
+		if listenErr != nil {
+			return nil, fmt.Errorf("listen tcp %s: %w", tcpAddr, listenErr)
+		}
+		listeners = append(listeners, listener)
+	}
+	if socketPath != "" {
+		if parentErr := core.ValidateSocketParent(socketPath); parentErr != nil {
+			return nil, parentErr
+		}
+		if info, statErr := os.Lstat(socketPath); statErr == nil {
+			if info.Mode()&os.ModeSocket == 0 {
+				return nil, fmt.Errorf("listen unix %s: refusing to replace existing non-socket file", socketPath)
+			}
+			conn, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+			if dialErr == nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("listen unix %s: socket is already accepting connections", socketPath)
+			}
+			if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+				return nil, fmt.Errorf("listen unix %s: cannot verify existing socket is stale: %w", socketPath, dialErr)
+			}
+			if removeErr := os.Remove(socketPath); removeErr != nil {
+				return nil, fmt.Errorf("listen unix %s: remove stale socket: %w", socketPath, removeErr)
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("listen unix %s: %w", socketPath, statErr)
+		}
+
+		listener, listenErr := net.Listen("unix", socketPath)
+		if listenErr != nil {
+			return nil, fmt.Errorf("listen unix %s: %w", socketPath, listenErr)
+		}
+		unixListener, ok := listener.(*net.UnixListener)
+		if ok {
+			unixListener.SetUnlinkOnClose(true)
+		}
+		mode, parseErr := strconv.ParseUint(socketMode, 8, 9)
+		if parseErr != nil {
+			_ = listener.Close()
+			return nil, fmt.Errorf("listen unix %s: parse socket mode %q: %w", socketPath, socketMode, parseErr)
+		}
+		if chmodErr := os.Chmod(socketPath, os.FileMode(mode)); chmodErr != nil {
+			_ = listener.Close()
+			return nil, fmt.Errorf("listen unix %s: set mode %s: %w", socketPath, socketMode, chmodErr)
+		}
+		listeners = append(listeners, listener)
+	}
+	if len(listeners) == 0 {
+		return nil, errors.New("no auth listener configured")
+	}
+	return listeners, nil
 }
 
 func run(configPath, profileDir string) error {
@@ -302,11 +371,24 @@ func run(configPath, profileDir string) error {
 		IdleTimeout:       120 * time.Second, // keep Angie's keepalive conns warm
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("guardiand listening", "addr", cfg.Listen, "store", cfg.Store.Backend, "version", version)
-		errCh <- srv.ListenAndServe()
+	listeners, err := openGuardListeners(cfg.Listen, cfg.Socket, cfg.SocketMode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
 	}()
+
+	errCh := make(chan error, len(listeners)+1)
+	for _, listener := range listeners {
+		listener := listener
+		go func() {
+			log.Info("guardiand listening", "network", listener.Addr().Network(), "addr", listener.Addr().String(), "store", cfg.Store.Backend, "version", version)
+			errCh <- srv.Serve(listener)
+		}()
+	}
 
 	// Admin + metrics server on its own listener (loopback / management iface).
 	var admin *http.Server
@@ -440,16 +522,16 @@ loop:
 }
 
 type staticConfig struct {
-	listen, signingKeyFile, previousKeyDir string
-	trustedProxy                           bool
-	admin                                  core.AdminConfig
-	store                                  core.StoreConfig
-	enforcement                            core.EnforcementConfig
+	listen, socket, socketMode, signingKeyFile, previousKeyDir string
+	trustedProxy                                               bool
+	admin                                                      core.AdminConfig
+	store                                                      core.StoreConfig
+	enforcement                                                core.EnforcementConfig
 }
 
 func staticConfigFrom(cfg *core.Config) staticConfig {
 	return staticConfig{
-		listen: cfg.Listen, trustedProxy: cfg.TrustedProxy,
+		listen: cfg.Listen, socket: cfg.Socket, socketMode: cfg.SocketMode, trustedProxy: cfg.TrustedProxy,
 		signingKeyFile: cfg.SigningKeyFile, previousKeyDir: cfg.PreviousKeyDir,
 		admin: cfg.Admin, store: cfg.Store, enforcement: cfg.Enforcement,
 	}
@@ -466,6 +548,8 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 		}
 	}
 	add("listen", running.listen != next.Listen)
+	add("socket", running.socket != next.Socket)
+	add("socket_mode", running.socketMode != next.SocketMode)
 	add("trusted_proxy", running.trustedProxy != next.TrustedProxy)
 	add("signing_key_file", running.signingKeyFile != next.SigningKeyFile)
 	add("previous_key_dir", running.previousKeyDir != next.PreviousKeyDir)
