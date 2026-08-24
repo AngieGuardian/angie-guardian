@@ -110,6 +110,9 @@ func TestDomainMerge(t *testing.T) {
 // bits), including for unknown hosts falling back to defaults.
 func TestBuiltinDifficultyDefaults(t *testing.T) {
 	cfg := loadTestConfig(t, "store: { backend: memory }\ndomains: { bare.test: }\n")
+	if cfg.Listen != defaultListen || cfg.Socket != defaultSocket {
+		t.Fatalf("default auth endpoints = listen %q, socket %q", cfg.Listen, cfg.Socket)
+	}
 	if cfg.LogLevel != "warn" {
 		t.Fatalf("log_level = %q, want production-safe default warn", cfg.LogLevel)
 	}
@@ -130,6 +133,71 @@ func TestBuiltinDifficultyDefaults(t *testing.T) {
 		if dc.PoW.TokenTTL.Std() != 7*24*time.Hour || dc.PoW.ChallengeTTL.Std() != 30*time.Minute {
 			t.Errorf("default PoW TTLs = %v/%v, want 168h/30m", dc.PoW.TokenTTL.Std(), dc.PoW.ChallengeTTL.Std())
 		}
+	}
+}
+
+func TestUnixSocketListenerConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "guardian.sock")
+	cfg := loadTestConfig(t, "socket: "+socket+"\nstore: { backend: memory }\n")
+	if cfg.Socket != socket {
+		t.Fatalf("socket = %q, want %q", cfg.Socket, socket)
+	}
+	if cfg.Listen != "" {
+		t.Fatalf("socket-only config unexpectedly enabled TCP listener %q", cfg.Listen)
+	}
+	if cfg.SocketMode != "0660" {
+		t.Fatalf("default socket mode = %q, want 0660", cfg.SocketMode)
+	}
+
+	cfg = loadTestConfig(t, "listen: 127.0.0.1:0\nsocket: "+socket+"\nsocket_mode: \"0666\"\nstore: { backend: memory }\n")
+	if cfg.Listen != "127.0.0.1:0" || cfg.Socket != socket {
+		t.Fatalf("dual listener config = listen %q, socket %q", cfg.Listen, cfg.Socket)
+	}
+	if cfg.SocketMode != "0666" {
+		t.Fatalf("configured socket mode = %q, want 0666", cfg.SocketMode)
+	}
+}
+
+func TestUnixSocketParentPreflight(t *testing.T) {
+	writable := t.TempDir()
+	if err := os.Chmod(writable, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "guardian.yaml")
+	body := "socket: " + filepath.Join(writable, "guardian.sock") + "\nstore: { backend: memory }\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "writable by group or others") {
+		t.Fatalf("writable socket parent error = %v", err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "not-created", "guardian.sock")
+	path = filepath.Join(t.TempDir(), "guardian.yaml")
+	body = "socket: " + missing + "\nstore: { backend: memory }\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("missing socket parent must remain valid before systemd creates it: %v", err)
+	}
+}
+
+func TestListenAddrsUsesBothDefaultEndpoints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guardian.yaml")
+	if err := os.WriteFile(path, []byte("store: { backend: memory }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listen, socket, admin, err := ListenAddrs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listen != defaultListen || socket != defaultSocket || admin != "" {
+		t.Fatalf("listen endpoints = %q, %q, admin %q", listen, socket, admin)
 	}
 }
 
@@ -357,6 +425,10 @@ func TestConfigValidation(t *testing.T) {
 		"non-loopback listen sans trusted_proxy": "listen: 0.0.0.0:8071",
 		"malformed trusted proxy listen":         "listen: malformed\ntrusted_proxy: true",
 		"nonnumeric trusted proxy port":          "listen: 0.0.0.0:http\ntrusted_proxy: true",
+		"relative unix socket":                   "socket: run/guardian.sock",
+		"short unix socket mode":                 "listen: 127.0.0.1:8071\nsocket_mode: \"660\"",
+		"non-octal unix socket mode":             "listen: 127.0.0.1:8071\nsocket_mode: \"0680\"",
+		"special-bit unix socket mode":           "listen: 127.0.0.1:8071\nsocket_mode: \"1660\"",
 		"malformed admin listen":                 "admin: { listen: malformed, token: secret }",
 		"nonloopback admin without token":        "admin: { listen: 0.0.0.0:8072 }",
 		"negative recent size":                   "admin: { recent_size: -1 }",

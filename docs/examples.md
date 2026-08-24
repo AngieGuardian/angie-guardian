@@ -13,6 +13,7 @@ store:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
+socket: /run/guardian/guardian.sock # host-local endpoint, enabled alongside TCP
 signing_key_file: /var/lib/guardian/ed25519.key   # signs PoW challenges and
                                                   # the JWT cookie a solve
                                                   # earns; created on first run,
@@ -42,6 +43,37 @@ defaults:
 domains:
   example.com: {}                 # inherits all defaults
 ```
+
+## Host-local Unix socket
+
+The minimum host config opens TCP and the Unix socket together. Remove its
+`listen` line to expose only the host-local endpoint. Conversely, an explicit
+`listen` with no `socket` remains TCP-only for containers and custom layouts.
+
+```yaml
+socket: /run/guardian/guardian.sock
+# socket_mode: "0666" # optional: no worker-group change, but all local users
+```
+
+With the shipped systemd unit, Guardian creates this socket
+`guardian:guardian` mode `0660` under a traversable, non-writable `0755`
+runtime directory. For the default mode, add the worker user named by Angie's
+top-level `user` directive to the `guardian` group and restart Angie. That user
+may be `angie`, `www-data`, or a custom account. Alternatively, set
+`socket_mode: "0666"` and restart Guardian; no Angie group change is then
+needed, but every local process can connect and forge the identity headers
+Guardian trusts from Angie.
+
+```nginx
+upstream guardian {
+    server unix:/run/guardian/guardian.sock max_conns=512;
+    keepalive 64;
+}
+```
+
+Guardian refuses to overwrite non-socket files or active sockets at that path.
+It cleans up its socket on normal shutdown and removes a stale socket left by
+an unclean exit.
 
 ## Mixed estate: HTML site, API, static assets
 

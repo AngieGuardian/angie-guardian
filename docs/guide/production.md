@@ -113,6 +113,7 @@ by who may write them:
 |---|---|---|---|
 | `/etc/guardian/` | immutable configuration: `guardian.yaml`, `rules.d/` | `root:guardian` | dir `0710`, subdirs `0750`, files `0640` |
 | `/var/lib/guardian/` | generated state: `ed25519.key`, `keys.d/`, `admin.token`, the store | `guardian:guardian` | dir `0700`, secrets `0600` |
+| `/run/guardian/` | default host auth Unix socket | `guardian:guardian` | dir `0755`, socket `0660` by default; configurable with `socket_mode` |
 
 Configuration is **read-only for the service**: the daemon runs as `guardian`
 and reaches config files through group permissions alone, so even a fully
@@ -650,7 +651,7 @@ floors; CI runs both on every pipeline).
 [fails open](/guide/threat-model) by design: when the store is unreachable,
 stages abstain, challenge issuance falls back to stateless minting, single-spend
 degrades to per-replica, and every request sails through. The process stays up,
-both listeners keep answering `/healthz`, and `systemctl status` still says
+all configured listeners keep answering `/healthz`, and `systemctl status` still says
 `active`. Nothing about that state is visible without this gauge.
 
 The thresholds are starting points chosen to be quiet on a healthy instance.
@@ -664,7 +665,7 @@ busy deployments.
 The two health endpoints answer different questions, and wiring them the same
 way defeats the point:
 
-- **`/healthz`** (both listeners) is **liveness**: is the process serving? It
+- **`/healthz`** (all configured auth and admin listeners) is **liveness**: is the process serving? It
   never consults the store. Use it for container health checks, systemd
   readiness sequencing, and the `-healthcheck` flag. Tying liveness to the store
   would kill containers that are still (fail-open) protecting traffic and turn a

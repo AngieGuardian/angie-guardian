@@ -8,6 +8,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -142,7 +144,14 @@ func (t ThresholdRate) MarshalYAML() (any, error) {
 
 // Config is the top-level guardian.yaml.
 type Config struct {
-	Listen         string `yaml:"listen"`
+	Listen string `yaml:"listen"`
+	// Socket is an optional Unix-domain socket for the auth hot path. When it
+	// is the only configured endpoint, no TCP listener is opened; when Listen
+	// is also set, both endpoints serve the same handler.
+	Socket string `yaml:"socket"`
+	// SocketMode is the permission mode applied to Socket after it is bound.
+	// It is a quoted four-digit octal string so YAML cannot reinterpret it.
+	SocketMode     string `yaml:"socket_mode"`
 	LogLevel       string `yaml:"log_level"`
 	SigningKeyFile string `yaml:"signing_key_file"`
 	PreviousKeyDir string `yaml:"previous_key_dir"` // retired signing keys, still verified
@@ -1093,13 +1102,15 @@ func difficultyBits(d float64) int { return int(math.Round(d * 4)) }
 //   - Paths: exact match, or prefix match when the entry ends with "/"
 type ListConfig = stateless.ListConfig
 
-// maxConfigBytes bounds guardian.yaml reads; defaultListen is the guard
-// listen applied when the config omits one. Shared by LoadConfig/finalize and
-// the lenient ListenAddrs so the healthcheck probe can never drift from what
-// the daemon actually binds.
+// maxConfigBytes bounds guardian.yaml reads. The default auth profile opens
+// both loopback TCP and a host-local Unix socket when neither endpoint field is
+// present. Shared by LoadConfig/finalize and the lenient ListenAddrs so the
+// healthcheck probe can never drift from what the daemon actually binds.
 const (
-	maxConfigBytes = 4 << 20
-	defaultListen  = "127.0.0.1:8071"
+	maxConfigBytes    = 4 << 20
+	defaultListen     = "127.0.0.1:8071"
+	defaultSocket     = "/run/guardian/guardian.sock"
+	defaultSocketMode = "0660"
 )
 
 // LoadConfig reads, validates and resolves guardian.yaml. Per-domain configs
@@ -1128,30 +1139,32 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// ListenAddrs leniently extracts the guard and admin listen addresses from a
+// ListenAddrs leniently extracts the guard TCP/Unix and admin addresses from a
 // config file without validating the rest of it. The -healthcheck probe uses
 // it so a half-edited or otherwise invalid guardian.yaml cannot fail a probe
 // of an already-running, healthy daemon (which would crash-loop the service on
-// the bad config). It applies the same default guard listen as finalize but
+// the bad config). It applies the same default guard endpoints as finalize but
 // runs no other validation, and tolerates unknown fields for the same reason.
-func ListenAddrs(path string) (listen, adminListen string, err error) {
+func ListenAddrs(path string) (listen, socket, adminListen string, err error) {
 	raw, err := safefile.Read(path, maxConfigBytes)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var probe struct {
 		Listen string `yaml:"listen"`
+		Socket string `yaml:"socket"`
 		Admin  struct {
 			Listen string `yaml:"listen"`
 		} `yaml:"admin"`
 	}
 	if err := yaml.Unmarshal(raw, &probe); err != nil {
-		return "", "", fmt.Errorf("parse %s: %w", path, err)
+		return "", "", "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	if probe.Listen == "" {
+	if probe.Listen == "" && probe.Socket == "" {
 		probe.Listen = defaultListen
+		probe.Socket = defaultSocket
 	}
-	return probe.Listen, probe.Admin.Listen, nil
+	return probe.Listen, probe.Socket, probe.Admin.Listen, nil
 }
 
 // decodeStrict decodes a yaml.Node into v with unknown-field checking, which
@@ -1211,14 +1224,39 @@ func nestedMappingValue(node *yaml.Node, keys ...string) (*yaml.Node, bool) {
 }
 
 func (c *Config) finalize() error {
-	if c.Listen == "" {
+	if c.Listen == "" && c.Socket == "" {
 		c.Listen = defaultListen
+		c.Socket = defaultSocket
 	}
-	if err := validateListenAddress("listen", c.Listen); err != nil {
-		return err
+	if c.Listen != "" {
+		if err := validateListenAddress("listen", c.Listen); err != nil {
+			return err
+		}
+		if !c.TrustedProxy && !listenIsLoopback(c.Listen) {
+			return fmt.Errorf("listen %s is not loopback: the auth hot path trusts client-identity headers from its caller, so a non-loopback bind lets clients spoof them. Isolate the listener to Angie and set trusted_proxy: true to allow this", c.Listen)
+		}
 	}
-	if !c.TrustedProxy && !listenIsLoopback(c.Listen) {
-		return fmt.Errorf("listen %s is not loopback: the auth hot path trusts client-identity headers from its caller, so a non-loopback bind lets clients spoof them. Isolate the listener to Angie and set trusted_proxy: true to allow this", c.Listen)
+	if c.Socket != "" {
+		if !filepath.IsAbs(c.Socket) {
+			return fmt.Errorf("socket must be an absolute path, got %q", c.Socket)
+		}
+		if strings.IndexByte(c.Socket, 0) >= 0 {
+			return fmt.Errorf("socket path contains a NUL byte")
+		}
+		if err := ValidateSocketParent(c.Socket); err != nil {
+			return err
+		}
+	}
+	if c.SocketMode == "" {
+		c.SocketMode = defaultSocketMode
+	}
+	if len(c.SocketMode) != 4 || c.SocketMode[0] != '0' {
+		return fmt.Errorf("socket_mode must be a quoted four-digit octal permission from \"0000\" through \"0777\", got %q", c.SocketMode)
+	}
+	for _, digit := range c.SocketMode[1:] {
+		if digit < '0' || digit > '7' {
+			return fmt.Errorf("socket_mode must be a quoted four-digit octal permission from \"0000\" through \"0777\", got %q", c.SocketMode)
+		}
 	}
 	switch c.LogLevel {
 	case "":
@@ -1490,6 +1528,27 @@ func (c *Config) finalize() error {
 	}
 	if err := c.validateAttackDifficultyCap(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidateSocketParent checks an existing Unix-socket parent without requiring
+// it to exist yet. The latter keeps preflight useful before systemd creates its
+// RuntimeDirectory; listener startup repeats this check before binding.
+func ValidateSocketParent(socketPath string) error {
+	parent := filepath.Dir(socketPath)
+	info, err := os.Stat(parent)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("socket %s: inspect parent directory: %w", socketPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("socket %s: parent %s is not a directory", socketPath, parent)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("socket %s: parent directory %s is writable by group or others (mode %#o); use a non-writable directory such as /run/guardian mode 0755", socketPath, parent, info.Mode().Perm())
 	}
 	return nil
 }

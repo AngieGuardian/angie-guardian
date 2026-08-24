@@ -49,10 +49,22 @@ protected `server {}` block. Validate and reload Angie yourself:
 include angie-guardian-limits.conf;
 
 upstream guardian {
+    # TCP works for every Angie worker user.
     server 127.0.0.1:8071;
+    # Host-local alternative: replace the line above if you prefer the socket:
+    # server unix:/run/guardian/guardian.sock max_conns=512;
     keepalive 64;
 }
 ```
+
+The socket defaults to `guardian:guardian` mode `0660`. To use it, either add
+the worker user named by Angie's top-level `user` directive to the `guardian`
+group, or set `socket_mode: "0666"` in `/etc/guardian/guardian.yaml`, validate
+the file, and restart Guardian. The latter needs no Angie user change, but it
+allows every local process to connect and forge the client-identity headers
+Guardian trusts from Angie. The worker user is not necessarily `www-data`;
+native installations may use `angie`, while migrated or custom configurations
+may name another account.
 
 **Place this once in Angie's top-level configuration (`/etc/angie/angie.conf` or a file it includes).**
 
@@ -61,6 +73,15 @@ For each protected `server {}` block, add:
 ```nginx
 include angie-guardian.conf;
 include angie-guardian-location.conf;
+```
+
+Validate the completed Angie configuration, then reload it. Restart Angie
+instead only when you changed its worker's group membership:
+
+```sh
+sudo angie -t
+sudo systemctl reload angie
+# sudo systemctl restart angie # if its worker group membership changed
 ```
 
 Use the manual installation below when you need a particular release version,
@@ -307,10 +328,34 @@ Add the baseline include and keepalive upstream once inside Angie's `http {}` co
 include angie-guardian-limits.conf;
 
 upstream guardian {
+    # TCP works for every Angie worker user.
     server 127.0.0.1:8071;
+    # Host-local alternative: replace the line above if you prefer the socket:
+    # server unix:/run/guardian/guardian.sock max_conns=512;
     keepalive 64;
 }
 ```
+
+The default socket mode is `0660`. For group-restricted access, add the user
+named by Angie's top-level `user` directive to `guardian` and restart Angie so
+new workers receive the supplementary group:
+
+```sh
+sudo usermod --append --groups guardian <angie-worker-user>
+```
+
+If you prefer not to change that account, set the following in
+`/etc/guardian/guardian.yaml`, validate with `guardiand -t`, and restart
+Guardian:
+
+```yaml
+socket_mode: "0666"
+```
+
+This makes the socket available to every local process, which can then forge
+the `X-Guardian-*` client identity headers Guardian trusts from Angie. Use TCP
+or the default group-restricted mode on hosts where local users are not all
+trusted.
 
 Then include the two server snippets once inside each protected `server {}` block. Every
 content location in that vhost inherits Guardian. Leave all existing static,
@@ -351,20 +396,25 @@ sudo systemctl --no-pager --full status guardiand
 sudo journalctl -u guardiand -n 50 --no-pager
 ```
 
-The unit repeats config validation in `ExecStartPre` and creates
-`/var/lib/guardian` as `guardian:guardian` with mode `0700`. Both configured
-listeners expose their own health endpoint:
+The unit repeats config validation in `ExecStartPre`, creates
+`/var/lib/guardian` as `guardian:guardian` with mode `0700`, and creates the
+socket parent `/run/guardian` with mode `0755`. All configured listeners
+expose their own health endpoint:
 
 ```sh
 curl --fail http://127.0.0.1:8071/healthz   # auth listener (liveness)
+sudo -u guardian curl --fail --unix-socket /run/guardian/guardian.sock \
+  http://localhost/healthz                  # Unix auth listener (liveness)
 curl --fail http://127.0.0.1:8072/healthz   # admin listener (liveness)
 curl --fail http://127.0.0.1:8072/readyz    # is the store actually working?
 ```
 
-Now apply the Angie configuration that already passed `angie -t`:
+Now apply the Angie configuration that already passed `angie -t`. A normal
+reload is enough unless you added its worker user to the `guardian` group:
 
 ```sh
 sudo systemctl reload angie
+# sudo systemctl restart angie # if its worker group membership changed
 ```
 
 Request the real protected URL through Angie. A raw `curl` has no Guardian

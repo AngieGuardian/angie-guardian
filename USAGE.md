@@ -31,6 +31,7 @@ everything else inherits from `defaults`:
 
 ```yaml
 listen: 127.0.0.1:8071            # Angie's auth_request target
+socket: /run/guardian/guardian.sock # host-local auth endpoint (also enabled)
 signing_key_file: /var/lib/guardian/ed25519.key   # generated state, not /etc
 store:
   backend: pebble
@@ -58,6 +59,31 @@ defaults:
 domains:
   example.com: {}                 # inherits all defaults
 ```
+
+The host/systemd profile opens both auth endpoints by default. Explicit
+endpoint fields are authoritative: omit `listen` for Unix-only operation, or
+omit `socket` for TCP-only operation.
+
+```yaml
+socket: /run/guardian/guardian.sock
+```
+
+The shipped systemd unit creates `/run/guardian` as `guardian:guardian` mode
+`0755`; guardiand creates the socket as `guardian:guardian` mode `0660` and
+removes it on a clean shutdown. It will remove an orphaned socket after an
+unclean exit, but refuses to overwrite a regular file or a socket that is
+still accepting connections. With the default mode, add Angie's worker user
+(the user named by the top-level Angie `user` directive) to the `guardian`
+group, then restart Angie so its workers receive the supplementary group:
+
+```sh
+sudo usermod --append --groups guardian <angie-worker-user>
+sudo systemctl restart angie
+```
+
+Alternatively, set `socket_mode: "0666"` and restart Guardian. This avoids
+changing Angie's worker groups but lets every local process connect and forge
+the client-identity headers Guardian trusts from Angie.
 
 Per-domain entries are merged field-by-field over `defaults`, so a domain only
 names what it changes. Unknown hosts fall back to `defaults`.
@@ -581,6 +607,7 @@ directives are inherited by its content locations:
 # http {} context, REQUIRED for throughput (connection reuse to the sidecar):
 upstream guardian {
     server 127.0.0.1:8071;
+    # Alternative: server unix:/run/guardian/guardian.sock max_conns=512;
     keepalive 64;
 }
 
@@ -590,6 +617,17 @@ include angie-guardian-location.conf;
 
 location / {
     proxy_pass http://my_application;     # or keep try_files/static/FastCGI
+}
+```
+
+When `socket: /run/guardian/guardian.sock` is configured, replace the server
+line above with the Unix endpoint (the existing `limit_conn` remains the
+request-level admission boundary):
+
+```nginx
+upstream guardian {
+    server unix:/run/guardian/guardian.sock max_conns=512;
+    keepalive 64;
 }
 ```
 
@@ -705,9 +743,9 @@ daemon, so a compromised process cannot rewrite its own policy. See
 for the full reasoning and exact ownership details.
 
 The shipped `Type=notify` unit reports `READY=1` only after every configured
-listener answers `/healthz`, then services the systemd watchdog. The distroless
-Compose deployment uses `guardiand -healthcheck` for the same readiness
-contract.
+TCP and Unix listener answers `/healthz`, then services the systemd watchdog.
+The distroless Compose deployment uses `guardiand -healthcheck` for the same
+readiness contract.
 
 Prefer containers? Every release publishes a prebuilt image (distroless and
 nonroot). Pull the same pinned tag selected for the deployment, for example

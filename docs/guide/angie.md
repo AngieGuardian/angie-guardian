@@ -47,7 +47,9 @@ the server endpoints would force Guardian on for the entire vhost.)
 include angie-guardian-limits.conf;
 
 upstream guardian {
+    # Replace this TCP line with the commented Unix line if desired.
     server 127.0.0.1:8071;
+    # server unix:/run/guardian/guardian.sock max_conns=512;
     keepalive 64;
 }
 
@@ -64,6 +66,15 @@ location / {
     proxy_pass http://my_application;
 }
 ```
+
+The Unix socket is `guardian:guardian` mode `0660` by default. It therefore
+requires the worker user from Angie's top-level `user` directive to belong to
+the `guardian` group; restart Angie after changing group membership. To avoid
+that account change, set `socket_mode: "0666"` in Guardian and restart it.
+This permits every local process to connect and forge the client-identity
+headers Guardian trusts from Angie, so keep `0660` on multi-user hosts. TCP
+remains enabled alongside the socket by default and needs no worker-group
+setup.
 
 [`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf)
 defines Guardian's control-plane admission baseline. Then
