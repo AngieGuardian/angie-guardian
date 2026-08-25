@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,7 +77,12 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	chaosSite := fmt.Sprintf("http://127.0.0.1:%d", ports[0])
 	chaosAdmin := fmt.Sprintf("http://127.0.0.1:%d", ports[1])
 	chaosAuth := fmt.Sprintf("http://127.0.0.1:%d", ports[2])
-	tlsCertPath, tlsKeyPath, _, err := writeSelfSignedCertificate(t.TempDir())
+	tlsDir, err := makeSharedTLSDir()
+	if err != nil {
+		t.Fatalf("create chaos TLS directory: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tlsDir) })
+	tlsCertPath, tlsKeyPath, _, err := writeSelfSignedCertificate(tlsDir)
 	if err != nil {
 		t.Fatalf("create chaos TLS certificate: %v", err)
 	}
@@ -102,6 +108,7 @@ func TestStoreOutageFailOpen(t *testing.T) {
 		_ = chaosStack.Down(down, compose.RemoveOrphans(true), compose.RemoveVolumes(true))
 	})
 	if err := chaosStack.Up(ctx, compose.Wait(true)); err != nil {
+		printServiceLogs(ctx, chaosStack, "angie")
 		t.Fatalf("chaos compose up: %v", err)
 	}
 

@@ -96,26 +96,12 @@ func TestMain(m *testing.M) {
 // runSuite is split out so the deferred teardown runs before os.Exit.
 func runSuite(m *testing.M) int {
 	ctx := context.Background()
-	projectDir, err := filepath.Abs("../..")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "e2e: find project directory:", err)
-		return 1
-	}
-	// Keep generated certificates under the shared project directory. CI runs
-	// this test inside a container while Compose uses the host Docker socket, so
-	// paths in the test container's private /tmp are not visible to Angie.
-	tlsDir, err := os.MkdirTemp(projectDir, ".guardian-e2e-tls-")
+	tlsDir, err := makeSharedTLSDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: create TLS directory:", err)
 		return 1
 	}
 	defer os.RemoveAll(tlsDir)
-	// The Docker daemon may remap container users. Allow the Angie container to
-	// traverse this test-only directory and read the short-lived key pair.
-	if err := os.Chmod(tlsDir, 0755); err != nil {
-		fmt.Fprintln(os.Stderr, "e2e: set TLS directory permissions:", err)
-		return 1
-	}
 	tlsCertPath, tlsKeyPath, roots, err := writeSelfSignedCertificate(tlsDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: create TLS certificate:", err)
@@ -200,7 +186,7 @@ func runSuite(m *testing.M) int {
 	}()
 	if upErr != nil {
 		fmt.Fprintln(os.Stderr, "e2e: compose up:", upErr)
-		printServiceLogs(ctx, "angie")
+		printServiceLogs(ctx, stack, "angie")
 		return 1
 	}
 
@@ -211,8 +197,8 @@ func runSuite(m *testing.M) int {
 	return m.Run()
 }
 
-func printServiceLogs(ctx context.Context, service string) {
-	ctr, err := stack.ServiceContainer(ctx, service)
+func printServiceLogs(ctx context.Context, source compose.ComposeStack, service string) {
+	ctr, err := source.ServiceContainer(ctx, service)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: %s container: %v\n", service, err)
 		return
@@ -229,6 +215,26 @@ func printServiceLogs(ctx context.Context, service string) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "e2e: %s logs:\n%s\n", service, b)
+}
+
+// makeSharedTLSDir creates a test-only directory that is visible to both the
+// outer CI test container and containers started through the host Docker socket.
+func makeSharedTLSDir() (string, error) {
+	projectDir, err := filepath.Abs("../..")
+	if err != nil {
+		return "", fmt.Errorf("find project directory: %w", err)
+	}
+	tlsDir, err := os.MkdirTemp(projectDir, ".guardian-e2e-tls-")
+	if err != nil {
+		return "", err
+	}
+	// The Docker daemon may remap container users. Allow Angie to traverse this
+	// directory and read its short-lived test key pair.
+	if err := os.Chmod(tlsDir, 0755); err != nil {
+		os.RemoveAll(tlsDir)
+		return "", fmt.Errorf("set permissions: %w", err)
+	}
+	return tlsDir, nil
 }
 
 // writeSelfSignedCertificate creates an ephemeral localhost certificate for
