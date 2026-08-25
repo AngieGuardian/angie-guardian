@@ -117,7 +117,10 @@ version.
 | `http2_body_preread_size` | `16k` | Request-body data buffered before application processing |
 | per-client `limit_conn` | `20` | Complete active requests from one source address |
 | per-vhost `limit_conn` | `1024` | Complete active requests for one server name |
-| TLS session cache | `10m`, `10m` expiry | Resumable TLS session state |
+| TLS curves | `X25519MLKEM768:X25519:prime256v1:secp384r1` | Offered key-exchange groups, including hybrid post-quantum exchange |
+| TLS 1.2 ciphers | ECDHE with AES-GCM or ChaCha20-Poly1305 | Authenticated cipher suites accepted for TLS 1.2 |
+| TLS cipher preference | client (`off`) | Let the client choose among the accepted cipher suites |
+| TLS session cache | `50m`, `4h` expiry | Resumable TLS session state |
 | `worker_connections` | `4096` | Connections handled by each worker |
 | worker/container `nofile` | `8192` | File descriptors available to the Angie process |
 
@@ -131,6 +134,9 @@ A client that continuously makes progress can legitimately remain connected
 longer. Conversely, `reset_timedout_connection on` closes timed-out sockets
 without keeping their state around.
 
+The two `limit_conn` entries cover different failure domains: the per-client
+limit prevents one source address from consuming the whole request budget,
+while the per-vhost limit caps aggregate concurrency across all clients.
 `limit_conn` begins counting only after complete request headers are available.
 On HTTP/2 and HTTP/3, each complete request counts separately. It does not bound
 silent TCP peers, partial TLS handshakes, or never-completed headers; the
