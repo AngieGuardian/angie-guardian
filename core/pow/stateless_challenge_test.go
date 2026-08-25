@@ -294,7 +294,7 @@ func TestStatelessSpendCASFailureStillMints(t *testing.T) {
 }
 
 func TestStatefulStillRedeemsAlongsideStateless(t *testing.T) {
-	// The 32-hex stateful path must keep working after the dispatch change.
+	// The UUID stateful path must keep working alongside stateless IDs.
 	m := testManager(t)
 	ctx := context.Background()
 	ch, err := m.Issue(ctx, "a.test", "203.0.113.7", "/", 8, 30*time.Minute, false)

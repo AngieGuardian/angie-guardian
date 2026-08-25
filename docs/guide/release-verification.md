@@ -26,7 +26,7 @@ Download the archive and all three GPG verification files into one directory.
 Replace the version and architecture when needed:
 
 ```sh
-VERSION=1.3.0
+VERSION=1.4.0
 ARCH=amd64
 BASE="https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}"
 ARCHIVE="angie-guardian-${VERSION}-linux-${ARCH}.tar.gz"
@@ -78,7 +78,7 @@ then download `cosign.pub` plus the GPG verification files from the matching
 release. Authenticate the Cosign key through the signed checksum list:
 
 ```sh
-VERSION=1.3.0
+VERSION=1.4.0
 BASE="https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}"
 
 wget "${BASE}/cosign.pub"
@@ -114,4 +114,3 @@ built image. Each registry therefore has its own digest and signature
 attachment. Production manifests should use the verified `...@sha256:...`
 reference for the chosen registry so a later move of `latest` cannot change
 what gets deployed.
-

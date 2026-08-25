@@ -26,10 +26,10 @@ import (
 // has actually paid the proof of work), so the only store write an attacker
 // can induce costs them real compute first.
 //
-// The ID is self-describing and versioned so it coexists with the 32-hex
-// stateful ID forever: Redeem dispatches on the "s1." and "s2." prefixes and
-// all formats are accepted unconditionally, so a challenge issued seconds
-// before or after a posture or algorithm flip still redeems.
+// The ID is self-describing and versioned so it coexists with canonical UUID
+// stateful IDs: Redeem dispatches on the "s1." and "s2." prefixes, so a
+// challenge issued seconds before or after a posture or algorithm flip still
+// redeems.
 
 const (
 	statelessPrefix        = "s1."
