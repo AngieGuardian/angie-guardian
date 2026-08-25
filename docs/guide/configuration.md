@@ -557,8 +557,8 @@ down.
 
 Not reloadable (fixed at startup; a reload that changes one is rejected):
 `listen`, `admin.listen`, `trusted_proxy`, the `store` block,
-`signing_key_file`, `previous_key_dir`, `admin.recent_size`, and the admin
-token/dashboard setup.
+`signing_key_file`, `previous_key_dir`, `admin.recent_decisions_capacity`, and
+the admin token/dashboard setup.
 
 WAF rules files, anomaly model artifacts, `.mmdb` databases and file-based
 reputation feeds are also watched on disk and reload on change by themselves;

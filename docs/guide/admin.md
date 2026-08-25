@@ -73,7 +73,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit
                 else "\(.bits)bits" end)
              + " \(.host)\(.uri) \(.ua)"'
 
-# Compact full-ring feed for live charting (still bounded by admin.recent_size).
+# Compact full-ring feed for live charting (still bounded by
+# admin.recent_decisions_capacity).
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit=all"
 
 # A small "right now" rollup: active blocks, recent counts by action and
@@ -404,8 +405,31 @@ under-report, and the measured one includes page load, both network legs and
 any time the tab spent backgrounded.
 
 The activity charts are a bounded, per-instance incident view: the compact feed
-can use the full configured ring, while the decision table and map stay capped
-at 1024 rows. The free-text box searches only those fetched rows, but a whole
+and Top-offenders map cover the full configured ring, while the detailed
+decision table fetches at most 1024 matching rows by default. Clicking a host,
+reason category, path, country or User-Agent in Top offenders applies a
+labelled exact facet to Recent decisions; clicking a populated country on the
+map applies the same country facet. The corresponding reason, host, country,
+request path and User-Agent values in Recent decisions are drill-down links
+too; a reason link selects its category (for example, `pow:no_token` selects
+all `pow` rows), not only that full reason. Facets combine
+with the action selector and each other, remain active through refreshes, and
+are reflected in the URL. The API filters the full ring before the response
+cap, so the table states both the fetched and matched counts when a result is
+truncated.
+
+Use **Add filter** beside the free-text box to apply the same exact facets
+without first finding a clickable value. Choose Host, Reason category, Country,
+Path or User-Agent and enter a value; suggestions come from the currently fetched
+activity but do not limit what can be entered. Adding another value for the
+same field replaces its existing chip. Countries use two-letter ISO codes.
+
+The **Rows** selector can fetch 256, 512, 1,024, 2,048 or **all retained**
+detailed rows after the structured filters are applied. The browser remembers
+this preference; **all retained** follows the daemon's configured
+`admin.recent_decisions_capacity` rather than assuming a fixed capacity.
+
+The free-text box still searches only the fetched rows, but a whole
 IP address that matches none of them is checked against the full ring
 server-side, so when older entries exist the empty state links to the IP lookup
 instead of reading as "never seen". For hours, days, alerting, or fleet-wide

@@ -125,7 +125,10 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 	  var td = function (cls, text) { return el("td", cls, text); };
 	  var lastDecisions = [];
 	  var lastDist = null;
-	  var reset = function () { nodes = {}; lastDecisions = []; lastDist = null; };
+	  var FACET_KEYS = ["host", "reason_category", "country", "path", "ua"];
+	  var facets = {};
+	  var hasFacet = function (key) { return Object.prototype.hasOwnProperty.call(facets, key); };
+	  var reset = function () { nodes = {}; lastDecisions = []; lastDist = null; facets = {}; };
 	`
 	if _, err := vm.RunString(stubs); err != nil {
 		t.Fatalf("harness stubs: %v", err)
@@ -137,6 +140,57 @@ func jsRuntime(t *testing.T, decls ...string) *goja.Runtime {
 		}
 	}
 	return vm
+}
+
+func TestDecisionFacetsComposeAndMatchExactDimensions(t *testing.T) {
+	vm := jsRuntime(t, "normalizedHost", "decisionPath", "decisionReasonCategory", "matchesFacets")
+	var got struct {
+		All          bool `json:"all"`
+		ReasonPrefix bool `json:"reasonPrefix"`
+		WrongCountry bool `json:"wrongCountry"`
+		ReplacedHost bool `json:"replacedHost"`
+		EmptyUA      bool `json:"emptyUA"`
+	}
+	call(t, vm, `(function () {
+	  var decision = {
+	    host: "Site.Test:443", reason: "pow:no_token", country: "NL",
+	    uri: "/login?next=/", ua: "curl/8"
+	  };
+	  facets = {host:"site.test", reason_category:"pow", country:"NL", path:"/login", ua:"curl/8"};
+	  var all = matchesFacets(decision);
+	  facets.reason_category = "po";
+	  var reasonPrefix = matchesFacets(decision);
+	  facets.reason_category = "pow";
+	  facets.country = "US";
+	  var wrongCountry = matchesFacets(decision);
+	  facets = {host:"other.test"};
+	  facets.host = "site.test";
+	  var replacedHost = matchesFacets(decision);
+	  facets = {ua:""};
+	  var emptyUA = matchesFacets({ua:""});
+	  return {all:all, reasonPrefix:reasonPrefix, wrongCountry:wrongCountry,
+	          replacedHost:replacedHost, emptyUA:emptyUA};
+	})()`, &got)
+	if !got.All || got.ReasonPrefix || got.WrongCountry || !got.ReplacedHost || !got.EmptyUA {
+		t.Errorf("facet matching = %+v", got)
+	}
+}
+
+func TestGeoCountrySelectionRequiresPopulatedShape(t *testing.T) {
+	vm := jsRuntime(t, "geoCountryAt")
+	var got string
+	call(t, vm, `geoCountryAt({data:{datasets:[{data:[
+	  {country:"NL", value:7}, {country:"US", value:null}, {country:"", value:3}
+	]}]}}, 0) + "," +
+	geoCountryAt({data:{datasets:[{data:[
+	  {country:"NL", value:7}, {country:"US", value:null}, {country:"", value:3}
+	]}]}}, 1) + "," +
+	geoCountryAt({data:{datasets:[{data:[
+	  {country:"NL", value:7}, {country:"US", value:null}, {country:"", value:3}
+	]}]}}, 2)`, &got)
+	if got != "NL,," {
+		t.Errorf("selected countries = %q, want populated shape only", got)
+	}
 }
 
 // TestPoWConfigCell keeps header exemptions visible without crossing the
@@ -314,6 +368,7 @@ func TestOffendersFailureRetainsOnlyLastKnownData(t *testing.T) {
 	  var ipCell = function (ip) { return td("num", ip); };
 	  var geoCell = function () { return td("wrap", ""); };
 	  var countryName = function (code) { return code; };
+	  var facetCell = function (key, value, label) { return td("wrap", label || value); };
 	  var renderGeoMap = function () {};
 	`); err != nil {
 		t.Fatal(err)

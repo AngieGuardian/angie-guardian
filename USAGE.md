@@ -795,8 +795,11 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
 # Every recent non-allow decision, solved challenge and failed redemption,
 # newest first, from an in-process ring buffer (per instance, cleared on
-# restart). Filters: ?limit= (default 50),
-# ?action=deny|challenge|refuse|solve|redeem_fail, ?reason=<prefix e.g. waf>.
+# restart). Filters compose with AND semantics over the full ring before the
+# response limit: ?action=, ?reason=<prefix>, and exact ?reason_category=,
+# ?host=, ?path=, ?ua=, ?country= and ?ip=. The response reports both count
+# (returned rows) and matched (before the limit); use ?limit=all for the full
+# configured ring. See the Admin API reference for normalization details.
 # refuse = Guardian withheld the challenge after classifying the request as
 # unable to complete it. Exclude refuse when looking only for puzzles that were
 # really issued.
@@ -896,11 +899,16 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
 block-an-IP form), the recent activity feed of non-allow decisions, solves and
-failed redemptions (filterable by action and free text),
+failed redemptions (filterable by action, free text and exact host, reason
+category, country, path and User-Agent facets),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and
-last error), and headline counters, auto-refreshing every 5 seconds. The page is a
+last error), and headline counters, auto-refreshing every 5 seconds. Click a
+facet value or use **Add filter** to build the same structured query manually;
+facets combine, appear in the URL and can be removed as chips. The remembered
+**Rows** selector controls how many matching details are fetched, from 256
+through **all retained**, while keeping 1024 as the default. The page is a
 static shell: it stores no secrets, stays off unless enabled, and every data
 call goes to the token-guarded `/admin/*` endpoints. The shell can still be
 publicly reachable on an external admin bind, so keep this listener on

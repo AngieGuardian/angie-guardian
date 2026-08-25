@@ -375,7 +375,8 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 		`id="chart-window"`,
 		`value="5m"`, `value="15m"`, `value="30m"`, `value="1h"`, `value="all"`,
 		`id="chart-decisions-window"`, `id="chart-reasons-window"`,
-		`api("/admin/decisions?limit=1024")`,
+		`api(decisionQuery())`,
+		`new URLSearchParams({ limit: $("f-limit").value })`,
 		`api("/admin/decisions?view=compact&limit=all")`,
 		// The ring-wide fall-through behind an empty whole-IP search: without
 		// it, an IP whose rows aged past the fetch window reads as never seen.
@@ -395,6 +396,49 @@ func TestDashboardRecentWindowSurface(t *testing.T) {
 	} {
 		if bytes.Contains(page, []byte(stale)) {
 			t.Errorf("dashboard still contains data-derived/unbounded chart path %q", stale)
+		}
+	}
+}
+
+func TestDashboardDecisionDrilldownSurface(t *testing.T) {
+	page, err := web.FS.ReadFile("dashboard.html")
+	if err != nil {
+		t.Fatalf("dashboard.html not embedded: %v", err)
+	}
+	for _, needle := range []string{
+		`id="f-facets"`,
+		`id="f-limit"`,
+		`id="f-add"`,
+		`id="f-builder"`,
+		`id="f-field"`,
+		`value="reason_category">Reason category`,
+		`id="f-suggestions"`,
+		`value="all">all retained`,
+		`guardian_dashboard_decision_limit`,
+		`localStorage.setItem(DECISION_LIMIT_KEY, $("f-limit").value)`,
+		`const FACET_KEYS = ["host", "reason_category", "country", "path", "ua"]`,
+		`facetCell("reason_category", r.key)`,
+		`facetCell("path", r.key)`,
+		`facetCell("ua", r.key, r.key || "(empty)")`,
+		`facetCell("host", r.key, r.key || "(empty)")`,
+		`facetCell("country", r.key, countryName(r.key))`,
+		`facetCell("reason_category", reasonCategory, d.reason)`,
+		`facetCell("host", normalizedHost(d.host), d.host || "(empty)")`,
+		`decisionGeoCell(d)`,
+		`facetCell("path", decisionPath(d.uri), requestText(d))`,
+		`facetCell("ua", d.ua || "", d.ua || "(empty)")`,
+		`if (country) applyFacet("country", country)`,
+		`geoPointer.moved`,
+		`history.replaceState(null, "", url.pathname + url.search + url.hash)`,
+		`filterSuggestionValues`,
+		`applyFacet(key, value); // replaces the active facet for this field`,
+		`Use a two-letter ISO country code, such as NL.`,
+		`lastDecisionMatched = Number(decisions.matched ?? decisions.count)`,
+		`" ring matches (" + lastDecisions.length + " fetched)"`,
+		`refreshAfterFilter()`,
+	} {
+		if !bytes.Contains(page, []byte(needle)) {
+			t.Errorf("dashboard drill-down surface missing %q", needle)
 		}
 	}
 }

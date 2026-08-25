@@ -94,7 +94,7 @@ defaults:
 			// Include one deliberately over-cap size to show the cost curve. The
 			// engine constructor accepts an already-finalized Config; production
 			// config loading still enforces the cap.
-			cfg.Admin.RecentSize = size
+			cfg.Admin.RecentDecisionsCapacity = size
 			st := store.NewMemory()
 			defer st.Close()
 			engine, err := core.NewEngine(cfg, st, nil, slog.Default())
@@ -346,9 +346,60 @@ func TestAdminDecisionsGeoDetail(t *testing.T) {
 	}
 }
 
+func TestAdminDecisionDrilldownFiltersCoverFullRing(t *testing.T) {
+	dir := t.TempDir()
+	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{
+		"203.0.113.10/32": "NL",
+		"203.0.113.11/32": "US",
+		"203.0.113.12/32": "NL",
+	})
+	yaml := reportYAML + "geoip: { location_db: " + countryDB + " }\n"
+	ts, engine := reportServer(t, yaml)
+
+	requests := []core.RequestContext{
+		{Host: "Site.Test:443", Method: "GET", URI: "/probe?x=1", RemoteAddr: "203.0.113.10", UserAgent: "curl/8"},
+		{Host: "other.test", Method: "POST", URI: "/other", RemoteAddr: "203.0.113.11", UserAgent: ""},
+		{Host: "site.test", Method: "GET", URI: "/other?next=1", RemoteAddr: "203.0.113.12", UserAgent: "browser/1"},
+	}
+	for i := range requests {
+		if d := engine.Evaluate(context.Background(), &requests[i]); d.Action != core.ActionDeny {
+			t.Fatalf("setup decision %d = %s, want deny", i, d.Action)
+		}
+	}
+
+	assertCount := func(query string, want int) map[string]any {
+		t.Helper()
+		out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/decisions?"+query, adminToken, ""))
+		if got := int(out["matched"].(float64)); got != want {
+			t.Errorf("%s matched = %d, want %d", query, got, want)
+		}
+		return out
+	}
+
+	assertCount("host=SITE.TEST:443", 2)
+	assertCount("path=%2Fprobe", 1)
+	assertCount("ua=curl%2F8", 1)
+	assertCount("ua=", 1)
+	assertCount("country=nl", 2)
+	assertCount("reason_category=denylist", 3)
+	assertCount("reason_category=deny", 0) // category boundary, not a prefix match
+	assertCount("host=site.test&country=NL&path=%2Fother", 1)
+
+	limited := assertCount("host=site.test&limit=1", 2)
+	if limited["count"] != float64(1) || limited["truncated"] != true {
+		t.Errorf("limited drill-down = %v, want count=1 matched=2 truncated=true", limited)
+	}
+
+	for _, query := range []string{"country=", "country=NLD", "country=N1", "reason_category="} {
+		if resp := adminReq(t, ts, http.MethodGet, "/admin/decisions?"+query, adminToken, ""); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", query, resp.StatusCode)
+		}
+	}
+}
+
 func TestAdminDecisionWindowWrapsAtConfiguredSize(t *testing.T) {
 	yaml := strings.Replace(reportYAML, "admin: { dashboard: true }",
-		"admin: { dashboard: true, recent_size: 2 }", 1)
+		"admin: { dashboard: true, recent_decisions_capacity: 2 }", 1)
 	ts, engine := reportServer(t, yaml)
 	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
 		engine.Evaluate(context.Background(), &core.RequestContext{

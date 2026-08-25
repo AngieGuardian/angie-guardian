@@ -116,8 +116,8 @@ func TestBuiltinDifficultyDefaults(t *testing.T) {
 	if cfg.LogLevel != "warn" {
 		t.Fatalf("log_level = %q, want production-safe default warn", cfg.LogLevel)
 	}
-	if cfg.Admin.RecentSize != defaultRecentSize {
-		t.Fatalf("admin.recent_size = %d, want default %d", cfg.Admin.RecentSize, defaultRecentSize)
+	if cfg.Admin.RecentDecisionsCapacity != defaultRecentDecisionsCapacity {
+		t.Fatalf("admin.recent_decisions_capacity = %d, want default %d", cfg.Admin.RecentDecisionsCapacity, defaultRecentDecisionsCapacity)
 	}
 	for _, dc := range []*DomainConfig{
 		&cfg.Defaults,
@@ -431,8 +431,8 @@ func TestConfigValidation(t *testing.T) {
 		"special-bit unix socket mode":           "listen: 127.0.0.1:8071\nsocket_mode: \"1660\"",
 		"malformed admin listen":                 "admin: { listen: malformed, token: secret }",
 		"nonloopback admin without token":        "admin: { listen: 0.0.0.0:8072 }",
-		"negative recent size":                   "admin: { recent_size: -1 }",
-		"oversized recent size":                  "admin: { recent_size: 16385 }",
+		"negative recent decisions capacity":     "admin: { recent_decisions_capacity: -1 }",
+		"oversized recent decisions capacity":    "admin: { recent_decisions_capacity: 16385 }",
 		"max_block_ttl below block_ttl":          "defaults: { waf: { ip_behaviour: { block_ttl: 1h, max_block_ttl: 15m } } }",
 		"negative max_block_ttl":                 "defaults: { waf: { ip_behaviour: { max_block_ttl: -5m } } }",
 		"oversized max_block_ttl":                "defaults: { waf: { ip_behaviour: { max_block_ttl: 8761h } } }",

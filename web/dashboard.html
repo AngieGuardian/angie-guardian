@@ -240,12 +240,6 @@
   .chip.shed::before { background: var(--series-1); }
   .chip.on::before { background: var(--good); }
 
-  /* Domains carries eight columns against the two of the reason rollup, so it
-     takes two thirds of the row rather than half: an even split squeezes the
-     host names into one character per line. */
-  .cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; }
-  @media (max-width: 56rem) { .cols { grid-template-columns: minmax(0, 1fr); } }
-
   /* Toolbars (block form, decision filters) */
   .toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
              margin: 0 0 0.5rem; }
@@ -253,6 +247,22 @@
     font: inherit; color: var(--ink); background: var(--surface);
     border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem; }
   .toolbar .err { color: var(--critical); font-size: 0.8rem; }
+  .filter-builder { padding: 0.45rem 0.55rem; border: 1px solid var(--border);
+                    border-radius: 8px; background: var(--plane); }
+  .filter-builder[hidden] { display: none; }
+  .filter-builder input { min-width: min(24rem, 55vw); }
+  @media (max-width: 42rem) {
+    .filter-builder { align-items: stretch; }
+    .filter-builder label, .filter-builder select, .filter-builder input,
+    .filter-builder button { width: 100%; }
+    .filter-builder input { min-width: 0; }
+  }
+  .facet-list { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+                margin: -0.1rem 0 0.55rem; }
+  .facet-list:empty { display: none; }
+  .facet-list button { border-radius: 999px; padding: 0.15rem 0.55rem;
+                       background: color-mix(in srgb, var(--series-1) 10%, var(--surface)); }
+  .facet-list .clear-facets { background: var(--surface); color: var(--ink-2); }
   /* Checkbox option, sized like .meta so a toggle sitting beside an action
      button reads as a qualifier on it rather than a second control. */
   label.opt { display: inline-flex; align-items: center; gap: 0.3rem;
@@ -264,9 +274,9 @@
   /* IP lookup: every IP shown in a table doubles as a link into the lookup
      card, so the affordance must survive on attacker-chosen surroundings
      without shouting. Inherited ink + dotted underline does that. */
-  a.ip-link { color: inherit; cursor: pointer;
-              text-decoration: underline dotted; text-underline-offset: 2px; }
-  a.ip-link:hover { text-decoration-style: solid; }
+  a.ip-link, a.drill-link { color: inherit; cursor: pointer;
+                           text-decoration: underline dotted; text-underline-offset: 2px; }
+  a.ip-link:hover, a.drill-link:hover { text-decoration-style: solid; }
   #lookup-card { background: var(--surface); border: 1px solid var(--border);
                  border-radius: 10px; padding: 0.8rem 1rem 0.9rem; }
   #lookup-card .toolbar { margin: 0 0 0.35rem; }
@@ -630,7 +640,7 @@
       redemptions; an empty list is not proof this IP sent nothing.</div>
   </div>
 
-  <h2>Recent decisions <span class="meta">(newest first, non-allow decisions, solves and failed redemptions)</span><a class="help"
+  <h2 id="decisions-heading">Recent decisions <span class="meta">(newest first, non-allow decisions, solves and failed redemptions)</span><a class="help"
       href="https://angieguardian.org/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked"
       target="_blank" rel="noopener noreferrer"
       title="Docs: what a reason means, and what to do about a false positive"
@@ -644,9 +654,36 @@
       <option value="solve">solve</option>
       <option value="redeem_fail">redeem_fail</option>
     </select>
+    <label class="meta" for="f-limit">Rows</label>
+    <select id="f-limit" aria-label="Recent decision fetch limit"
+            title="Maximum detailed rows fetched after structured filters; all means this instance's complete retained ring">
+      <option value="256">256</option>
+      <option value="512">512</option>
+      <option value="1024" selected>1,024</option>
+      <option value="2048">2,048</option>
+      <option value="all">all retained</option>
+    </select>
     <input id="f-text" placeholder="filter action / host / IP / Geo / URI / reason / UA" size="38">
+    <button id="f-add" type="button" aria-expanded="false" aria-controls="f-builder">Add filter</button>
     <span class="meta" id="f-count"></span>
   </div>
+  <form class="toolbar filter-builder" id="f-builder" hidden>
+    <label class="meta" for="f-field">Filter by</label>
+    <select id="f-field" aria-label="Structured filter field">
+      <option value="host">Host</option>
+      <option value="reason_category">Reason category</option>
+      <option value="country">Country</option>
+      <option value="path">Path</option>
+      <option value="ua">User-Agent</option>
+    </select>
+    <input id="f-value" list="f-suggestions" autocomplete="off" required
+           aria-label="Structured filter value">
+    <datalist id="f-suggestions"></datalist>
+    <button type="submit">Apply</button>
+    <button id="f-cancel" type="button">Cancel</button>
+    <span class="err" id="f-builder-err" role="alert"></span>
+  </form>
+  <div class="facet-list" id="f-facets" aria-label="Active decision filters"></div>
   <div class="tablewrap">
     <table>
       <thead><tr>
@@ -654,13 +691,13 @@
         <th title="What Guardian did">Action</th>
         <th id="dec-solve" hidden
             title="Client-reported proof time; hover a cell for the algorithm, work parameters, and measured round trip">Solve</th>
-        <th title="Which policy decided, as category:detail">Reason</th>
-        <th title="Request Host header">Host</th>
+        <th title="Which policy decided, as category:detail; click to filter its category">Reason</th>
+        <th title="Request Host header; click to filter this host">Host</th>
         <th title="Client IP; click to look it up">IP</th>
         <th id="dec-geo" hidden
-            title="Country, city and network of the IP">Geo</th>
-        <th title="Method and URI requested; a solve row names the page its challenge was for">Request</th>
-        <th title="Client User-Agent; forgeable">User-Agent</th>
+            title="Country, city and network of the IP; click the country to filter it">Geo</th>
+        <th title="Method and URI requested; click to filter the query-stripped path; a solve row names the page its challenge was for">Request</th>
+        <th title="Client User-Agent; forgeable; click to filter the exact value">User-Agent</th>
       </tr></thead>
       <tbody id="decisions"></tbody>
     </table>
@@ -731,40 +768,25 @@
   </div>
   <div class="empty" id="offenders-empty" hidden>No non-allow decisions recorded yet.</div>
 
-  <div class="cols">
-    <div>
-      <h2>Domains<a class="help"
-        href="https://angieguardian.org/reference/configuration#per-domain-options-defaults-and-domains-host"
-        target="_blank" rel="noopener noreferrer"
-        title="Docs: per-domain options reference"
-        aria-label="Documentation: per-domain configuration">i</a></h2>
-      <!-- One row per configured domain, so a large fleet would otherwise push
-           everything below it off the page: scroll in place, header pinned. -->
-      <div class="tablewrap scrolly">
-        <table>
-          <thead><tr><th title="Configured domain, or defaults">Domain</th>
-                     <th title="Proof of work and configured header-exemption counts">PoW</th>
-                     <th title="When proof of work applies">Mode</th>
-                     <th title="WAF rules; hover a cell for the rules file">Rules</th>
-                     <th title="Anomaly scoring: enforce, observe or off">Anomaly</th>
-                     <th title="Per-IP behavioural blocking">Behaviour</th>
-                     <th title="GeoIP country and ASN rules">Geo</th>
-                     <th title="Reputation feeds">Feeds</th></tr></thead>
-          <tbody id="domains"></tbody>
-        </table>
-      </div>
-    </div>
-    <div>
-      <h2>Recent by reason</h2>
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th title="The part of a reason before the colon">Reason category</th>
-                     <th title="Decisions in the recent window">Count</th></tr></thead>
-          <tbody id="reasons"></tbody>
-        </table>
-        <div class="empty" id="reasons-empty" hidden>No recent activity.</div>
-      </div>
-    </div>
+  <h2>Domains<a class="help"
+    href="https://angieguardian.org/reference/configuration#per-domain-options-defaults-and-domains-host"
+    target="_blank" rel="noopener noreferrer"
+    title="Docs: per-domain options reference"
+    aria-label="Documentation: per-domain configuration">i</a></h2>
+  <!-- One row per configured domain, so a large fleet would otherwise push
+       everything below it off the page: full width, scroll in place, header pinned. -->
+  <div class="tablewrap scrolly">
+    <table>
+      <thead><tr><th title="Configured domain, or defaults">Domain</th>
+                 <th title="Proof of work and configured header-exemption counts">PoW</th>
+                 <th title="When proof of work applies">Mode</th>
+                 <th title="WAF rules; hover a cell for the rules file">Rules</th>
+                 <th title="Anomaly scoring: enforce, observe or off">Anomaly</th>
+                 <th title="Per-IP behavioural blocking">Behaviour</th>
+                 <th title="GeoIP country and ASN rules">Geo</th>
+                 <th title="Reputation feeds">Feeds</th></tr></thead>
+      <tbody id="domains"></tbody>
+    </table>
   </div>
 
   <h2>IP intelligence <span class="meta" id="intel-dbs"></span><a class="help"
@@ -1107,9 +1129,11 @@
     return r.toFixed(2) + "/s";
   };
 
-  // Detailed rows stay bounded for the table and geo map. The compact feed can
-  // use the full configured ring without transferring request or GeoIP detail.
+  // Detailed rows stay bounded for the table. The compact feed and offender
+  // rollups can use the full ring without transferring request-level detail.
   let lastDecisions = [];
+  let lastDecisionMatched = 0;
+  let lastDecisionTruncated = false;
   let lastChartDecisions = [];
   let lastDecisionWindow = null;
   let lastBlocks = { blocks: [] };
@@ -1123,6 +1147,17 @@
   // the browser keeps the whole thing self-contained. decPage is 0-based.
   const DEC_PAGE_SIZE = 25;
   let decPage = 0;
+
+  // Detailed request/Geo rows are the expensive feed, so 1024 remains the
+  // default while an operator can opt into the complete configured ring. This
+  // is a browser preference, not incident state, hence localStorage rather
+  // than a URL parameter alongside the shareable facets.
+  const DECISION_LIMIT_KEY = "guardian_dashboard_decision_limit";
+  const DECISION_LIMIT_OPTIONS = [...$("f-limit").options].map((option) => option.value);
+  const storedDecisionLimit = localStorage.getItem(DECISION_LIMIT_KEY);
+  if (DECISION_LIMIT_OPTIONS.includes(storedDecisionLimit)) {
+    $("f-limit").value = storedDecisionLimit;
+  }
 
   // Active blocks paginate the same way. Blocks can pile up under a
   // behavioural attack, and the list is only refetched every 60s, so page
@@ -1201,7 +1236,7 @@
   const geoModifierLabel = macPlatform ? "Cmd" : "Ctrl";
   $("geomap-help").textContent = geoModifierLabel +
     "+wheel to zoom · " + geoModifierLabel +
-    "+drag to pan · touch: pinch and drag";
+    "+drag to pan · touch: pinch and drag · click a shaded country to filter";
 
   const geoProjection = (chart) => chart?.scales?.projection;
   const geoOutline = (chart) => ({
@@ -1691,6 +1726,13 @@
   // sample size is a column, so a thin one is visible rather than papered over.
   const THIN_SOLVE_SAMPLE = 5;
   const renderSolveClients = () => {
+    // Structured filters are applied server-side before the detailed response
+    // cap, so this feed is no longer a neutral sample for comparing clients.
+    // Hide the unrelated rollup until the unfiltered feed is restored.
+    if ($("f-action").value || FACET_KEYS.some(hasFacet)) {
+      $("card-solve-clients").hidden = true;
+      return;
+    }
     const groups = new Map();
     for (const d of lastDecisions) {
       if (d.action !== "solve") continue;
@@ -1985,6 +2027,179 @@
     try { return regionNames?.of(code) || code; } catch (_) { return code; }
   };
 
+  // Structured drill-down state. Empty host/UA values are meaningful offender
+  // keys, so property presence (not truthiness) says whether a facet is active.
+  const FACET_KEYS = ["host", "reason_category", "country", "path", "ua"];
+  const initialQuery = new URLSearchParams(location.search);
+  const facets = {};
+  for (const key of FACET_KEYS) {
+    if (!initialQuery.has(key)) continue;
+    const value = initialQuery.get(key);
+    if (key === "reason_category" && !value) continue;
+    if (key === "country" && !/^[a-z]{2}$/i.test(value)) continue;
+    facets[key] = value;
+  }
+  if (facets.country) facets.country = facets.country.toUpperCase();
+  const initialAction = initialQuery.get("action");
+  if ([...$("f-action").options].some((option) => option.value === initialAction)) {
+    $("f-action").value = initialAction;
+  }
+  const hasFacet = (key) => Object.prototype.hasOwnProperty.call(facets, key);
+  const facetLabel = (key, value) => {
+    if (key === "reason_category") return "Reason: " + value;
+    if (key === "country") return "Country: " + countryName(value) + " (" + value + ")";
+    if (key === "ua") return "User-Agent: " + (value || "(empty)");
+    if (key === "host") return "Host: " + (value || "(empty)");
+    return "Path: " + value;
+  };
+  const facetURL = (key, value) => {
+    const url = new URL(location.href);
+    url.searchParams.set(key, value);
+    const action = $("f-action").value;
+    if (action) url.searchParams.set("action", action);
+    else url.searchParams.delete("action");
+    return url.pathname + url.search + url.hash;
+  };
+  const syncFilterURL = () => {
+    const url = new URL(location.href);
+    for (const key of FACET_KEYS) {
+      if (hasFacet(key)) url.searchParams.set(key, facets[key]);
+      else url.searchParams.delete(key);
+    }
+    const action = $("f-action").value;
+    if (action) url.searchParams.set("action", action);
+    else url.searchParams.delete("action");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  };
+  const renderFacetChips = () => {
+    const active = FACET_KEYS.filter(hasFacet);
+    const nodes = active.map((key) => {
+      const button = el("button", null, facetLabel(key, facets[key]) + " ×");
+      button.type = "button";
+      button.setAttribute("aria-label", "Remove " + facetLabel(key, facets[key]) + " filter");
+      button.addEventListener("click", () => {
+        delete facets[key];
+        syncFilterURL();
+        renderFacetChips();
+        decPage = 0;
+        renderDecisions();
+        refreshAfterFilter();
+      });
+      return button;
+    });
+    if (active.length > 1) {
+      const clear = el("button", "clear-facets", "Clear all");
+      clear.type = "button";
+      clear.addEventListener("click", () => {
+        for (const key of FACET_KEYS) delete facets[key];
+        syncFilterURL();
+        renderFacetChips();
+        decPage = 0;
+        renderDecisions();
+        refreshAfterFilter();
+      });
+      nodes.push(clear);
+    }
+    if (active.length) {
+      nodes.push(el("span", "meta",
+        "Recent-ring activity; offender Hits exclude solves and failed redemptions."));
+    }
+    $("f-facets").replaceChildren(...nodes);
+  };
+  const applyFacet = (key, value) => {
+    facets[key] = key === "country" ? value.toUpperCase() : value;
+    syncFilterURL();
+    renderFacetChips();
+    decPage = 0;
+    renderDecisions(); // narrow the cached page while the full-ring query runs
+    refreshAfterFilter();
+    $("decisions-heading").scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
+
+  // The manual builder exposes the same exact facets as the drill-down links.
+  // Suggestions come from the fetched activity only: they speed up entry but
+  // never prevent an operator from entering a value that is older in the ring.
+  const FILTER_HINTS = {
+    host: "example.com",
+    reason_category: "pow",
+    country: "ISO code, e.g. NL",
+    path: "/login",
+    ua: "exact User-Agent",
+  };
+  const filterSuggestionValues = (key) => {
+    const values = lastDecisions.map((decision) => {
+      if (key === "host") return normalizedHost(decision.host);
+      if (key === "reason_category") return decisionReasonCategory(decision.reason);
+      if (key === "country") return String(decision.country || "").toUpperCase();
+      if (key === "path") return decisionPath(decision.uri);
+      return String(decision.ua || "");
+    }).filter(Boolean);
+    return [...new Set(values)].sort((a, b) => key === "country"
+      ? countryName(a).localeCompare(countryName(b)) : a.localeCompare(b)).slice(0, 200);
+  };
+  const updateFilterBuilder = () => {
+    const key = $("f-field").value;
+    $("f-value").placeholder = FILTER_HINTS[key];
+    $("f-value").value = hasFacet(key) ? facets[key] : "";
+    $("f-builder-err").textContent = "";
+    $("f-suggestions").replaceChildren(...filterSuggestionValues(key).map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      if (key === "country") option.label = countryName(value);
+      return option;
+    }));
+  };
+  const closeFilterBuilder = () => {
+    $("f-builder").hidden = true;
+    $("f-add").setAttribute("aria-expanded", "false");
+    $("f-builder-err").textContent = "";
+  };
+  const openFilterBuilder = () => {
+    updateFilterBuilder();
+    $("f-builder").hidden = false;
+    $("f-add").setAttribute("aria-expanded", "true");
+    $("f-value").focus();
+  };
+  const facetLink = (key, value, label = value) => {
+    const link = el("a", "drill-link", label);
+    link.href = facetURL(key, value);
+    link.addEventListener("click", (event) => {
+      link.href = facetURL(key, value); // action/other facets may have changed since render
+      if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+      event.preventDefault();
+      applyFacet(key, value);
+    });
+    return link;
+  };
+  const facetCell = (key, value, label = value) => {
+    const cell = td("wrap", "");
+    cell.appendChild(facetLink(key, value, label));
+    return cell;
+  };
+  const decisionGeoCell = (decision) => {
+    const cell = td("wrap", "");
+    const parts = [];
+    const place = [decision.city, decision.subdivision].filter(Boolean).join(", ");
+    if (place) parts.push(el("span", null, place));
+    if (decision.country) {
+      parts.push(facetLink("country", decision.country, countryName(decision.country)));
+    }
+    const network = decision.as_org || (decision.asn ? "AS" + decision.asn : "");
+    if (network) parts.push(el("span", null, network));
+    parts.forEach((part, index) => {
+      if (index) cell.appendChild(el("span", null, " · "));
+      cell.appendChild(part);
+    });
+    // Match geoCell's qualification: the whole locality is approximate even
+    // though only its country token is interactive.
+    if ((decision.city || decision.subdivision) &&
+        decision.accuracy_radius_km >= COARSE_RADIUS_KM) {
+      cell.className = "wrap coarse";
+      cell.title = "approximate: " + decision.accuracy_radius_km + " km radius";
+    }
+    return cell;
+  };
+
   // Top offenders: six ranked-list tables from /admin/offenders. Text only
   // (attacker-controlled IPs/paths/UAs/hosts), so every cell lands via
   // td()'s textContent.
@@ -2012,19 +2227,19 @@
       return [ipCell(r.ip), geoCell(r), td("hits", String(r.count))];
     });
     fill("off-reasons", data.reasons || [], (r) =>
-      [td("wrap", r.key), td("hits", String(r.count))]);
+      [facetCell("reason_category", r.key), td("hits", String(r.count))]);
     fill("off-paths", data.paths || [], (r) =>
-      [td("wrap", r.key), td("hits", String(r.count))]);
+      [facetCell("path", r.key), td("hits", String(r.count))]);
     fill("off-user-agents", data.user_agents || [], (r) =>
-      [td("wrap", r.key || "(empty)"), td("hits", String(r.count))]);
+      [facetCell("ua", r.key, r.key || "(empty)"), td("hits", String(r.count))]);
     fill("off-hosts", data.hosts || [], (r) =>
-      [td("wrap", r.key || "(empty)"), td("hits", String(r.count))]);
+      [facetCell("host", r.key, r.key || "(empty)"), td("hits", String(r.count))]);
 
     const countries = data.countries || [];
     $("off-countries-wrap").hidden = countries.length === 0;
     if (countries.length) {
       fill("off-countries", countries, (r) =>
-        [td("wrap", countryName(r.key)), td("hits", String(r.count))]);
+        [facetCell("country", r.key, countryName(r.key)), td("hits", String(r.count))]);
     }
     // Collapse the Geo column header when no GeoIP data is present anywhere.
     $("off-ip-geo").textContent = hasGeo ? "Geo" : "";
@@ -2072,6 +2287,27 @@
     VN:"704",VU:"548",WF:"876",WS:"882",YE:"887",YT:"175",ZA:"710",ZM:"894",
     ZW:"716",
   };
+  const ISO_NUM_TO_A2 = Object.fromEntries(
+    Object.entries(ISO_A2_TO_NUM).map(([alpha2, numeric]) => [numeric, alpha2])
+  );
+  const geoCountryAt = (chart, index) => {
+    const selected = chart?.data?.datasets?.[0]?.data?.[index];
+    return selected?.country && selected.value !== null ? selected.country : "";
+  };
+
+  // Do not turn the end of a map pan into a country selection. A fresh pointer
+  // down resets the guard; moving more than a click-sized tolerance arms it.
+  const geoPointer = { x: 0, y: 0, moved: false };
+  $("chart-geomap").addEventListener("pointerdown", (event) => {
+    geoPointer.x = event.clientX;
+    geoPointer.y = event.clientY;
+    geoPointer.moved = false;
+  });
+  $("chart-geomap").addEventListener("pointermove", (event) => {
+    if (Math.hypot(event.clientX - geoPointer.x, event.clientY - geoPointer.y) > 6) {
+      geoPointer.moved = true;
+    }
+  });
 
   // The atlas is fetched once, lazily, and only when there is geo data to draw:
   // a deployment without a location_db never pays for it. null = not loaded yet,
@@ -2131,11 +2367,22 @@
           // A country with no traffic gets null, NOT 0: 0 lands on the bottom
           // of the colour ramp and paints the whole world as a light offender.
           // null routes it to the scale's `missing` colour instead.
-          data: features.map((f) => ({ feature: f, value: byNum[f.id] ?? null })),
+          data: features.map((f) => ({
+            feature: f, value: byNum[f.id] ?? null, country: ISO_NUM_TO_A2[f.id] || "",
+          })),
         }],
       },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
+        onClick: (event, elements, chart) => {
+          const native = event.native || event;
+          if (geoPointer.moved || native.ctrlKey || native.metaKey || !elements.length) {
+            geoPointer.moved = false;
+            return;
+          }
+          const country = geoCountryAt(chart, elements[0].index);
+          if (country) applyFacet("country", country);
+        },
         plugins: {
           legend: { display: false },
           zoom: {
@@ -2743,6 +2990,34 @@
     }, 350) };
   };
 
+  const normalizedHost = (value) => {
+    let host = String(value || "").trim().toLowerCase();
+    const bracketed = host.match(/^\[([^\]]+)](?::\d+)?$/);
+    if (bracketed) host = bracketed[1];
+    else if ((host.match(/:/g) || []).length === 1) host = host.replace(/:\d+$/, "");
+    return host.replace(/\.$/, "");
+  };
+  const decisionPath = (uri) => {
+    const path = String(uri || "").split("?", 1)[0] || "/";
+    return path.length > 128 ? path.slice(0, 128) + "…" : path;
+  };
+  const decisionReasonCategory = (reason) => String(reason || "").split(":", 1)[0];
+  const matchesFacets = (decision) =>
+    (!hasFacet("host") || normalizedHost(decision.host) === normalizedHost(facets.host)) &&
+    (!hasFacet("reason_category") || decisionReasonCategory(decision.reason) === facets.reason_category) &&
+    (!hasFacet("country") || String(decision.country || "").toUpperCase() === facets.country) &&
+    (!hasFacet("path") || decisionPath(decision.uri) === decisionPath(facets.path)) &&
+    (!hasFacet("ua") || String(decision.ua || "") === facets.ua);
+  const decisionQuery = () => {
+    const query = new URLSearchParams({ limit: $("f-limit").value });
+    const action = $("f-action").value;
+    if (action) query.set("action", action);
+    for (const key of FACET_KEYS) {
+      if (hasFacet(key)) query.set(key, facets[key]);
+    }
+    return "/admin/decisions?" + query.toString();
+  };
+
   // The feed the decisions table pages over. Split out of renderDecisions so
   // the Last button can size the page count from the same rows without having
   // to render a page it is about to leave.
@@ -2751,6 +3026,7 @@
     const needle = $("f-text").value.trim().toLowerCase();
     return lastDecisions.filter((d) => {
       if (action && d.action !== action) return false;
+      if (!matchesFacets(d)) return false;
       if (!needle) return true;
       // d.action is searched too: "solve" already appeared to match as an
       // accident of the pow:solved reason string, while "redeem_fail" found
@@ -2783,9 +3059,16 @@
       action.appendChild(el("span", "chip " + d.action, d.action));
       const cells = [timeCell(d.time), action];
       if (hasSolve) cells.push(solveCell(d));
-      cells.push(td("wrap", d.reason), td("wrap", d.host), ipCell(d.ip));
-      if (hasGeo) cells.push(geoCell(d));
-      cells.push(td("wrap", requestText(d)), td("wrap", d.ua));
+      const reasonCategory = decisionReasonCategory(d.reason);
+      cells.push(reasonCategory
+        ? facetCell("reason_category", reasonCategory, d.reason)
+        : td("wrap", d.reason));
+      cells.push(facetCell("host", normalizedHost(d.host), d.host || "(empty)"), ipCell(d.ip));
+      if (hasGeo) cells.push(decisionGeoCell(d));
+      cells.push(d.uri
+        ? facetCell("path", decisionPath(d.uri), requestText(d))
+        : td("wrap", requestText(d)));
+      cells.push(facetCell("ua", d.ua || "", d.ua || "(empty)"));
       return row(...cells);
     }));
     // An empty result for a whole-IP needle gets the ring-wide fall-through:
@@ -2794,7 +3077,7 @@
     // set, since the probe cannot honour it.
     const empty = $("decisions-empty");
     empty.hidden = rows.length > 0;
-    if (!empty.hidden && !action && looksLikeIP(needle)) {
+    if (!empty.hidden && !action && !FACET_KEYS.some(hasFacet) && looksLikeIP(needle)) {
       probeRingForIP(needle);
       if (ipProbe.needle === needle && ipProbe.count > 0) {
         const link = el("a", "ip-link", ipProbe.count +
@@ -2814,8 +3097,15 @@
     } else if (!empty.hidden) {
       empty.textContent = "No matching recent decisions.";
     }
-    $("f-count").textContent = (action || needle)
-      ? rows.length + " of " + lastDecisions.length : "";
+    const structured = action || FACET_KEYS.some(hasFacet);
+    if (lastDecisionTruncated && structured) {
+      $("f-count").textContent = rows.length + " shown · " + lastDecisionMatched +
+        " ring matches (" + lastDecisions.length + " fetched)";
+    } else if (structured || needle) {
+      $("f-count").textContent = rows.length + " of " + lastDecisions.length;
+    } else {
+      $("f-count").textContent = "";
+    }
 
     // Pager: hidden when everything fits on one page.
     $("dec-pager").hidden = rows.length <= DEC_PAGE_SIZE;
@@ -3342,7 +3632,7 @@
     // renderBlocks reads); the resolved value itself is not needed here.
     const [stats, , decisions, chartDecisions, config, intel, dist, offenders, angie, anomaly] = await Promise.all([
       api("/admin/stats"), blocksRequest,
-      api("/admin/decisions?limit=1024"),
+      api(decisionQuery()),
       api("/admin/decisions?view=compact&limit=all"),
       api("/admin/config"),
       api("/admin/intel"),
@@ -3420,6 +3710,8 @@
 
     // Recent decisions (rendered through the active filters).
     lastDecisions = decisions.decisions;
+    lastDecisionMatched = Number(decisions.matched ?? decisions.count) || 0;
+    lastDecisionTruncated = Boolean(decisions.truncated);
     lastChartDecisions = chartDecisions.decisions;
     lastDecisionWindow = chartDecisions.window;
     renderDecisions();
@@ -3428,11 +3720,6 @@
     // the tick and re-scan the freshly fetched ring. Best-effort like the
     // other optional fetches; a failure renders inline in the card.
     if (lookupIP) doLookup(lookupIP).catch(() => {});
-
-    // Reason rollup.
-    $("reasons").replaceChildren(...reasons.map(([r, n]) =>
-      row(td("wrap", r), td("num", String(n)))));
-    $("reasons-empty").hidden = reasons.length > 0;
 
     // Domains.
     const doms = Object.entries(config.domains || {}).sort((a, b) => a[0].localeCompare(b[0]));
@@ -3525,6 +3812,7 @@
     return refreshes.scheduled();
   };
   const refreshAfterAction = () => refreshes.forced(true);
+  const refreshAfterFilter = () => refreshes.forced(false);
   // Auto-refresh interval (ms), persisted per browser; 0 = off (manual only).
   // Validate the stored value against the actual options so a stale/garbage
   // entry can't leave the select blank or fall back silently.
@@ -3541,6 +3829,7 @@
     $("gate").hidden = true; $("app").hidden = false;
     armTimer();
     probeReload();
+    renderFacetChips();
     // Deep link: /admin/dashboard?ip=... opens the lookup on load, so an
     // operator can share a lookup URL with the on-call. Wait for the initial
     // render: on a refresh, scrolling before it has established the document
@@ -3765,11 +4054,53 @@
     refreshAfterAction();
   });
 
-  // Decision filters re-render locally, no refetch. A filter change resets to
-  // the first page so results aren't hidden on a stale page number.
+  // Free text re-renders locally. Action changes also refetch because the
+  // daemon applies structured filters before the response cap. Every change
+  // resets to the first page so results cannot hide on a stale page number.
   const refilter = () => { decPage = 0; renderDecisions(); };
-  $("f-action").addEventListener("change", refilter);
+  $("f-action").addEventListener("change", () => {
+    syncFilterURL();
+    refilter();
+    refreshAfterFilter();
+  });
+  $("f-limit").addEventListener("change", () => {
+    localStorage.setItem(DECISION_LIMIT_KEY, $("f-limit").value);
+    refilter();
+    refreshAfterFilter();
+  });
   $("f-text").addEventListener("input", refilter);
+  $("f-add").addEventListener("click", () => {
+    if ($("f-builder").hidden) openFilterBuilder();
+    else closeFilterBuilder();
+  });
+  $("f-cancel").addEventListener("click", () => {
+    closeFilterBuilder();
+    $("f-add").focus();
+  });
+  $("f-field").addEventListener("change", updateFilterBuilder);
+  $("f-builder").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const key = $("f-field").value;
+    const raw = $("f-value").value;
+    let value = raw;
+    if (key === "host") value = normalizedHost(raw);
+    else if (key === "reason_category") value = raw.trim();
+    else if (key === "country") value = raw.trim().toUpperCase();
+    else if (key === "path") value = decisionPath(raw.trim());
+    if (!value || (key === "ua" && !value.trim())) {
+      $("f-builder-err").textContent = "Enter a value.";
+      $("f-value").focus();
+      return;
+    }
+    if (key === "country" && !/^[A-Z]{2}$/.test(value)) {
+      $("f-builder-err").textContent = "Use a two-letter ISO country code, such as NL.";
+      $("f-value").focus();
+      return;
+    }
+    applyFacet(key, value); // replaces the active facet for this field
+    closeFilterBuilder();
+    $("f-add").focus();
+  });
 
   // Pager: step within the filtered decisions, re-render locally. First and
   // Last jump to the ends of the feed as it stands at the click; the next tick
