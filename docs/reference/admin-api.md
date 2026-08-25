@@ -252,9 +252,10 @@ works immediately.
 
 ### `GET /admin/decisions`
 
-The recent activity feed, newest first, from an in-process ring buffer (per
-instance, cleared on restart, capacity set by `admin.recent_size`). It holds
-three kinds of row: every non-allow decision, every redeemed proof-of-work
+The recent activity feed, newest first, from an in-process ring buffer
+(per instance, cleared on restart, capacity set by
+`admin.recent_decisions_capacity`). It holds three kinds of row: every
+non-allow decision, every redeemed proof-of-work
 challenge (action `solve`), and every failed redemption attempt (action
 `redeem_fail`). Allows - including explicit WAF allow rules - are never recorded;
 their aggregate volume remains available through
@@ -296,9 +297,9 @@ Neither timing is evidence about a client, and neither should decide anything;
 they are inputs for tuning SHA-256 difficulty or Argon2id work parameters. When
 GeoIP/ASN databases are configured, each row may also contain `country`,
 `city`, `subdivision`, `accuracy_radius_km`, `asn`, and `as_org`. These optional
-fields are looked up when the feed is read, once per distinct IP in the
-response; they do not add work to the request decision path and are omitted
-when unavailable.
+fields are looked up when the feed is read, once per distinct IP returned (or
+examined when filtering by country); they do not add work to the request
+decision path and are omitted when unavailable.
 
 Query parameters:
 
@@ -307,17 +308,27 @@ Query parameters:
 | `limit` | `50` | Maximum entries returned, or `all` for every entry in the configured bounded ring. |
 | `action` | | Filter: `deny`, `challenge`, `refuse`, `solve` or `redeem_fail`. `refuse` means Guardian withheld a challenge after classifying the request as unable to complete it, so it is neither a block nor a puzzle anyone was asked to solve. `solve` returns only redeemed challenges, `redeem_fail` only failed redemption attempts. |
 | `reason` | | Filter by reason prefix, e.g. `waf`, or `pow` for every proof-of-work verdict, which also matches the `pow:solved` and `pow:nojs` rows of solved challenges and the `pow:*` rows of failed attempts (filter on `action` to separate them). Token-related outcomes are `pow:no_token`, `pow:token_expired`, `pow:token_binding`, `pow:token_underdifficulty`, `pow:token_invalid`, and `pow:unchallengeable`; the last is paired with action `refuse` rather than `challenge` (see [Troubleshooting](/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked)). |
+| `reason_category` | | Match the category before the first `:` exactly, as used by the dashboard's offender rollup (`pow`, `behaviour_block`, `waf`, and so on). Unlike `reason`, this is not a prefix match. |
+| `host` | | Match one request host exactly after lowercasing, stripping the port and IPv6 brackets, and dropping a trailing dot. An empty value matches an empty Host. |
+| `path` | | Match the offender-rollup path exactly: query stripped, empty normalized to `/`, and capped at 128 bytes. |
+| `ua` | | Match the complete, case-sensitive User-Agent value. An empty value matches decisions with no User-Agent. |
+| `country` | | Match an ISO alpha-2 GeoIP country exactly, case-insensitive on input. Requires a location database; malformed codes return `400`. |
 | `ip` | | Filter to one client IP, matched exactly after canonicalisation (`::ffff:1.2.3.4` matches `1.2.3.4`); a value that is not an IP returns `400`. Used by the dashboard's IP lookup. |
 | `view` | detailed | Set to `compact` to return only `time`, `action`, and `reason` without GeoIP/ASN enrichment. Intended for live chart bucketing; `solve` and `redeem_fail` rows are returned like any other, and the dashboard's charts drop them (an outcome is the consequence of a challenge already plotted). |
 
-Both views include retention metadata. `truncated` describes the response limit,
-while `window.full` says whether the ring itself has overwritten older decisions.
+Filters compose with AND semantics and are applied to the complete retained ring
+before `limit`. Both views include retention metadata. `count` is the number of
+rows returned, `matched` is the number matched before the response limit, and
+`truncated` says those numbers differ. This lets a client report a partial page
+without presenting it as the complete drill-down. `window.full` says whether
+the ring itself has overwritten older decisions.
 Together with `started_at` and the retained oldest/newest timestamps, clients can
 distinguish an empty covered interval from unavailable history.
 
 ```json
 {
   "count": 1024,
+  "matched": 1842,
   "truncated": true,
   "window": {
     "available": 4096,
@@ -422,9 +433,10 @@ outlive the bounded ring behind `/admin/decisions`.
 The heaviest sources of non-allow decisions in the recent window: top IPs,
 reason categories, request paths, exact User-Agent strings and normalized hosts,
 plus a country rollup when GeoIP is loaded.
-Counts the in-process decision ring exactly (bounded by `admin.recent_size`,
-with no extra hot-path work). The window is the ring, so it covers challenged/denied
-traffic, not allows. Proof-of-work outcomes (`solve`, `redeem_fail`) are in that
+Counts the in-process decision ring exactly (bounded by
+`admin.recent_decisions_capacity`, with no extra hot-path work). The window is
+the ring, so it covers challenged/denied traffic, not allows. Proof-of-work
+outcomes (`solve`, `redeem_fail`) are in that
 ring too, and are excluded from every rollup here including `window`: this list
 is read to decide who to block, the clients that paid their proof of work are
 the last ones that belong on it, and a failed redemption is as often a VPN
@@ -711,7 +723,7 @@ with `422` and the running config stays active.
 ```
 
 Listener addresses, the store backend, signing key paths, admin token setup and
-`admin.recent_size` are fixed at startup; changing those fields still requires
+`admin.recent_decisions_capacity` are fixed at startup; changing those fields still requires
 a restart
 (the reload is rejected with `422`, leaving the active config unchanged).
 

@@ -227,7 +227,7 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 		pow:    powMgr,
 		bots:   botverify.New(st, log),
 		board:  NewScoreboard(st, log),
-		recent: newRecentRing(cfg.Admin.RecentSize),
+		recent: newRecentRing(cfg.Admin.RecentDecisionsCapacity),
 		log:    log,
 		stages: []Stage{
 			// Evaluated in this order; the first stage to return a terminal

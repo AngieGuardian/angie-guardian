@@ -562,7 +562,7 @@ func staticConfigChanges(running staticConfig, next *core.Config) []string {
 	add("admin.token", running.admin.Token != next.Admin.Token)
 	add("admin.token_file", running.admin.TokenFile != next.Admin.TokenFile)
 	add("admin.dashboard", running.admin.Dashboard != next.Admin.Dashboard)
-	add("admin.recent_size", running.admin.RecentSize != next.Admin.RecentSize)
+	add("admin.recent_decisions_capacity", running.admin.RecentDecisionsCapacity != next.Admin.RecentDecisionsCapacity)
 	add("admin.angie_api", running.admin.AngieAPI != next.Admin.AngieAPI)
 	add("admin.metrics_auth", running.admin.MetricsAuth != next.Admin.MetricsAuth)
 	add("store.backend", running.store.Backend != next.Store.Backend)

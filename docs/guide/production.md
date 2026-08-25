@@ -563,7 +563,7 @@ remote OOM). The client-keyed structures and their caps:
   rotating-IP flood still trips the limiter (over-counting at worst) instead
   of resetting to one each time.
 - **Recent-decisions ring** (admin/dashboard feed): bounded by
-  `admin.recent_size` (default 4096, maximum 16384), overwrite-oldest. It holds
+  `admin.recent_decisions_capacity` (default 4096, maximum 16384), overwrite-oldest. It holds
   raw host/URI/UA strings, so exact bytes vary with traffic, but entry count
   never grows past the configured cap. Proof-of-work outcomes (solves and
   failed redemptions) share it, which costs no extra memory (they take ring

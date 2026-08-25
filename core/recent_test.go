@@ -37,18 +37,18 @@ func TestRecentRing(t *testing.T) {
 	}
 
 	// Overfill past capacity: oldest entries overwritten, order kept.
-	for i := 5; i < defaultRecentSize+10; i++ {
+	for i := 5; i < defaultRecentDecisionsCapacity+10; i++ {
 		r.add(RecentDecision{URI: "/" + strconv.Itoa(i)})
 	}
 	got = r.list(0)
-	if len(got) != defaultRecentSize {
-		t.Fatalf("wrapped ring holds %d, want %d", len(got), defaultRecentSize)
+	if len(got) != defaultRecentDecisionsCapacity {
+		t.Fatalf("wrapped ring holds %d, want %d", len(got), defaultRecentDecisionsCapacity)
 	}
-	if got[0].URI != "/"+strconv.Itoa(defaultRecentSize+9) {
-		t.Errorf("newest = %s, want /%d", got[0].URI, defaultRecentSize+9)
+	if got[0].URI != "/"+strconv.Itoa(defaultRecentDecisionsCapacity+9) {
+		t.Errorf("newest = %s, want /%d", got[0].URI, defaultRecentDecisionsCapacity+9)
 	}
-	if got[defaultRecentSize-1].URI != "/10" {
-		t.Errorf("oldest = %s, want /10 (0..9 overwritten)", got[defaultRecentSize-1].URI)
+	if got[defaultRecentDecisionsCapacity-1].URI != "/10" {
+		t.Errorf("oldest = %s, want /10 (0..9 overwritten)", got[defaultRecentDecisionsCapacity-1].URI)
 	}
 }
 

@@ -377,7 +377,9 @@ func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
 // with configured GeoIP/ASN data; view=compact returns only time/action/reason
 // for live charts. Query: ?limit= (default 50, or "all" for the bounded ring),
 // ?action=deny|challenge|refuse|solve|redeem_fail, ?reason=<prefix>,
-// ?ip=<exact ip>, ?view=compact.
+// ?reason_category=<exact category>, ?host=<exact normalized host>,
+// ?path=<exact normalized path>, ?ua=<exact User-Agent>,
+// ?country=<exact ISO alpha-2 code>, ?ip=<exact ip>, ?view=compact.
 func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
@@ -399,6 +401,25 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, reason := q.Get("action"), q.Get("reason")
+	reasonCategory := q.Get("reason_category")
+	if q.Has("reason_category") && reasonCategory == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "reason_category must not be empty"})
+		return
+	}
+	host, filterHost := q.Get("host"), q.Has("host")
+	if filterHost {
+		host = stateless.NormalizeHost(host)
+	}
+	path, filterPath := q.Get("path"), q.Has("path")
+	if filterPath {
+		path = normalizePath(path)
+	}
+	ua, filterUA := q.Get("ua"), q.Has("ua")
+	country := strings.ToUpper(q.Get("country"))
+	if q.Has("country") && (len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z') {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "country must be an ISO alpha-2 code"})
+		return
+	}
 	// ?ip= is an exact match after canonicalisation, so the dashboard's IP
 	// lookup covers the whole ring rather than a substring of a page of it.
 	ip := q.Get("ip")
@@ -419,9 +440,29 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	if responseLimit == 0 || responseLimit > len(all) {
 		responseLimit = len(all)
 	}
+	provider := s.engine.Intel()
+	byIP := make(map[string]intel.Info)
+	lookupInfo := func(ip string) intel.Info {
+		if info, ok := byIP[ip]; ok {
+			return info
+		}
+		var info intel.Info
+		if provider != nil {
+			if addr, err := netip.ParseAddr(ip); err == nil {
+				info = provider.Lookup(addr)
+			}
+		}
+		byIP[ip] = info
+		return info
+	}
 	matches := func(d core.RecentDecision) bool {
 		return (action == "" || d.Action == action) &&
 			(reason == "" || strings.HasPrefix(d.Reason, reason)) &&
+			(reasonCategory == "" || reasonCat(d.Reason) == reasonCategory) &&
+			(!filterHost || stateless.NormalizeHost(d.Host) == host) &&
+			(!filterPath || normalizePath(d.URI) == path) &&
+			(!filterUA || d.UA == ua) &&
+			(country == "" || lookupInfo(d.IP).Country == country) &&
 			(ip == "" || d.IP == ip)
 	}
 
@@ -438,15 +479,13 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"count": len(out), "truncated": matched > len(out),
+			"count": len(out), "matched": matched, "truncated": matched > len(out),
 			"window": recentWindow(snap), "decisions": out,
 		})
 		return
 	}
 
 	out := make([]recentDecisionView, 0, responseLimit)
-	provider := s.engine.Intel()
-	byIP := make(map[string]intel.Info)
 	matched := 0
 	for _, d := range all {
 		if !matches(d) {
@@ -458,19 +497,12 @@ func (s *AdminServer) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		}
 		row := recentDecisionView{RecentDecision: d}
 		if provider != nil {
-			info, ok := byIP[d.IP]
-			if !ok {
-				if addr, err := netip.ParseAddr(d.IP); err == nil {
-					info = provider.Lookup(addr)
-				}
-				byIP[d.IP] = info
-			}
-			row.Info = info
+			row.Info = lookupInfo(d.IP)
 		}
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"count": len(out), "truncated": matched > len(out),
+		"count": len(out), "matched": matched, "truncated": matched > len(out),
 		"window": recentWindow(snap), "decisions": out,
 	})
 }
@@ -973,8 +1005,8 @@ type offenderIP struct {
 // recent window: top IPs, reason categories, request paths, User-Agent strings,
 // and hosts, plus a country rollup when GeoIP is loaded. It counts the
 // in-process RecentDecisions ring
-// exactly (bounded to the configured admin.recent_size); no Count-Min Sketch
-// and nothing extra on the hot path. The window is the ring, so it covers
+// exactly (bounded to the configured admin.recent_decisions_capacity); no
+// Count-Min Sketch and nothing extra on the hot path. The window is the ring, so it covers
 // challenged/denied traffic, not allows (which are never recorded).
 func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 	decisions := s.engine.RecentDecisionSnapshot().Decisions

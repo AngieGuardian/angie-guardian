@@ -108,14 +108,14 @@ const (
 // keep the zero-value fallback here so recentRing remains useful in tests and
 // embedded code that constructs one directly.
 const (
-	defaultRecentSize = 4096
-	maxRecentSize     = 16384
+	defaultRecentDecisionsCapacity = 4096
+	maxRecentDecisionsCapacity     = 16384
 )
 
 // Per-entry field caps. URI, UA, Host and Method are all attacker-supplied and
 // can each run to the proxy's full header budget (~8 KiB); uncapped, a hostile
-// flood could pin capacity*several-KiB (hundreds of MiB at maxRecentSize) in a
-// diagnostics buffer. Truncation keeps the ring's worst case
+// flood could pin capacity*several-KiB (hundreds of MiB at
+// maxRecentDecisionsCapacity) in a diagnostics buffer. Truncation keeps the ring's worst case
 // attacker-independent while leaving entries plenty descriptive for a live
 // operator view. Host and Method are capped far tighter because a legitimate
 // value is short: a Host is bounded by DNS name length and a method by the
@@ -189,7 +189,7 @@ type recentRing struct {
 
 func newRecentRing(size int) *recentRing {
 	if size <= 0 {
-		size = defaultRecentSize
+		size = defaultRecentDecisionsCapacity
 	}
 	return &recentRing{buf: make([]RecentDecision, size), startedAt: time.Now()}
 }
@@ -201,7 +201,7 @@ func (r *recentRing) add(d RecentDecision) {
 	d.Method = truncateRecent(d.Method, maxRecentMethodLen)
 	r.mu.Lock()
 	if len(r.buf) == 0 {
-		r.buf = make([]RecentDecision, defaultRecentSize)
+		r.buf = make([]RecentDecision, defaultRecentDecisionsCapacity)
 		r.startedAt = time.Now()
 	}
 	if r.count == len(r.buf) {
@@ -224,7 +224,7 @@ func (r *recentRing) snapshot(limit int) RecentDecisionSnapshot {
 	defer r.mu.Unlock()
 	capacity := len(r.buf)
 	if capacity == 0 {
-		capacity = defaultRecentSize
+		capacity = defaultRecentDecisionsCapacity
 	}
 	n := r.count
 	if limit <= 0 || limit > n {
