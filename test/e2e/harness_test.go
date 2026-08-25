@@ -110,6 +110,12 @@ func runSuite(m *testing.M) int {
 		return 1
 	}
 	defer os.RemoveAll(tlsDir)
+	// The Docker daemon may remap container users. Allow the Angie container to
+	// traverse this test-only directory and read the short-lived key pair.
+	if err := os.Chmod(tlsDir, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: set TLS directory permissions:", err)
+		return 1
+	}
 	tlsCertPath, tlsKeyPath, roots, err := writeSelfSignedCertificate(tlsDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: create TLS certificate:", err)
@@ -255,10 +261,10 @@ func writeSelfSignedCertificate(dir string) (certPath, keyPath string, roots *x5
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	certPath = dir + "/e2e.crt"
 	keyPath = dir + "/e2e.key"
-	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
 		return "", "", nil, err
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+	if err := os.WriteFile(keyPath, keyPEM, 0644); err != nil {
 		return "", "", nil, err
 	}
 	roots = x509.NewCertPool()
