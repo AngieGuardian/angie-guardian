@@ -55,24 +55,24 @@ type RecentDecision struct {
 	// SHA-256 difficulty or Argon2id parameters. 0 means "not reported": a
 	// no-JS redemption, or a value rejected as physically impossible. It never
 	// means "instant".
-	SolveMS int32 `json:"solve_ms,omitempty"`
+	SolveMS int32 `json:"solve_ms,omitzero"`
 	// RoundTripMS is issue to redeem, measured here from the challenge's own
 	// issued-at. Not forgeable, but not solve time either: it includes page
 	// load, both network legs and any time the tab spent backgrounded. On one
 	// instance it bounds SolveMS from above; across instances it does so only
 	// within pow.ClockSkewAllowance, since the challenge may carry a peer's
 	// clock. Never a substitute for SolveMS.
-	RoundTripMS int32 `json:"round_trip_ms,omitempty"`
+	RoundTripMS int32 `json:"round_trip_ms,omitzero"`
 	// PoWAlgorithm identifies how the solve was produced. RecordSolve maps an
 	// omitted value from older/internal callers to SHA-256.
 	PoWAlgorithm string `json:"pow_algorithm,omitempty"`
 	// Bits is set for SHA-256 and is the leading-zero-bit difficulty this
 	// challenge actually required after any escalation.
-	Bits uint8 `json:"bits,omitempty"`
+	Bits uint8 `json:"bits,omitzero"`
 	// Argon2MemoryKiB and Argon2Iterations are the authenticated fixed-result
 	// work parameters for an Argon2id solve. They are zero for SHA-256.
-	Argon2MemoryKiB  uint32 `json:"argon2_memory_kib,omitempty"`
-	Argon2Iterations uint32 `json:"argon2_iterations,omitempty"`
+	Argon2MemoryKiB  uint32 `json:"argon2_memory_kib,omitzero"`
+	Argon2Iterations uint32 `json:"argon2_iterations,omitzero"`
 }
 
 // The vocabulary for outcome rows. ActionSolve and ActionRedeemFail are

@@ -5,11 +5,10 @@
 package anomaly
 
 import (
-	"bytes"
 	"container/heap"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
-	"io"
 	"math"
 	"net/url"
 	"sort"
@@ -49,41 +48,9 @@ func ParseLogRecord(line []byte) (LogRecord, error) {
 	if !utf8.Valid(line) {
 		return rec, fmt.Errorf("line is not valid UTF-8")
 	}
-	dec := json.NewDecoder(bytes.NewReader(line))
-	tok, err := dec.Token()
-	if err != nil {
+	fields := make(map[string]jsontext.Value)
+	if err := json.Unmarshal(line, &fields); err != nil {
 		return rec, err
-	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return rec, fmt.Errorf("record must be a JSON object")
-	}
-	fields := make(map[string]json.RawMessage)
-	for dec.More() {
-		keyToken, err := dec.Token()
-		if err != nil {
-			return rec, err
-		}
-		key, ok := keyToken.(string)
-		if !ok {
-			return rec, fmt.Errorf("object key is not a string")
-		}
-		if _, duplicate := fields[key]; duplicate {
-			return rec, fmt.Errorf("duplicate field %q", key)
-		}
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			return rec, fmt.Errorf("field %q: %w", key, err)
-		}
-		fields[key] = raw
-	}
-	if _, err := dec.Token(); err != nil {
-		return rec, err
-	}
-	if tok, err := dec.Token(); err != io.EOF {
-		if err != nil {
-			return rec, err
-		}
-		return rec, fmt.Errorf("trailing JSON value %v", tok)
 	}
 
 	requireString := func(name string, dst *string) error {

@@ -424,9 +424,9 @@ type Challenge struct {
 	ID         string    `json:"challenge_id"`
 	Challenge  string    `json:"challenge"`
 	Algorithm  Algorithm `json:"algorithm"`
-	Difficulty int       `json:"difficulty_bits,omitempty"`
-	MemoryKiB  uint32    `json:"memory_kib,omitempty"`
-	Iterations uint32    `json:"iterations,omitempty"`
+	Difficulty int       `json:"difficulty_bits,omitzero"`
+	MemoryKiB  uint32    `json:"memory_kib,omitzero"`
+	Iterations uint32    `json:"iterations,omitzero"`
 	Salt       string    `json:"salt,omitempty"`
 }
 

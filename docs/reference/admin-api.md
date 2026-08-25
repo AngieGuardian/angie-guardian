@@ -141,7 +141,8 @@ default TTL is `24h`. It is deliberately far longer than the behavioural
 ladder's first rung (`block_ttl`, `30m`): a manual block is an operator
 deciding an IP is bad, not the scoreboard reacting to one burst. Pass an
 explicit `ttl` for a shorter block. An explicit TTL must be greater than zero
-and at most one year (`8760h`, i.e. `1y`). Malformed or unknown JSON fields
+and at most one year (`8760h`, i.e. `1y`). JSON member names are case-sensitive;
+malformed input, unknown or duplicate names, invalid UTF-8, and trailing values
 return `400` without changing block state.
 
 `ttl` takes the same units as [`guardian.yaml`

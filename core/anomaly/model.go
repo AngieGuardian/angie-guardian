@@ -8,9 +8,9 @@ package anomaly
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -255,15 +255,7 @@ func Load(path string) (*Model, error) {
 
 func ParseModel(raw []byte, path string) (*Model, error) {
 	m := &Model{}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(m); err != nil {
-		return nil, fmt.Errorf("parse model %s: %w", path, err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("trailing JSON value")
-		}
+	if err := json.UnmarshalRead(bytes.NewReader(raw), m, json.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("parse model %s: %w", path, err)
 	}
 	if m.Version != ModelVersion {
@@ -381,7 +373,7 @@ func (m *Model) Save(path string) error {
 	if err := m.validate(); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(m, "", " ")
+	raw, err := json.Marshal(m, json.Deterministic(true), jsontext.WithIndent(" "))
 	if err != nil {
 		return err
 	}

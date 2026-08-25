@@ -264,6 +264,26 @@ func TestAngieInvalidJSONNotCached(t *testing.T) {
 	}
 }
 
+func TestAngieRejectsAmbiguousJSON(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"duplicate member": []byte(`{"requests":1,"requests":2}`),
+		"invalid UTF-8":    append([]byte(`{"name":"`), 0xff, '"', '}'),
+	} {
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+			}))
+			defer upstream.Close()
+			ts := angieAdminServer(t, upstream.URL+"/status")
+			out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/angie", adminToken, ""))
+			if _, ok := out["server_zones"]; ok {
+				t.Fatalf("ambiguous JSON relayed: %v", out["server_zones"])
+			}
+		})
+	}
+}
+
 // TestAngieOverLimitRejected: a body larger than the read cap is detected and
 // rejected, not silently truncated and cached as valid-looking JSON.
 func TestAngieOverLimitRejected(t *testing.T) {

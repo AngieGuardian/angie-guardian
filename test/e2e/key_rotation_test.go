@@ -7,7 +7,7 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"testing"
 )
@@ -33,7 +33,7 @@ func TestKeyRotationPreservesLiveTokens(t *testing.T) {
 	var rotated struct {
 		Rotated bool `json:"rotated"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rotated); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &rotated); err != nil {
 		t.Fatalf("decode rotate response: %v", err)
 	}
 	if !rotated.Rotated {

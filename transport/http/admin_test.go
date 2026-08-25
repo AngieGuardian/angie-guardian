@@ -5,7 +5,7 @@
 package httptransport
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"log/slog"
@@ -115,7 +115,7 @@ func adminReq(t *testing.T, ts *httptest.Server, method, path, token string, bod
 func decodeJSON(t *testing.T, resp *http.Response) map[string]any {
 	t.Helper()
 	var m map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &m); err != nil {
 		t.Fatalf("decode json: %v", err)
 	}
 	return m
@@ -484,6 +484,9 @@ func TestAdminBlockRejectsInvalidInput(t *testing.T) {
 		{"negative ttl", "203.0.113.12", `{"ttl":"-1s"}`},
 		{"unknown field", "203.0.113.13", `{"ttl":"1m","extra":true}`},
 		{"trailing json", "203.0.113.14", `{"ttl":"1m"} {"ttl":"2m"}`},
+		{"duplicate field", "203.0.113.16", `{"ttl":"1m","ttl":"2m"}`},
+		{"wrong-case field", "203.0.113.17", `{"TTL":"1m"}`},
+		{"invalid utf8", "203.0.113.18", "{\"reason\":\"\xff\"}"},
 		{"invalid ip", "not-an-ip", `{"ttl":"1m"}`},
 		{"oversized ttl", "203.0.113.15", `{"ttl":"8761h"}`},
 	} {
@@ -500,6 +503,19 @@ func TestAdminBlockRejectsInvalidInput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAdminBlockAcceptsEmptyBody(t *testing.T) {
+	ts, _ := adminServer(t)
+	resp := adminReq(t, ts, http.MethodPut, "/admin/blocks/203.0.113.19", adminToken, "")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	got := decodeJSON(t, resp)
+	if got["blocked"] != true || got["ttl"] != "24h0m0s" {
+		t.Fatalf("response = %v, want blocked with default TTL", got)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -341,6 +341,28 @@ defaults:
 }
 
 var dataRe = regexp.MustCompile(`<script id="guardian-data" type="application/json">(.*?)</script>`)
+
+func TestPassRejectsAmbiguousJSON(t *testing.T) {
+	ts := testServer(t)
+	valid := []byte(`{"challenge_id":"id","nonce":"1"}`)
+	invalidUTF8 := append([]byte(`{"challenge_id":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`","nonce":"1"}`)...)
+	for name, body := range map[string][]byte{
+		"duplicate member": []byte(`{"challenge_id":"id","challenge_id":"other","nonce":"1"}`),
+		"unknown member":   []byte(`{"challenge_id":"id","nonce":"1","extra":true}`),
+		"wrong-case name":  []byte(`{"Challenge_ID":"id","nonce":"1"}`),
+		"trailing value":   append(append([]byte(nil), valid...), []byte(` {}`)...),
+		"invalid UTF-8":    invalidUTF8,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := do(t, http.MethodPost, ts.URL+PassPath,
+				guardianHeaders("html.test", "198.51.100.200", "/", "Mozilla/5.0"), body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
 
 func fetchChallenge(t *testing.T, ts *httptest.Server, ip, ua string) (id, challenge string, difficulty int) {
 	t.Helper()

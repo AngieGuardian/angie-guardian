@@ -5,7 +5,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -40,7 +39,7 @@ func TestProfilerStopReturnsSampleWriteError(t *testing.T) {
 
 func TestProfilerRetainsJSONLSampleWriteError(t *testing.T) {
 	want := errors.New("disk full")
-	p := &profiler{enc: json.NewEncoder(failingProfileWriter{err: want})}
+	p := &profiler{sampleOut: failingProfileWriter{err: want}}
 	p.writeSample()
 	if err := p.sampleWriteErr(); !errors.Is(err, want) {
 		t.Fatalf("sample write error = %v, want disk-full error", err)

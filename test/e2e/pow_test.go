@@ -7,7 +7,7 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"strings"
 	"testing"
@@ -151,7 +151,7 @@ func TestPoWFullSolveThroughAngie(t *testing.T) {
 		} `json:"decisions"`
 	}
 	dr := adminReq(t, http.MethodGet, "/admin/decisions?action=solve&limit=all", nil)
-	if err := json.NewDecoder(dr.Body).Decode(&dl); err != nil {
+	if err := json.UnmarshalRead(dr.Body, &dl); err != nil {
 		t.Fatalf("decode /admin/decisions: %v", err)
 	}
 	var found bool

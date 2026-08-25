@@ -5,8 +5,9 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,16 +21,16 @@ import (
 // profiler writes bounded, opt-in evidence for a single daemon run. Its
 // ticker and runtime profiling are never started unless -profile-dir is set.
 type profiler struct {
-	dir      string
-	cpu      *os.File
-	samples  *os.File
-	enc      *json.Encoder
-	done     chan struct{}
-	wg       sync.WaitGroup
-	mu       sync.RWMutex
-	pebble   *store.Pebble
-	errMu    sync.Mutex
-	writeErr error
+	dir       string
+	cpu       *os.File
+	samples   *os.File
+	sampleOut io.Writer
+	done      chan struct{}
+	wg        sync.WaitGroup
+	mu        sync.RWMutex
+	pebble    *store.Pebble
+	errMu     sync.Mutex
+	writeErr  error
 }
 
 type profileSample struct {
@@ -72,7 +73,7 @@ func startProfiler(dir string) (*profiler, error) {
 		_ = cpu.Close()
 		return nil, fmt.Errorf("start CPU profile: %w", err)
 	}
-	p := &profiler{dir: dir, cpu: cpu, samples: samples, enc: json.NewEncoder(samples), done: make(chan struct{})}
+	p := &profiler{dir: dir, cpu: cpu, samples: samples, sampleOut: samples, done: make(chan struct{})}
 	p.wg.Add(1)
 	go p.sampleLoop()
 	return p, nil
@@ -109,8 +110,12 @@ func (p *profiler) writeSample() {
 		stats := db.Stats()
 		s.Pebble = &stats
 	}
-	if err := p.enc.Encode(s); err != nil {
+	if err := json.MarshalWrite(p.sampleOut, &s); err != nil {
 		p.recordWriteErr(fmt.Errorf("write JSONL sample: %w", err))
+		return
+	}
+	if _, err := io.WriteString(p.sampleOut, "\n"); err != nil {
+		p.recordWriteErr(fmt.Errorf("write JSONL delimiter: %w", err))
 	}
 }
 

@@ -29,7 +29,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -415,7 +415,7 @@ func blockStatus(t *testing.T, ip string) (blocked bool, reason string) {
 		Blocked bool   `json:"blocked"`
 		Reason  string `json:"reason"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("decode block status: %v", err)
 	}
 	return out.Blocked, out.Reason
@@ -429,7 +429,7 @@ func offenses(t *testing.T, ip string) int64 {
 	var out struct {
 		Offenses int64 `json:"offenses"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("decode block detail: %v", err)
 	}
 	return out.Offenses
@@ -458,7 +458,7 @@ func unblock(t *testing.T, ip string, resetBackoff bool) {
 			Incomplete bool `json:"incomplete"`
 		} `json:"reset"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("decode unblock response: %v", err)
 	}
 	if out.Reset.Incomplete {
@@ -489,7 +489,7 @@ func activeBlocks() map[string]string {
 			Reason string `json:"reason"`
 		} `json:"blocks"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+	if json.UnmarshalRead(resp.Body, &out) != nil {
 		return nil
 	}
 	blocks := make(map[string]string, len(out.Blocks))

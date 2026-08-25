@@ -6,7 +6,7 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,7 +41,7 @@ func main() {
 		n := requests.Add(1)
 		_, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = json.MarshalWrite(w, map[string]any{
 			"hostname":              "e2e-backend",
 			"path":                  r.URL.Path,
 			"headers":               r.Header,

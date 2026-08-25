@@ -620,7 +620,7 @@ type UnblockReset struct {
 	EventKeys      int  `json:"event_keys"`
 	EscalationKeys int  `json:"escalation_keys"`
 	BackoffReset   bool `json:"backoff_reset"`
-	Incomplete     bool `json:"incomplete,omitempty"`
+	Incomplete     bool `json:"incomplete,omitzero"`
 }
 
 // UnblockIP lifts a behavioural block and clears the state that produced it.

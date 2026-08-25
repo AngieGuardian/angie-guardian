@@ -44,7 +44,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/v2"
 	"flag"
 	"fmt"
 	"io"
@@ -420,7 +420,7 @@ func printSummary(admin, token string) {
 		} `json:"recent"`
 		Challenges map[string]float64 `json:"challenges"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&stats) != nil {
+	if json.UnmarshalRead(resp.Body, &stats) != nil {
 		return
 	}
 	fmt.Println("\n--- seeded ---")
