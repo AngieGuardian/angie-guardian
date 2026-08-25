@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type profiler struct {
 	cpu       *os.File
 	samples   *os.File
 	sampleOut io.Writer
+	flight    *trace.FlightRecorder
 	done      chan struct{}
 	wg        sync.WaitGroup
 	mu        sync.RWMutex
@@ -73,7 +75,14 @@ func startProfiler(dir string) (*profiler, error) {
 		_ = cpu.Close()
 		return nil, fmt.Errorf("start CPU profile: %w", err)
 	}
-	p := &profiler{dir: dir, cpu: cpu, samples: samples, sampleOut: samples, done: make(chan struct{})}
+	flight := trace.NewFlightRecorder(trace.FlightRecorderConfig{MinAge: 10 * time.Second, MaxBytes: 8 << 20})
+	if err := flight.Start(); err != nil {
+		pprof.StopCPUProfile()
+		_ = samples.Close()
+		_ = cpu.Close()
+		return nil, fmt.Errorf("start runtime flight recorder: %w", err)
+	}
+	p := &profiler{dir: dir, cpu: cpu, samples: samples, sampleOut: samples, flight: flight, done: make(chan struct{})}
 	p.wg.Add(1)
 	go p.sampleLoop()
 	return p, nil
@@ -141,7 +150,20 @@ func (p *profiler) stop() error {
 	p.wg.Wait()
 	pprof.StopCPUProfile()
 	first := p.sampleWriteErr()
-	for _, name := range []string{"heap", "allocs", "mutex", "block"} {
+	if p.flight != nil {
+		f, err := os.Create(filepath.Join(p.dir, "flight.trace"))
+		if err == nil {
+			_, err = p.flight.WriteTo(f)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		p.flight.Stop()
+		if first == nil && err != nil {
+			first = err
+		}
+	}
+	for _, name := range []string{"heap", "allocs", "mutex", "block", "goroutineleak"} {
 		f, err := os.Create(filepath.Join(p.dir, name+".pprof"))
 		if err == nil {
 			err = pprof.Lookup(name).WriteTo(f, 0)

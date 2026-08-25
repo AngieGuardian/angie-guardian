@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -59,14 +60,12 @@ func TestLoadOrCreateKeyConcurrentFirstStart(t *testing.T) {
 	errs := make(chan error, workers)
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			key, err := LoadOrCreateKey(path)
 			keys <- key
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -129,7 +128,8 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ch.ID) != 32 || len(ch.Challenge) != 64 || ch.Difficulty != 8 {
+	parsedID, parseErr := uuid.Parse(ch.ID)
+	if parseErr != nil || parsedID.String() != ch.ID || len(ch.Challenge) != 64 || ch.Difficulty != 8 {
 		t.Fatalf("unexpected challenge shape: %+v", ch)
 	}
 
@@ -172,6 +172,27 @@ func TestIssueRedeemRoundTrip(t *testing.T) {
 	// Double redemption must fail: the spent CAS is the anti-replay guarantee.
 	if _, err := m.Redeem(ctx, req); !errors.Is(err, ErrChallengeUnknown) {
 		t.Errorf("second redemption = %v, want ErrChallengeUnknown", err)
+	}
+}
+
+func TestRedeemRejectsLegacyHexChallengeID(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	ch, err := m.Issue(ctx, "example.test", "198.51.100.7", "/", 4, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok, err := m.store.Get(ctx, challengeKey(ch.ID))
+	if err != nil || !ok {
+		t.Fatalf("read issued challenge: ok=%t err=%v", ok, err)
+	}
+	const legacyID = "00112233445566778899aabbccddeeff"
+	if err := m.store.Set(ctx, challengeKey(legacyID), raw, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Redeem(ctx, &RedeemRequest{ChallengeID: legacyID})
+	if !errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("legacy challenge ID error = %v, want ErrChallengeUnknown", err)
 	}
 }
 
@@ -248,9 +269,7 @@ func TestConcurrentStatefulIssueRedeemRoundTrips(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	for worker := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ip := "203.0.113." + strconv.Itoa(worker+1)
 			for range issuesPerWorker {
 				ch, err := m.Issue(ctx, "concurrent.test", ip, "/page?x=1", 0, time.Minute, false)
@@ -266,7 +285,7 @@ func TestConcurrentStatefulIssueRedeemRoundTrips(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

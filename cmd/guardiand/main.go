@@ -38,8 +38,27 @@ import (
 
 var version = "dev" // set via -ldflags "-X main.version=..."
 
-// defaultConfigPath is where the packaging installs guardian.yaml.
-const defaultConfigPath = "/etc/guardian/guardian.yaml"
+const (
+	// defaultConfigPath is where the packaging installs guardian.yaml.
+	defaultConfigPath = "/etc/guardian/guardian.yaml"
+
+	// Guardian's listeners receive a small, fixed protocol from Angie or an
+	// operator. Keep enough room for normal proxy metadata while bounding the
+	// parser work from repeated header lines well below net/http's default 500.
+	maxHeaderValueCount = 64
+)
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:                addr,
+		Handler:             handler,
+		ReadHeaderTimeout:   5 * time.Second,
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		IdleTimeout:         120 * time.Second, // keep Angie's keepalive conns warm
+		MaxHeaderValueCount: maxHeaderValueCount,
+	}
+}
 
 // resolveConfigPath returns the installed configuration path when -config is
 // omitted. Passing -config remains available for foreground evaluations,
@@ -362,14 +381,7 @@ func run(configPath, profileDir string) error {
 	}
 
 	guard := httptransport.New(engine, powMgr, st, m, log)
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           guard,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second, // keep Angie's keepalive conns warm
-	}
+	srv := newHTTPServer(cfg.Listen, guard)
 
 	listeners, err := openGuardListeners(cfg.Listen, cfg.Socket, cfg.SocketMode)
 	if err != nil {
@@ -435,14 +447,7 @@ func run(configPath, profileDir string) error {
 		adminHandler := httptransport.NewAdminServer(engine, cfg, m,
 			cfg.Admin.Token, cfg.SigningKeyFile, cfg.PreviousKeyDir, reload, log)
 		adminHandler.SetPreflight(preflight)
-		admin = &http.Server{
-			Addr:              cfg.Admin.Listen,
-			Handler:           adminHandler,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      30 * time.Second,
-			IdleTimeout:       120 * time.Second,
-		}
+		admin = newHTTPServer(cfg.Admin.Listen, adminHandler)
 		go func() {
 			log.Info("admin+metrics listening", "addr", cfg.Admin.Listen)
 			if cfg.Admin.Dashboard {

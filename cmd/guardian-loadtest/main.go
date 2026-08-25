@@ -249,9 +249,7 @@ func main() {
 	measuredN := int64(*requests)
 
 	for w := 0; w < *concurrency; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			lats := make([]time.Duration, 0, 1<<16)
 			for {
 				seq := claimed.Add(1) - 1
@@ -303,7 +301,7 @@ func main() {
 				}
 			}
 			latencies[w] = lats
-		}(w)
+		})
 	}
 	wg.Wait()
 

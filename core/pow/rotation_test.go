@@ -136,13 +136,11 @@ func TestRetiredKeyCannotMintPostRetirementOrOverlongTokens(t *testing.T) {
 	sign := func(issued, expires time.Time) string {
 		t.Helper()
 		claims := &TokenClaims{
-			Host: host,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   Fingerprint(ip, ua),
-				IssuedAt:  jwt.NewNumericDate(issued),
-				NotBefore: jwt.NewNumericDate(issued),
-				ExpiresAt: jwt.NewNumericDate(expires),
-			},
+			Host:      host,
+			Subject:   Fingerprint(ip, ua),
+			IssuedAt:  jwt.NewNumericDate(issued),
+			NotBefore: jwt.NewNumericDate(issued),
+			ExpiresAt: jwt.NewNumericDate(expires),
 		}
 		token, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(retired)
 		if err != nil {
@@ -229,10 +227,8 @@ func TestLivePeerRefreshesBeforeAcceptingOldKeyJWT(t *testing.T) {
 	claims := func() *TokenClaims {
 		return &TokenClaims{
 			Host: host, Difficulty: 32,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject: Fingerprint(ip, ua), IssuedAt: jwt.NewNumericDate(issued),
-				NotBefore: jwt.NewNumericDate(issued), ExpiresAt: jwt.NewNumericDate(issued.Add(time.Hour)),
-			},
+			Subject: Fingerprint(ip, ua), IssuedAt: jwt.NewNumericDate(issued),
+			NotBefore: jwt.NewNumericDate(issued), ExpiresAt: jwt.NewNumericDate(issued.Add(time.Hour)),
 		}
 	}
 	forgedOld, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims()).SignedString(oldKey)
@@ -599,16 +595,14 @@ func TestConcurrentRotationsAreAtomicAndPreserveKeys(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range rotations {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			key, err := RotateKey(keyPath, prevDir, time.Now().Unix())
 			if err != nil {
 				errs <- err
 				return
 			}
 			results <- key
-		}()
+		})
 	}
 	wg.Wait()
 	close(stopReader)

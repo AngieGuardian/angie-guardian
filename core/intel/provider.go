@@ -241,8 +241,7 @@ func (p *Provider) refreshLoop(f *feed) {
 			if p.ctx.Err() != nil {
 				return // shutting down, the error is just the cancellation
 			}
-			msg := err.Error()
-			f.lastErr.Store(&msg)
+			f.lastErr.Store(new(err.Error()))
 			p.log.Warn("feed refresh failed, keeping loaded entries",
 				"feed", f.cfg.Name, "url", f.cfg.URL, "err", err)
 			next = min(feedRetryInterval, f.cfg.Refresh)

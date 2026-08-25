@@ -272,10 +272,8 @@ func signJWTWithKID(t testing.TB, key ed25519.PrivateKey, kid, host, boundPath, 
 	t.Helper()
 	claims := jwtClaims{
 		GuardianHost: host, GuardianPath: boundPath,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: issuer, Audience: jwt.ClaimStrings{audience}, IssuedAt: jwt.NewNumericDate(issued),
-			NotBefore: jwt.NewNumericDate(issued.Add(-time.Second)), ExpiresAt: jwt.NewNumericDate(issued.Add(lifetime)),
-		},
+		Issuer: issuer, Audience: jwt.ClaimStrings{audience}, IssuedAt: jwt.NewNumericDate(issued),
+		NotBefore: jwt.NewNumericDate(issued.Add(-time.Second)), ExpiresAt: jwt.NewNumericDate(issued.Add(lifetime)),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	if kid != "" {
@@ -293,10 +291,8 @@ func signHMACJWT(t testing.TB, secret []byte, host, boundPath, issuer, audience 
 	now := time.Now()
 	claims := jwtClaims{
 		GuardianHost: host, GuardianPath: boundPath,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: issuer, Audience: jwt.ClaimStrings{audience}, IssuedAt: jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
-		},
+		Issuer: issuer, Audience: jwt.ClaimStrings{audience}, IssuedAt: jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
 	}
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 	if err != nil {

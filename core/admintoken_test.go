@@ -44,14 +44,12 @@ func TestAdminTokenConcurrentFirstStart(t *testing.T) {
 	errs := make(chan error, workers)
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			token, err := LoadOrCreateAdminToken(path)
 			tokens <- token
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

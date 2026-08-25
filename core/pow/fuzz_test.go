@@ -89,7 +89,7 @@ func FuzzRedeemRecord(f *testing.F) {
 		defer st.Close()
 		m := NewManager(key, st)
 		// Plant the fuzzed bytes as a challenge record, then redeem it.
-		id := "0123456789abcdef0123456789abcdef"
+		id := "01234567-89ab-4def-8123-456789abcdef"
 		if err := st.Set(ctx, challengeKey(id), rec, time.Minute); err != nil {
 			t.Skip()
 		}

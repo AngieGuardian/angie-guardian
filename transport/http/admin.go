@@ -52,6 +52,7 @@ type AdminServer struct {
 	preflight func() ([]string, error)
 	log       *slog.Logger
 	mux       *http.ServeMux
+	handler   http.Handler
 	angie     *angieClient // nil = admin.angie_api not configured
 
 	// assets holds each vendored dashboard file's bytes and its strong ETag,
@@ -170,10 +171,16 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 			s.mux.HandleFunc("GET "+route, s.handleAsset)
 		}
 	}
+	crossOrigin := http.NewCrossOriginProtection()
+	crossOrigin.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		securityHeaders(w, "", "")
+		http.Error(w, "cross-origin request denied", http.StatusForbidden)
+	}))
+	s.handler = crossOrigin.Handler(s.mux)
 	return s
 }
 
-func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 
 // auth wraps a handler with constant-time bearer-token checking.
 func (s *AdminServer) auth(h http.HandlerFunc) http.HandlerFunc {

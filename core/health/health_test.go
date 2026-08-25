@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -134,6 +135,20 @@ func (l *logBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.buf.String()
+}
+
+func TestProcessSuffixUsesCanonicalUUID(t *testing.T) {
+	first := processSuffix()
+	parsed, err := uuid.Parse(first)
+	if err != nil {
+		t.Fatalf("process suffix %q is not a UUID: %v", first, err)
+	}
+	if parsed.String() != first {
+		t.Fatalf("process suffix = %q, want canonical UUID %q", first, parsed.String())
+	}
+	if second := processSuffix(); second == first {
+		t.Fatalf("two process suffixes collided: %q", first)
+	}
 }
 
 func newChecker(t *testing.T, st store.Store, rec Recorder, log *slog.Logger) *Checker {

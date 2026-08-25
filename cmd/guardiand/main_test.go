@@ -5,7 +5,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +53,50 @@ func privateSocketDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestHTTPServerRejectsExcessHeaderValues(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan struct{}, 1)
+	server := newHTTPServer("", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called <- struct{}{}
+	}))
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var request strings.Builder
+	request.WriteString("GET / HTTP/1.1\r\nHost: guardian.test\r\nConnection: close\r\n")
+	for i := range maxHeaderValueCount + 1 {
+		fmt.Fprintf(&request, "X-Fill-%d: x\r\n", i)
+	}
+	request.WriteString("\r\n")
+	if _, err := fmt.Fprint(conn, request.String()); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("status = %d, want 431", resp.StatusCode)
+	}
+	select {
+	case <-called:
+		t.Fatal("handler ran for a request over the header-value limit")
+	default:
+	}
 }
 
 // -healthcheck must probe the running daemon even when the on-disk config was
@@ -351,8 +397,8 @@ func TestStaticConfigChangesCoversEveryAdminField(t *testing.T) {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			v.SetInt(v.Int() + 1)
 		case reflect.Struct:
-			for i := range v.NumField() {
-				if perturb(v.Field(i)) {
+			for _, field := range v.Fields() {
+				if perturb(field) {
 					return true
 				}
 			}

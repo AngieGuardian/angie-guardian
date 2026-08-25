@@ -299,6 +299,6 @@ func decodeCache(raw string) Result {
 // isNotFound reports a definitive NXDOMAIN/no-record answer, as opposed to a
 // timeout or server failure.
 func isNotFound(err error) bool {
-	var de *net.DNSError
-	return errors.As(err, &de) && de.IsNotFound
+	de, ok := errors.AsType[*net.DNSError](err)
+	return ok && de.IsNotFound
 }

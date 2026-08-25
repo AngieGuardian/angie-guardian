@@ -14,13 +14,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/internal/jitter"
@@ -147,11 +147,7 @@ func New(st store.Store, backend string, rec Recorder, log *slog.Logger) *Checke
 
 // processSuffix returns a random per-process suffix for the probe key.
 func processSuffix() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "unknown"
-	}
-	return hex.EncodeToString(b[:])
+	return uuid.New().String()
 }
 
 // Start runs the first probe synchronously, then keeps probing on a ticker.

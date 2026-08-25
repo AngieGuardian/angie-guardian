@@ -150,8 +150,8 @@ func (s *ShardedMemory) lockShardKeys(keys ...string) func() {
 		s.shards[idx].mu.Lock()
 	}
 	return func() {
-		for i := len(idxs) - 1; i >= 0; i-- {
-			s.shards[idxs[i]].mu.Unlock()
+		for _, idx := range slices.Backward(idxs) {
+			s.shards[idx].mu.Unlock()
 		}
 	}
 }
