@@ -17,6 +17,7 @@ coverage.out
 *.db
 *.key
 *.rotate.lock
+*.crt
 
 # GeoLite databases (except committed test/demo fixtures)
 *.mmdb
