@@ -42,6 +42,7 @@ export default defineConfig({
             { text: 'PoW Algorithms', link: '/guide/pow-algorithms' },
             { text: 'Bots, GeoIP & Reputation', link: '/guide/bots-ip-intel' },
             { text: 'Wire it into Angie', link: '/guide/angie' },
+            { text: 'Harden Angie', link: '/guide/angie-hardening' },
             { text: 'Run it in Production', link: '/guide/production' },
             { text: 'Security Model & Limitations', link: '/guide/threat-model' },
           ],

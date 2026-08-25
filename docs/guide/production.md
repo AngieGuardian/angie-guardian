@@ -55,10 +55,10 @@ enables and starts the service. Existing local configuration, rules, unit, and
 Angie snippet files are preserved; mismatches are reported for manual review.
 
 It does not edit Angie virtual hosts or reload Angie. After reviewing
-`/etc/guardian/guardian.yaml`, install the three Angie snippets and update your
-Angie top-level configuration file (`/etc/angie/angie.conf`) as described in the
-[Getting Started guide](/guide/getting-started), then run `angie -t` and reload
-Angie yourself.
+`/etc/guardian/guardian.yaml`, wire the three required Guardian integration
+snippets into your Angie configuration as described in the
+[Getting Started guide](/guide/getting-started). Then run `angie -t` and reload
+Angie yourself. The two Angie hardening snippets are optional.
 
 #### Optional: manual installation
 
@@ -176,7 +176,7 @@ docker pull "registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION}"
 A complete, production-ready reference Compose deployment is available in the repository at
 [`deploy/docker/compose.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/compose.yaml). It orchestrates:
 
-1. **Angie** (reverse proxy) fronting HTTP traffic, configured with the official Guardian integration snippets (`angie-guardian.conf`, `angie-guardian-location.conf`, `angie-guardian-limits.conf`).
+1. **Angie** (reverse proxy) fronting HTTP traffic, configured with the official Guardian integration snippets and optional server-hardening profile.
 2. **`guardiand`** (sidecar daemon) performing auth requests, PoW challenge issuance, and WAF inspection.
 3. **`backend`** (application container) serving origin content.
 
@@ -211,7 +211,7 @@ services:
       - "8080"
 
   angie:
-    image: docker.angie.software/angie:latest
+    image: docker.angie.software/angie:1.12.1@sha256:c9b84be14a2a584891a1ef6678d44e6d7740127e6ceddc8f2f237491ff369ce0
     restart: unless-stopped
     depends_on:
       guardiand:
@@ -221,10 +221,16 @@ services:
     volumes:
       - ./angie.docker.conf:/etc/angie/angie.conf:ro
       - ../angie-guardian-limits.conf:/etc/angie/angie-guardian-limits.conf:ro
+      - ../angie-hardening-http.conf:/etc/angie/angie-hardening-http.conf:ro
+      - ../angie-hardening-server.conf:/etc/angie/angie-hardening-server.conf:ro
       - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
       - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
       - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro
       - ./basic.htpasswd:/etc/angie/basic.htpasswd:ro
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
     ports:
       - "127.0.0.1:8080:80"
 

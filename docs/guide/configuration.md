@@ -508,7 +508,8 @@ without solving them is throttled (60 issuances per IP per minute), escalated
 (see challenge farming above), and eventually blocked outright via the
 `challenge_farm` threshold, but a raw flood that never even follows the
 challenge redirect is **not** PoW's problem. Put Angie's own rate limiting in
-front: see [Rate limiting](/guide/angie#rate-limiting-volumetric-ddos).
+front: see
+[front-door admission and application rate limits](/guide/angie#front-door-admission-and-application-rate-limits).
 :::
 
 ## Loopback and trusted proxies

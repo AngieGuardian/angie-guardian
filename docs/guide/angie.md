@@ -87,9 +87,9 @@ An `include` path is relative to Angie's **prefix**, not to the file holding
 the `include`. On the official packages and container images that prefix is
 `/etc/angie` (`angie -V` prints `--prefix=/etc/angie`), which is where the
 [getting started guide](/guide/getting-started#_3-install-and-wire-the-angie-configuration)
-installs all three snippets. Running under a different prefix, such as a source
-build (`/usr/local/angie/` by default) or a `-p` override, write the paths out
-in full instead.
+installs all three Guardian integration snippets. Running under a different
+prefix, such as a source build (`/usr/local/angie/` by default) or a `-p`
+override, write the paths out in full instead.
 
 ## Static files and a PHP front controller
 
@@ -367,19 +367,24 @@ WebSocket route, is a targeted
 Guardian from issuing its intentional `403` on that route in the first place,
 while its WAF and other Guardian checks remain enabled.
 
-## Rate limiting (volumetric DDoS)
+## Front-door admission and application rate limits
 
-Guardian adds three separate components to the Angie `http {}` context:
+Treat front-door admission as three separate layers:
 
 1. **Guardian baseline** (`angie-guardian-limits.conf`) - shipped control-plane admission for challenge issuance, solution redemption, and assets
-2. **Operator application limits** (per `server {}`) - capacity-neutral limits for protected application content
-3. **Site-specific limits** - any additional rate or connection limits for the deployment
+2. **Optional Angie hardening profile** (`angie-hardening-*.conf`) - timeout, size, HTTP/2, active-request, worker, and file-descriptor bounds
+3. **Site-specific application limits** - capacity-derived request-rate and any additional connection limits for the deployment
 
 The shipped baseline deliberately covers only Guardian's known public paths. It does not rate-limit `/__guardian/auth`, because that internal subrequest runs once for every protected application request and a fixed RPS there would secretly set a universal application budget. Instead it applies a per-host+IP budget to each public path and a single per-Angie-instance concurrent-work ceiling shared by those paths and `/__guardian/auth`.
 
 The shipped values are intentionally modest: `30r/m` with a burst of six for each host+IP challenge or redemption stream, `20r/s` with a burst of 40 for assets, and 512 concurrent control-plane requests across the Angie instance. A per-IP excess gets `429`; the shared concurrency ceiling gets `503` and is an explicit shed, never a fail-open continuation. These are a starting protection for Guardian's known work, not a promise about site capacity. Keep the defaults only after testing legitimate retries, no-JS clients, and your normal asset delivery pattern; override them by copying the small baseline file into your managed Angie configuration.
 
-Protected application content remains deliberately **capacity-neutral**. Its request and connection limits belong to the deployment: the site owner knows whether its backend can safely sustain 50, 500, or 50,000 requests per second. Add those selected limits at the protected `server {}` scope; they run before `auth_request`, so rejected requests reach neither Guardian nor the backend.
+The optional [Angie hardening profile](/guide/angie-hardening) supplies conservative
+active-request and parsing bounds, but protected application request rate
+remains deliberately **capacity-neutral**. The site owner knows whether its
+backend can safely sustain 50, 500, or 50,000 requests per second. Add that
+selected rate limit at protected `server {}` scope; it runs before
+`auth_request`, so rejected requests reach neither Guardian nor the backend.
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a
 raw flood. Every request still costs an `auth_request` subrequest, and a client
@@ -409,12 +414,27 @@ that get through.
 limit_req_zone  $binary_remote_addr zone=guard:10m rate=30r/s;
 limit_conn_zone $binary_remote_addr zone=gconn:10m;
 
-# in each protected server {} (or the location / block). limit_req runs in an
-# earlier phase than auth_request, so a rejected flood never reaches the sidecar.
-limit_req  zone=guard burst=60 nodelay;   # smooth spikes, reject sustained floods
-limit_conn gconn 20;                       # cap concurrent connections per client
-limit_req_status  429;
+# in each protected server {}. Keep limit_conn here with the hardening include.
+limit_conn gconn 20;                      # cap active requests per client
 limit_conn_status 429;
+
+# in each protected server {}, or in a narrower application location {}.
+# limit_req runs before auth_request, so rejected requests do not reach Guardian.
+limit_req zone=guard burst=60 nodelay;    # allow spikes, reject sustained floods
+limit_req_status 429;
+```
+
+Keep site-specific `limit_conn` directives at the same `server {}` level as
+`angie-hardening-server.conf`. Angie inherits parent `limit_conn` directives
+only when the current level has none. If an application `location {}` needs its
+own connection limit, repeat every limit needed there:
+
+```nginx
+location /expensive/ {
+    limit_conn angie_hardening_client 20;
+    limit_conn angie_hardening_server 1024;
+    limit_conn gconn 20;
+}
 ```
 
 ### Volumetric 403 floods and the fast 403 optimization
@@ -531,8 +551,10 @@ end-to-end suite:
   the streamed frames). Ensure your `location` forwards the upgrade headers
   (`proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection
   "upgrade";`) for the backend proxy, exactly as you would without Guardian.
-- **HTTP/2 and HTTP/3.** Guardian is oblivious to the client protocol version:
-  it acts on the decoded request Angie hands the subrequest, so an HTTP/2 or
-  HTTP/3 client is handled identically to HTTP/1.1. The sidecar hop itself uses
-  keepalive'd HTTP/1.1 to loopback, which is an internal detail. The token
-  cookie and challenge flow work the same across versions.
+- **HTTP/2 and HTTP/3.** Guardian is oblivious to the client protocol version
+  after Angie has decoded the request. The sidecar hop itself uses keepalive'd
+  HTTP/1.1, which is an internal detail. TLS/QUIC handshakes, header decoding,
+  stream concurrency, slow clients, and Rapid Reset stay Angie's responsibility;
+  they are not handled identically below the decoded-request boundary. Use the
+  [Angie server-hardening profile](/guide/angie-hardening), and note
+  its explicit HTTP/3 runtime boundary.

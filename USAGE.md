@@ -420,7 +420,8 @@ challenges without solving them is throttled (60 issuances per IP per minute),
 escalated (see challenge farming above), and eventually blocked outright via
 the `challenge_farm` threshold, but a raw flood that never even follows the
 challenge redirect is **not** PoW's problem: see
-[Rate limiting](#rate-limiting-volumetric-ddos) below.
+[front-door admission and application rate limits](#front-door-admission-and-application-rate-limits)
+below.
 
 ### Search crawlers: verified_bots, not allowlist.uas
 
@@ -682,7 +683,7 @@ from `deploy/angie-json-log.conf`:
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
-### Rate limiting (volumetric DDoS)
+### Front-door admission and application rate limits
 
 PoW taxes bots that speak HTTP and solve the puzzle; it does **not** absorb a raw
 flood. Every request still costs an `auth_request` subrequest; requests not
@@ -700,13 +701,21 @@ get through. Tune the rates to your real traffic before enabling.
 limit_req_zone  $binary_remote_addr zone=guard:10m rate=30r/s;
 limit_conn_zone $binary_remote_addr zone=gconn:10m;
 
-# in each protected server {} (or the location / block). limit_req runs in an
-# earlier phase than auth_request, so a rejected flood never reaches the sidecar.
-limit_req  zone=guard burst=60 nodelay;   # smooth spikes, reject sustained floods
-limit_conn gconn 20;                       # cap concurrent connections per client
-limit_req_status  429;
+# in each protected server {}.
+limit_conn gconn 20;                      # cap active requests per client
 limit_conn_status 429;
+
+# in each protected server {}, or in a narrower application location {}.
+# limit_req runs before auth_request, so rejected requests do not reach Guardian.
+limit_req zone=guard burst=60 nodelay;    # allow spikes, reject sustained floods
+limit_req_status 429;
 ```
+
+Keep site-specific `limit_conn` directives at `server {}` level. Angie inherits
+parent `limit_conn` directives only when the current level has none. If a
+location needs its own connection limit, repeat every required `limit_conn`
+directive there. This includes the two limits from
+`angie-hardening-server.conf` when that optional profile is enabled.
 
 ## 3. Run it (systemd)
 

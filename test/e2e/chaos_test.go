@@ -65,7 +65,7 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chaos compose parse: %v", err)
 	}
-	ports := make([]int, 3)
+	ports := make([]int, 4)
 	for i := range ports {
 		p, err := freePort()
 		if err != nil {
@@ -76,10 +76,17 @@ func TestStoreOutageFailOpen(t *testing.T) {
 	chaosSite := fmt.Sprintf("http://127.0.0.1:%d", ports[0])
 	chaosAdmin := fmt.Sprintf("http://127.0.0.1:%d", ports[1])
 	chaosAuth := fmt.Sprintf("http://127.0.0.1:%d", ports[2])
+	tlsCertPath, tlsKeyPath, _, err := writeSelfSignedCertificate(t.TempDir())
+	if err != nil {
+		t.Fatalf("create chaos TLS certificate: %v", err)
+	}
 	chaosStack := c.WithEnv(map[string]string{
 		"GUARDIAN_SITE_PORT":  strconv.Itoa(ports[0]),
 		"GUARDIAN_ADMIN_PORT": strconv.Itoa(ports[1]),
 		"GUARDIAN_AUTH_PORT":  strconv.Itoa(ports[2]),
+		"GUARDIAN_TLS_PORT":   strconv.Itoa(ports[3]),
+		"GUARDIAN_TLS_CERT":   tlsCertPath,
+		"GUARDIAN_TLS_KEY":    tlsKeyPath,
 		"GUARDIAN_CONFIG":     "./guardian.e2e-chaos.yaml",
 	}).
 		WaitForService("guardiand",

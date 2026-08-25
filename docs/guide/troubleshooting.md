@@ -1,5 +1,21 @@
 # Troubleshooting
 
+## Slow clients or HTTP/2 resets consume Angie resources
+
+Guardian metrics may remain quiet because incomplete TLS and HTTP requests
+have not reached `auth_request` yet. Confirm the active Angie version/modules,
+its connection and SSL counters, process file-descriptor limit, and whether the
+two optional Angie hardening snippets are included at the correct scopes. Then run:
+
+```sh
+angie -t
+make e2e-angie-soak ANGIE_HARDENING_SOAK_DURATION=5m
+```
+
+Do not "fix" Angie overload by rate-limiting `/__guardian/auth` or mapping a
+local Angie rejection to Guardian's fail-open location. Use the ownership and
+exception checklist in [Angie Server Hardening](/guide/angie-hardening).
+
 Symptoms you're most likely to hit, and what causes them. Most are
 configuration or environment issues, not bugs.
 

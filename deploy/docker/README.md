@@ -25,7 +25,8 @@ root (Go and make are required; Docker is the only external service):
 make e2e                              # or: go test -tags e2e ./test/e2e/...
 ```
 
-The suite picks four free host ports, brings the stack up, runs every scenario,
+The suite picks five free host ports (including a generated-certificate TLS
+listener), brings the stack up, runs every scenario,
 and tears the stack (and its volumes) back down. It covers: allowlist passthrough,
 PoW challenge issuance, **full SHA-256 and Argon2id solves through Angie**
 (challenge → solve → cookie → vouched request, plus SHA-256 spent-challenge
@@ -34,7 +35,15 @@ fallback, WAF `allow`/`deny`/`block`/`challenge` actions, scanner-UA blocking, p
 policy (`localhost` vs `api.localhost`), fail-open when guardiand is stopped,
 Guardian control-plane and operator-defined application admission shedding
 (each verified against an origin request counter), and the `/metrics` +
-`/admin/*` report surface.
+`/admin/*` report surface. It also covers TLS 1.2/1.3, HTTP/2 ALPN and SETTINGS,
+stalled TLS/header/body clients, body-size and keepalive limits, decoded HTTP/2
+header limits, repeated stream resets, origin isolation, and recovery.
+
+For a longer manual reset soak with no timing gate:
+
+```sh
+make e2e-angie-soak ANGIE_HARDENING_SOAK_DURATION=5m
+```
 
 Because every request from the host shares one source IP (the Docker gateway), a
 WAF `block` blocks that IP; the harness clears such blocks via the admin API
@@ -141,7 +150,8 @@ Accept-header allow without weakening the shared starter policy.
 
 ## Notes on the configs here vs `deploy/`
 
-Both harness configs include the exact top-level `deploy/angie-guardian.conf`
-and `deploy/angie-guardian-location.conf` files shipped to operators. The
+Both harness configs include the exact top-level `deploy/angie-guardian.conf`,
+`deploy/angie-guardian-location.conf`, and optional `deploy/angie-hardening-*.conf`
+files shipped to operators. The
 server glue uses a rewrite plus a pathless `proxy_pass` in named locations,
 because Angie rejects a URI part on `proxy_pass` there.

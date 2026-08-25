@@ -24,7 +24,8 @@ which wires Angie, the `guardiand` sidecar, and an upstream backend together.
 On a Debian or Ubuntu host that already has Angie installed, this installer
 downloads the latest GitHub release, pins that run to the release's exact
 version, verifies `SHA256SUMS`, installs and starts `guardiand`, and places
-the three shipped Angie snippets in `/etc/angie`:
+five Angie snippets in `/etc/angie`: three required Guardian integration
+snippets and two optional Angie hardening snippets.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
@@ -34,7 +35,7 @@ It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
 binary but preserves `/etc/systemd/system/guardiand.service`,
 `/etc/guardian/guardian.yaml`, starter rules, existing Angie snippets, and all
 state under `/var/lib/guardian`. For the starter rules file, systemd unit, and
-the three Angie snippets, the installer compares SHA-256 checksums; if a local
+the five Angie snippets, the installer compares SHA-256 checksums; if a local
 file differs from the release, it prints an **ACTION REQUIRED** notice and
 leaves the file untouched so you can review and update it yourself. This keeps
 local WAF rules, `Environment=` settings, and Angie customizations intact.
@@ -289,7 +290,7 @@ recommended annotated profile instead.
 
 ## 3. Install and wire the Angie configuration
 
-Install the three shipped Angie snippets,
+Install the three required Guardian integration snippets,
 [`deploy/angie-guardian-limits.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-limits.conf),
 [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 and
@@ -304,6 +305,12 @@ sudo install -Dm644 deploy/angie-guardian.conf \
 sudo install -Dm644 deploy/angie-guardian-location.conf \
   /etc/angie/angie-guardian-location.conf
 ```
+
+The release also contains `angie-hardening-http.conf` and
+`angie-hardening-server.conf`. They are an optional Angie server-hardening
+profile and are installed automatically by `scripts/install.sh`.
+Review body, streaming, timeout, and concurrency requirements before enabling
+them; see [Angie Server Hardening](/guide/angie-hardening).
 
 For the normal fail-open installation, do not edit any of the three files.
 `angie-guardian.conf` contains reusable internal Guardian endpoints and no
@@ -369,7 +376,8 @@ include angie-guardian-location.conf;
 Both names resolve against Angie's prefix, `/etc/angie` on the official
 packages and images: see [Wire it into Angie](/guide/angie).
 
-The [full Angie guide](/guide/angie) explains real client-IP restoration,
+The [full Angie guide](/guide/angie) and
+[server-hardening guide](/guide/angie-hardening) explain real client-IP restoration,
 fail-open versus fail-closed operation, request and connection limits, logging,
 request-body limitations, and a complete static + `try_files` + PHP-FPM
 example (including the static-only `$uri $uri/ =404` form), server-level

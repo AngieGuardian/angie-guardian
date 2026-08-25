@@ -52,16 +52,22 @@ services:
       - "8080"
 
   angie:
-    image: docker.angie.software/angie:latest
+    image: docker.angie.software/angie:1.12.1@sha256:c9b84be14a2a584891a1ef6678d44e6d7740127e6ceddc8f2f237491ff369ce0
     depends_on:
       backend:
         condition: service_started
     volumes:
       - ./angie.nft.conf:/etc/angie/angie.conf:ro
       - ../angie-guardian-limits.conf:/etc/angie/angie-guardian-limits.conf:ro
+      - ../angie-hardening-http.conf:/etc/angie/angie-hardening-http.conf:ro
+      - ../angie-hardening-server.conf:/etc/angie/angie-hardening-server.conf:ro
       - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
       - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
       - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
     ports:
       # The protected site and the guardiand admin API are both published
       # through Angie's namespace (guardiand shares it). Overridable so the

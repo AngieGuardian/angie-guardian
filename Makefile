@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test install-test e2e fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
+.PHONY: all build wasm test install-test e2e e2e-angie-soak fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -43,6 +43,17 @@ install-test:
 # the fast unit `test` target above.
 e2e:
 	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+
+# Manual Angie server-abuse soak. It repeatedly opens real TLS/HTTP/2 connections,
+# resets incomplete request-body streams, checks origin isolation, and proves
+# the protected site remains healthy. No elapsed-time throughput threshold is
+# used: run it on the target host for as long as desired.
+#
+#   make e2e-angie-soak ANGIE_HARDENING_SOAK_DURATION=5m
+ANGIE_HARDENING_SOAK_DURATION ?= 30s
+e2e-angie-soak:
+	ANGIE_HARDENING_SOAK=1 ANGIE_HARDENING_SOAK_DURATION=$(ANGIE_HARDENING_SOAK_DURATION) \
+		go test -tags e2e -run '^TestAngieHardeningSoak$$' -count=1 -timeout 15m ./test/e2e/...
 
 # Gated nftables kernel-offload e2e. Needs a kernel with nf_tables and a
 # runtime that grants NET_ADMIN; skips cleanly where that is unavailable

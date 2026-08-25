@@ -43,9 +43,14 @@ tools that own these problems.
 - **Volumetric / L3–L4 floods.** Proof-of-work only taxes clients that *solve*
   the puzzle. A raw flood that never follows the challenge redirect is not
   Guardian's problem to absorb: put Angie's own
-  [rate limiting](/guide/angie#rate-limiting-volumetric-ddos) in front, and a
-  network/transport DDoS mitigation in front of that. Guardian *fails open* (see
-  below), so it will not itself become the bottleneck under a flood.
+  [admission and rate limits](/guide/angie#front-door-admission-and-application-rate-limits)
+  in front, and a network/transport DDoS mitigation in front of that. Guardian
+  *fails open* (see below), so it will not itself become the bottleneck under a
+  flood.
+- **TLS, QUIC, HTTP parsing, or slow-client exhaustion.** Guardian is not
+  invoked until Angie has decoded enough of a request to run `auth_request`.
+  Use Angie's [server-hardening profile](/guide/angie-hardening)
+  for local bounds, and keep network/transport scrubbing upstream.
 - **Request-body attacks.** Angie's `auth_request` subrequest carries only the
   request line and headers, by design. Body-borne payloads (SQL in a POST form,
   file-upload exploits) are the backend's input validation to handle, or a full

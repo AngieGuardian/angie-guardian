@@ -289,6 +289,8 @@ upload_and_release:
       test -f "$PKG/deploy/angie-guardian.conf"
       test -f "$PKG/deploy/angie-guardian-limits.conf"
       test -f "$PKG/deploy/angie-guardian-location.conf"
+      test -f "$PKG/deploy/angie-hardening-http.conf"
+      test -f "$PKG/deploy/angie-hardening-server.conf"
       test -f "$PKG/assets/argon2id-worker-db57362e2dddfb66.js"
       test -f "$PKG/assets/argon2id-runtime-1b3aa08f6d118ad6.js"
       test -f "$PKG/assets/argon2id-4507b469b9b103a5.wasm"
