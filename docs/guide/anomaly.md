@@ -44,7 +44,9 @@ The trainer does not parse Angie's default `combined` log format. It strictly
 requires one JSON object per line with `host`, `method`, `uri`, `status`,
 `user_agent`, and `guardian_action`. Extra fields are allowed, but missing,
 duplicate, wrongly typed, malformed, or invalid required fields are counted as
-bad input. A line over the 1 MiB input limit aborts the scan instead of being
+bad input. Required member names are case-sensitive, and invalid UTF-8 or a
+trailing JSON value is rejected. A line over the 1 MiB input limit aborts the
+scan instead of being
 silently skipped. [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf) defines the matching
 `guardian_json` format.
 

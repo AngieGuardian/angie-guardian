@@ -6,7 +6,8 @@ package httptransport
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"html/template"
 	"io"
@@ -38,7 +39,7 @@ func TestChallengeRendererMatchesTemplate(t *testing.T) {
 					Challenge:   strings.Repeat("a", 64),
 					Difficulty:  32,
 					PassURL:     PassPath,
-				})
+				}, jsontext.EscapeForHTML(true))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -85,7 +86,7 @@ func TestChallengeRendererStreamingJSONMatchesMarshal(t *testing.T) {
 		Difficulty:  16,
 		PassURL:     "/pass?next=\"<>&",
 	}
-	payload, err := json.Marshal(data)
+	payload, err := json.Marshal(data, jsontext.EscapeForHTML(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,17 @@ func TestChallengeRendererStreamingJSONMatchesMarshal(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got.Bytes(), want.Bytes()) {
-			t.Fatalf("noScript=%t: Encoder output differs from Marshal renderer\nwant %q\n got %q", noScript, want.Bytes(), got.Bytes())
+			t.Fatalf("noScript=%t: streamed output differs from Marshal renderer\nwant %q\n got %q", noScript, want.Bytes(), got.Bytes())
+		}
+		embedded := dataRe.FindSubmatch(got.Bytes())
+		if embedded == nil {
+			t.Fatalf("noScript=%t: embedded JSON missing", noScript)
+		}
+		if bytes.Contains(embedded[1], []byte(`<`)) || bytes.Contains(embedded[1], []byte(`>`)) || bytes.Contains(embedded[1], []byte(`&`)) {
+			t.Fatalf("noScript=%t: HTML-special JSON was emitted raw: %q", noScript, embedded[1])
+		}
+		if !bytes.Contains(embedded[1], []byte(`\u003c`)) || !bytes.Contains(embedded[1], []byte(`\u0026`)) {
+			t.Fatalf("noScript=%t: HTML-safe escapes missing: %q", noScript, embedded[1])
 		}
 	}
 }
@@ -177,42 +188,10 @@ func TestChallengeRendererPropagatesWriteFailures(t *testing.T) {
 	if err := renderer.RenderChallenge(jsonFailure, data, false, ""); !errors.Is(err, want) {
 		t.Fatalf("streaming JSON write error = %v, want %v", err, want)
 	}
-	// A failed pooled writer must be fully reset before the next request.
+	// A failed stream must not affect the next request.
 	var got bytes.Buffer
 	if err := renderer.RenderChallenge(&got, data, false, ""); err != nil {
 		t.Fatalf("render after streaming failure: %v", err)
-	}
-}
-
-func TestTrailingNewlineWriterHandlesFragmentedWrites(t *testing.T) {
-	var got bytes.Buffer
-	w := trailingNewlineWriter{w: &got}
-	for _, part := range [][]byte{[]byte("abc"), []byte("def"), []byte("\n")} {
-		if _, err := w.Write(part); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := w.finish(); err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "abcdef" {
-		t.Fatalf("trimmed output = %q, want %q", got.String(), "abcdef")
-	}
-
-	got.Reset()
-	w.reset(&got)
-	if _, err := w.Write([]byte("xyz")); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.finish(); err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "xyz" {
-		t.Fatalf("non-newline output = %q, want %q", got.String(), "xyz")
-	}
-	w.reset(nil)
-	if w.w != nil || w.hasTail || w.tail[0] != 0 {
-		t.Fatalf("reset writer retained state: %#v", w)
 	}
 }
 

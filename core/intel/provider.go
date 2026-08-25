@@ -46,7 +46,7 @@ type Config struct {
 // configured, or the IP simply has no record; private ranges never do).
 type Info struct {
 	Country string `json:"country,omitempty"` // ISO 3166-1 alpha-2, upper case
-	ASN     uint32 `json:"asn,omitempty"`
+	ASN     uint32 `json:"asn,omitzero"`
 	ASOrg   string `json:"as_org,omitempty"`
 
 	// City and Subdivision are only ever populated from a City-class
@@ -60,7 +60,7 @@ type Info struct {
 	// (~29% of networks are 200km+), so anything showing a locality to an
 	// operator should show this alongside it. Never a coordinate: see
 	// geoRecord.AccuracyRadiusKM.
-	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitempty"`
+	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitzero"`
 }
 
 // FeedHit names one feed an IP appears in.

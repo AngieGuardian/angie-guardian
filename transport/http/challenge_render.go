@@ -6,13 +6,13 @@ package httptransport
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"html"
 	"html/template"
 	"io"
 	"strconv"
-	"sync"
 
 	"github.com/melroy89/angie-guardian/web"
 )
@@ -22,6 +22,8 @@ const (
 	challengeURLMarker     = "__guardian_dynamic_url_8a4e2b__"
 	challengeRefreshMarker = 987654321
 )
+
+var challengeJSONOptions = jsontext.EscapeForHTML(true)
 
 // challengeData is the build-time input to the audited HTML template. The
 // production hot path does not execute the template: newChallengeRenderer
@@ -39,24 +41,15 @@ type challengeData struct {
 // Every byte still comes from web/challenge.html.tmpl; only its few dynamic
 // values are streamed into the gaps per request.
 type challengeRenderer struct {
-	js          [2][]byte
-	noJS        [5][]byte
-	jsonWriters *sync.Pool
+	js   [2][]byte
+	noJS [5][]byte
 }
 
 func newChallengeRenderer() challengeRenderer {
 	tmpl := template.Must(template.ParseFS(web.FS, "challenge.html.tmpl"))
-	jsonWriters := &sync.Pool{
-		New: func() any { return new(trailingNewlineWriter) },
-	}
-	// Seed the common single-request case during construction. Concurrent
-	// requests may grow the pool, and a GC may discard idle entries, but neither
-	// case retains response writers or adds steady-state request allocations.
-	jsonWriters.Put(new(trailingNewlineWriter))
 	return challengeRenderer{
-		js:          compileChallengeJS(tmpl),
-		noJS:        compileChallengeNoJS(tmpl),
-		jsonWriters: jsonWriters,
+		js:   compileChallengeJS(tmpl),
+		noJS: compileChallengeNoJS(tmpl),
 	}
 }
 
@@ -116,7 +109,7 @@ func compileChallengeNoJS(tmpl *template.Template) [5][]byte {
 }
 
 // Render streams a challenge page around an already-encoded JSON payload.
-// payload is encoding/json output and therefore already safe for the
+// payload must be HTML-escaped JSON and therefore safe for the
 // application/json script element.
 func (r *challengeRenderer) Render(w io.Writer, payload []byte, noScript bool, refreshSeconds, id string) error {
 	if err := r.renderPrefix(w, noScript, refreshSeconds, id); err != nil {
@@ -128,26 +121,14 @@ func (r *challengeRenderer) Render(w io.Writer, payload []byte, noScript bool, r
 	return r.renderSuffix(w, noScript)
 }
 
-// RenderChallenge streams the production payload through encoding/json
-// directly into the compiled page gap. Encoder and Marshal produce identical
-// bytes before Encoder's framing newline; trailingNewlineWriter removes only
-// that final byte, avoiding Marshal's per-request copy into a returned slice.
-// The wrapper comes from a concurrency-safe pool because passing it through
-// Encoder's io.Writer interface otherwise forces one heap allocation.
+// RenderChallenge streams the production payload through encoding/json/v2
+// directly into the compiled page gap. EscapeForHTML is required because the
+// JSON is embedded in an application/json script element.
 func (r *challengeRenderer) RenderChallenge(w io.Writer, data *challengePayload, noScript bool, refreshSeconds string) error {
 	if err := r.renderPrefix(w, noScript, refreshSeconds, data.ChallengeID); err != nil {
 		return err
 	}
-	tw := r.jsonWriters.Get().(*trailingNewlineWriter)
-	tw.reset(w)
-	err := json.NewEncoder(tw).Encode(data)
-	if err == nil {
-		err = tw.finish()
-	}
-	// Do not retain the request's ResponseWriter while this entry is idle.
-	tw.reset(nil)
-	r.jsonWriters.Put(tw)
-	if err != nil {
+	if err := json.MarshalWrite(w, data, challengeJSONOptions); err != nil {
 		return err
 	}
 	return r.renderSuffix(w, noScript)
@@ -195,47 +176,6 @@ func (r *challengeRenderer) renderSuffix(w io.Writer, noScript bool) error {
 		return writeChallengeBytes(w, r.noJS[4])
 	}
 	return writeChallengeBytes(w, r.js[1])
-}
-
-// trailingNewlineWriter retains the most recent byte across writes. finish
-// drops it when it is Encoder's framing newline and otherwise forwards it, so
-// correctness does not depend on Encoder issuing exactly one Write call.
-type trailingNewlineWriter struct {
-	w       io.Writer
-	tail    [1]byte
-	hasTail bool
-}
-
-func (w *trailingNewlineWriter) reset(dst io.Writer) {
-	w.w = dst
-	w.tail[0] = 0
-	w.hasTail = false
-}
-
-func (w *trailingNewlineWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if w.hasTail {
-		if err := writeChallengeBytes(w.w, w.tail[:]); err != nil {
-			return 0, err
-		}
-	}
-	w.tail[0] = p[len(p)-1]
-	w.hasTail = true
-	if len(p) > 1 {
-		if err := writeChallengeBytes(w.w, p[:len(p)-1]); err != nil {
-			return 0, err
-		}
-	}
-	return len(p), nil
-}
-
-func (w *trailingNewlineWriter) finish() error {
-	if !w.hasTail || w.tail[0] == '\n' {
-		return nil
-	}
-	return writeChallengeBytes(w.w, w.tail[:])
 }
 
 func writeChallengeBytes(w io.Writer, p []byte) error {

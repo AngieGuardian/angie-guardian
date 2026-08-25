@@ -29,8 +29,8 @@ type TokenClaims struct {
 	ChallengeID string    `json:"cid"`
 	Difficulty  int       `json:"dif"`
 	Algorithm   Algorithm `json:"alg,omitempty"`
-	MemoryKiB   uint32    `json:"argon_m,omitempty"`
-	Iterations  uint32    `json:"argon_t,omitempty"`
+	MemoryKiB   uint32    `json:"argon_m,omitzero"`
+	Iterations  uint32    `json:"argon_t,omitzero"`
 	jwt.RegisteredClaims
 }
 

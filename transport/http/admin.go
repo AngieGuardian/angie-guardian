@@ -5,11 +5,11 @@
 package httptransport
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
+	"encoding/json/v2"
 	"io"
 	"log/slog"
 	"net/http"
@@ -212,21 +212,13 @@ func (s *AdminServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 		TTL    string `json:"ttl"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	if err == nil && len(bytes.TrimSpace(raw)) != 0 {
+		err = json.Unmarshal(raw, &body, json.RejectUnknownMembers(true))
+	}
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
 		return
-	} else if err == nil {
-		var trailing any
-		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-			if err == nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: trailing JSON value"})
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
-			}
-			return
-		}
 	}
 	// A manual block is a deliberate operator act, not a reflex from the
 	// behavioural ladder, so it defaults long rather than to the ladder's first
@@ -965,8 +957,8 @@ type offenderIP struct {
 	Country          string `json:"country,omitempty"`
 	City             string `json:"city,omitempty"`
 	Subdivision      string `json:"subdivision,omitempty"`
-	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitempty"`
-	ASN              uint32 `json:"asn,omitempty"`
+	AccuracyRadiusKM uint16 `json:"accuracy_radius_km,omitzero"`
+	ASN              uint32 `json:"asn,omitzero"`
 	ASOrg            string `json:"as_org,omitempty"`
 }
 
@@ -1145,7 +1137,7 @@ func (s *AdminServer) handleAnomaly(w http.ResponseWriter, _ *http.Request) {
 		Mode     string `json:"mode"`
 		Model    string `json:"model"`
 		Coverage string `json:"coverage"`
-		Segments int    `json:"segments,omitempty"`
+		Segments int    `json:"segments,omitzero"`
 	}
 	statuses := s.engine.AnomalyModels()
 	models := make([]modelView, 0, len(statuses))
@@ -1329,19 +1321,8 @@ func (s *AdminServer) handleAttackSet(w http.ResponseWriter, r *http.Request) {
 		Level string `json:"level"`
 		TTL   string `json:"ttl"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
+	if err := json.UnmarshalRead(http.MaxBytesReader(w, r.Body, 4096), &body, json.RejectUnknownMembers(true)); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
-		return
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: trailing JSON value"})
-		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request: " + err.Error()})
-		}
 		return
 	}
 	level, auto, ok := attackmode.ParseLevel(body.Level)

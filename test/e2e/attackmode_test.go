@@ -7,7 +7,8 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -184,7 +185,7 @@ func attackLevel(t *testing.T) string {
 	var out struct {
 		Level string `json:"level"`
 	}
-	json.NewDecoder(resp.Body).Decode(&out)
+	json.UnmarshalRead(resp.Body, &out)
 	return out.Level
 }
 
@@ -194,9 +195,9 @@ func attackSignals(t *testing.T) string {
 	t.Helper()
 	resp := adminReq(t, http.MethodGet, "/admin/attack", nil)
 	var out struct {
-		Signals json.RawMessage `json:"signals"`
+		Signals jsontext.Value `json:"signals"`
 	}
-	json.NewDecoder(resp.Body).Decode(&out)
+	json.UnmarshalRead(resp.Body, &out)
 	return string(out.Signals)
 }
 

@@ -6,7 +6,7 @@ package httptransport
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"io"
 	"log/slog"
@@ -193,7 +193,7 @@ func (a *angieClient) fetchUpstream(suffix string) (sample, error) {
 	// Validate before caching: a 200 with malformed (or truncated) JSON must not
 	// be stored as a good result, or the dashboard gets an empty-but-200 render
 	// and the bad entry sticks for the whole TTL.
-	if !json.Valid(body) {
+	if !jsontext.Value(body).IsValid() {
 		return sample{}, errors.New("angie api returned invalid JSON")
 	}
 
@@ -264,7 +264,7 @@ func (s *AdminServer) handleAngie(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		out[r.key] = json.RawMessage(r.s.body)
+		out[r.key] = jsontext.Value(r.s.body)
 		asOf[r.key] = r.s.at.UTC().Format(time.RFC3339Nano)
 		got++
 	}

@@ -7,7 +7,7 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"testing"
 )
@@ -64,7 +64,7 @@ func TestBlockOffloadMirror(t *testing.T) {
 			Seeded  bool   `json:"seeded"`
 		} `json:"mirror"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &status); err != nil {
 		t.Fatalf("decode offload status: %v", err)
 	}
 	if !status.Mirror.Seeded || status.Mirror.Entries < 1 || status.Mirror.Mode != "authoritative" {

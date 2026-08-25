@@ -11,7 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"strings"
 	"time"
@@ -66,8 +66,8 @@ type statelessPayload struct {
 	TS   int64     `json:"t"` // issued-at unix millis
 	Rand string    `json:"r"` // 96-bit hex, so identical requests differ
 	Alg  Algorithm `json:"a,omitempty"`
-	Mem  uint32    `json:"m,omitempty"`
-	Iter uint32    `json:"p,omitempty"`
+	Mem  uint32    `json:"m,omitzero"`
+	Iter uint32    `json:"p,omitzero"`
 	Salt string    `json:"s,omitempty"`
 }
 
@@ -324,7 +324,7 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		return nil, ErrChallengeUnknown
 	}
 	var p statelessPayload
-	if err := json.Unmarshal(payload, &p); err != nil || p.V != version {
+	if err := json.Unmarshal(payload, &p, json.RejectUnknownMembers(true)); err != nil || p.V != version {
 		return nil, ErrChallengeUnknown
 	}
 	spec, err := p.proofSpec()

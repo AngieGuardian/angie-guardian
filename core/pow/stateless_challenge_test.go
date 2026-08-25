@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json/v2"
 	"errors"
 	"path/filepath"
 	"strconv"
@@ -86,6 +87,24 @@ func TestStatelessIssuesNoStoreWrite(t *testing.T) {
 	}
 	if cs.writes.Load() != 0 {
 		t.Fatalf("stateless issuance performed %d store writes, want 0", cs.writes.Load())
+	}
+}
+
+func TestStatelessPayloadUsesJSONV2Contract(t *testing.T) {
+	p := &statelessPayload{
+		V: 1, Host: "example.test", IP: "203.0.113.7", Bits: 8,
+		URI: "/page?x=1", TS: 1234, Rand: "00112233445566778899aabb",
+	}
+	got, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"v":1,"h":"example.test","i":"203.0.113.7","d":8,"u":"/page?x=1","n":0,"t":1234,"r":"00112233445566778899aabb"}`
+	if string(got) != want {
+		t.Fatalf("payload = %s\nwant    = %s", got, want)
+	}
+	if bytes.Contains(got, []byte(`"m":0`)) || bytes.Contains(got, []byte(`"p":0`)) {
+		t.Fatalf("zero Argon2 fields leaked into SHA payload: %s", got)
 	}
 }
 

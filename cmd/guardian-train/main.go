@@ -8,7 +8,8 @@ package main
 import (
 	"bufio"
 	"compress/gzip"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -262,7 +263,7 @@ func parseRecord(source string, lineNo int64, line []byte, stats *inputStats, st
 	if err == nil {
 		return rec, nil
 	}
-	if json.Valid(line) {
+	if jsontext.Value(line).IsValid() {
 		stats.InvalidSchema++
 	} else {
 		stats.MalformedJSON++
@@ -389,7 +390,7 @@ func materializeStdin(paths []string) ([]string, func(), error) {
 }
 
 func writeJSON(path string, value any) error {
-	raw, err := json.MarshalIndent(value, "", "  ")
+	raw, err := json.Marshal(value, json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}

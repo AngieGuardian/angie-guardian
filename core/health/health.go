@@ -55,7 +55,7 @@ const probeKeyPrefix = "guardian:health:probe:"
 type Status struct {
 	Probed    bool      `json:"probed"`
 	Up        bool      `json:"up"`
-	Stale     bool      `json:"stale,omitempty"`
+	Stale     bool      `json:"stale,omitzero"`
 	Backend   string    `json:"backend"`
 	LatencyMS float64   `json:"latency_ms"`
 	CheckedAt time.Time `json:"checked_at"`

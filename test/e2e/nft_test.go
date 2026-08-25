@@ -16,7 +16,7 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net"
 	"net/http"
@@ -150,7 +150,7 @@ func TestNFTKernelDropScopedToPort(t *testing.T) {
 				IP string `json:"ip"`
 			} `json:"blocks"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&out)
+		_ = json.UnmarshalRead(resp.Body, &out)
 		if len(out.Blocks) > 0 {
 			blockedIP = out.Blocks[0].IP
 			break
@@ -170,7 +170,7 @@ func TestNFTKernelDropScopedToPort(t *testing.T) {
 			Elements int    `json:"elements"`
 		} `json:"sinks"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &status); err != nil {
 		t.Fatalf("decode offload status: %v", err)
 	}
 	var nft *struct {

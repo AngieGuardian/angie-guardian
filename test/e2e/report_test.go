@@ -7,7 +7,8 @@
 package e2e
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"strings"
 	"testing"
@@ -88,7 +89,7 @@ func TestAdminConfigReflectsDomains(t *testing.T) {
 			Rules      bool `json:"waf_rules"`
 		} `json:"domains"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &cfg); err != nil {
 		t.Fatalf("decode /admin/config: %v", err)
 	}
 	if cfg.Store != "pebble" {
@@ -130,19 +131,19 @@ func TestAdminAngieRelaysZones(t *testing.T) {
 		t.Fatalf("/admin/angie: status %d, want 200", resp.StatusCode)
 	}
 	var out struct {
-		Enabled     bool            `json:"enabled"`
-		Error       string          `json:"error"`
-		ServerZones json.RawMessage `json:"server_zones"`
+		Enabled     bool           `json:"enabled"`
+		Error       string         `json:"error"`
+		ServerZones jsontext.Value `json:"server_zones"`
 		Angie       struct {
 			Version string `json:"version"`
 		} `json:"angie"`
 		Connections struct {
 			Accepted int64 `json:"accepted"`
 		} `json:"connections"`
-		Upstreams map[string]json.RawMessage `json:"upstreams"`
-		AsOf      map[string]string          `json:"as_of"`
+		Upstreams map[string]jsontext.Value `json:"upstreams"`
+		AsOf      map[string]string         `json:"as_of"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("decode /admin/angie: %v", err)
 	}
 	if !out.Enabled {
@@ -152,7 +153,7 @@ func TestAdminAngieRelaysZones(t *testing.T) {
 		t.Fatalf("angie api error: %q (is the api listener up in angie.docker.conf?)", out.Error)
 	}
 	// server_zones must be a non-empty object carrying the protected host.
-	var zones map[string]json.RawMessage
+	var zones map[string]jsontext.Value
 	if err := json.Unmarshal(out.ServerZones, &zones); err != nil {
 		t.Fatalf("server_zones is not an object: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestAdminAngieContract(t *testing.T) {
 		t.Fatalf("/admin/angie: status %d, want 200 always", resp.StatusCode)
 	}
 	var out map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if _, ok := out["enabled"]; !ok {
@@ -252,7 +253,7 @@ func TestAdminBlockListAndDecisions(t *testing.T) {
 			ExpiresAt *string `json:"expires_at"`
 		} `json:"blocks"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&bl); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &bl); err != nil {
 		t.Fatalf("decode /admin/blocks: %v", err)
 	}
 	if bl.Count < 1 {
@@ -281,7 +282,7 @@ func TestAdminBlockListAndDecisions(t *testing.T) {
 			Action string `json:"action"`
 		} `json:"decisions"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&dl); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &dl); err != nil {
 		t.Fatalf("decode /admin/decisions: %v", err)
 	}
 	if dl.Count < 1 || !strings.Contains(dl.Decisions[0].URI, "/.git/config") {
@@ -297,7 +298,7 @@ func TestAdminBlockListAndDecisions(t *testing.T) {
 			ByAction map[string]int `json:"by_action"`
 		} `json:"recent"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &st); err != nil {
 		t.Fatalf("decode /admin/stats: %v", err)
 	}
 	if st.BlocksActive < 1 || st.Recent.ByAction["deny"] < 1 {
@@ -347,7 +348,7 @@ func TestReadinessAndStoreHealth(t *testing.T) {
 			Backend string `json:"backend"`
 		} `json:"store"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &ready); err != nil {
 		t.Fatalf("decode /readyz: %v", err)
 	}
 	if !ready.Ready || !ready.Store.Up || !ready.Store.Probed {
@@ -421,7 +422,7 @@ func TestAdminStatsHealthObject(t *testing.T) {
 			Fallback map[string]float64 `json:"pow_fallback"`
 		} `json:"health"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &stats); err != nil {
 		t.Fatalf("decode /admin/stats: %v", err)
 	}
 	h := stats.Health

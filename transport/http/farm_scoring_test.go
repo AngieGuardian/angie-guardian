@@ -5,7 +5,7 @@
 package httptransport
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"strings"

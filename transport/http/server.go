@@ -9,7 +9,7 @@ package httptransport
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -296,15 +296,15 @@ type challengePayload struct {
 	Challenge           string        `json:"challenge"`
 	Algorithm           pow.Algorithm `json:"algorithm"`
 	Difficulty          int           `json:"difficulty_bits"`
-	MemoryKiB           uint32        `json:"memory_kib,omitempty"`
-	Iterations          uint32        `json:"iterations,omitempty"`
+	MemoryKiB           uint32        `json:"memory_kib,omitzero"`
+	Iterations          uint32        `json:"iterations,omitzero"`
 	Salt                string        `json:"salt,omitempty"`
 	PassURL             string        `json:"pass_url"`
 	WorkerURL           string        `json:"worker_url,omitempty"`
 	WASMURL             string        `json:"wasm_url,omitempty"`
-	NoScriptFallback    bool          `json:"noscript_fallback,omitempty"`
+	NoScriptFallback    bool          `json:"noscript_fallback,omitzero"`
 	NoScriptURL         string        `json:"noscript_url,omitempty"`
-	NoScriptWaitSeconds int           `json:"noscript_wait_seconds,omitempty"`
+	NoScriptWaitSeconds int           `json:"noscript_wait_seconds,omitzero"`
 }
 
 // refuseChallenge writes a challenge refusal: a plain 403 with an explanation,
@@ -614,7 +614,7 @@ func (s *Server) handlePassSolve(w http.ResponseWriter, r *http.Request) {
 		Proof       string `json:"proof"`
 		ElapsedMS   int64  `json:"elapsed_ms"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+	if err := json.UnmarshalRead(http.MaxBytesReader(w, r.Body, 4096), &body, json.RejectUnknownMembers(true)); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "malformed request"})
 		return
 	}
@@ -907,7 +907,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	// from rendering one as HTML anyway.
 	securityHeaders(w, "", "")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.MarshalWrite(w, v)
 }
 
 // safeRedirect confines post-challenge redirects to same-site paths.

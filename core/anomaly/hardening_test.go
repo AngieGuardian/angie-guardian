@@ -31,6 +31,7 @@ func TestParseLogRecordStrictSchema(t *testing.T) {
 	for name, line := range map[string]string{
 		"missing action":    `{"host":"x.test","method":"GET","uri":"/","status":200,"user_agent":"curl"}`,
 		"duplicate host":    `{"host":"x.test","host":"y.test","method":"GET","uri":"/","status":200,"user_agent":"curl","guardian_action":"allow"}`,
+		"wrong-case host":   `{"Host":"x.test","method":"GET","uri":"/","status":200,"user_agent":"curl","guardian_action":"allow"}`,
 		"bad method":        `{"host":"x.test","method":"G ET","uri":"/","status":200,"user_agent":"curl","guardian_action":"allow"}`,
 		"padded host":       `{"host":" x.test ","method":"GET","uri":"/","status":200,"user_agent":"curl","guardian_action":"allow"}`,
 		"relative uri":      `{"host":"x.test","method":"GET","uri":"relative","status":200,"user_agent":"curl","guardian_action":"allow"}`,
@@ -43,6 +44,11 @@ func TestParseLogRecordStrictSchema(t *testing.T) {
 				t.Fatal("record unexpectedly accepted")
 			}
 		})
+	}
+	invalidUTF8 := append([]byte(`{"host":"x.test","method":"GET","uri":"/","status":200,"user_agent":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`","guardian_action":"allow"}`)...)
+	if _, err := ParseLogRecord(invalidUTF8); err == nil {
+		t.Fatal("record with invalid UTF-8 unexpectedly accepted")
 	}
 }
 
@@ -295,17 +301,27 @@ func TestComparatorScopesCoverageFailuresToRequired(t *testing.T) {
 	}
 }
 
-func TestParseModelRejectsTrailingDocument(t *testing.T) {
+func TestParseModelRejectsAmbiguousInput(t *testing.T) {
 	m := &Model{Version: ModelVersion, FeatureSchema: FeatureSchema, TrainedAt: time.Now().UTC(),
 		Domains: map[string]*DomainModel{"x.test": {Baseline: testBaseline(1)}}}
 	path := filepath.Join(t.TempDir(), "model.json")
 	if err := m.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	raw := fmt.Sprintf(`{"version":%d,"feature_schema":%q,"trained_at":%q,"domains":{"x.test":{"baseline":{"requests":1}}}} {}`,
+	base := fmt.Sprintf(`{"version":%d,"feature_schema":%q,"trained_at":%q,"domains":{"x.test":{"baseline":{"requests":1,"path_depth":{"mean":0,"std":0},"path_len":{"mean":0,"std":0},"path_entropy":{"mean":0,"std":0},"query_params":{"mean":0,"std":0},"ua_freq":{},"path_prefix_freq":{}}}}}`,
 		ModelVersion, FeatureSchema, m.TrainedAt.Format(time.RFC3339Nano))
-	if _, err := ParseModel([]byte(raw), path); err == nil {
-		t.Fatal("trailing JSON document unexpectedly accepted")
+	for name, raw := range map[string][]byte{
+		"trailing value":  []byte(base + ` {}`),
+		"duplicate name":  []byte(strings.Replace(base, `"version":2`, `"version":2,"version":2`, 1)),
+		"unknown member":  []byte(strings.Replace(base, `"feature_schema"`, `"extra":true,"feature_schema"`, 1)),
+		"wrong-case name": []byte(strings.Replace(base, `"version"`, `"Version"`, 1)),
+		"invalid UTF-8":   append(append([]byte(nil), []byte(base[:len(base)-2])...), 0xff, '}', '}'),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseModel(raw, path); err == nil {
+				t.Fatal("ambiguous model unexpectedly accepted")
+			}
+		})
 	}
 }
 

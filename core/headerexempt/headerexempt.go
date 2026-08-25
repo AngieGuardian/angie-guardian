@@ -12,7 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/v2"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -160,7 +160,7 @@ func hasInvalidFieldValueByte(s string) bool {
 
 // VariantKey is stable for one effective predicate list.
 func VariantKey(predicates []PredicateConfig) string {
-	b, _ := json.Marshal(predicates)
+	b, _ := json.Marshal(predicates, json.Deterministic(true))
 	return string(b)
 }
 
