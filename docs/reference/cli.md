@@ -68,6 +68,11 @@ server endpoints and
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf)
 authorization directives; you never call them directly.
 
+The separately optional `angie-hardening-http.conf` and
+`angie-hardening-server.conf` snippets bound Angie's client-facing TLS/HTTP work;
+they are documented in [Angie Server Hardening](/guide/angie-hardening)
+and do not change Guardian's endpoint contract.
+
 | Endpoint | Purpose |
 |---|---|
 | `GET /auth` | The `auth_request` target: answers allow, challenge, or deny. |

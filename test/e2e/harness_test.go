@@ -22,11 +22,18 @@ package e2e
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"math/bits"
 	"net"
 	"net/http"
@@ -67,10 +74,13 @@ const (
 // box; the compose file publishes them via ${GUARDIAN_SITE_PORT}/
 // ${GUARDIAN_ADMIN_PORT}).
 var (
-	site    string // the protected site, through Angie
-	admin   string // guardiand admin API + /metrics
-	auth    string // guardiand auth hot path, published for the attack-mode test
-	backend string // test-only backend counter listener
+	site     string // the protected site, through Angie
+	admin    string // guardiand admin API + /metrics
+	auth     string // guardiand auth hot path, published for the attack-mode test
+	backend  string // test-only backend counter listener
+	tlsSite  string // protected HTTPS listener through Angie
+	tlsAddr  string // host:port form of tlsSite for raw protocol clients
+	tlsRoots *x509.CertPool
 )
 
 // stack is the running compose stack, shared by every test via TestMain.
@@ -85,6 +95,18 @@ func TestMain(m *testing.M) {
 // runSuite is split out so the deferred teardown runs before os.Exit.
 func runSuite(m *testing.M) int {
 	ctx := context.Background()
+	tlsDir, err := os.MkdirTemp("", "guardian-e2e-tls-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: create TLS directory:", err)
+		return 1
+	}
+	defer os.RemoveAll(tlsDir)
+	tlsCertPath, tlsKeyPath, roots, err := writeSelfSignedCertificate(tlsDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: create TLS certificate:", err)
+		return 1
+	}
+	tlsRoots = roots
 
 	c, err := compose.NewDockerCompose("../../deploy/docker/compose.e2e.yaml")
 	if err != nil {
@@ -93,7 +115,7 @@ func runSuite(m *testing.M) int {
 	}
 	stack = c
 
-	// Pick three free host ports so the published listeners never collide with
+	// Pick free host ports so the published listeners never collide with
 	// anything else on the box, and hand them to compose via the env-var
 	// defaults in compose.yaml.
 	sitePort, err := freePort()
@@ -112,6 +134,13 @@ func runSuite(m *testing.M) int {
 		return 1
 	}
 	site = fmt.Sprintf("http://127.0.0.1:%d", sitePort)
+	tlsPort, err := freePort()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: pick TLS port:", err)
+		return 1
+	}
+	tlsAddr = fmt.Sprintf("127.0.0.1:%d", tlsPort)
+	tlsSite = "https://" + tlsAddr
 	admin = fmt.Sprintf("http://127.0.0.1:%d", adminPort)
 	auth = fmt.Sprintf("http://127.0.0.1:%d", authPort)
 	backendPort, err := freePort()
@@ -122,6 +151,9 @@ func runSuite(m *testing.M) int {
 	backend = fmt.Sprintf("http://127.0.0.1:%d", backendPort)
 	stack = stack.WithEnv(map[string]string{
 		"GUARDIAN_SITE_PORT":  strconv.Itoa(sitePort),
+		"GUARDIAN_TLS_PORT":   strconv.Itoa(tlsPort),
+		"GUARDIAN_TLS_CERT":   tlsCertPath,
+		"GUARDIAN_TLS_KEY":    tlsKeyPath,
 		"GUARDIAN_ADMIN_PORT": strconv.Itoa(adminPort),
 		// The auth hot path is published so the attack-mode test can drive
 		// /challenge directly from synthetic client IPs (trusted_proxy: true).
@@ -161,6 +193,49 @@ func runSuite(m *testing.M) int {
 	clearGatewayBlocks()
 
 	return m.Run()
+}
+
+// writeSelfSignedCertificate creates an ephemeral localhost certificate for
+// the real Angie TLS listener. No fixture key is committed and every suite run
+// exercises certificate loading from scratch.
+func writeSelfSignedCertificate(dir string) (certPath, keyPath string, roots *x509.CertPool, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", nil, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	certPath = dir + "/e2e.crt"
+	keyPath = dir + "/e2e.key"
+	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+		return "", "", nil, err
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return "", "", nil, err
+	}
+	roots = x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		return "", "", nil, fmt.Errorf("append generated certificate")
+	}
+	return certPath, keyPath, roots, nil
 }
 
 // backendCount reads the exact number of requests that reached the origin

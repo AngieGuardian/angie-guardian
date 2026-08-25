@@ -12,12 +12,31 @@ import (
 	"net/http"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 var requests atomic.Int64
 
+const largeResponseSize = 64 << 20
+
 func main() {
 	public := http.NewServeMux()
+	public.HandleFunc("/held-response", func(w http.ResponseWriter, _ *http.Request) {
+		n := requests.Add(1)
+		time.Sleep(8 * time.Second)
+		fmt.Fprintf(w, "Backend-Request-Count: %d\n", n)
+	})
+	public.HandleFunc("/large-response", func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprint(largeResponseSize))
+		chunk := make([]byte, 32<<10)
+		for written := 0; written < largeResponseSize; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
 	public.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
 		_, _ = io.ReadAll(r.Body)

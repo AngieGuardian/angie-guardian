@@ -5,6 +5,11 @@ refusal route through Angie, over keepalive connections. It reports throughput
 and latency percentiles. Run it before relying on a deployment near its
 throughput budget.
 
+It does not model partial TLS handshakes, slow HTTP/1.1 clients, HTTP/2 stream
+resets, or file-descriptor recovery. Those are Angie's protocol layer. Run the
+real-stack [Angie validation and soak](/guide/angie-hardening#validate-and-soak)
+for that separate question.
+
 ## Scenarios
 
 `allow`, `token`, and the `/auth` half of `refuse` are read-dominated; the

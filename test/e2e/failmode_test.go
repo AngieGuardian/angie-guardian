@@ -36,6 +36,21 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 
 	stopGuardiand(t)
 
+	// Fail-open applies only to Guardian's own upstream failure. Angie's
+	// protocol admission remains in force while the sidecar is unavailable.
+	// In particular, the body-size boundary must not leak through to origin.
+	oversizedBefore := backendCount(t)
+	oversized := req(t, http.MethodPost, site+"/too-large-with-guardian-down", map[string]string{
+		"Host":       wafOnlyHost,
+		"User-Agent": browserUA,
+	}, strings.NewReader(strings.Repeat("x", (1<<20)+1)))
+	if oversized.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("fail-open oversized request: status %d, want 413", oversized.StatusCode)
+	}
+	if after := backendCount(t); after != oversizedBefore {
+		t.Fatalf("fail-open oversized request reached origin: delta %d", after-oversizedBefore)
+	}
+
 	// With the sidecar down, the site must still serve the backend (fail-open).
 	// Use a normal path to prove the original backend handler resumes.
 	before := backendCount(t)

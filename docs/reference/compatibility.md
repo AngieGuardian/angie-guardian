@@ -58,6 +58,10 @@ These may change in any release, including a patch:
   automate.
 - **The starter `rules-common.yaml`.** It's a template to copy and tune, not a
   frozen interface.
+- **Angie hardening settings.** The values in the optional
+  `angie-hardening-*.conf` snippets may change between releases as Angie
+  changes. If you need fixed values, copy the snippets into your own Angie
+  configuration and manage them there.
 - **Internal Go packages.** Guardian is a daemon, not a library; import paths
   under `core/…` carry no compatibility promise.
 - **The dashboard HTML/JS and the challenge interstitial markup.**
