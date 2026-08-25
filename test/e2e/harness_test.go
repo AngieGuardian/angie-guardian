@@ -38,6 +38,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -95,7 +96,15 @@ func TestMain(m *testing.M) {
 // runSuite is split out so the deferred teardown runs before os.Exit.
 func runSuite(m *testing.M) int {
 	ctx := context.Background()
-	tlsDir, err := os.MkdirTemp("", "guardian-e2e-tls-")
+	projectDir, err := filepath.Abs("../..")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: find project directory:", err)
+		return 1
+	}
+	// Keep generated certificates under the shared project directory. CI runs
+	// this test inside a container while Compose uses the host Docker socket, so
+	// paths in the test container's private /tmp are not visible to Angie.
+	tlsDir, err := os.MkdirTemp(projectDir, ".guardian-e2e-tls-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: create TLS directory:", err)
 		return 1
@@ -185,6 +194,7 @@ func runSuite(m *testing.M) int {
 	}()
 	if upErr != nil {
 		fmt.Fprintln(os.Stderr, "e2e: compose up:", upErr)
+		printServiceLogs(ctx, "angie")
 		return 1
 	}
 
@@ -193,6 +203,26 @@ func runSuite(m *testing.M) int {
 	clearGatewayBlocks()
 
 	return m.Run()
+}
+
+func printServiceLogs(ctx context.Context, service string) {
+	ctr, err := stack.ServiceContainer(ctx, service)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: %s container: %v\n", service, err)
+		return
+	}
+	rc, err := ctr.Logs(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: %s logs: %v\n", service, err)
+		return
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: read %s logs: %v\n", service, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "e2e: %s logs:\n%s\n", service, b)
 }
 
 // writeSelfSignedCertificate creates an ephemeral localhost certificate for
