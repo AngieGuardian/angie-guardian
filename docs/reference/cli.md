@@ -14,7 +14,7 @@ guardiand
 |---|---|
 | `-config <path>` | Path to `guardian.yaml`. Optional for every mode; when omitted, Guardian uses `/etc/guardian/guardian.yaml`. |
 | `-healthcheck` | **Liveness** check: require every configured listener to answer `/healthz`, then exit. Without `-config`, it also uses `/etc/guardian/guardian.yaml`. Only the listen addresses are read from the config, leniently: a half-edited or invalid `guardian.yaml` cannot fail the probe of a healthy running daemon. Used by the distroless Compose image. It deliberately does not consult the store; see [`/readyz`](/reference/admin-api#get-readyz) for readiness. |
-| `-profile-dir <dir>` | Diagnostic mode for a controlled benchmark run. The directory must be empty; on graceful shutdown Guardian writes CPU, heap, allocation, mutex and block profiles plus one JSONL runtime/Pebble sample per second. It enables extra runtime sampling, so do not use it for normal serving or compare its throughput directly with a standard run. |
+| `-profile-dir <dir>` | Diagnostic mode for a controlled benchmark run. The directory must be empty; on graceful shutdown Guardian writes CPU, heap, allocation, mutex, block and goroutine-leak profiles, a bounded runtime flight-recorder trace, and one JSONL runtime/Pebble sample per second. It enables extra runtime sampling, so do not use it for normal serving or compare its throughput directly with a standard run. |
 | `-t` | Test the config and startup-required local artifacts (WAF rules, anomaly models, GeoIP databases, and file feeds), then exit. Remote URL feeds are not fetched. Exit code `0` and `ok` when valid, `1` and the reason when not (like `angie -t`). Without `-config` it tests `/etc/guardian/guardian.yaml`. |
 | `-version` | Print version and exit. |
 

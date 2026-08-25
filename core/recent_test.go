@@ -79,14 +79,12 @@ func TestRecentRingConcurrentSnapshot(t *testing.T) {
 	r := newRecentRing(64)
 	var wg sync.WaitGroup
 	for writer := 0; writer < 4; writer++ {
-		wg.Add(1)
-		go func(writer int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := 0; i < 1000; i++ {
 				r.add(RecentDecision{Time: time.Now(), URI: "/" + strconv.Itoa(writer) + "/" + strconv.Itoa(i)})
 				_ = r.snapshot(16)
 			}
-		}(writer)
+		})
 	}
 	wg.Wait()
 	if snap := r.snapshot(0); len(snap.Decisions) != 64 || !snap.Full {

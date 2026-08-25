@@ -121,6 +121,11 @@ version.
 | `worker_connections` | `4096` | Connections handled by each worker |
 | worker/container `nofile` | `8192` | File descriptors available to the Angie process |
 
+After Angie decodes a request, both Guardian HTTP listeners independently cap
+the number of parsed header values at 64. Requests with more repeated header
+lines receive `431` before a Guardian handler runs. This is defense in depth for
+listener-isolation mistakes; it does not replace Angie's client-facing limits.
+
 Angie timeouts are inactivity intervals, not total upload/download deadlines.
 A client that continuously makes progress can legitimately remain connected
 longer. Conversely, `reset_timedout_connection on` closes timed-out sockets

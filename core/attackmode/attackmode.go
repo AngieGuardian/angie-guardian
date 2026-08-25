@@ -18,13 +18,12 @@ package attackmode
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 	"github.com/melroy89/angie-guardian/internal/jitter"
@@ -218,11 +217,7 @@ func New(cfg Config, st store.Store, log *slog.Logger) *Detector {
 // newInstanceID returns a random per-process id for this instance's
 // posture-share key, so replicas never collide on the shared store.
 func newInstanceID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "unknown"
-	}
-	return hex.EncodeToString(b[:])
+	return uuid.New().String()
 }
 
 func (d *Detector) applyConfig(cfg Config) {

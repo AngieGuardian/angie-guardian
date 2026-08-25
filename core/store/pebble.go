@@ -649,8 +649,8 @@ func (s *shardLocks) lockMany(keys ...[]byte) func() {
 		s.mus[idx].Lock()
 	}
 	return func() {
-		for i := len(idxs) - 1; i >= 0; i-- {
-			s.mus[idxs[i]].Unlock()
+		for _, idx := range slices.Backward(idxs) {
+			s.mus[idx].Unlock()
 		}
 	}
 }

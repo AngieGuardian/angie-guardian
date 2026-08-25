@@ -54,9 +54,8 @@ func TestAttackModeTrips(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for w := range floodWorkers {
-		wg.Add(1)
-		go func(base int) {
-			defer wg.Done()
+		base := w * 16
+		wg.Go(func() {
 			for n := base; ; n++ {
 				select {
 				case <-stop:
@@ -65,7 +64,7 @@ func TestAttackModeTrips(t *testing.T) {
 				}
 				floodChallenge(t, fmt.Sprintf("198.51.100.%d", n%254+1))
 			}
-		}(w * 16)
+		})
 	}
 
 	var level string

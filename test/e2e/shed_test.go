@@ -37,9 +37,7 @@ func TestGuardianBaselineControlPlaneAdmission(t *testing.T) {
 			var mu sync.Mutex
 			codes := map[int]int{}
 			for range burst {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					r, err := http.NewRequest(tt.method, site+tt.path, strings.NewReader(tt.body))
 					if err != nil {
 						t.Error(err)
@@ -54,7 +52,7 @@ func TestGuardianBaselineControlPlaneAdmission(t *testing.T) {
 					codes[resp.StatusCode]++
 					mu.Unlock()
 					resp.Body.Close()
-				}()
+				})
 			}
 			wg.Wait()
 
@@ -90,9 +88,7 @@ func TestLoadShedThroughAngie(t *testing.T) {
 
 	client := &http.Client{}
 	for range burst {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			r, _ := http.NewRequest(http.MethodGet, site+"/shed-probe", nil)
 			r.Host = powHost // unvouched requests must challenge or shed, never reach the backend
 			r.Header.Set("User-Agent", "shed-test/1.0")
@@ -107,7 +103,7 @@ func TestLoadShedThroughAngie(t *testing.T) {
 			}
 			mu.Unlock()
 			resp.Body.Close()
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -144,9 +140,7 @@ func TestServerScopeAdmissionProtectsBackend(t *testing.T) {
 	var mu sync.Mutex
 	codes := map[int]int{}
 	for range burst {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			r, _ := http.NewRequest(http.MethodGet, site+"/admission-probe", nil)
 			r.Host = admissionHost
 			r.Header.Set("User-Agent", "admission-test/1.0")
@@ -158,7 +152,7 @@ func TestServerScopeAdmissionProtectsBackend(t *testing.T) {
 			codes[resp.StatusCode]++
 			mu.Unlock()
 			resp.Body.Close()
-		}()
+		})
 	}
 	wg.Wait()
 

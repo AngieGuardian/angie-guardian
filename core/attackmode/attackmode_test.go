@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 )
 
 func testConfig() Config {
@@ -67,6 +68,20 @@ func TestDetectorNilReceiver(t *testing.T) {
 		t.Fatal("nil detector not normal")
 	}
 	d.Close()
+}
+
+func TestNewInstanceIDUsesCanonicalUUID(t *testing.T) {
+	first := newInstanceID()
+	parsed, err := uuid.Parse(first)
+	if err != nil {
+		t.Fatalf("instance ID %q is not a UUID: %v", first, err)
+	}
+	if parsed.String() != first {
+		t.Fatalf("instance ID = %q, want canonical UUID %q", first, parsed.String())
+	}
+	if second := newInstanceID(); second == first {
+		t.Fatalf("two instance IDs collided: %q", first)
+	}
 }
 
 // TestInitialStateHasSince guards the admin API's "normal since ..." field. A

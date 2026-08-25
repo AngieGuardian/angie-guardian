@@ -24,7 +24,7 @@ func TestChallengeRendererMatchesTemplate(t *testing.T) {
 	tmpl := template.Must(template.ParseFS(web.FS, "challenge.html.tmpl"))
 	renderer := newChallengeRenderer()
 	ids := []string{
-		"0123456789abcdef0123456789abcdef",
+		"01234567-89ab-4def-8123-456789abcdef",
 		"s1." + strings.Repeat("Ab0_-", 180) + ".Ab0_-",
 	}
 	for _, id := range ids {
@@ -148,9 +148,7 @@ func TestChallengeRendererConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 32)
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 100 {
 				var got bytes.Buffer
 				if err := renderer.RenderChallenge(&got, data, true, "6"); err != nil {
@@ -162,7 +160,7 @@ func TestChallengeRendererConcurrent(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

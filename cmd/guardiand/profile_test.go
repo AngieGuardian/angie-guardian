@@ -55,7 +55,7 @@ func TestStartProfilerCreatesArtifacts(t *testing.T) {
 	if err := p.stop(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cpu.pprof", "samples.jsonl", "heap.pprof", "allocs.pprof", "mutex.pprof", "block.pprof"} {
+	for _, name := range []string{"cpu.pprof", "samples.jsonl", "flight.trace", "heap.pprof", "allocs.pprof", "mutex.pprof", "block.pprof", "goroutineleak.pprof"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Errorf("%s: %v", name, err)

@@ -47,12 +47,10 @@ func (m *Manager) mintTokenWithSpec(host, fingerprint, challengeID string, spec 
 		Algorithm:   spec.algorithm(),
 		MemoryKiB:   spec.MemoryKiB,
 		Iterations:  spec.Iterations,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   fingerprint,
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
-		},
+		Subject:     fingerprint,
+		IssuedAt:    jwt.NewNumericDate(now),
+		NotBefore:   jwt.NewNumericDate(now),
+		ExpiresAt:   jwt.NewNumericDate(now.Add(ttl)),
 	}
 	return m.signToken(jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims))
 }

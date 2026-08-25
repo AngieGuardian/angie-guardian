@@ -12,6 +12,10 @@ no data and uses the token for every API call. The authorization scheme for
 protected routes must use the exact `Bearer ` prefix; another scheme
 followed by the same secret is rejected.
 
+Unsafe cross-origin browser requests are rejected before an admin handler runs,
+even when they carry a valid token. Same-origin dashboard requests and
+non-browser operator clients without browser origin headers continue normally.
+
 The token comes from `admin.token` (or `ADMIN_TOKEN`), the auto-generated
 `admin.token_file`, or, on a loopback listener with neither set, a fresh
 per-start token printed in the startup log; see

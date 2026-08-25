@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -448,18 +449,17 @@ func (m *Manager) IssueWithSpec(ctx context.Context, host, ip, uri string, spec 
 	if err := spec.validate(); err != nil {
 		return nil, err
 	}
-	var idRaw [16]byte
-	if _, err := rand.Read(idRaw[:]); err != nil {
-		return nil, err
-	}
 	// Build the store key and ID in one backing string. The ID substring keeps
 	// that allocation alive for the response, while the complete string is the
 	// key passed to the store; constructing them separately costs an additional
 	// allocation on every challenge.
-	var keyBytes [len(challengeKeyPrefix) + 32]byte
+	var keyBytes [len(challengeKeyPrefix) + 36]byte
 	copy(keyBytes[:], challengeKeyPrefix)
-	hex.Encode(keyBytes[len(challengeKeyPrefix):], idRaw[:])
-	key := string(keyBytes[:])
+	keyText, err := uuid.New().AppendText(keyBytes[:len(challengeKeyPrefix)])
+	if err != nil {
+		return nil, err
+	}
+	key := string(keyText)
 	id := key[len(challengeKeyPrefix):]
 	normalizedHost := strings.ToLower(host)
 
@@ -476,7 +476,7 @@ func (m *Manager) IssueWithSpec(ctx context.Context, host, ip, uri string, spec 
 	issuedAt := m.now()
 	bucket := issuedAt.Unix() / 3600
 	// 384 covers the realistic maximum without a heap allocation: a 253-byte
-	// DNS name, a 45-byte IPv6 text form, a 19-digit bucket, the 32-byte id and
+	// DNS name, a 45-byte IPv6 text form, a 19-digit bucket, the 36-byte id and
 	// three separators. A longer (attacker-supplied) Host is not a correctness
 	// problem: append simply spills to the heap for that one issuance. The
 	// grown slice stays local, so an oversized request is not retained in the
@@ -632,7 +632,8 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if IsStatelessID(req.ChallengeID) {
 		return m.redeemStateless(ctx, req)
 	}
-	if len(req.ChallengeID) != 32 {
+	parsedID, err := uuid.Parse(req.ChallengeID)
+	if err != nil || parsedID.String() != req.ChallengeID {
 		return nil, ErrChallengeUnknown
 	}
 	raw, ok, err := m.store.Get(ctx, challengeKey(req.ChallengeID))

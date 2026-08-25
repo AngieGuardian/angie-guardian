@@ -142,9 +142,7 @@ func TestStatelessConcurrentIssuanceRoundTrips(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	for worker := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ip := "203.0.113." + strconv.Itoa(worker+1)
 			for range issuesPerWorker {
 				ch, err := m.IssueStateless("concurrent.test", ip, "/page?x=1", 0, false)
@@ -160,7 +158,7 @@ func TestStatelessConcurrentIssuanceRoundTrips(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

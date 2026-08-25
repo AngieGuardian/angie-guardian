@@ -519,6 +519,31 @@ func TestAdminBlockAcceptsEmptyBody(t *testing.T) {
 	}
 }
 
+func TestAdminRejectsCrossOriginMutation(t *testing.T) {
+	ts, _ := adminServer(t)
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/admin/blocks/203.0.113.20", strings.NewReader(`{"ttl":"1m"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, body)
+	}
+
+	status := adminReq(t, ts, http.MethodGet, "/admin/blocks/203.0.113.20", adminToken, "")
+	if got := decodeJSON(t, status)["blocked"]; got != false {
+		t.Fatalf("cross-origin request changed block state: blocked=%v", got)
+	}
+}
+
 func TestAdminRotateKey(t *testing.T) {
 	ts, keyPath := adminServer(t)
 	before, err := os.ReadFile(keyPath)

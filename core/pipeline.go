@@ -67,8 +67,7 @@ func (env *stageEnv) effBits() (base, maxDiff int) {
 // deny and challenge stages both consult it.
 func (env *stageEnv) originInfo(addr netip.Addr) intel.Info {
 	if env.origin == nil {
-		info := env.intel.Lookup(addr)
-		env.origin = &info
+		env.origin = new(env.intel.Lookup(addr))
 	}
 	return *env.origin
 }

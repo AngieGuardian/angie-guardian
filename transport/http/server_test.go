@@ -1236,10 +1236,10 @@ func TestRedeemInternalErrorDoesNotLeakDetail(t *testing.T) {
 	ts, _ := testServerAndHandlerWithStore(t, testYAML, redeemErrStore{Store: base}, nil)
 	ip, ua := "198.51.100.9", "Mozilla/5.0 (X11; Linux x86_64)"
 
-	// A well-formed 32-hex id, so Redeem reaches the record read rather than
+	// A canonical UUID, so Redeem reaches the record read rather than
 	// rejecting the shape first.
 	body, _ := json.Marshal(map[string]any{
-		"challenge_id": strings.Repeat("a", 32),
+		"challenge_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		"nonce":        "1",
 	})
 	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", ip, "/x", ua), body)

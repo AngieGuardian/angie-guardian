@@ -103,7 +103,7 @@ func benchmarkChallengeIssue(b *testing.B, instrumented bool) {
 func BenchmarkChallengeRenderTemplate(b *testing.B) {
 	tmpl := template.Must(template.ParseFS(web.FS, "challenge.html.tmpl"))
 	payload, err := json.Marshal(&challengePayload{
-		ChallengeID: "0123456789abcdef0123456789abcdef",
+		ChallengeID: "01234567-89ab-4def-8123-456789abcdef",
 		Challenge:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Difficulty:  16,
 		PassURL:     PassPath,
@@ -117,7 +117,7 @@ func BenchmarkChallengeRenderTemplate(b *testing.B) {
 				JSON:           template.JS(payload),
 				NoScript:       noScript,
 				RefreshSeconds: 6,
-				NoJSURL:        PassPath + "?cid=0123456789abcdef0123456789abcdef&nojs=1",
+				NoJSURL:        PassPath + "?cid=01234567-89ab-4def-8123-456789abcdef&nojs=1",
 			}
 			b.ReportAllocs()
 			for b.Loop() {
@@ -131,10 +131,10 @@ func BenchmarkChallengeRenderTemplate(b *testing.B) {
 
 func BenchmarkChallengeRenderCompiled(b *testing.B) {
 	renderer := newChallengeRenderer()
-	payload := []byte(`{"challenge_id":"0123456789abcdef0123456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
+	payload := []byte(`{"challenge_id":"01234567-89ab-4def-8123-456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := renderer.Render(io.Discard, payload, false, "", "0123456789abcdef0123456789abcdef"); err != nil {
+		if err := renderer.Render(io.Discard, payload, false, "", "01234567-89ab-4def-8123-456789abcdef"); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -142,10 +142,10 @@ func BenchmarkChallengeRenderCompiled(b *testing.B) {
 
 func BenchmarkChallengeRenderCompiledNoJS(b *testing.B) {
 	renderer := newChallengeRenderer()
-	payload := []byte(`{"challenge_id":"0123456789abcdef0123456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
+	payload := []byte(`{"challenge_id":"01234567-89ab-4def-8123-456789abcdef","challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","difficulty_bits":16,"pass_url":"/__guardian/pass"}`)
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := renderer.Render(io.Discard, payload, true, "6", "0123456789abcdef0123456789abcdef"); err != nil {
+		if err := renderer.Render(io.Discard, payload, true, "6", "01234567-89ab-4def-8123-456789abcdef"); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -156,7 +156,7 @@ func BenchmarkChallengeRenderCompiledNoJS(b *testing.B) {
 func BenchmarkChallengeRenderEncoded(b *testing.B) {
 	renderer := newChallengeRenderer()
 	data := &challengePayload{
-		ChallengeID: "0123456789abcdef0123456789abcdef",
+		ChallengeID: "01234567-89ab-4def-8123-456789abcdef",
 		Challenge:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Difficulty:  16,
 		PassURL:     PassPath,

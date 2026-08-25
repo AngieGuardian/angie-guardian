@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/melroy89/angie-guardian/core/store"
 )
@@ -100,7 +101,7 @@ func TestJSONChallengeRecordIsRejectedAfterCompactMigration(t *testing.T) {
 
 	m := testManager(t)
 	ctx := context.Background()
-	id := "0123456789abcdef0123456789abcdef"
+	id := "01234567-89ab-4def-8123-456789abcdef"
 	if err := m.store.Set(ctx, challengeKey(id), raw, time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestCompactChallengeRecordSurvivesPebbleCrashReopen(t *testing.T) {
 		t.Fatalf("crash writer: %v", err)
 	}
 	id := strings.TrimSpace(string(out))
-	if len(id) != 32 {
+	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
 		t.Fatalf("crash writer returned challenge ID %q", id)
 	}
 

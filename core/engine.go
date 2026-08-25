@@ -829,13 +829,13 @@ func (e *Engine) BlockDetailFor(ctx context.Context, ip string) (BlockDetail, er
 	out := BlockDetail{IP: canonIP(ip), Blocked: blocked, Reason: reason}
 	if blocked {
 		if exp, ok := e.blockExpiry(ctx, ip); ok {
-			out.ExpiresAt = &exp
+			out.ExpiresAt = new(exp)
 		}
 	}
 	// canonIP, because RecordEvent canonicalises before writing blkct:.
 	if raw, ok, err := e.store.Get(ctx, blockCountKey(canonIP(ip))); err == nil && ok {
 		if n, err := strconv.ParseInt(string(raw), 10, 64); err == nil {
-			out.Offenses = &n
+			out.Offenses = new(n)
 		}
 	}
 	return out, nil
@@ -893,8 +893,7 @@ func (e *Engine) ListBlocksLimit(ctx context.Context, limit int) ([]BlockEntry, 
 	for _, kv := range kvs {
 		b := BlockEntry{IP: kv.Key[len(blockKeyPrefix):], Reason: store.BlockReason(kv.Value)}
 		if !kv.ExpiresAt.IsZero() {
-			exp := kv.ExpiresAt
-			b.ExpiresAt = &exp
+			b.ExpiresAt = new(kv.ExpiresAt)
 		}
 		out = append(out, b)
 	}
