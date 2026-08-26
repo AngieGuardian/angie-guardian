@@ -5,9 +5,14 @@
 package stateless
 
 import (
+	"bytes"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/melroy89/angie-guardian/core/waf"
 )
 
 const guestYAML = `
@@ -116,6 +121,63 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 			}
 			if tc.reason == "waf:api-json" && len(d.Events) != 0 {
 				t.Errorf("allow rule emitted bad events: %+v", d.Events)
+			}
+		})
+	}
+}
+
+func TestShippedCommonRulesFileReadProbes(t *testing.T) {
+	commonPath := filepath.Join("..", "..", "deploy", "rules-common.yaml")
+	commonRaw, err := os.ReadFile(commonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerPath := filepath.Join("..", "..", "deploy", "docker", "rules-common.yaml")
+	dockerRaw, err := os.ReadFile(dockerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(commonRaw, dockerRaw) {
+		t.Fatal("deploy/rules-common.yaml and deploy/docker/rules-common.yaml differ")
+	}
+
+	rules, err := waf.CompileRules(commonRaw, commonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		uri        string
+		wantRule   string
+		wantAction waf.Action
+	}{
+		{"Vite proc environment bypass", "/@fs/proc/1/environ?raw??", "vite-dev-filesystem-probe", waf.ActionBlock},
+		{"Vite dotfile traversal bypass", "/@fs/../.env?raw??", "vite-dev-filesystem-probe", waf.ActionBlock},
+		{"Vite arbitrary file import bypass", "/@fs/etc/passwd?import&raw??", "vite-dev-filesystem-probe", waf.ActionBlock},
+		{"encoded Vite route", "/%40fs/%2e%2e/.env?raw??", "vite-dev-filesystem-probe", waf.ActionBlock},
+		{"PID 1 environment", "/proc/1/environ", "linux-proc-lfi", waf.ActionBlock},
+		{"numeric PID maps in query", "/download?file=/proc/42/maps", "linux-proc-lfi", waf.ActionBlock},
+		{"encoded PID environment in query", "/download?file=%2Fproc%2F1%2Fenviron", "linux-proc-lfi", waf.ActionBlock},
+		{"file URL proc environment", "/download?file=file:///proc/self/environ", "linux-proc-lfi", waf.ActionBlock},
+		{"thread-self traversal in query", "/download?file=../../proc/thread-self/cmdline", "linux-proc-lfi", waf.ActionBlock},
+		{"duplicate-slash proc path", "//proc/self/status", "linux-proc-lfi", waf.ActionBlock},
+		{"proc root LFI pivot", "/proc/self/root/etc/passwd", "linux-proc-lfi", waf.ActionBlock},
+		{"nested proc documentation path", "/docs/proc/1/status", "", ""},
+		{"Vite-looking documentation path", "/docs/@fs/usage", "", ""},
+		{"non-endpoint at-fs prefix", "/@fs-guide", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := req("site.test", "192.0.2.9", tc.uri, "curl")
+			in := BuildMatchInput(r, rules)
+			matched := rules.Match(&in)
+			switch {
+			case matched == nil && tc.wantRule != "":
+				t.Fatalf("no match, want %s/%s", tc.wantRule, tc.wantAction)
+			case matched != nil && tc.wantRule == "":
+				t.Fatalf("matched %s/%s, want no match", matched.ID, matched.Action)
+			case matched != nil && (matched.ID != tc.wantRule || matched.Action != tc.wantAction):
+				t.Fatalf("matched %s/%s, want %s/%s", matched.ID, matched.Action, tc.wantRule, tc.wantAction)
 			}
 		})
 	}
