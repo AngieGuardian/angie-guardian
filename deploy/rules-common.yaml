@@ -34,6 +34,14 @@
 # backend's input validation (or a full inline WAF's) to handle.
 
 rules:
+  # Exposed Vite development-server filesystem route (including CVE-2025-30208)
+  - id: vite-dev-filesystem-probe
+    description: Root-level Vite /@fs requests that can expose files from the server
+    action: block
+    targets: [ path ]
+    regexes:
+      - '(?i)^/@fs(?:/|$)'
+
   - id: dotfile-probe
     description: Dotfiles, VCS paths, and local IDE metadata are never served legitimately
     action: block
@@ -221,21 +229,20 @@ rules:
       - "dirbuster"
       - "gobuster"
 
+  # Linux process data and local-file inclusion pivots
+  - id: linux-proc-lfi
+    description: Direct and traversal-based reads of sensitive per-process /proc nodes
+    action: block
+    targets: [ path, query ]
+    regexes:
+      - '(?i)^/+proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
+      - '(?i)(?:[=:]|\.\.|file://)/proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
+
   # Path traversal attempts
   - id: path-traversal
     action: deny
     targets: [ path, query ]
     keywords: [ "../", "..\\", "%2e%2e/", "%2e%2e%2f" ]
-
-  # Linux process-memory and local-file inclusion probes
-  - id: linux-proc-lfi
-    description: Direct traversal attempts targeting Linux /proc environment and process nodes
-    action: block
-    targets: [ path, query ]
-    keywords:
-      - "/proc/self/environ"
-      - "/proc/self/cmdline"
-      - "/proc/self/status"
 
   # PHP stream pseudo-protocols used in local-file inclusion
   - id: php-stream-wrappers
