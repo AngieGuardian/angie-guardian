@@ -376,7 +376,7 @@ func recentWindow(snap core.RecentDecisionSnapshot) recentWindowView {
 // proof-of-work outcomes, newest first. The default detailed view is enriched
 // with configured GeoIP/ASN data; view=compact returns only time/action/reason
 // for live charts. Query: ?limit= (default 50, or "all" for the bounded ring),
-// ?action=deny|challenge|refuse|solve|redeem_fail, ?reason=<prefix>,
+// ?action=deny|challenge|refuse|solve|redeem_fail|redeem_retry, ?reason=<prefix>,
 // ?reason_category=<exact category>, ?host=<exact normalized host>,
 // ?path=<exact normalized path>, ?ua=<exact User-Agent>,
 // ?country=<exact ISO alpha-2 code>, ?ip=<exact ip>, ?view=compact.
@@ -611,7 +611,7 @@ func (s *AdminServer) handleStats(w http.ResponseWriter, r *http.Request) {
 		// large share of the ring, so folding them in would pin the
 		// dashboard's top-reason tile to "pow" forever, reading as a
 		// proof-of-work incident when it is proof of work working.
-		if d.Action == core.ActionSolve || d.Action == core.ActionRedeemFail {
+		if core.IsOutcomeAction(d.Action) {
 			continue
 		}
 		decisions++
@@ -1025,7 +1025,7 @@ func (s *AdminServer) handleOffenders(w http.ResponseWriter, _ *http.Request) {
 		// abusive kind reaches this list on its own once pow_fail/tamper
 		// scoring blocks the IP). One guard covers all six rollups, since the
 		// country breakdown below is derived from byIP.
-		if d.Action == core.ActionSolve || d.Action == core.ActionRedeemFail {
+		if core.IsOutcomeAction(d.Action) {
 			continue
 		}
 		window++

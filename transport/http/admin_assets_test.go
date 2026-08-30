@@ -544,7 +544,9 @@ func TestDashboardSolveSurface(t *testing.T) {
 		`id="dec-solve"`, `id="lu-dec-solve"`,
 		`<option value="solve">solve</option>`,
 		`<option value="redeem_fail">redeem_fail</option>`,
+		`<option value="redeem_retry">redeem_retry</option>`,
 		`.chip.redeem_fail::before`,
+		`.chip.redeem_retry::before`,
 		`d.action !== "solve"`,
 		`Number(d.solve_ms)`, `d.round_trip_ms`, `d.bits`,
 		`id="card-solve-domains"`, `id="card-solve-clients"`,
@@ -558,7 +560,7 @@ func TestDashboardSolveSurface(t *testing.T) {
 	// them: an outcome is the consequence of a challenge already in the
 	// stacked area, and its reason would swamp the band that shows pow token
 	// failures.
-	if !bytes.Contains(page, []byte(`if (d.action === "solve" || d.action === "redeem_fail") return false;`)) {
+	if !bytes.Contains(page, []byte(`if (d.action === "solve" || d.action === "redeem_fail" || d.action === "redeem_retry") return false;`)) {
 		t.Error("the chart feed no longer filters outcome rows out; both charts would double-count")
 	}
 }

@@ -176,12 +176,12 @@ func TestAdminStatsChallenges(t *testing.T) {
 	}
 }
 
-// Outcome rows (solves and failed redemptions) share the ring with verdicts
+// PoW outcome rows share the ring with verdicts
 // but are not verdicts: stats must keep them out of total/by_reason (every
 // pow:* reason collapses to "pow" and would pin the top-reason tile) while
 // by_action, documented as the ring's full contents, still counts them; and
 // offenders must rank neither a client that paid its proof of work nor one
-// whose VPN flapped mid-challenge.
+// whose address changed mid-challenge.
 func TestAdminStatsAndOffendersSkipOutcomeRows(t *testing.T) {
 	const yaml = `
 store: { backend: memory }
@@ -209,7 +209,7 @@ domains:
 	}
 	t.Cleanup(engine.Close)
 
-	// One of each kind: a real deny verdict through the pipeline, then the two
+	// One of each kind: a real deny verdict through the pipeline, then the three
 	// outcome rows via the same entry points the transport uses.
 	if d := engine.Evaluate(t.Context(), &core.RequestContext{
 		Host: "shop.test", Method: "GET", URI: "/admin.php",
@@ -219,6 +219,7 @@ domains:
 	}
 	engine.RecordSolve(core.SolveRecord{Host: "shop.test", IP: "198.51.100.7", URI: "/", UA: "Mozilla/5.0", Bits: 20})
 	engine.RecordRedeemFailure("shop.test", "198.51.100.44", "Mozilla/5.0", core.ReasonBindingMismatch)
+	engine.RecordNetworkHandover("shop.test", "2001:db8::44", "/checkout", "Mozilla/5.0")
 
 	ts := httptest.NewServer(NewAdminServer(engine, cfg, metrics.New("memory"), adminToken, "", "", nil, slog.Default()))
 	t.Cleanup(ts.Close)
@@ -232,8 +233,8 @@ domains:
 		t.Errorf("recent.total = %v, want 1 (the deny; outcome rows are not verdicts)", recent["total"])
 	}
 	byAction, _ := recent["by_action"].(map[string]any)
-	if byAction["deny"] != 1.0 || byAction[core.ActionSolve] != 1.0 || byAction[core.ActionRedeemFail] != 1.0 {
-		t.Errorf("by_action = %v, want deny/solve/redeem_fail 1 each (the ring's full contents)", byAction)
+	if byAction["deny"] != 1.0 || byAction[core.ActionSolve] != 1.0 || byAction[core.ActionRedeemFail] != 1.0 || byAction[core.ActionRedeemRetry] != 1.0 {
+		t.Errorf("by_action = %v, want deny and all three PoW outcomes once (the ring's full contents)", byAction)
 	}
 	byReason, _ := recent["by_reason"].(map[string]any)
 	if len(byReason) != 1 || byReason["denylist"] != 1.0 {

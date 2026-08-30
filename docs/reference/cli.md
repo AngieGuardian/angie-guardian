@@ -77,7 +77,7 @@ and do not change Guardian's endpoint contract.
 |---|---|
 | `GET /auth` | The `auth_request` target: answers allow, challenge, or deny. |
 | `GET /challenge` | Serves the PoW interstitial. |
-| `POST /pass` (public path `/__guardian/pass`) | Receives the solved challenge, sets the signed cookie. `GET` serves the no-JS fallback. |
+| `POST /pass` (public path `/__guardian/pass`) | Receives the solved challenge and sets the signed cookie. If the address changed after issuance, a valid proof returns `409` / `network_handover` with a safe `retry_url`; the interstitial restarts authorization there without receiving a pass. `GET` serves the no-JS fallback. |
 | `/denied` | The deny page. |
 | `GET /healthz` | Liveness probe. |
 

@@ -793,7 +793,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 # {"count":2,"complete":true,"blocks":[{"ip":"203.0.113.9","reason":"waf:dotfile-probe",
 #                       "expires_at":"2026-07-05T18:30:00Z"}, ...]}
 
-# Every recent non-allow decision, solved challenge and failed redemption,
+# Every recent non-allow decision and PoW outcome,
 # newest first, from an in-process ring buffer (per instance, cleared on
 # restart). Filters compose with AND semantics over the full ring before the
 # response limit: ?action=, ?reason=<prefix>, and exact ?reason_category=,
@@ -806,10 +806,14 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
 # Failed redemption attempts: the per-attempt detail behind the funnel's
-# "failed" count. pow:bad_solution is a wrong nonce, pow:binding_mismatch
-# usually a VPN or mobile handover moving the client to a new IP between issue
-# and redeem, pow:unknown_challenge an expired, replayed or forged challenge ID.
+# "failed" count. pow:bad_solution is a wrong nonce, pow:binding_mismatch means
+# a different host (or an address change on no-JS), and pow:unknown_challenge
+# an expired, replayed or forged ID.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
+
+# Valid proofs recovered after the client address changed. No pass is minted
+# until a fresh challenge bound to the new exact address is solved.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_retry&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
 # how long the client reports computing (solve_ms), how long this daemon
@@ -818,8 +822,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit=20"
 
 # A small "right now" rollup: active blocks, recent counts by action and
-# reason category, and the PoW lifecycle (challenges issued/solved/failed +
-# average solve seconds). (Long-horizon numbers live in /metrics.)
+# reason category, and the PoW lifecycle (challenges issued/solved/failed,
+# recovered network handovers + average solve seconds). (Long-horizon numbers
+# live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
 # Block an IP for two hours (reason + ttl optional; default 24h, max 8760h).
@@ -898,9 +903,9 @@ in process logs; the page keeps the token in the tab's sessionStorage.
 
 The dashboard shows active blocks (with one-click unblock, a checkbox for
 whether that unblock also resets the repeat-offender backoff, and a
-block-an-IP form), the recent activity feed of non-allow decisions, solves and
-failed redemptions (filterable by action, free text and exact host, reason
-category, country, path and User-Agent facets),
+block-an-IP form), the recent activity feed of non-allow decisions and PoW
+outcomes, including recovered network handovers (filterable by action, free
+text and exact host, reason category, country, path and User-Agent facets),
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

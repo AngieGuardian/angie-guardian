@@ -206,8 +206,7 @@ func TestRecordArgon2IDSolve(t *testing.T) {
 
 // A failed redemption lands in the same ring, carrying who failed and why:
 // the funnel metric counts these without a reason, and the ring row is what
-// lets an operator tell a garbage-nonce bot from a visitor whose VPN moved
-// them to a new exit IP mid-challenge.
+// lets an operator tell a garbage-nonce bot from replayed or misbound state.
 func TestRecordRedeemFailure(t *testing.T) {
 	e := &Engine{recent: newRecentRing(8)}
 	e.RecordRedeemFailure("shop.test", "198.51.100.7", "Mozilla/5.0", ReasonBindingMismatch)
@@ -233,6 +232,21 @@ func TestRecordRedeemFailure(t *testing.T) {
 	}
 	if d.Time.IsZero() {
 		t.Error("failure row has no timestamp")
+	}
+}
+
+func TestRecordNetworkHandover(t *testing.T) {
+	e := &Engine{recent: newRecentRing(8)}
+	e.RecordNetworkHandover("shop.test", "2001:db8::7", "/checkout?step=2", "Mozilla/5.0")
+	d := e.recent.list(1)[0]
+	if d.Action != ActionRedeemRetry || d.Reason != ReasonNetworkHandover {
+		t.Fatalf("action/reason = %s/%s, want %s/%s", d.Action, d.Reason, ActionRedeemRetry, ReasonNetworkHandover)
+	}
+	if d.Host != "shop.test" || d.IP != "2001:db8::7" || d.URI != "/checkout?step=2" || d.UA != "Mozilla/5.0" {
+		t.Errorf("attribution = %+v", d)
+	}
+	if !IsOutcomeAction(d.Action) {
+		t.Error("redeem_retry must be classified as an outcome row")
 	}
 }
 

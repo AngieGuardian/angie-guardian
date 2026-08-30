@@ -347,9 +347,16 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		return nil, ErrChallengeUnknown
 	}
 
-	// Binding.
-	if !strings.EqualFold(p.Host, req.Host) || p.IP != req.IP {
-		return nil, ErrBindingMismatch
+	// The authenticated host remains authoritative and is rejected before
+	// expensive proof verification. An address change is different: only a
+	// valid proof may qualify for bounded handover recovery, so remember it and
+	// continue through verification and the shared single-spend claim.
+	if !strings.EqualFold(p.Host, req.Host) {
+		return nil, ErrHostMismatch
+	}
+	addressChanged := p.IP != req.IP
+	if addressChanged && req.NoJS {
+		return nil, ErrClientAddressMismatch
 	}
 
 	challenge := statelessSolveFor(matched.secret, payload, solveDomain)
@@ -408,6 +415,13 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 	spentKey := "spent1:" + hex.EncodeToString(spentDigest[:16])
 	swapped, err := m.store.CompareAndSwap(ctx, spentKey, nil, []byte{1}, remaining)
 	if err != nil {
+		if addressChanged {
+			// Recovery must be globally single-use. The ordinary same-address
+			// solve may retain its documented local-cache fail-open behavior, but
+			// a handover cannot safely issue a replacement when peers cannot see
+			// the spend marker.
+			return nil, err
+		}
 		// Store is down: claim the challenge in a bounded local replay cache,
 		// then mint fail-open. This preserves availability without letting the
 		// same process repeatedly mint from one solved challenge; the shared CAS
@@ -421,6 +435,14 @@ func (m *Manager) redeemStateless(ctx context.Context, req *RedeemRequest) (*Red
 		return nil, ErrChallengeUnknown // already spent (replay)
 	}
 	_ = m.spent.claim(spentDigest, now.Add(remaining), now)
+	if addressChanged {
+		m.ForgetEscalation(p.Host, p.IP)
+		return &RedeemResult{
+			Outcome: RedeemNetworkHandover, RedirectURI: p.URI, IssuedIP: p.IP,
+			Difficulty: p.Bits, Algorithm: spec.algorithm(), MemoryKiB: spec.MemoryKiB,
+			Iterations: spec.Iterations, IssuedAt: time.UnixMilli(p.TS),
+		}, nil
+	}
 	return m.finishStateless(&p, spec, req, tokenTTL, nil)
 }
 
@@ -435,7 +457,7 @@ func (m *Manager) finishStateless(p *statelessPayload, spec ProofSpec, req *Rede
 		return nil, err
 	}
 	return &RedeemResult{
-		Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr,
+		Outcome: RedeemSolved, Token: token, TokenTTL: tokenTTL, RedirectURI: p.URI, SoftError: softErr,
 		Difficulty: p.Bits, Algorithm: spec.algorithm(), MemoryKiB: spec.MemoryKiB,
 		Iterations: spec.Iterations, IssuedAt: time.UnixMilli(p.TS),
 	}, nil

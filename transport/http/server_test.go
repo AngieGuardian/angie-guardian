@@ -737,6 +737,96 @@ func TestPoWFlowEndToEnd(t *testing.T) {
 	}
 }
 
+// TestPoWNetworkHandoverEndToEnd walks the recovery journey at the transport
+// boundary: a proof solved on one address is redeemed on another, consumed
+// without a pass or tamper row, then the original URI issues a fresh challenge
+// for the new exact address and that second solve reaches the normal token path.
+func TestPoWNetworkHandoverEndToEnd(t *testing.T) {
+	ts, h, m := testServerWithMetrics(t, testYAML)
+	oldIP, newIP, ua := "198.51.100.7", "2001:db8::7", "Mozilla/5.0 handover"
+	id, challenge, difficulty := fetchChallengeForURI(t, ts, "html.test", oldIP, ua, "/ledger?month=8")
+	body, _ := json.Marshal(map[string]any{
+		"challenge_id": id, "nonce": solve(t, challenge, difficulty), "elapsed_ms": 42,
+	})
+
+	resp := do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", newIP, "/ignored", ua), body)
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("handover redeem: status = %d body = %s, want 409", resp.StatusCode, raw)
+	}
+	var recovery struct {
+		OK       bool   `json:"ok"`
+		Reason   string `json:"reason"`
+		RetryURL string `json:"retry_url"`
+	}
+	if err := json.UnmarshalRead(resp.Body, &recovery); err != nil {
+		t.Fatal(err)
+	}
+	if recovery.OK || recovery.Reason != "network_handover" || recovery.RetryURL != "/ledger?month=8" {
+		t.Fatalf("recovery response = %+v", recovery)
+	}
+	if len(resp.Cookies()) != 0 {
+		t.Fatal("network handover minted a pass cookie")
+	}
+
+	var retries, failures int
+	for _, d := range h.engine.RecentDecisions(0) {
+		switch d.Action {
+		case core.ActionRedeemRetry:
+			retries++
+			if d.Reason != core.ReasonNetworkHandover || d.IP != newIP || d.URI != "/ledger?month=8" {
+				t.Errorf("handover row = %+v", d)
+			}
+		case core.ActionRedeemFail:
+			failures++
+		}
+	}
+	if retries != 1 || failures != 0 {
+		t.Fatalf("outcome rows: retries=%d failures=%d, want 1/0", retries, failures)
+	}
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handovers float64
+	for _, mf := range families {
+		if mf.GetName() != "guardian_challenges_total" {
+			continue
+		}
+		for _, sample := range mf.GetMetric() {
+			for _, label := range sample.GetLabel() {
+				if label.GetName() == "outcome" && label.GetValue() == "network_handover" {
+					handovers += sample.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	if handovers != 1 {
+		t.Errorf("guardian_challenges_total{outcome=network_handover} = %v, want 1", handovers)
+	}
+
+	// The response's safe original URI is the browser's next authorization
+	// request. It is still unvouched and therefore receives a new challenge.
+	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", newIP, recovery.RetryURL, ua), nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("new-address authorization: status = %d, want 401", resp.StatusCode)
+	}
+	newID, newChallenge, newDifficulty := fetchChallengeForURI(t, ts, "html.test", newIP, ua, recovery.RetryURL)
+	newBody, _ := json.Marshal(map[string]any{
+		"challenge_id": newID, "nonce": solve(t, newChallenge, newDifficulty), "elapsed_ms": 42,
+	})
+	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", newIP, recovery.RetryURL, ua), newBody)
+	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) == 0 {
+		t.Fatalf("replacement redeem: status = %d cookies = %d, want 200 with pass", resp.StatusCode, len(resp.Cookies()))
+	}
+
+	// The consumed original cannot trigger a second recovery.
+	resp = do(t, "POST", ts.URL+"/pass", guardianHeaders("html.test", "2001:db8::8", "/ignored", ua), body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("replayed handover: status = %d, want 403", resp.StatusCode)
+	}
+}
+
 func TestStoreOutageFallsBackToStatelessChallenge(t *testing.T) {
 	base := store.NewMemory()
 	ts, h := testServerAndHandlerWithStore(t, testYAML, unavailableCASStore{Store: base}, nil)
@@ -833,6 +923,33 @@ func TestNoJSFlow(t *testing.T) {
 	}
 	if rows[0].RoundTripMS < 90 {
 		t.Errorf("round_trip_ms = %d, want at least the 100ms wait", rows[0].RoundTripMS)
+	}
+}
+
+func TestNoJSAddressChangeDoesNotRecoverWithoutProof(t *testing.T) {
+	ts, h := testServerAndHandler(t, testYAML)
+	oldIP, newIP, ua := "198.51.100.8", "2001:db8::8", "Mozilla/5.0 nojs handover"
+	id, _, _ := fetchChallengeForURI(t, ts, "html.test", oldIP, ua, "/nojs-handover?q=1")
+	time.Sleep(100 * time.Millisecond)
+	url := fmt.Sprintf("%s%s?cid=%s&nojs=1", ts.URL, PassPath, id)
+	resp := do(t, "GET", url, guardianHeaders("html.test", newIP, "/ignored", ua), nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("address-changed no-JS redeem: status=%d, want 403", resp.StatusCode)
+	}
+	if len(resp.Cookies()) != 0 {
+		t.Fatal("address-changed no-JS redeem minted a pass cookie")
+	}
+	for _, d := range h.engine.RecentDecisions(0) {
+		if d.Action == core.ActionRedeemRetry {
+			t.Fatal("work-free no-JS mismatch recorded a recoverable handover")
+		}
+	}
+
+	// The mismatch did not consume the challenge. Its issuing address can still
+	// complete the accepted time-based fallback.
+	resp = do(t, "GET", url, guardianHeaders("html.test", oldIP, "/ignored", ua), nil)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/nojs-handover?q=1" {
+		t.Fatalf("original address after mismatch: status=%d location=%q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 

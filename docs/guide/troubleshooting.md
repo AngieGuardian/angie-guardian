@@ -149,32 +149,35 @@ the host, IP, User-Agent and one of these reasons:
 
 | Reason | What happened |
 |---|---|
-| `pow:binding_mismatch` | The client's IP changed between being issued the challenge and redeeming it. |
+| `pow:binding_mismatch` | The authenticated challenge belongs to a different host, or the address changed on the work-free no-JS path. |
 | `pow:unknown_challenge` | Unknown, expired or already spent: the solve took longer than `pow.challenge_ttl`, a backgrounded tab let it rot, the same challenge was submitted twice, or the ID was forged. |
 | `pow:bad_solution` | The nonce does not meet the required difficulty. A real browser solver does not produce these; a bot posting garbage does. |
 | `pow:too_fast`, `pow:nojs_disabled` | Only reachable on the no-JS meta-refresh path. |
 | `pow:internal_error` | Guardian failing, not the client (store or key-refresh trouble). A burst is worth investigating on its own. |
 
-**The common legitimate cause is `pow:binding_mismatch`.** A challenge is bound
-to the host and the exact client IP, so anything that moves a visitor between
-addresses mid-challenge invalidates it: a VPN reassigning its exit IP, a mobile
-network handover, or a CGNAT pool rebalancing. The visitor sees one failure and
-a refresh works, because the refresh mints a new challenge bound to whatever
-address they now have.
+An IP change after issuance is recovered separately for submitted proofs.
+Guardian verifies the proof first, consumes the old challenge, mints no pass,
+and sends the browser through one fresh challenge bound to the new exact
+address. The dashboard and admin feed show `redeem_retry` /
+`pow:network_handover`, and Prometheus counts
+`guardian_challenges_total{outcome="network_handover"}`. This path does not
+score `tamper`; an invalid proof or a replay still follows the ordinary failure
+path. A stateless handover requires the shared spent-marker write, so a store
+outage cannot turn it into an unlimited cross-replica retry.
 
-**Fix:** normally nothing. It is self-correcting and costs one refresh. Two
-things are worth knowing anyway:
+The visitor briefly sees **Network changed; restarting verification…** and
+does not need to refresh manually. At `info` log level, the corresponding
+`challenge network handover` entry includes the issuing address, newly observed
+address, host and original URI for diagnosis.
 
-- A binding mismatch scores the IP as `tamper` (see
-  [`waf.ip_behaviour.thresholds`](/reference/configuration#waf-ip-behaviour),
-  default 10/min), so a client on a network that reassigns addresses
-  aggressively can eventually earn a behavioural block. Check
-  `GET /admin/blocks/{ip}` if a visitor reports being locked out rather than
-  merely delayed, and allowlist the range if it is a network you trust.
-- The binding is deliberately an exact address, not a prefix. Matching a `/24`
-  or `/64` instead would fix the VPN case at the cost of letting every host
-  sharing that prefix redeem each other's challenges, which is a bad trade for
-  a failure that costs a page refresh.
+The no-JS fallback has no submitted proof to validate, so an address change on
+that work-free path does not qualify for handover recovery and remains a
+binding mismatch. Refreshing issues a challenge for the current address.
+
+The binding deliberately remains an exact address, not a `/24` or `/64`.
+Automatic recovery handles VPN reassignment, mobile handover, CGNAT rebalancing
+and IPv4/IPv6 racing without letting another host in the same subnet redeem the
+original challenge.
 
 If instead you see a steady stream of `pow:bad_solution` from many IPs, that is
 not a false positive: it is a bot that fetches challenges and posts junk. The

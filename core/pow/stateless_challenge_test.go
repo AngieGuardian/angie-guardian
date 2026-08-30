@@ -186,16 +186,45 @@ func TestStatelessMACTamperRejected(t *testing.T) {
 	}
 }
 
-func TestStatelessBindingMismatch(t *testing.T) {
+func TestStatelessNetworkHandoverConsumesValidProof(t *testing.T) {
 	m := testManager(t)
 	ch, _ := m.IssueStateless("a.test", "203.0.113.7", "/", 8, false)
-	_, err := m.Redeem(context.Background(), &RedeemRequest{
-		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+	req := &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: unsolve(t, ch.Challenge, 8),
 		Host: "a.test", IP: "203.0.113.99", UserAgent: "x", // wrong IP
 		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
+	}
+	if _, err := m.Redeem(context.Background(), req); !errors.Is(err, ErrBadSolution) {
+		t.Fatalf("bad proof from new address: err = %v, want ErrBadSolution", err)
+	}
+	req.Nonce = solve(t, ch.Challenge, 8)
+	res, err := m.Redeem(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != RedeemNetworkHandover || res.Token != "" || res.IssuedIP != "203.0.113.7" {
+		t.Fatalf("handover result = %+v", res)
+	}
+	if _, err := m.Redeem(context.Background(), req); !errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("replayed handover: err = %v, want ErrChallengeUnknown", err)
+	}
+}
+
+func TestStatelessNetworkHandoverRequiresSharedSpend(t *testing.T) {
+	m := testManager(t)
+	cs := &countingStore{Store: m.store, failCAS: true}
+	m.store = cs
+	ch, err := m.IssueStateless("a.test", "203.0.113.7", "/", 8, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Redeem(context.Background(), &RedeemRequest{
+		ChallengeID: ch.ID, Nonce: solve(t, ch.Challenge, 8),
+		Host: "a.test", IP: "203.0.113.99", UserAgent: "x",
+		TokenTTL: time.Hour, ChallengeTTL: 30 * time.Minute,
 	})
-	if !errors.Is(err, ErrBindingMismatch) {
-		t.Fatalf("wrong-IP err = %v, want ErrBindingMismatch", err)
+	if err == nil || res != nil {
+		t.Fatalf("handover during store failure = (%+v, %v), want hard failure", res, err)
 	}
 }
 

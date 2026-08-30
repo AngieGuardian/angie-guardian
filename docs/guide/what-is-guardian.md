@@ -31,7 +31,10 @@ pipeline. Everything is per-domain configurable.
   scoring is enabled, places a persistent IP block.
 - Tamper detection on proof-of-work challenge IDs: each challenge is
   single-spend and bound to `{host, client IP}`, so a forged, replayed or
-  cross-domain challenge ID is rejected and scored as a tamper event.
+  cross-domain challenge ID is rejected and scored as a tamper event. A valid
+  submitted proof that arrives after the client's IP changes is consumed
+  without granting access, then the browser is automatically challenged again
+  on its new exact address.
 - Statistical anomaly scoring: `guardian-train` learns domain and bounded
   route/method baselines from Angie JSON access logs offline; the
   sub-microsecond online scorer rates each unvouched request and drives

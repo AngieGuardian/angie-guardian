@@ -30,10 +30,13 @@ sound protection and a false sense of one. This page is the honest map.
 - **Tampering and replay** of Guardian's own tokens and IDs: tokens are EdDSA
   JWTs bound to `{host, client fingerprint}` with a short expiry; challenges
   are single-spend (an atomic compare-and-swap marks them redeemed) and bound
-  to the host and client they were issued to. A redemption presenting an
-  unknown, already-spent, or wrong-client challenge ID fails verification and
-  emits a tamper event against the source IP, feeding the behavioural
-  scoreboard when `waf.ip_behaviour.enabled` is on (off by default).
+  to the host and client they were issued to. Unknown, already-spent,
+  cross-host and invalid-proof redemptions fail verification and emit an abuse
+  event against the source IP, feeding the behavioural scoreboard when
+  `waf.ip_behaviour.enabled` is on (off by default). If a valid submitted proof
+  arrives from a new client address, Guardian instead consumes it without
+  minting a pass and sends the browser through a fresh exact-address-bound
+  challenge. The work-free no-JS path cannot qualify for that recovery.
 
 ## What Guardian does NOT defend against
 
