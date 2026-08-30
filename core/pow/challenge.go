@@ -579,11 +579,27 @@ type RedeemRequest struct {
 	ReleaseArgon func()
 }
 
-// RedeemResult is a minted token plus where to send the client afterwards.
+// RedeemOutcome is the closed set of non-error redemption results. A network
+// handover proves and consumes the old challenge but deliberately mints no
+// token; the transport must send the client through one fresh challenge bound
+// to its newly observed exact address.
+type RedeemOutcome string
+
+const (
+	RedeemSolved          RedeemOutcome = "solved"
+	RedeemNetworkHandover RedeemOutcome = "network_handover"
+)
+
+// RedeemResult is a successful redemption outcome plus where to send the
+// client afterwards. Token is empty for RedeemNetworkHandover.
 type RedeemResult struct {
+	Outcome     RedeemOutcome
 	Token       string
 	TokenTTL    time.Duration
 	RedirectURI string
+	// IssuedIP is populated only for a network handover. It is operational
+	// context for logs; it must never be reflected to the public response.
+	IssuedIP string
 	// SoftError is set when a token was minted despite a non-fatal issue
 	// (currently only a failed single-spend write during a store outage, on
 	// the stateless path). The caller may count it; the redemption still
@@ -610,15 +626,30 @@ type RedeemResult struct {
 // challenge is often not the one redeeming it.
 const ClockSkewAllowance = statelessSkew
 
+type bindingMismatchError struct{ message string }
+
+func (e *bindingMismatchError) Error() string { return e.message }
+
+// Is preserves errors.Is(err, ErrBindingMismatch) for embedders while letting
+// new callers distinguish host mismatch from a no-proof address mismatch.
+func (e *bindingMismatchError) Is(target error) bool { return target == ErrBindingMismatch }
+
 var (
-	ErrChallengeUnknown    = errors.New("challenge unknown, expired or already spent")
-	ErrBadSolution         = errors.New("solution does not meet the required difficulty")
-	ErrBindingMismatch     = errors.New("challenge was issued to a different client")
-	ErrTooFast             = errors.New("no-JS redemption attempted too quickly")
-	ErrNoJSDisabled        = errors.New("no-JS redemption not allowed for this challenge")
-	ErrNoJSRateLimited     = errors.New("no-JS redemption rate limit exceeded")
-	ErrVerifierBusy        = errors.New("argon2id verifier saturated")
-	ErrVerifierRateLimited = errors.New("argon2id verification rate limit exceeded")
+	ErrChallengeUnknown = errors.New("challenge unknown, expired or already spent")
+	ErrBadSolution      = errors.New("solution does not meet the required difficulty")
+	// ErrBindingMismatch is retained for errors.Is compatibility with embedders.
+	// New code should use the more precise sentinels below.
+	ErrBindingMismatch = errors.New("challenge was issued to a different client")
+	ErrHostMismatch    = &bindingMismatchError{message: "challenge was issued for a different host"}
+	// ErrClientAddressMismatch is returned only when an address changes on a
+	// work-free redemption. A valid submitted proof instead produces the typed
+	// RedeemNetworkHandover result.
+	ErrClientAddressMismatch = &bindingMismatchError{message: "challenge was issued for a different client address"}
+	ErrTooFast               = errors.New("no-JS redemption attempted too quickly")
+	ErrNoJSDisabled          = errors.New("no-JS redemption not allowed for this challenge")
+	ErrNoJSRateLimited       = errors.New("no-JS redemption rate limit exceeded")
+	ErrVerifierBusy          = errors.New("argon2id verifier saturated")
+	ErrVerifierRateLimited   = errors.New("argon2id verification rate limit exceeded")
 )
 
 // Redeem validates a challenge solution and mints a signed token. The spent
@@ -653,8 +684,14 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	if rec.State != recordStateIssued {
 		return nil, ErrChallengeUnknown
 	}
-	if !strings.EqualFold(rec.Host, req.Host) || rec.IP != req.IP {
-		return nil, ErrBindingMismatch
+	if !strings.EqualFold(rec.Host, req.Host) {
+		return nil, ErrHostMismatch
+	}
+	addressChanged := rec.IP != req.IP
+	// The no-JS fallback proves only that time elapsed; it has no submitted
+	// proof whose validity can authorize consumption on a different address.
+	if addressChanged && req.NoJS {
+		return nil, ErrClientAddressMismatch
 	}
 	tokenTTL, challengeTTL := req.TokenTTL, req.ChallengeTTL
 	if req.TTLs != nil {
@@ -717,13 +754,21 @@ func (m *Manager) Redeem(ctx context.Context, req *RedeemRequest) (*RedeemResult
 	// The client just proved it solves what it requests: forget its
 	// unsolved-issuance escalation counter (best-effort; see escalation.go).
 	m.ForgetEscalation(rec.Host, rec.IP)
+	if addressChanged {
+		return &RedeemResult{
+			Outcome: RedeemNetworkHandover, RedirectURI: rec.URI,
+			IssuedIP: rec.IP, Difficulty: rec.Difficulty, Algorithm: rec.Algorithm,
+			MemoryKiB: rec.MemoryKiB, Iterations: rec.Iterations,
+			IssuedAt: time.UnixMilli(rec.IssuedAt),
+		}, nil
+	}
 
 	token, err := m.mintTokenWithSpec(rec.Host, Fingerprint(req.IP, req.UserAgent), req.ChallengeID, rec.proofSpec(), tokenTTL)
 	if err != nil {
 		return nil, err
 	}
 	return &RedeemResult{
-		Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI,
+		Outcome: RedeemSolved, Token: token, TokenTTL: tokenTTL, RedirectURI: rec.URI,
 		Difficulty: rec.Difficulty, Algorithm: rec.Algorithm, MemoryKiB: rec.MemoryKiB,
 		Iterations: rec.Iterations, IssuedAt: time.UnixMilli(rec.IssuedAt),
 	}, nil

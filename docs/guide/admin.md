@@ -46,19 +46,23 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/blocks/203.0.113.9
 # is 1000 and the hard maximum is 10000; complete=false means more exist.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/blocks?limit=1000"
 
-# Every recent non-allow decision, solved challenge and failed redemption, newest first, from an
+# Every recent non-allow decision and PoW outcome, newest first, from an
 # in-process ring buffer (per instance, cleared on restart). ?action= takes deny, challenge,
-# refuse, solve or redeem_fail; refuse means Guardian withheld the challenge after
+# refuse, solve, redeem_fail or redeem_retry; refuse means Guardian withheld the challenge after
 # classifying the request as unable to complete it. Exclude refuse to see only
 # puzzles that were really issued.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=deny&limit=20"
 
 # Failed redemption attempts: the per-attempt detail behind the funnel's
 # "failed" count. The reason says why: pow:bad_solution is a wrong nonce,
-# pow:binding_mismatch usually a VPN or mobile handover moving the client to a
-# new IP between issue and redeem, pow:unknown_challenge an expired, replayed
-# or forged challenge ID.
+# pow:binding_mismatch means the challenge belongs to another host (or a
+# work-free no-JS redemption changed address), while pow:unknown_challenge is
+# an expired, replayed or forged challenge ID.
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_fail&limit=20"
+
+# Automatically recovered address changes. The old valid proof was consumed,
+# no pass was minted, and the browser was sent through one fresh challenge.
+curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=redeem_retry&limit=20"
 
 # Solved challenges: which host, path, IP and User-Agent paid the proof of work,
 # how long the client reports computing (solve_ms), how long this daemon
@@ -78,8 +82,9 @@ curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?action=solve&limit
 curl -s -H "Authorization: Bearer $TOKEN" "$A/admin/decisions?view=compact&limit=all"
 
 # A small "right now" rollup: active blocks, recent counts by action and
-# reason category, and the PoW lifecycle (challenges issued/solved/failed +
-# average solve seconds). (Long-horizon numbers live in /metrics.)
+# reason category, and the PoW lifecycle (challenges issued/solved/failed,
+# recovered network handovers + average solve seconds). (Long-horizon numbers
+# live in /metrics.)
 curl -s -H "Authorization: Bearer $TOKEN" $A/admin/stats
 
 # Block an IP for two hours (reason + ttl optional; default 24h, max 8760h).
@@ -219,8 +224,9 @@ the header and remembered per browser. On it:
   whether the unblock also resets the repeat-offender backoff) and a
   block-an-IP form. The table paginates at 25 rows, is capped at 1000 and
   cached for a minute, refreshed immediately after any block/unblock action.
-- The **recent activity feed** of non-allow decisions, solves and failed
-  redemptions, filterable by action and free text, also paginating at 25 rows.
+- The **recent activity feed** of non-allow decisions and PoW outcomes,
+  including recovered network handovers, filterable by action and free text,
+  also paginating at 25 rows.
 - Explicit WAF allow rules follow the same retention policy as every other
   allow: they stay out of the recent ring, while their aggregate volume appears
   in the per-domain traffic chart and `guardian_decisions_total` under reason
@@ -332,6 +338,7 @@ path:
   selected interval, history overwritten by a full ring, and time before this
   daemon started.
 - **Activity / totals**: the proof-of-work funnel (issued, solved, failed),
+  including recovered network handovers beneath the headline counters,
   per-domain traffic volume, the solve-time histogram, **solve time by domain**
   and **by client** (see below), and the anomaly-score histogram, read from
   lifetime counters and Prometheus histograms via
@@ -348,14 +355,14 @@ path:
   baselines via [`GET /admin/anomaly`](/reference/admin-api#get-admin-anomaly)
   and the distribution counters.
 
-Solves and failed redemptions are deliberately absent from both time-series
+PoW outcome rows are deliberately absent from both time-series
 charts: an outcome is the consequence of a challenge already drawn there, so
 its own band would draw one client journey twice (and in the by-reason chart
-every outcome would collapse to `pow`). Both remain in the recent activity feed
-(actions `solve` and `redeem_fail`), which is where the funnel's `failed` count
-gets its explanation: a `redeem_fail` row names the IP and the reason, so a
-wrong-nonce bot and a visitor whose VPN switched exit IPs mid-challenge stop
-looking alike.
+every outcome would collapse to `pow`). All three remain in the recent activity
+feed (actions `solve`, `redeem_fail` and `redeem_retry`), which is where the
+funnel's `failed` count gets its explanation: a `redeem_fail` row names the IP
+and the reason, so a wrong-nonce bot and an automatically recovered address
+handover stop looking alike.
 
 #### Per-domain traffic on a large fleet
 

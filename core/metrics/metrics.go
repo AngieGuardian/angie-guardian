@@ -27,7 +27,7 @@ type Metrics struct {
 	backend string
 
 	decisions           *prometheus.CounterVec   // by action, reason_category, domain
-	challenge           *prometheus.CounterVec   // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|subresource_refused|accept_heuristic_refused|frame_unscored|solved|failed|spent_cas_failed
+	challenge           *prometheus.CounterVec   // by outcome: issued|issued_stateless|issued_stateless_fallback|escalated|farm_detected|subresource_refused|accept_heuristic_refused|frame_unscored|solved|network_handover|failed|spent_cas_failed
 	challengeFail       *prometheus.CounterVec   // failed redemptions by reason (bad_solution|binding_mismatch|unknown_challenge|too_fast|nojs_disabled|internal_error)
 	solveTime           *prometheus.HistogramVec // client-reported solve time in seconds, by domain
 	anomalyScore        *prometheus.HistogramVec

@@ -424,9 +424,10 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 }
 
 // RecentDecisions returns the last non-allow decisions and proof-of-work
-// outcomes (solves, failed redemptions), newest first, up to limit (<= 0 for
-// all). Backed by a bounded in-process ring: per-instance, lost on restart. A
-// live operator view, not an audit log (that's the structured decision log).
+// outcomes (solves, failed redemptions and handover retries), newest first, up
+// to limit (<= 0 for all). Backed by a bounded in-process ring: per-instance,
+// lost on restart. A live operator view, not an audit log (that's the
+// structured decision log).
 func (e *Engine) RecentDecisions(limit int) []RecentDecision {
 	return e.recent.list(limit)
 }
@@ -497,6 +498,16 @@ func (e *Engine) RecordRedeemFailure(host, ip, ua, reason string) {
 	e.recent.add(RecentDecision{
 		Time: time.Now(), Host: host, IP: ip, UA: ua,
 		Action: ActionRedeemFail, Reason: reason,
+	})
+}
+
+// RecordNetworkHandover records a valid, consumed proof that could not mint a
+// pass because the client's exact address changed after issuance. It is an
+// outcome row, not a failure or a second pipeline verdict.
+func (e *Engine) RecordNetworkHandover(host, ip, uri, ua string) {
+	e.recent.add(RecentDecision{
+		Time: time.Now(), Host: host, IP: ip, URI: uri, UA: ua,
+		Action: ActionRedeemRetry, Reason: ReasonNetworkHandover,
 	})
 }
 

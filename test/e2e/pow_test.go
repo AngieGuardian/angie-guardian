@@ -192,6 +192,132 @@ func TestPoWFullSolveThroughAngie(t *testing.T) {
 	}
 }
 
+// TestPoWNetworkHandoverThroughAngie starts a challenge on a synthetic old
+// address at the trusted auth listener, then redeems its valid proof through
+// the real Angie listener (whose observed gateway address is different). The
+// recovery response must carry the original URI into one normal Angie
+// authorization/challenge cycle, after which the replacement solve reaches the
+// backend. This is the address transition the host network cannot create on a
+// single TCP client by itself.
+func TestPoWNetworkHandoverThroughAngie(t *testing.T) {
+	const oldIP = "198.51.100.231"
+	path := "/handover-ledger?month=8"
+	ua := browserUA + " handover"
+	handoverBefore := metric(t, "guardian_challenges_total", `outcome="network_handover"`)
+
+	issue, err := http.NewRequest(http.MethodGet, auth+"/challenge", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.Header.Set("X-Guardian-Host", powHost)
+	issue.Header.Set("X-Guardian-IP", oldIP)
+	issue.Header.Set("X-Guardian-UA", ua)
+	issue.Header.Set("X-Guardian-URI", path)
+	issued, err := noRedirect.Do(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { issued.Body.Close() })
+	page := bodyOf(t, issued)
+	match := dataRe.FindStringSubmatch(page)
+	if match == nil {
+		t.Fatalf("initial direct-auth response is not a challenge (status %d):\n%s", issued.StatusCode, page)
+	}
+	var first challengeData
+	if err := json.Unmarshal([]byte(match[1]), &first); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"challenge_id": first.ChallengeID,
+		"nonce":        solve(t, first.Challenge, first.Difficulty),
+		"elapsed_ms":   42,
+	})
+	redeem := req(t, http.MethodPost, site+"/__guardian/pass", map[string]string{
+		"Host": powHost, "User-Agent": ua, "Content-Type": "application/json",
+	}, strings.NewReader(string(payload)))
+	if redeem.StatusCode != http.StatusConflict {
+		t.Fatalf("handover redeem: status %d, want 409; body %s", redeem.StatusCode, bodyOf(t, redeem))
+	}
+	if len(redeem.Cookies()) != 0 {
+		t.Fatal("handover minted a pass cookie")
+	}
+	var recovery struct {
+		Reason   string `json:"reason"`
+		RetryURL string `json:"retry_url"`
+	}
+	if err := json.Unmarshal([]byte(bodyOf(t, redeem)), &recovery); err != nil {
+		t.Fatal(err)
+	}
+	if recovery.Reason != "network_handover" || recovery.RetryURL != path {
+		t.Fatalf("recovery = %+v, want original URI", recovery)
+	}
+	if delta := metric(t, "guardian_challenges_total", `outcome="network_handover"`) - handoverBefore; delta != 1 {
+		t.Fatalf("network_handover metric grew by %v, want 1", delta)
+	}
+
+	var outcomes struct {
+		Decisions []struct {
+			UA     string `json:"ua"`
+			URI    string `json:"uri"`
+			Action string `json:"action"`
+			Reason string `json:"reason"`
+		} `json:"decisions"`
+	}
+	dr := adminReq(t, http.MethodGet, "/admin/decisions?action=redeem_retry&limit=all", nil)
+	if err := json.UnmarshalRead(dr.Body, &outcomes); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range outcomes.Decisions {
+		if d.UA == ua {
+			found = true
+			if d.Action != "redeem_retry" || d.Reason != "pow:network_handover" || d.URI != path {
+				t.Errorf("handover row = %+v", d)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no handover outcome recorded for %q", ua)
+	}
+
+	// Follow the response through Angie. The original URI is challenged again,
+	// this time bound to the listener's newly observed address.
+	replacement := fetchChallenge(t, recovery.RetryURL, powHost, ua)
+	replacementPayload, _ := json.Marshal(map[string]any{
+		"challenge_id": replacement.ChallengeID,
+		"nonce":        solve(t, replacement.Challenge, replacement.Difficulty),
+		"elapsed_ms":   42,
+	})
+	replaced := req(t, http.MethodPost, site+"/__guardian/pass", map[string]string{
+		"Host": powHost, "User-Agent": ua, "Content-Type": "application/json",
+	}, strings.NewReader(string(replacementPayload)))
+	if replaced.StatusCode != http.StatusOK {
+		t.Fatalf("replacement redeem: status %d, body %s", replaced.StatusCode, bodyOf(t, replaced))
+	}
+	var token string
+	for _, c := range replaced.Cookies() {
+		if c.Name == "guardian_token" {
+			token = c.Value
+		}
+	}
+	if token == "" {
+		t.Fatal("replacement solve minted no pass")
+	}
+	backendResp := get(t, recovery.RetryURL, powHost, ua, map[string]string{"Cookie": "guardian_token=" + token})
+	if backendResp.StatusCode != http.StatusOK || !strings.Contains(bodyOf(t, backendResp), "Hostname:") {
+		t.Fatal("replacement pass did not reach the backend")
+	}
+
+	// The old challenge was consumed by the first handover and cannot generate
+	// another replacement.
+	replay := req(t, http.MethodPost, site+"/__guardian/pass", map[string]string{
+		"Host": powHost, "User-Agent": ua, "Content-Type": "application/json",
+	}, strings.NewReader(string(payload)))
+	if replay.StatusCode != http.StatusForbidden {
+		t.Fatalf("handover replay: status %d, want 403", replay.StatusCode)
+	}
+}
+
 func TestArgon2IDFullSolveThroughAngie(t *testing.T) {
 	const host = "argon.localhost"
 	ua := browserUA + " argon2id"

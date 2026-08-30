@@ -232,6 +232,9 @@
      column says why; the text label disambiguates it from challenge per the
      never-color-alone rule above. */
   .chip.redeem_fail::before { background: var(--warning); }
+  /* A valid proof consumed after the client's address changed. No pass was
+     minted; informational blue distinguishes recovery from success/failure. */
+  .chip.redeem_retry::before { background: var(--series-1); }
   /* Load shedding is Guardian refusing to decide at all, under saturation, so
      it is neither a verdict nor a refusal and must not read as either. Blue
      from the CVD-safe categorical set: identity, not severity. It short-circuits
@@ -636,11 +639,11 @@
       <div class="empty" id="lu-dec-empty" hidden>No recent activity for this IP on this instance.</div>
     </div>
     <div class="meta" style="margin-top:0.5rem;">Covers only this instance's
-      bounded ring of recent non-allow decisions, solves and failed
-      redemptions; an empty list is not proof this IP sent nothing.</div>
+      bounded ring of recent non-allow decisions and PoW outcomes; an empty
+      list is not proof this IP sent nothing.</div>
   </div>
 
-  <h2 id="decisions-heading">Recent decisions <span class="meta">(newest first, non-allow decisions, solves and failed redemptions)</span><a class="help"
+  <h2 id="decisions-heading">Recent decisions <span class="meta">(newest first, non-allow decisions and PoW outcomes)</span><a class="help"
       href="https://angieguardian.org/guide/troubleshooting#legitimate-visitors-get-challenged-or-blocked"
       target="_blank" rel="noopener noreferrer"
       title="Docs: what a reason means, and what to do about a false positive"
@@ -653,6 +656,7 @@
       <option value="refuse">refuse</option>
       <option value="solve">solve</option>
       <option value="redeem_fail">redeem_fail</option>
+      <option value="redeem_retry">redeem_retry</option>
     </select>
     <label class="meta" for="f-limit">Rows</label>
     <select id="f-limit" aria-label="Recent decision fetch limit"
@@ -1543,14 +1547,14 @@
     const now = Date.now();
     const bounds = chartBounds(now);
     const decisions = lastChartDecisions.filter((d) => {
-      // Outcome rows (solves and failed redemptions) share the ring but are
+      // Outcome rows (solves, failed redemptions and handover retries) share the ring but are
       // not verdicts, and both charts below would misreport them. In the
       // stacked-action chart an outcome is the consequence of a challenge
       // already in the stack, so another band would draw one client journey
       // twice; in the by-reason chart every one collapses to "pow" and would
       // swamp the band that exists to show token-stage pow failures. The PoW
       // funnel card already carries issued/solved/failed.
-      if (d.action === "solve" || d.action === "redeem_fail") return false;
+      if (d.action === "solve" || d.action === "redeem_fail" || d.action === "redeem_retry") return false;
       const t = new Date(d.time).getTime();
       return Number.isFinite(t) && t >= bounds.lo && t <= bounds.hi;
     });
@@ -2102,7 +2106,7 @@
     }
     if (active.length) {
       nodes.push(el("span", "meta",
-        "Recent-ring activity; offender Hits exclude solves and failed redemptions."));
+        "Recent-ring activity; offender Hits exclude PoW outcome rows."));
     }
     $("f-facets").replaceChildren(...nodes);
   };
@@ -3239,7 +3243,7 @@
   // rather than passing a partial count off as the total.
   // Ranking only: an action missing from this list still renders, it just sorts
   // last. Ordered by how much operator attention it deserves.
-  const ACTION_ORDER = ["deny", "challenge", "redeem_fail", "refuse", "solve"];
+  const ACTION_ORDER = ["deny", "challenge", "redeem_fail", "redeem_retry", "refuse", "solve"];
   const renderLookupTotals = (rows, whole) => {
     const counts = new Map();
     for (const d of rows) counts.set(d.action, (counts.get(d.action) || 0) + 1);
@@ -3677,6 +3681,10 @@
           if (split.length) failed += " (" + split.join(", ") + ")";
         }
         parts.push(failed);
+      }
+      if (ch.network_handover > 0) {
+        parts.push(Math.round(ch.network_handover) + " network handover" +
+          (Math.round(ch.network_handover) === 1 ? "" : "s"));
       }
       if (ch.avg_solve_seconds !== undefined) parts.push("avg " + ch.avg_solve_seconds.toFixed(1) + "s");
       $("t-solved-sub").textContent = parts.length ? parts.join(", ") : "since start";

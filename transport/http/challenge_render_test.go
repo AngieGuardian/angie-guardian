@@ -129,6 +129,7 @@ func TestChallengePageContainsBoundedArgonRetryAndFallbackLogic(t *testing.T) {
 	}
 	for _, contract := range []string{
 		`resp.status !== 429 && resp.status !== 503`, `Math.random() * 1500`, `body[solution.kind]`,
+		`resp.status === 409`, `result.reason === "network_handover"`, `location.replace(result.retry_url)`,
 		`new Worker(data.worker_url)`, `data.noscript_wait_seconds * 1000`,
 	} {
 		if !strings.Contains(page.String(), contract) {

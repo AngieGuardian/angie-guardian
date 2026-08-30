@@ -186,6 +186,14 @@
           body: JSON.stringify(body),
         });
         if (resp.ok) { location.reload(); return; }
+        if (resp.status === 409) {
+          const result = await resp.json();
+          if (result.reason === "network_handover" && result.retry_url) {
+            status.textContent = "Network changed; restarting verification…";
+            location.replace(result.retry_url);
+            return;
+          }
+        }
         if (resp.status !== 429 && resp.status !== 503) break;
         // Keep the same proof and challenge: a busy or rate-limited verifier
         // does not consume it. Retry-After is combined with capped exponential

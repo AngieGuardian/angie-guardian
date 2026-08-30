@@ -639,7 +639,9 @@ func redeemFailReason(err error) string {
 	switch {
 	case errors.Is(err, pow.ErrBadSolution):
 		return core.ReasonBadSolution
-	case errors.Is(err, pow.ErrBindingMismatch):
+	case errors.Is(err, pow.ErrHostMismatch):
+		return core.ReasonBindingMismatch
+	case errors.Is(err, pow.ErrClientAddressMismatch):
 		return core.ReasonBindingMismatch
 	case errors.Is(err, pow.ErrChallengeUnknown):
 		return core.ReasonChallengeGone
@@ -779,6 +781,36 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 		} else {
 			writeJSON(w, status, map[string]any{"ok": false, "error": clientErr})
 		}
+		return
+	}
+	if res.Outcome == pow.RedeemNetworkHandover {
+		// The old challenge was authenticated, solved and atomically consumed,
+		// but exact-address binding forbids minting a pass for this request. Send
+		// the browser back through normal authorization: that path issues one
+		// replacement challenge bound to the newly observed address and remains
+		// covered by the existing issuance limits and escalation controls.
+		retryURL := safeRedirect(res.RedirectURI)
+		s.metrics.Challenge("network_handover")
+		s.engine.AttackDetector().ChallengeRedeemed()
+		s.engine.RecordNetworkHandover(host, ip, res.RedirectURI, req.UserAgent)
+		s.log.Info("challenge network handover",
+			"host", host, "issued_ip", res.IssuedIP, "ip", ip,
+			"uri", res.RedirectURI, "nojs", req.NoJS)
+		if req.NoJS {
+			http.Redirect(w, r, retryURL, http.StatusSeeOther)
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "reason": "network_handover", "retry_url": retryURL,
+		})
+		return
+	}
+	if res.Outcome != pow.RedeemSolved {
+		s.metrics.Challenge("failed")
+		s.metrics.ChallengeFailure("internal_error")
+		s.engine.RecordRedeemFailure(host, ip, req.UserAgent, core.ReasonRedeemInternal)
+		s.log.Error("redeem returned unknown outcome", "host", host, "ip", ip, "outcome", res.Outcome)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "challenge verification unavailable"})
 		return
 	}
 

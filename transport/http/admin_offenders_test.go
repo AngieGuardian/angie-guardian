@@ -146,6 +146,7 @@ func TestOffendersUserAgentsAndHosts(t *testing.T) {
 	for range 20 {
 		engine.RecordSolve(core.SolveRecord{Host: "solve.test", IP: "198.51.100.2", UA: "Solver/1"})
 		engine.RecordRedeemFailure("fail.test", "198.51.100.3", "Failed/1", core.ReasonBindingMismatch)
+		engine.RecordNetworkHandover("retry.test", "198.51.100.4", "/", "Retry/1")
 	}
 
 	out := decodeJSON(t, adminReq(t, ts, http.MethodGet, "/admin/offenders", adminToken, ""))
@@ -169,12 +170,15 @@ func TestOffendersUserAgentsAndHosts(t *testing.T) {
 	if _, present := uas["Failed/1"]; present {
 		t.Errorf("user_agents ranks a failed redemption: %v", uas)
 	}
+	if _, present := uas["Retry/1"]; present {
+		t.Errorf("user_agents ranks a recovered handover: %v", uas)
+	}
 
 	hosts := counts("hosts")
 	if hosts["shop.test"] != 6 || hosts["api.test"] != 3 {
 		t.Errorf("hosts = %v, want normalized shop.test:6 and api.test:3", hosts)
 	}
-	for _, excluded := range []string{"solve.test", "fail.test"} {
+	for _, excluded := range []string{"solve.test", "fail.test", "retry.test"} {
 		if _, present := hosts[excluded]; present {
 			t.Errorf("hosts ranks outcome-only host %q: %v", excluded, hosts)
 		}

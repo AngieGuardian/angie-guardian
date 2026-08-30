@@ -388,8 +388,7 @@ func TestRedeemRejections(t *testing.T) {
 	}{
 		"unknown id":  {func(r *RedeemRequest) { r.ChallengeID = "00000000000000000000000000000000" }, ErrChallengeUnknown},
 		"bad id len":  {func(r *RedeemRequest) { r.ChallengeID = "short" }, ErrChallengeUnknown},
-		"wrong host":  {func(r *RedeemRequest) { r.Host = "evil.com" }, ErrBindingMismatch},
-		"wrong ip":    {func(r *RedeemRequest) { r.IP = "203.0.113.1" }, ErrBindingMismatch},
+		"wrong host":  {func(r *RedeemRequest) { r.Host = "evil.com" }, ErrHostMismatch},
 		"nojs denied": {func(r *RedeemRequest) { r.NoJS = true }, ErrNoJSDisabled},
 	} {
 		req := base
@@ -416,6 +415,55 @@ func TestRedeemRejections(t *testing.T) {
 	// All those rejections must not have spent the challenge.
 	if _, err := m.Redeem(ctx, &base); err != nil {
 		t.Errorf("valid redemption after rejections should succeed, got %v", err)
+	}
+}
+
+func TestHostMismatchKeepsLegacyBindingSentinel(t *testing.T) {
+	if !errors.Is(ErrHostMismatch, ErrBindingMismatch) {
+		t.Fatal("ErrHostMismatch no longer matches the legacy ErrBindingMismatch sentinel")
+	}
+	if errors.Is(ErrClientAddressMismatch, ErrHostMismatch) {
+		t.Fatal("client-address mismatch must remain distinguishable from host mismatch")
+	}
+	if !errors.Is(ErrClientAddressMismatch, ErrBindingMismatch) {
+		t.Fatal("ErrClientAddressMismatch no longer matches the legacy ErrBindingMismatch sentinel")
+	}
+}
+
+func TestStatefulNetworkHandoverConsumesValidProof(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t)
+	ch, err := m.Issue(ctx, "example.com", "198.51.100.7", "/ledger?month=8", 4, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := RedeemRequest{
+		ChallengeID: ch.ID, Host: "example.com", IP: "2001:db8::7", UserAgent: "UA",
+		TokenTTL: time.Hour, ChallengeTTL: time.Minute,
+	}
+
+	// A changed address with a bad proof is ordinary proof failure and does not
+	// consume the challenge or qualify for recovery.
+	bad := base
+	bad.Nonce = unsolve(t, ch.Challenge, 4)
+	if _, err := m.Redeem(ctx, &bad); !errors.Is(err, ErrBadSolution) {
+		t.Fatalf("bad proof from new address: err = %v, want ErrBadSolution", err)
+	}
+
+	valid := base
+	valid.Nonce = solve(t, ch.Challenge, 4)
+	res, err := m.Redeem(ctx, &valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != RedeemNetworkHandover || res.Token != "" || res.RedirectURI != "/ledger?month=8" {
+		t.Fatalf("handover result = %+v", res)
+	}
+	if res.IssuedIP != "198.51.100.7" {
+		t.Fatalf("issued IP = %q, want original address", res.IssuedIP)
+	}
+	if _, err := m.Redeem(ctx, &valid); !errors.Is(err, ErrChallengeUnknown) {
+		t.Fatalf("replayed handover: err = %v, want ErrChallengeUnknown", err)
 	}
 }
 
