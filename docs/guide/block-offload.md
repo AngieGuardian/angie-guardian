@@ -5,6 +5,11 @@ denied. Enforcing that check as cheaply as possible matters under attack: a
 flood from already-blocked clients should cost near nothing, not saturate the
 sidecar and trip [fail-open](/guide/threat-model#fail-open-by-design).
 
+Enable kernel offload before an incident and rehearse its management-access and
+rollback checks with the [DDoS drill](/guide/ddos-drill). Do not introduce
+`CAP_NET_ADMIN`, proxy exceptions, or a new nftables table for the first time
+during a live attack; follow the [incident runbook](/guide/ddos-incident-runbook).
+
 Guardian enforces blocks on two layers:
 
 1. an always-on **in-process mirror**, so the block check on the hot path is a

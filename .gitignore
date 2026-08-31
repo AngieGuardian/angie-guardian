@@ -13,6 +13,9 @@ coverage.out
 # to commit; the committed baselines live in allocs-baseline.txt)
 /bench-current.txt
 
+# Staging drill reports contain machine- and deployment-specific evidence.
+/ddos-drill-*.md
+
 # Runtime data
 *.db
 *.key
@@ -32,4 +35,3 @@ coverage.out
 # Claude Code agent worktrees (parallel sessions; never commit these)
 .claude/worktrees/
 .hermes
-

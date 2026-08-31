@@ -10,6 +10,10 @@ The profile is not a volumetric DDoS service. It places local, deterministic
 bounds around client work that reaches Angie. Keep provider, CDN, load-balancer,
 firewall, SYN-flood, and bandwidth protection upstream.
 
+The [DDoS incident runbook](/guide/ddos-incident-runbook) assigns those layers
+to their operational owners; the [staging drill](/guide/ddos-drill) verifies
+that these bounds reject before the origin and recover cleanly.
+
 ## Enable the profile
 
 The release archive and installer provide two separate files:

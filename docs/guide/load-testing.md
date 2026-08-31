@@ -10,6 +10,10 @@ resets, or file-descriptor recovery. Those are Angie's protocol layer. Run the
 real-stack [Angie validation and soak](/guide/angie-hardening#validate-and-soak)
 for that separate question.
 
+For a repeatable operational exercise that combines these measurements with
+attack pinning, origin-impact checks, sidecar faults, false-positive probes,
+and cleanup, use the [DDoS drill](/guide/ddos-drill).
+
 ## Scenarios
 
 `allow`, `token`, and the `/auth` half of `refuse` are read-dominated; the

@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test install-test e2e e2e-angie-soak fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
+.PHONY: all build wasm test install-test e2e e2e-angie-soak ddos-drill fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -54,6 +54,12 @@ ANGIE_HARDENING_SOAK_DURATION ?= 30s
 e2e-angie-soak:
 	ANGIE_HARDENING_SOAK=1 ANGIE_HARDENING_SOAK_DURATION=$(ANGIE_HARDENING_SOAK_DURATION) \
 		go test -tags e2e -run '^TestAngieHardeningSoak$$' -count=1 -timeout 15m ./test/e2e/...
+
+# Staging-only attack-mode exercise. The runner intentionally has no target
+# defaults; pass its required URLs/host explicitly after reading the runbook.
+# Extra arguments can be supplied as DDOS_DRILL_ARGS='...'.
+ddos-drill:
+	bash scripts/ddos-drill.sh $(DDOS_DRILL_ARGS)
 
 # Gated nftables kernel-offload e2e. Needs a kernel with nf_tables and a
 # runtime that grants NET_ADMIN; skips cleanly where that is unavailable
