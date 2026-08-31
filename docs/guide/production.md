@@ -20,6 +20,12 @@ Two references cover the file itself, so this guide does not repeat them:
   [full annotated example](/examples#the-full-annotated-example) you can copy as
   a starting point, alongside smaller task-focused snippets.
 
+For an active HTTP attack, use the
+[DDoS incident runbook](/guide/ddos-incident-runbook). Rehearse its controls and
+measure the target host with the [staging drill](/guide/ddos-drill) before an
+incident. Guardian is a Layer-7 authorization sidecar; volumetric bandwidth,
+connection, TLS-handshake, and QUIC attacks require upstream/CDN/L4 mitigation.
+
 Validate an edit before applying it with `guardiand -t` (the systemd unit does
 this on every start).
 Most of the file hot-reloads on `systemctl reload guardiand` (domains, lists,
@@ -651,6 +657,7 @@ floors; CI runs both on every pipeline).
 | `GuardianBlockRateSpike` | 5m block rate >5x the pre-spike hour and >1/min | warning |
 | `GuardianOffloadDegraded` | an enforcement sink dropped to in-daemon | warning |
 | `GuardianLoadShedding` | sustained shedding for 10m | warning |
+| `GuardianRedeemInternalErrors` | internal challenge-redemption failures for 10m | warning |
 | `GuardianStatelessSpendFallback` | single-spend CAS failing for 10m | warning |
 | `GuardianAttackMode` | posture above normal for 10m | info |
 

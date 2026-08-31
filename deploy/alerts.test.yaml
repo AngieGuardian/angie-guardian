@@ -41,7 +41,7 @@ tests:
             exp_annotations:
               summary: 'Guardian store unreachable on guardian:9101 (pebble)'
               description: "The pebble store has not answered Guardian's write/read-back probe for over 2 minutes. Guardian is failing open: requests still pass, but single-spend is per-replica, behavioural scoreboards are not updating and blocks may not be enforced. /healthz stays green on purpose; check /readyz and the \"store\" block of /admin/stats for the raw error."
-              runbook_url: https://angieguardian.org/guide/troubleshooting#readyz-says-degraded
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#protection-alerts-versus-application-errors
 
   - interval: 1m
     name: a healthy store never trips the fail-open alert
@@ -75,7 +75,7 @@ tests:
             exp_annotations:
               summary: 'Guardian store error rate above 5% on guardian:9101'
               description: 'More than 5% of store operations failed over the last 10 minutes (20%). Individual stages abstain on a store error, so protection is degrading unevenly rather than cleanly failing open.'
-              runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#detect-and-classify
 
   - interval: 1m
     name: an idle instance with the same error ratio stays quiet
@@ -113,7 +113,7 @@ tests:
             exp_annotations:
               summary: 'Guardian proof-of-work solve rate below 30% on guardian:9101'
               description: 'Under 30% of issued challenges were solved over the last 15 minutes (10%). Check base_difficulty against the solve-time histogram before assuming an attack: a difficulty that real browsers cannot afford looks identical to a bot flood.'
-              runbook_url: https://angieguardian.org/guide/troubleshooting
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#detect-and-classify
 
   - interval: 1m
     name: a quiet site with a bad-looking solve rate stays quiet
@@ -161,7 +161,7 @@ tests:
             exp_annotations:
               summary: 'Guardian proof-of-work solve rate below 30% on guardian:9101'
               description: 'Under 30% of issued challenges were solved over the last 15 minutes (0%). Check base_difficulty against the solve-time histogram before assuming an attack: a difficulty that real browsers cannot afford looks identical to a bot flood.'
-              runbook_url: https://angieguardian.org/guide/troubleshooting
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#detect-and-classify
 
   # --- GuardianBlockRateSpike ---------------------------------------------
   - interval: 1m
@@ -190,7 +190,7 @@ tests:
             exp_annotations:
               summary: 'Guardian block rate spiked on guardian:9101'
               description: 'Blocks are being placed more than 5x faster than the trailing hour, and above 1 per minute. Check /admin/decisions and the top-offenders view to tell an attack from a rule change that started blocking real users.'
-              runbook_url: https://angieguardian.org/guide/admin
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#detect-and-classify
 
   - interval: 1m
     name: a tiny baseline multiplied fivefold stays below the absolute floor
@@ -237,7 +237,7 @@ tests:
             exp_annotations:
               summary: 'Guardian is not being scraped (guardian:9101)'
               description: "Prometheus cannot scrape Guardian's admin listener. Every other rule in this group is blind until this is fixed. Check that guardiand is running, that admin.listen is reachable from Prometheus, and that the job name in your scrape config matches these rules."
-              runbook_url: https://angieguardian.org/guide/production#dashboards-and-metrics
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#protection-alerts-versus-application-errors
 
   - interval: 1m
     name: a target that never existed still alerts
@@ -258,7 +258,7 @@ tests:
             exp_annotations:
               summary: 'Guardian is not being scraped ()'
               description: "Prometheus cannot scrape Guardian's admin listener. Every other rule in this group is blind until this is fixed. Check that guardiand is running, that admin.listen is reachable from Prometheus, and that the job name in your scrape config matches these rules."
-              runbook_url: https://angieguardian.org/guide/production#dashboards-and-metrics
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#protection-alerts-versus-application-errors
 
   - interval: 1m
     name: a healthy scrape stays quiet
@@ -291,7 +291,7 @@ tests:
             exp_annotations:
               summary: 'Guardian nftables offload degraded on guardian:9101'
               description: 'The nftables enforcement sink is unhealthy; Guardian is enforcing blocks in-daemon instead of in the kernel. Traffic is still protected. Usually a missing capability (CAP_NET_ADMIN) or an nft table removed out of band; see /admin/offload for the error.'
-              runbook_url: https://angieguardian.org/guide/block-offload
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#emergency-actions
       - eval_time: 15m
         alertname: GuardianAttackMode
         exp_alerts:
@@ -303,7 +303,7 @@ tests:
             exp_annotations:
               summary: 'Guardian attack posture raised on guardian:9101'
               description: 'Attack mode has been above normal for 10 minutes (1 = elevated, 2 = attack). Proof-of-work difficulty is raised fleet-wide. See /admin/attack for the signal that triggered it.'
-              runbook_url: https://angieguardian.org/guide/attack-mode
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#first-five-minutes
 
   - interval: 1m
     name: sustained shedding and single-spend fallback both alert
@@ -324,7 +324,7 @@ tests:
             exp_annotations:
               summary: 'Guardian is shedding load on guardian:9101'
               description: 'Guardian has been shedding requests continuously for 10 minutes (1/s). The instance is saturated: add capacity, or move to a faster store backend.'
-              runbook_url: https://angieguardian.org/guide/production#gc-tuning-for-peak-throughput
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#detect-and-classify
       - eval_time: 25m
         alertname: GuardianStatelessSpendFallback
         exp_alerts:
@@ -336,7 +336,7 @@ tests:
             exp_annotations:
               summary: 'Guardian single-spend CAS failing on guardian:9101'
               description: 'Challenge redemption cannot complete its compare-and-swap, so single-spend has degraded to per-replica and a solved challenge can be replayed against another instance. Check GuardianStoreDown and GuardianStoreErrors first; this rarely fires on its own.'
-              runbook_url: https://angieguardian.org/guide/production#choosing-a-store-backend
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#recovery-and-rollback
 
   # --- GuardianRedeemInternalErrors ----------------------------------------
   - interval: 1m
@@ -360,7 +360,7 @@ tests:
             exp_annotations:
               summary: 'Guardian redemptions failing with internal errors on guardian:9101'
               description: 'Solved challenges are being rejected because Guardian itself errored while redeeming them (store or verification-key trouble), so real visitors who paid their proof of work are turned away. Check GuardianStoreDown and GuardianStoreErrors first; the per-attempt detail is /admin/decisions?action=redeem_fail.'
-              runbook_url: https://angieguardian.org/guide/troubleshooting#a-solved-challenge-is-rejected-challenge-verification-failed
+              runbook_url: https://angieguardian.org/guide/ddos-incident-runbook#protection-alerts-versus-application-errors
 
   - interval: 1m
     name: client-caused redemption failures never page, however high they run

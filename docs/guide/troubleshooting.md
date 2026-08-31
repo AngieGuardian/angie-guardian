@@ -332,7 +332,9 @@ until Guardian returns.
 **Don't mistake this for health.** Alert on it: watch the systemd unit
 (`Type=notify` marks the service failed if it wedges), the `/metrics` endpoint,
 and store connectivity via `guardian_store_up`. [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) ships the
-rules; see [Alerting](/guide/production#alerting).
+rules; see [Alerting](/guide/production#alerting). During an attack, use the
+[incident runbook](/guide/ddos-incident-runbook) to distinguish protection
+fail-open from an application error and to apply a verified rollback.
 
 To verify fail-open is wired correctly, stop guardiand and confirm the site
 still serves. If it returns 500 instead, check the 5xx `error_page` and

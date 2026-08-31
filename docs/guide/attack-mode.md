@@ -206,3 +206,8 @@ Enable with the defaults and watch `guardian_attack_mode_signal` for a week to
 learn your real ceilings before tightening. Entering attack does not invalidate
 tokens, so the first time it trips, current visitors keep browsing while new
 clients pay more. The feature is fully off when the section is absent.
+
+Before relying on it during a live event, measure the deployment with the
+[DDoS drill](/guide/ddos-drill). During an incident, use the bounded pin,
+verification, and rollback sequence in the
+[DDoS incident runbook](/guide/ddos-incident-runbook).
