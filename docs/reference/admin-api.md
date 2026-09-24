@@ -278,9 +278,12 @@ spent), `pow:too_fast` and `pow:nojs_disabled` (no-JS redemptions), or
 `pow:internal_error` (Guardian failing, not the client; a burst of these is a
 store-trouble signal). It carries no `uri`, `method` or solve fields: a failed
 attempt usually has no verified challenge record to read them from. Failed
-attempts also score against the IP (`pow_fail` or `tamper`,
+JSON POST solution failures also score against the IP (`pow_fail` or `tamper`,
 [behaviour thresholds](/reference/configuration#waf-ip-behaviour)), so
-repetition earns a block; a lone row costs the client one page refresh.
+repetition earns a block. Failed no-JS GET redemptions remain visible in the
+ring and metrics, but do not score: another site can induce those requests from
+a visitor's browser. The POST endpoint requires `Content-Type: application/json`;
+browser-sendable form content types are rejected before redemption or scoring.
 
 A `redeem_retry` / `pow:network_handover` row is not a failure. Guardian
 authenticated the challenge, verified the submitted proof, atomically consumed

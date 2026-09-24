@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"testing"
+
+	"github.com/melroy89/angie-guardian/core"
 )
 
 // tamperYAML enables the behavioural scoreboard with a low tamper threshold so
@@ -80,5 +82,51 @@ func TestForgedChallengeIDBelowThresholdDoesNotBlock(t *testing.T) {
 	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
 	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
 		t.Fatalf("blocked after only 2 tamper events (threshold 3): action=%q", got)
+	}
+}
+
+func TestCrossSiteNoJSFailuresDoNotScore(t *testing.T) {
+	ts, h := testServerAndHandler(t, tamperYAML)
+	ip, ua := "198.51.100.92", "Mozilla/5.0"
+	for i := range 3 {
+		headers := guardianHeaders("html.test", ip, "/", ua)
+		headers["Sec-Fetch-Site"] = "cross-site"
+		headers["Sec-Fetch-Dest"] = "image"
+		resp := do(t, "GET", ts.URL+PassPath+"?nojs=1&cid=invalid", headers, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("no-JS request %d: status = %d, want 403", i+1, resp.StatusCode)
+		}
+	}
+	var failures int
+	for _, d := range h.engine.RecentDecisions(0) {
+		if d.Action == core.ActionRedeemFail {
+			failures++
+		}
+	}
+	if failures != 3 {
+		t.Errorf("recorded %d failed redemptions, want 3", failures)
+	}
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("cross-site no-JS failures blocked visitor: action=%q", got)
+	}
+}
+
+func TestCrossSiteFormPOSTDoesNotReachScoredRedemption(t *testing.T) {
+	ts := testServerWithYAML(t, tamperYAML)
+	ip, ua := "198.51.100.93", "Mozilla/5.0"
+	for i := range 3 {
+		headers := guardianHeaders("html.test", ip, "/", ua)
+		headers["Content-Type"] = "text/plain"
+		headers["Sec-Fetch-Site"] = "cross-site"
+		// A text/plain HTML form can produce a body that parses as JSON.
+		resp := do(t, "POST", ts.URL+PassPath, headers, []byte(`{"challenge_id":"invalid","nonce":"x=y"}`))
+		if resp.StatusCode != http.StatusUnsupportedMediaType {
+			t.Fatalf("form request %d: status = %d, want 415", i+1, resp.StatusCode)
+		}
+	}
+	resp := do(t, "GET", ts.URL+"/auth", guardianHeaders("html.test", ip, "/page", ua), nil)
+	if got := resp.Header.Get("X-Guardian-Action"); got == "deny" {
+		t.Fatalf("cross-site form requests blocked visitor: action=%q", got)
 	}
 }

@@ -152,6 +152,9 @@ func do(t *testing.T, method, url string, headers map[string]string, body []byte
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	if method == http.MethodPost && body != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := noRedirect.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1075,6 +1078,32 @@ func TestChallengeRateLimit(t *testing.T) {
 	}
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("after %d issuances: status = %d, want 429", defaultLimit+5, last)
+	}
+}
+
+func TestChallengeRateLimitIsPerHostAndIP(t *testing.T) {
+	ts := testServerWithYAML(t, `
+store: { backend: memory }
+signing_key_file: test-signing.key
+defaults:
+  pow: { enabled: true, base_difficulty: 1, max_difficulty: 6, issuance_rate_limit: 1/min }
+domains:
+  alpha.test: {}
+  beta.test: {}
+`)
+	ip, ua := "198.51.100.94", "Mozilla/5.0"
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{"alpha.test", http.StatusOK},
+		{"beta.test", http.StatusOK},
+		{"alpha.test", http.StatusTooManyRequests},
+	} {
+		resp := do(t, "GET", ts.URL+"/challenge", guardianHeaders(tc.host, ip, "/", ua), nil)
+		if resp.StatusCode != tc.want {
+			t.Errorf("host %s: status = %d, want %d", tc.host, resp.StatusCode, tc.want)
+		}
 	}
 }
 
