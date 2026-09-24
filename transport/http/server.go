@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -431,26 +432,13 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cheap per-IP issuance rate limit; bucketed per minute. Counted through
+	// Cheap per-host+IP issuance rate limit. Counted through
 	// the CounterCache so the request never blocks on a store write round:
 	// the local count enforces immediately (and keeps enforcing if the store
 	// is down), the shared counter syncs in the background. The limit is
 	// config-driven (pow.issuance_rate_limit) so operators can tighten it.
 	limit := dcfg.PoW.IssuanceRateLimit
-	// The config parser only accepts s/min/h windows, so Per is always at least
-	// a second; the floor keeps the bucket divisor safe for any Config built in
-	// code (tests, embedders) rather than parsed from YAML.
-	window := max(limit.Per, time.Second)
-	// Built by append rather than Sprintf: this key is created on every
-	// interstitial fetch, and fmt costs several allocations (boxing plus the
-	// intermediate) where append into a stack scratch costs one for the final
-	// string. 64 bytes covers "chrl:" + the longest IPv6 form + the bucket.
-	var rlBuf [64]byte
-	rlb := append(rlBuf[:0], "chrl:"...)
-	rlb = append(rlb, ip...)
-	rlb = append(rlb, ':')
-	rlb = strconv.AppendInt(rlb, time.Now().Unix()/int64(window.Seconds()), 10)
-	if int(s.counters.Incr(string(rlb), 2*window)) > limit.Count {
+	if s.rateLimitExceeded("chrl", host, ip, limit) {
 		s.log.Warn("challenge issuance rate limit", "ip", ip, "host", host)
 		http.Error(w, "too many challenge requests, slow down", http.StatusTooManyRequests)
 		return
@@ -608,6 +596,15 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 // handlePassSolve verifies a solved challenge posted by the page's JS and
 // sets the signed token cookie.
 func (s *Server) handlePassSolve(w http.ResponseWriter, r *http.Request) {
+	// Only the challenge page's JSON request may reach redemption. A browser
+	// can submit cross-site forms with simple content types, including text/plain
+	// bodies shaped like JSON; letting those failures score would let another
+	// site poison the visitor's IP reputation.
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"ok": false, "error": "Content-Type must be application/json"})
+		return
+	}
 	var body struct {
 		ChallengeID string `json:"challenge_id"`
 		Nonce       string `json:"nonce"`
@@ -764,17 +761,18 @@ func (s *Server) redeem(w http.ResponseWriter, r *http.Request, req *pow.RedeemR
 			s.log.Error("redeem failed", "host", host, "ip", ip, "err", err)
 		} else {
 			s.log.Info("redeem rejected", "host", host, "ip", ip, "nojs", req.NoJS, "err", err)
-			// Failed solutions score against the client: repeated bad nonces
-			// or forged/replayed challenge IDs earn a behavioural block. A
-			// wrong nonce or a premature no-JS redeem is pow_fail; an unknown
-			// or misbound challenge ID smells of forgery or replay and scores
-			// as the more serious tamper.
-			evtype := core.EventPoWFail
-			if reason == core.ReasonChallengeGone || reason == core.ReasonBindingMismatch ||
-				reason == core.ReasonNoJSDisabled {
-				evtype = core.EventTamper
+			// The no-JS fallback uses a public GET. Another site can make a
+			// visitor's browser request any URL on it, so a failed no-JS redeem
+			// cannot safely count against that visitor's IP. Keep the failure
+			// row and metrics, but score only POSTed solutions.
+			if !req.NoJS {
+				evtype := core.EventPoWFail
+				if reason == core.ReasonChallengeGone || reason == core.ReasonBindingMismatch ||
+					reason == core.ReasonNoJSDisabled {
+					evtype = core.EventTamper
+				}
+				s.engine.ReportEvent(r.Context(), host, ip, evtype, err.Error())
 			}
-			s.engine.ReportEvent(r.Context(), host, ip, evtype, err.Error())
 		}
 		if req.NoJS {
 			http.Error(w, "challenge verification failed", status)

@@ -191,8 +191,8 @@ defaults:
                               # scanners trip these in rapid bursts
         pow_fail: 10/min      # wrong PoW solutions submitted; an honest
                               # client fails at most once or twice
-        tamper: 10/min        # forged or replayed challenge/signed IDs;
-                              # never produced by a real browser
+        tamper: 10/min        # forged or replayed challenge/signed IDs from
+                              # POSTed solves; failed no-JS GETs do not score
         bot_spoof: 5/min      # clients claiming a verified-bot UA whose
                               # rDNS identity failed verification
         challenge_farm: 80/h  # challenges fetched but never solved, counted

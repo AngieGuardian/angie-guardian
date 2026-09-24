@@ -19,7 +19,7 @@ of these prefixes are enumerable, and only enumerable state can be listed.
 | `ev:` | Per-IP behaviour counters, one key per event type (such as `rule_match`), unblock generation and window bucket | Progress toward an `ip_behaviour` threshold resets | Not surfaced; the current generation is rotated and its old keys are cleared by an unblock |
 | `chesc:` | Per host+IP unsolved-issuance escalation | A client that farms challenges drops back to base difficulty | Not surfaced; the escalation itself is logged and counted in `guardian_challenges_total{outcome="escalated"}`, and an unblock clears it for one IP |
 | `chfesc:` | As `chesc:`, but for framed navigations whose Fetch metadata cannot establish that the interstitial will render | A client farming challenges through a claimed frame context drops back to base difficulty | Not surfaced; counted in `guardian_challenges_total{outcome="frame_unscored"}`, and cleared by an unblock alongside `chesc:` |
-| `chrl:` | Per-IP challenge issuance rate limit | An IP's issuance budget resets | Not surfaced |
+| `chrl:` | Per host+IP challenge issuance rate limit | An IP's issuance budget for that host resets | Not surfaced |
 | `botdns:` | Verified-crawler rDNS verdicts | Every crawler IP needs a fresh forward-confirmed DNS round trip | Not surfaced |
 | `challenge:` | Issued challenge records and their spent markers | A solved challenge could be replayed until `challenge_ttl` elapsed | Not surfaced |
 | `spent1:` | Single-spend markers for **stateless** challenges | As above, for challenges issued under attack mode | Not surfaced |
