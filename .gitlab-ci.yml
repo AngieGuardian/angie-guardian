@@ -392,30 +392,46 @@ upload_and_release:
     # above from being published. The golang image has no `gh`, so fetch the
     # pinned CLI tarball (the shared runners are amd64).
     #
-    # create-or-upload: `create` fails if the release already exists (a retried
-    # job, or one made by hand), in which case `upload --clobber` attaches the
-    # assets to it instead. That makes re-running this job idempotent.
+    # GitLab's release description is the source of truth for GitHub notes.
+    # A retried job refreshes both the notes and the assets.
     #
     # --target pins the release to this commit so GitHub creates the tag itself
     # if the (asynchronous) push mirror has not delivered it yet.
     - |
+      apt-get update
+      apt-get install --yes --no-install-recommends jq
+      curl --fail --silent --show-error \
+        --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+        --output gitlab-release.json \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases/${CI_COMMIT_TAG}"
+      jq --exit-status --raw-output \
+        '.description | strings | select(length > 0)' \
+        gitlab-release.json > release-notes.md
+
       curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz" \
         | tar -xz -C /tmp
       export PATH="/tmp/gh_${GH_CLI_VERSION}_linux_amd64/bin:$PATH"
-      gh release create "$CI_COMMIT_TAG" \
-        angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
-        angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
-        SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
-        --repo "$GH_REPO" \
-        --target "$CI_COMMIT_SHA" \
-        --title "v$CI_COMMIT_TAG" \
-        --notes "Angie Guardian $CI_COMMIT_TAG" || \
-      gh release upload "$CI_COMMIT_TAG" \
-        angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
-        angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
-        SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
-        --repo "$GH_REPO" \
-        --clobber
+      if gh release view "$CI_COMMIT_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+        gh release edit "$CI_COMMIT_TAG" \
+          --repo "$GH_REPO" \
+          --title "v$CI_COMMIT_TAG" \
+          --notes-file release-notes.md
+        gh release upload "$CI_COMMIT_TAG" \
+          angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
+          angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
+          SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
+          --repo "$GH_REPO" \
+          --clobber
+      else
+        gh release create "$CI_COMMIT_TAG" \
+          angie-guardian-${CI_COMMIT_TAG}-linux-amd64.tar.gz \
+          angie-guardian-${CI_COMMIT_TAG}-linux-arm64.tar.gz \
+          SHA256SUMS SHA256SUMS.asc RELEASE-KEY.asc cosign.pub \
+          --repo "$GH_REPO" \
+          --target "$CI_COMMIT_SHA" \
+          --title "v$CI_COMMIT_TAG" \
+          --notes-file release-notes.md
+      fi
   # Keep the built archives downloadable from the pipeline for a short while,
   # so a failed GitHub step can be recovered with a manual upload instead of a
   # rebuild.
