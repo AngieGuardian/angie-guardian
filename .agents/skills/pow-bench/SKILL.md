@@ -32,7 +32,7 @@ Note the pure-JS digest assumes ASCII input up to 246 bytes (single-buffer paddi
 
 Single Go benchmark measuring `sha256.Sum256(challenge + itoa(nonce))`, the exact per-attempt work of a native solver. Run it from a throwaway module dir (it is intentionally NOT part of the main module, keep it out of `go.mod`):
 
-    d=$(mktemp -d) && cp .Codex/skills/pow-bench/hashrate_test.go "$d" \
+    d=$(mktemp -d) && cp .agents/skills/pow-bench/hashrate_test.go "$d" \
       && (cd "$d" && go mod init bench >/dev/null && go test -bench . -benchtime 2s)
 
 ns/op converts to hashrate as `1e9 / ns_per_op` H/s. Compare against `subtleRate`/`jsRate` to quantify the browser-vs-native gap.
