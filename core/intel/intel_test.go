@@ -445,6 +445,39 @@ func TestURLFeedFetchAndCache(t *testing.T) {
 	}
 }
 
+func TestURLFeedCacheDoesNotReplaceInheritedState(t *testing.T) {
+	cacheDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cacheDir, "remote.list"), []byte("192.0.2.0/24\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{CacheDir: cacheDir, Feeds: []FeedConfig{
+		{Name: "remote", URL: "https://example.test/feed", Refresh: time.Hour, Action: FeedActionDeny},
+	}}
+	old, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err := old.feeds[0].install([]byte("203.0.113.0/24\n"), "url", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	next.SeedURLFeedsFrom(old)
+	if mtime := next.feeds[0].loadCache(cacheDir); !mtime.IsZero() {
+		t.Fatalf("cache replaced inherited state at %v", mtime)
+	}
+	if _, ok := next.FeedMatch(netip.MustParseAddr("203.0.113.7"), FeedActionDeny); !ok {
+		t.Fatal("inherited live entry was lost")
+	}
+	if _, ok := next.FeedMatch(netip.MustParseAddr("192.0.2.7"), FeedActionDeny); ok {
+		t.Fatal("stale cache entry replaced the live feed")
+	}
+}
+
 func TestFeedRejectsGarbageBody(t *testing.T) {
 	f := &feed{cfg: FeedConfig{Name: "x", Action: FeedActionDeny}}
 	if _, err := f.install([]byte("<!doctype html><html>oops</html>"), "url", time.Now()); err == nil {

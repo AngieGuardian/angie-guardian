@@ -206,11 +206,27 @@ defaults:
 	// A reload must not replace the loaded deny set with an empty provider just
 	// because URL refresh is asynchronous and the source is currently down.
 	available.Store(false)
-	if err := e.Reload(cfg); err != nil {
+	cacheDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cacheDir, "remote-deny.list"), []byte("192.0.2.0/24\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reloadCfg := loadTestConfig(t, fmt.Sprintf(`
+store: { backend: memory }
+reputation:
+  cache_dir: %q
+  feeds:
+    - { name: remote-deny, url: %q, refresh: 1m, action: deny }
+defaults:
+  reputation: { enabled: true }
+`, cacheDir, srv.URL))
+	if err := e.Reload(reloadCfg); err != nil {
 		t.Fatal(err)
 	}
 	if d := e.Evaluate(t.Context(), r); d.Action != ActionDeny || d.Reason != "reputation:remote-deny" {
 		t.Fatalf("reload dropped last good URL feed: got %s/%s", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(t.Context(), req("x.test", "192.0.2.7", "/", "Mozilla")); d.Action == ActionDeny {
+		t.Fatalf("reload adopted stale cache entry: got %s/%s", d.Action, d.Reason)
 	}
 }
 

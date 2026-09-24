@@ -79,6 +79,7 @@ async function main() {
       }
     }
   } else {
+    result.ok = false;
     result.errors.push("crypto.subtle unavailable; correctness not verified");
   }
 

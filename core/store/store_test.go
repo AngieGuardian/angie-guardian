@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -26,6 +27,24 @@ type scanCountingHook struct {
 type discardRecorder struct{}
 
 func (discardRecorder) StoreOp(string, float64, error) {}
+
+type countingRecorder struct {
+	ops  atomic.Int64
+	errs atomic.Int64
+}
+
+func (r *countingRecorder) StoreOp(_ string, _ float64, err error) {
+	r.ops.Add(1)
+	if err != nil {
+		r.errs.Add(1)
+	}
+}
+
+type failingActiveBlockStore struct{ Store }
+
+func (failingActiveBlockStore) ScanActiveBlocks(context.Context, string, int) ([]KV, bool, error) {
+	return nil, false, errors.New("backend unavailable")
+}
 
 func (h *scanCountingHook) DialHook(next redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -921,6 +940,38 @@ func TestInstrumentedPreservesIndexedCapabilities(t *testing.T) {
 	}
 	if got, err := votes.MaxPostureVote(ctx, ""); err != nil || got != 2 {
 		t.Fatalf("instrumented posture max = %d, %v", got, err)
+	}
+}
+
+func TestInstrumentedIgnoresUnsupportedCapabilityProbe(t *testing.T) {
+	base := NewMemory()
+	t.Cleanup(func() { base.Close() })
+	if err := base.Set(t.Context(), "block:192.0.2.20", []byte("x"), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &countingRecorder{}
+	wrapped := Instrument(base, recorder)
+	indexed := wrapped.(ActiveBlockScanner)
+	if _, _, err := indexed.ScanActiveBlocks(t.Context(), "block:192.0.2.20", 10); !errors.Is(err, ErrCapabilityUnsupported) {
+		t.Fatalf("indexed scan error = %v, want capability unsupported", err)
+	}
+	if recorder.ops.Load() != 0 {
+		t.Fatal("capability probe was recorded as a store operation")
+	}
+	if kvs, _, err := wrapped.(LimitedScanner).ScanLimit(t.Context(), "block:192.0.2.20", 10); err != nil || len(kvs) != 1 {
+		t.Fatalf("fallback scan = %+v, err %v", kvs, err)
+	}
+	if recorder.ops.Load() != 1 || recorder.errs.Load() != 0 {
+		t.Fatalf("fallback telemetry: ops=%d errors=%d", recorder.ops.Load(), recorder.errs.Load())
+	}
+
+	failureRecorder := &countingRecorder{}
+	failing := Instrument(failingActiveBlockStore{base}, failureRecorder).(ActiveBlockScanner)
+	if _, _, err := failing.ScanActiveBlocks(t.Context(), "block:", 10); err == nil {
+		t.Fatal("backend error was lost")
+	}
+	if failureRecorder.ops.Load() != 1 || failureRecorder.errs.Load() != 1 {
+		t.Fatalf("backend error telemetry: ops=%d errors=%d", failureRecorder.ops.Load(), failureRecorder.errs.Load())
 	}
 }
 
