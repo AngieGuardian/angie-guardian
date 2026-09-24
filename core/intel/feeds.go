@@ -192,6 +192,11 @@ func (f *feed) fetch(ctx context.Context, client *http.Client, cacheDir string, 
 // loadCache seeds a URL feed from its persisted copy at startup. Returns the
 // cache file's mtime (zero when there is no usable cache).
 func (f *feed) loadCache(cacheDir string) time.Time {
+	// A reload may have inherited a newer in-memory list from the previous
+	// provider. The cache is only a startup seed, never a replacement for it.
+	if f.state.Load() != nil {
+		return time.Time{}
+	}
 	path := f.cachePath(cacheDir)
 	if path == "" {
 		return time.Time{}

@@ -80,7 +80,13 @@ http://127.0.0.1:18072/admin/stats`) before seeding.
    so it can be re-run safely; the lookup form submit navigates to `?ip=`, and
    any navigation drops injected styles, so re-inject before every shot:
    ```js
-   ::-webkit-scrollbar{display:none} html{scrollbar-width:none}
+   () => {
+     if (document.getElementById('hide-dashboard-scrollbars')) return;
+     const style = document.createElement('style');
+     style.id = 'hide-dashboard-scrollbars';
+     style.textContent = '::-webkit-scrollbar { display: none } html { scrollbar-width: none }';
+     document.head.appendChild(style);
+   }
    ```
 3. `emulate` with `colorScheme: "dark"` and viewport `1280x<H>x2` for this
    shot's `<H>` (see the table and "Zoom and resolution").
