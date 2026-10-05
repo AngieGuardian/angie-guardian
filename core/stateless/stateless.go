@@ -158,7 +158,9 @@ type Decision struct {
 	Action     Action
 	Difficulty int // PoW difficulty in leading-zero bits when Action == ActionChallenge
 	Reason     string
-	Events     []Event
+	// PoWExemption classifies a request without replacing its final verdict.
+	PoWExemption string
+	Events       []Event
 }
 
 // --- shared config value types (stateless subset) --------------------------
@@ -347,26 +349,21 @@ type DomainRules struct {
 
 // --- the evaluator ---------------------------------------------------------
 
-// Evaluate runs the stateless pipeline (allowlist -> denylist -> honeypot ->
-// WAF rules, first terminal wins). The result is terminal for this subset:
-// ActionAllow (reason "default" if nothing matched) or ActionDeny. An allow
-// rule is terminal for this subset and carries its waf:<id> reason. Because
-// there is no PoW here, a WAF rule whose action is "challenge" degrades to a
-// deny.
+// Evaluate runs the stateless security checks. Allowlists exempt only WAF
+// challenges; deny/block rules and honeypots still apply. Non-exempt challenges
+// degrade to deny because this evaluator cannot issue PoW.
 func Evaluate(req *RequestContext, dr *DomainRules) Decision {
-	if d, ok := evalAllowlist(req, dr); ok {
-		return d
+	exemption := MatchAllowlist(req, &dr.Allowlist)
+	d := Decision{Action: ActionAllow, Reason: "default"}
+	if denied, ok := evalDenylist(req, dr); ok {
+		d = denied
+	} else if trapped, ok := evalHoneypot(req, dr); ok {
+		d = trapped
+	} else if matched, ok := evalRules(req, dr, exemption != ""); ok {
+		d = matched
 	}
-	if d, ok := evalDenylist(req, dr); ok {
-		return d
-	}
-	if d, ok := evalHoneypot(req, dr); ok {
-		return d
-	}
-	if d, ok := evalRules(req, dr); ok {
-		return d
-	}
-	return Decision{Action: ActionAllow, Reason: "default"}
+	d.PoWExemption = exemption
+	return d
 }
 
 // The static-list verdicts carry nothing per-request, so they are immutable
@@ -376,10 +373,6 @@ func Evaluate(req *RequestContext, dr *DomainRules) Decision {
 // heap-allocate that Decision on EVERY call, match or not. Callers must treat
 // these as read-only.
 var (
-	allowlistPath = &Decision{Action: ActionAllow, Reason: "allowlist:path"}
-	allowlistIP   = &Decision{Action: ActionAllow, Reason: "allowlist:ip"}
-	allowlistUA   = &Decision{Action: ActionAllow, Reason: "allowlist:ua"}
-
 	staticDenyEvents = []Event{{Type: "deny", Detail: "static denylist hit"}}
 	denylistIP       = &Decision{Action: ActionDeny, Reason: "denylist:ip", Events: staticDenyEvents}
 	denylistUA       = &Decision{Action: ActionDeny, Reason: "denylist:ua", Events: staticDenyEvents}
@@ -392,29 +385,19 @@ var (
 	}
 )
 
-func evalAllowlist(req *RequestContext, dr *DomainRules) (Decision, bool) {
-	d := CheckAllowlist(req, &dr.Allowlist)
-	if d == nil {
-		return Decision{}, false
-	}
-	return *d, true
-}
-
-// CheckAllowlist runs the static allowlist (path, IP, UA). It returns a
-// terminal allow Decision on a match, or nil otherwise. Exported so the
-// sidecar's allowlist stage shares this exact logic with the WASM guest and the
-// two can never drift. The returned Decision is shared and must not be mutated.
-func CheckAllowlist(req *RequestContext, l *ListConfig) *Decision {
+// MatchAllowlist returns the PoW exemption reason for the first matching
+// dimension, or an empty string. It never grants a terminal security decision.
+func MatchAllowlist(req *RequestContext, l *ListConfig) string {
 	if l.MatchPath(req.NormalizedPath()) {
-		return allowlistPath
+		return "allowlist:path"
 	}
 	if addr, err := netip.ParseAddr(req.RemoteAddr); err == nil && l.MatchIP(addr) {
-		return allowlistIP
+		return "allowlist:ip"
 	}
 	if l.MatchUALower(req.LowerUA()) {
-		return allowlistUA
+		return "allowlist:ua"
 	}
-	return nil
+	return ""
 }
 
 func evalDenylist(req *RequestContext, dr *DomainRules) (Decision, bool) {
@@ -426,7 +409,7 @@ func evalDenylist(req *RequestContext, dr *DomainRules) (Decision, bool) {
 }
 
 // CheckDenylist runs the static denylist (IP, UA, path), the mirror image of
-// CheckAllowlist: every list dimension an operator can configure is enforced,
+// MatchAllowlist: every list dimension an operator can configure is enforced,
 // not just IPs. Exported so the sidecar's denylist stage shares this exact
 // logic with the WASM guest and the two can never drift. The returned Decision
 // is shared and must not be mutated.
@@ -500,12 +483,12 @@ func BuildMatchInput(req *RequestContext, rs *waf.RuleSet) waf.MatchInput {
 	return in
 }
 
-func evalRules(req *RequestContext, dr *DomainRules) (Decision, bool) {
+func evalRules(req *RequestContext, dr *DomainRules, exempt bool) (Decision, bool) {
 	if !dr.RulesEnabled || dr.Rules == nil {
 		return Decision{}, false
 	}
 	in := BuildMatchInput(req, dr.Rules)
-	rule := dr.Rules.Match(&in)
+	rule := dr.Rules.MatchEnforcing(&in, exempt)
 	if rule == nil {
 		return Decision{}, false
 	}

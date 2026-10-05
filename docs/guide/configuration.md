@@ -90,8 +90,9 @@ interstitial instead of your `Disallow` rules, including the ones steering
 them away from [honeypot](/reference/configuration#waf-honeypot) traps; the
 file also carries the `Sitemap:` line, so exempting it while the URL it
 advertises still challenges just moves the dead end one hop further. This is
-narrower than an `allowlist.paths` entry, which ends the pipeline outright:
-here blocks, GeoIP, reputation and the WAF still apply. A single host
+a targeted way to disable PoW: blocks, GeoIP, reputation and the WAF still
+apply. `allowlist.paths` also retains security checks and additionally
+suppresses challenge-only WAF matches, even when PoW is disabled. A single host
 overrides an inherited entry by naming the same key in its own `paths`.
 
 Keys match exactly, so `"/sitemap.xml"` covers a flat sitemap and nothing
@@ -170,7 +171,8 @@ Inside a rules file, each rule has an `id`, an `action`
 `header:<name>`; default `[path, query]`), optional `methods`, and `keywords`
 (case-insensitive literals) and/or `regexes` (Go RE2, linear-time). Rules are
 evaluated **in effective file order, then file order, and the first match
-wins**, so put narrow allow
+wins**. PoW-exempt requests skip challenge rules and continue to later
+security rules in that order. Put narrow allow
 exceptions before the broader deny, challenge or block rules they override.
 An allow match is terminal at the WAF stage and does not feed the
 `rule_match` behaviour counter. Earlier denylist, deny-intel, active-block and
@@ -317,8 +319,9 @@ Which value fires:
 - **A WAF rule hit:** one full step over base (`base + 1`, i.e. +4 bits
   = 16x, capped at `max`). A valid bound token satisfies rules whose action is
   `challenge`; it never bypasses `deny` or `block` rules. On a domain or path
-  where PoW is disabled there is nothing to challenge with, so
-  challenge-action rules degrade to deny there.
+  where PoW is disabled, non-exempt challenge-action rules degrade to deny.
+  A PoW exemption skips challenge rules and continues to later WAF rules,
+  including deny/block rules, in their original order.
 - **The anomaly scorer:** scales the difficulty across the `[base, max]`
   range with the score, so a more bot-like client pays more. Requires
   `waf.anomaly` enabled with a trained model.

@@ -199,10 +199,10 @@ func TestAuthEndpoint(t *testing.T) {
 		t.Fatalf("deny: status = %d reason = %q", resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
 	}
 
-	// Denylisted IP on an allowlisted path → allow.
+	// Denylisted IP on a PoW-exempt path remains denied.
 	resp = do(t, "GET", ts.URL+"/auth", guardianHeaders("plain.test", "203.0.113.9", "/robots.txt", "curl"), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("allowlisted path: status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Guardian-Reason") != "denylist:ip" {
+		t.Fatalf("exempt path: status = %d reason=%q, want 403/denylist:ip", resp.StatusCode, resp.Header.Get("X-Guardian-Reason"))
 	}
 }
 

@@ -1339,7 +1339,7 @@ func TestSilentlyInertConfigIsRejected(t *testing.T) {
 		name, yaml, want string
 	}{
 		{
-			"allowlist path / turns the whole product off",
+			"allowlist path / exempts every request",
 			"defaults:\n  allowlist:\n    paths: [ \"/\" ]\n",
 			"prefix-matches every URL",
 		},

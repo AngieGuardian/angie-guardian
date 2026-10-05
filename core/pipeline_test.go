@@ -58,17 +58,17 @@ func TestPipeline(t *testing.T) {
 		reason string
 	}{
 		{"default allow", req("x.test", "198.51.100.7", "/page", "Mozilla"), ActionAllow, "default"},
-		{"allowlist ip", req("x.test", "10.9.8.7", "/page", "Mozilla"), ActionAllow, "allowlist:ip"},
-		{"allowlist ua", req("x.test", "198.51.100.7", "/page", "monitoring healthbot v2"), ActionAllow, "allowlist:ua"},
-		{"allowlist path", req("x.test", "203.0.113.5", "/robots.txt?x=1", "curl"), ActionAllow, "allowlist:path"},
+		{"allowlist ip", req("x.test", "10.9.8.7", "/page", "Mozilla"), ActionAllow, "default"},
+		{"allowlist ua", req("x.test", "198.51.100.7", "/page", "monitoring healthbot v2"), ActionAllow, "default"},
+		{"allowlist path", req("x.test", "203.0.113.5", "/robots.txt?x=1", "curl"), ActionDeny, "denylist:ip"},
 		{"denylist", req("x.test", "203.0.113.5", "/page", "curl"), ActionDeny, "denylist:ip"},
-		// Allowlist runs before denylist: 10.0.0.66 is in both, allow wins.
-		{"allowlist precedence", req("x.test", "10.0.0.66", "/page", "curl"), ActionAllow, "allowlist:ip"},
+		// PoW exemption never overrides a permanent denylist.
+		{"allowlist precedence", req("x.test", "10.0.0.66", "/page", "curl"), ActionDeny, "denylist:ip"},
 		// Unparseable IP: denylist stage errors, pipeline fails open.
 		{"garbage ip fails open", req("x.test", "not-an-ip", "/page", "curl"), ActionAllow, "default"},
 		// IPv6 ranges, including non-canonical textual forms of the client IP.
-		{"allowlist ip v6", req("x.test", "2001:db8:a110::7", "/page", "Mozilla"), ActionAllow, "allowlist:ip"},
-		{"allowlist ip v6 mixed case", req("x.test", "2001:0DB8:A110::7", "/page", "Mozilla"), ActionAllow, "allowlist:ip"},
+		{"allowlist ip v6", req("x.test", "2001:db8:a110::7", "/page", "Mozilla"), ActionAllow, "default"},
+		{"allowlist ip v6 mixed case", req("x.test", "2001:0DB8:A110::7", "/page", "Mozilla"), ActionAllow, "default"},
 		{"denylist v6", req("x.test", "2001:db8:bad::5", "/page", "curl"), ActionDeny, "denylist:ip"},
 		{"denylist v6 expanded form", req("x.test", "2001:0db8:0bad:0000:0000:0000:0000:0005", "/page", "curl"), ActionDeny, "denylist:ip"},
 		{"v6 outside every range", req("x.test", "2001:db8:cafe::1", "/page", "Mozilla"), ActionAllow, "default"},
@@ -175,8 +175,8 @@ func TestVerifiedBotStage(t *testing.T) {
 		action Action
 		reason string
 	}{
-		{"verified crawler allowed", req("x.test", "66.249.66.1", "/page", googlebotUA), ActionAllow, "verified_bot:googlebot"},
-		{"verified v6 crawler allowed", req("x.test", "2001:db8:60::1", "/page", googlebotUA), ActionAllow, "verified_bot:googlebot"},
+		{"verified crawler allowed", req("x.test", "66.249.66.1", "/page", googlebotUA), ActionAllow, "default"},
+		{"verified v6 crawler allowed", req("x.test", "2001:db8:60::1", "/page", googlebotUA), ActionAllow, "default"},
 		{"v6 forward mismatch is an impostor", req("x.test", "2001:db8:bad::66", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
 		{"no rDNS is an impostor", req("x.test", "203.0.113.50", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},
 		{"foreign rDNS is an impostor", req("x.test", "192.0.2.66", "/page", googlebotUA), ActionDeny, "bot_spoof:googlebot"},

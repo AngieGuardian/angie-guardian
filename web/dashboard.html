@@ -3087,9 +3087,13 @@
       const cells = [timeCell(d.time), action];
       if (hasSolve) cells.push(solveCell(d));
       const reasonCategory = decisionReasonCategory(d.reason);
-      cells.push(reasonCategory
+      const reasonCell = reasonCategory
         ? facetCell("reason_category", reasonCategory, d.reason)
-        : td("wrap", d.reason));
+        : td("wrap", d.reason);
+      if (d.pow_exemption) {
+        reasonCell.appendChild(el("div", "muted", "PoW exemption: " + d.pow_exemption));
+      }
+      cells.push(reasonCell);
       cells.push(facetCell("host", normalizedHost(d.host), d.host || "(empty)"), ipCell(d.ip));
       if (hasGeo) cells.push(decisionGeoCell(d));
       cells.push(d.uri

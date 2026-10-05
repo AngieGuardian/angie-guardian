@@ -35,6 +35,8 @@ type Metrics struct {
 	anomalySelection    *prometheus.CounterVec
 	anomalyModelAge     *prometheus.GaugeVec   // by model path (config-bounded)
 	blocksPlaced        *prometheus.CounterVec // by reason_category
+	botCacheLookups     *prometheus.CounterVec
+	botCacheEntries     prometheus.Gauge
 	botVerify           *prometheus.CounterVec // by bot (config-bounded), result
 	headerPoWExemptions *prometheus.CounterVec // by bounded outcome and verifier type
 	storeOps            *prometheus.CounterVec // by backend, op, status
@@ -131,6 +133,8 @@ func New(backend string) *Metrics {
 			Namespace: "guardian", Name: "blocks_placed_total",
 			Help: "Behavioural IP blocks placed, by reason category.",
 		}, []string{"reason"}),
+		botCacheLookups: f.NewCounterVec(prometheus.CounterOpts{Namespace: "guardian", Name: "bot_cache_lookups_total", Help: "Local bot identity cache lookups by path (normal|shed) and outcome (hit|miss)."}, []string{"path", "outcome"}),
+		botCacheEntries: f.NewGauge(prometheus.GaugeOpts{Namespace: "guardian", Name: "bot_cache_entries", Help: "Resident local bot identity entries, including expired entries pending eviction; bounded to 8192."}),
 		botVerify: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "guardian", Name: "bot_verifications_total",
 			Help: "Verified-bot checks by bot name and result (verified|spoof|error).",
@@ -515,4 +519,20 @@ func (m *Metrics) UnproxiedReject() {
 		return
 	}
 	m.unproxiedRejects.Inc()
+}
+
+func (m *Metrics) BotCacheLookup(path string, hit bool) {
+	if m == nil {
+		return
+	}
+	outcome := "miss"
+	if hit {
+		outcome = "hit"
+	}
+	m.botCacheLookups.WithLabelValues(path, outcome).Inc()
+}
+func (m *Metrics) BotCacheEntries(delta int) {
+	if m != nil {
+		m.botCacheEntries.Add(float64(delta))
+	}
 }

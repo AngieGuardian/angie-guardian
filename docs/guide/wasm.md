@@ -2,7 +2,7 @@
 
 Instead of the sidecar, you can run Guardian's **stateless WAF checks**
 in-process inside Angie via its WebAssembly support. This path does the
-store-free checks only (allowlist, denylist, honeypot, literal/regex WAF
+store-free checks only (PoW exemptions, denylist, honeypot, literal/regex WAF
 rules); proof-of-work and behavioural IP blocking need sidecar state,
 while anomaly scoring also remains sidecar-only.
 
@@ -10,7 +10,7 @@ Use it when you want the WASM integration and the stateless WAF subset is
 enough, or alongside a backend that handles the rest. Both paths share the
 same parsing and matching logic. The guest has no store or PoW manager, so a
 matching `allow` rule continues to the backend, while a matching `deny`,
-`challenge`, or `block` rule returns the same `403`, and a
+non-exempt `challenge`, or `block` rule returns the same `403`, and a
 honeypot hit denies only that request; only the sidecar can issue a challenge
 or persist an IP block. Per-path `paths` overlays are also sidecar-only: the
 guest config schema does not accept a `paths` key.
@@ -73,3 +73,8 @@ Unlike the sidecar, which refuses to start on a bad `guardian.yaml`, a bad
 guest config only surfaces at request time. The guest schema uses inline
 `rules` and is not accepted by `guardiand -t`, so exercise a request against a
 staging WASM instance before reloading production Angie.
+
+Allowlists retain denylist, honeypot and WAF protection in WASM. An exempt
+request skips challenge-only rules and continues to later rules. A non-exempt
+challenge rule degrades to deny because WASM cannot issue PoW. Explicit WAF
+`allow` remains a terminal policy exception in both execution paths.

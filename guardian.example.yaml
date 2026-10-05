@@ -306,7 +306,8 @@ defaults:
     # Countries are ISO 3166-1 alpha-2 codes; ASNs are plain numbers.
     # deny beats challenge; allow exempts an origin from default_action.
     # Origins with no database record (private ranges) match no selector and
-    # get default_action, so allowlist internal IPs before tightening it.
+    # get default_action. Keep it allow if unknown/private origins must work;
+    # PoW allowlists cannot override a geo deny.
     # challenge: { countries: [ CN, RU ], asns: [] }
     # deny: { countries: [] }
     # allow: { countries: [] }
@@ -317,18 +318,18 @@ defaults:
   allowlist:
     # ips match the CLIENT address Angie reports (X-Guardian-IP), NOT the
     # Angie-to-Guardian loopback hop, so normal wiring needs nothing here.
-    # Allowlisting 127.0.0.1/::1 turns a broken real-IP setup into a total
-    # bypass; add them only if you deliberately trust local-origin HTTP
-    # clients (e.g. an on-box monitor requesting the site through Angie).
+    # Allowlists exempt PoW only: WAF, denylists and existing bans still apply.
+    # Loopback entries can exempt every proxy client if real-IP wiring breaks.
+    # Keep exemptions narrow and retain backend authentication/authorization.
     ips: []
     # uas: substring UA allowlist. DO NOT put crawler names here: a User-Agent
     # is freely forgeable, so `uas: [ Googlebot ]` would let any scraper skip
-    # everything by claiming to be Googlebot. Use verified_bots below instead
+    # PoW by claiming to be Googlebot. Use verified_bots below instead
     # (Guardian refuses a config where the two overlap). Reserve uas for
     # UAs you control, e.g. your own uptime monitor.
     uas: []
-    # Path entries are terminal: they skip denylist, blocks, GeoIP, WAF and
-    # PoW. Keep them narrow (a trailing / matches a prefix). Uncomment ACME
+    # Path entries exempt PoW/challenge-only outcomes; security checks remain.
+    # Keep them narrow (a trailing / matches a prefix). Uncomment ACME
     # when every HTTP host uses http-01; otherwise add it per domain. For
     # assets that need only PoW off, use the paths: overlay below.
     paths:
@@ -371,7 +372,8 @@ domains:
     # resolves back to the same IP (the verification Google/Bing/Apple
     # document). Results are cached in the store, so DNS is paid once per
     # crawler IP, not per request. Scoped to this public HTML site on purpose:
-    # verified identity is not authorization for every vhost.
+    # Verified clients skip PoW only; WAF and existing bans still apply.
+    # Verified identity is not authorization for every vhost.
     verified_bots:
       bots:
         - name: googlebot     # built-in presets: googlebot, google-special,
@@ -392,7 +394,7 @@ domains:
       # definitively fails verification (no PTR, or rDNS owned by someone
       # else):
       #   deny (default) - reject and score a bot_spoof event (see thresholds)
-      #   continue       - just withhold the allowlist skip; the WAF/PoW
+      #   continue       - just withhold the crawler PoW exemption; the WAF/PoW
       #                    pipeline handles the request like any other client
       spoof_action: deny
       dns_timeout: 1s         # DNS budget for a first-sight verification
@@ -412,16 +414,15 @@ domains:
       # limits. It is classification, never authentication or authorization.
       # Overlays inherit
       # everything else from the domain, INCLUDING verified_bots: clear it
-      # with an empty list, or a verified crawler identity would terminally
-      # allow past the API's blocks and WAF too. A separate host (like
-      # api.example.com below) that never grants the bots stays the safer
-      # pattern:
+      # with an empty list when this API should not grant crawler PoW
+      # exemptions. Security blocks and WAF checks still apply either way.
+      # A separate host (like api.example.com below) can keep its own policy:
       # "/api/v1/":
       #   pow:
       #     header_exemptions:
       #       - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
       #       - { header: X-API-Key, require_value: true, max_length: 256 }
-      #   verified_bots: { bots: [] }  # do not inherit crawler authorization
+      #   verified_bots: { bots: [] }  # do not inherit crawler PoW exemptions
       # "/account/login":
       #   pow: { base_difficulty: 6 }
 

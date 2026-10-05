@@ -187,8 +187,9 @@ not a false positive: it is a bot that fetches challenges and posts junk. The
 
 **A shared source IP (office NAT, corporate proxy) gets blocked.** Behavioural
 blocks are per-IP, so one bad actor behind a NAT can score a block that hits
-everyone sharing that egress. Put known-good shared ranges on
-`allowlist.ips`: allowlisted IPs are never scored.
+everyone sharing that egress. Inspect the block reason and tune the relevant
+behaviour threshold, or remove an erroneous block through the admin API.
+`allowlist.ips` exempts PoW only; it does not disable scoring or existing bans.
 
 **A real crawler is being challenged instead of allowed.** Verified-bot
 allowlisting needs the crawler's IP to reverse-DNS *and* forward-confirm. Check

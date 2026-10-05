@@ -79,10 +79,10 @@ func handleRequest() uint64 {
 		return next
 	}
 
-	// ActionDeny (challenge degrades to deny in the stateless path).
+	// Non-exempt challenge rules degrade to deny in the stateless path.
 	setStatus(denyStatus)
 	writeResponseBody([]byte("Access denied by Angie Guardian\n"))
-	logInfo("guardian-wasm deny host=" + req.Host + " ip=" + req.RemoteAddr + " reason=" + d.Reason)
+	logInfo("guardian-wasm deny host=" + req.Host + " ip=" + req.RemoteAddr + " reason=" + d.Reason + " pow_exemption=" + d.PoWExemption)
 	return stop
 }
 

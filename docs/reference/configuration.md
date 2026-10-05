@@ -111,7 +111,7 @@ full picture. Every field is restart-required.
 | `enforcement.nftables.netns` | string | | Network namespace file to program instead of guardiand's own. |
 | `enforcement.nftables.max_entries` | int | `65536` | Kernel set size bound. |
 | `enforcement.nftables.min_ttl` | duration | `0s` | Skip offloading blocks shorter than this; `0` offloads all. |
-| `enforcement.nftables.never_block` | []string | `[]` | CIDRs/IPs never sent to the kernel. Put LB/CDN ranges here. Configured allowlists are excluded automatically on top. |
+| `enforcement.nftables.never_block` | []string | `[]` | CIDRs/IPs never sent to the kernel. Put LB/CDN ranges here. PoW allowlists do not exclude addresses from kernel offload. |
 | `enforcement.nftables.allow_private` | bool | `false` | Allow private/special-purpose ranges (RFC1918, CGNAT, ULA, unspecified, multicast) to be kernel-dropped. Off by default so a trusted-proxy misconfiguration can't blackhole internal infrastructure. Loopback and link-local stay excluded regardless. |
 
 ## attack_mode
@@ -225,9 +225,9 @@ defaults:
     "/site.webmanifest": { pow: { enabled: false } }
 ```
 
-Unlike an [`allowlist.paths`](#allowlist-denylist) entry, which ends the
-pipeline at stage 0, this only turns off the layers it names: blocks, GeoIP,
-reputation and the WAF still cover `/robots.txt` here. The manifest, icon and
+This only turns off the layers it names: blocks, GeoIP, reputation and the
+WAF still cover `/robots.txt` here. An [`allowlist.paths`](#allowlist-denylist)
+entry also preserves these protections and suppresses challenge-only WAF rules. The manifest, icon and
 browser metadata names are only conventional root URLs: add any site-specific
 asset URL explicitly rather than exempting a broad asset prefix.
 
@@ -476,29 +476,29 @@ challenge IDs always emit a tamper event, whether or not this is enabled; the
 
 ### allowlist / denylist
 
-Static lists, evaluated before everything else. An allowlist match is
-terminal: denylist, behaviour blocks, GeoIP, honeypots, WAF rules and PoW
-are all skipped for it, so reserve it for endpoints that must keep working
-even for otherwise-blocked clients (ACME renewal, say) and keep every entry
-as narrow as possible. `defaults.allowlist.paths` is inherited by every host,
+Static allowlists classify requests as **PoW exemptions**. Matches skip PoW
+and challenge-only outcomes, while permanent denylists, existing behavioural
+and admin bans, honeypots, WAF deny/block rules, GeoIP/reputation denies and
+anomaly denies still apply. Keep every entry narrow; an exemption is not
+identity or application authorization. `defaults.allowlist.paths` is inherited by every host,
 known or unknown: the shipped example includes the fixed ACME http-01 prefix
 as an optional entry for installations that use it on every HTTP vhost. Put it
 under a specific domain instead when that is not true.
 
-To merely skip the PoW interstitial for public assets like `/robots.txt`, prefer
-a
+For public assets like `/robots.txt`, either use `allowlist.paths` or a
 [per-path overlay](#per-path-overrides-domains-host-paths) with
-`pow: { enabled: false }`: the rest of the pipeline still runs there. `ips`
+`pow: { enabled: false }`. Both retain security checks, but only an exemption
+suppresses WAF challenges instead of letting them degrade to deny when PoW is off. `ips`
 match the client address Angie reports (`X-Guardian-IP`), not the
 Angie-to-Guardian connection, so normal wiring needs no loopback entries;
-allowlisting `127.0.0.1`/`::1` would turn a broken real-IP setup into a
-total bypass. The allowlist supports:
+allowlisting `127.0.0.1`/`::1` could turn a broken real-IP setup into a
+PoW exemption for every proxied client. The allowlist supports:
 
 | Option | Type | Matching |
 |---|---|---|
 | `ips` | list | CIDRs or bare IPv4/IPv6 addresses. |
 | `uas` | list | Case-insensitive substring match on User-Agent. Empty or whitespace-only entries are rejected. |
-| `paths` | list | Exact match, or prefix match when the entry ends with `/`. Matching is against the normalized request path (percent-decoded, dot segments and duplicate slashes resolved), so entries must be written in that same form or they could never match. Empty, whitespace-only, relative and non-normalized entries (`/admin//`, `/a/../admin`, `/%61dmin`) are rejected at load, as are entries containing `?` or `#` (only the path is matched: the query is cut before matching and a fragment never reaches the server), as is a bare `"/"`, which prefix-matches every URL and would allow (or on the denylist, deny) every request. `waf.honeypot.paths` takes the same rules. |
+| `paths` | list | Exact match, or prefix match when the entry ends with `/`. Matching is against the normalized request path (percent-decoded, dot segments and duplicate slashes resolved), so entries must be written in that same form or they could never match. Empty, whitespace-only, relative and non-normalized entries (`/admin//`, `/a/../admin`, `/%61dmin`) are rejected at load, as are entries containing `?` or `#` (only the path is matched: the query is cut before matching and a fragment never reaches the server), as is a bare `"/"`, which prefix-matches every URL and would exempt (or on the denylist, deny) every request. `waf.honeypot.paths` takes the same rules. |
 
 The denylist enforces the same three options symmetrically: a match on
 `ips`, `uas`, or `paths` is a terminal deny (reasons `denylist:ip`,
@@ -519,7 +519,7 @@ also catch an unrelated product whose name merely starts the same way.
 `uas` is a plain substring match on a client-controlled, freely forgeable
 header. Reserve it for UAs you control (an internal uptime monitor, say).
 **Never** put search-crawler names here (`uas: [ Googlebot ]`): any scraper
-can claim that UA and skip the entire pipeline. Use `verified_bots` below
+can claim that UA and skip PoW. Use `verified_bots` below
 for crawlers instead; loading a config where an `allowlist.uas` entry
 overlaps a configured bot fails fast for exactly this reason.
 
@@ -532,6 +532,23 @@ denylist:
   ips: []
 ```
 
+Exempt clients skip default PoW and WAF/geo/reputation/anomaly challenge
+outcomes, including challenge-derived subresource refusals. WAF challenge
+rules are skipped in effective order so later deny/block rules still match,
+even when `pow.enabled` is false. Non-exempt WAF challenges retain their deny
+fallback when PoW is off. An explicit WAF `action: allow` remains terminal:
+it honours earlier security stages but can override later rules and policy.
+
+Exemptions do not disable event scoring, existing bans or admission/load
+shedding, and do not automatically exclude IPs from kernel block offload.
+Detailed admin decisions and structured decision logs expose `pow_exemption`
+separately from the final action/reason: `allowlist:path`, `allowlist:ip`,
+`allowlist:ua`, `verified_bot:<name>` or `header_exemption`. The first applicable
+classification wins in that order of sources (static lists, crawler, header).
+No credential/header values are included. Final response headers and decision
+metrics describe the actual verdict; a denied exemption still reports its
+security reason. Routine allows remain outside the recent-decision ring.
+
 ### verified_bots
 
 Allowlists well-known crawlers by **verified identity** instead of by their
@@ -541,8 +558,8 @@ domains **and** that hostname forward-resolves back to the same IP, the
 verification Google/Bing/Apple themselves document. Results are cached in
 the shared store, so DNS runs once per crawler IP, not per request.
 
-A confirmed identity is a **terminal allow**: it skips GeoIP, reputation,
-behaviour blocks, WAF rules and PoW for that request. Verified identity is
+A confirmed identity grants a **PoW exemption**. Existing bans, honeypots,
+WAF deny/block rules, GeoIP/reputation denies and anomaly denies still apply. Verified identity is
 not authorization for every vhost, so configure `verified_bots` per domain
 (the public HTML sites you want crawled) rather than in `defaults`, where an
 API host, a static-assets host and every unknown host would inherit it.
@@ -553,7 +570,7 @@ API host, a static-assets host and every unknown host would inherit it.
 | `dns_timeout` | duration | `1s` | DNS budget for one first-sight verification. |
 | `cache_ttl` | duration | `12h` | How long a confirmed identity is cached; maximum one year (`8760h`). |
 | `negative_ttl` | duration | `1h` | How long a proven impostor is cached; maximum one year (`8760h`). |
-| `spoof_action` | `deny` \| `continue` | `deny` | What happens to a client that claims a listed UA but definitively fails verification (no PTR, or rDNS owned by someone else). `deny` rejects and scores a `bot_spoof` behaviour event (see `waf.ip_behaviour.thresholds`); `continue` just withholds the allowlist skip and lets the rest of the pipeline handle the request. |
+| `spoof_action` | `deny` \| `continue` | `deny` | What happens to a client that claims a listed UA but definitively fails verification (no PTR, or rDNS owned by someone else). `deny` rejects and scores a `bot_spoof` behaviour event (see `waf.ip_behaviour.thresholds`); `continue` just withholds the crawler PoW exemption and lets the rest of the pipeline handle the request. |
 
 Built-in presets (need only `name`): `googlebot`, `google-special`,
 `bingbot`, `applebot`, `yandexbot`, `baiduspider`. DuckDuckBot publishes a

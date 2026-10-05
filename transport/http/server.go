@@ -198,7 +198,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			s.inflight.Add(-1)
 			// Saturated: run only the cheap store-free terminal checks. A
 			// blocked or denylisted IP is still denied (never fast-passed on a
-			// token); an allowlisted client or a valid-token holder passes;
+			// token); a clean token holder or explicit WAF allow can pass;
 			// anyone else is shed with a 503 rather than a full evaluation.
 			switch s.engine.ShedDecision(req) {
 			case core.ShedPass:
@@ -236,10 +236,10 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Guardian-Reason", d.Reason)
 	switch d.Action {
 	case core.ActionAllow:
-		// Routine/default allows stay silent, but an explicit WAF allow is a
-		// policy match operators need to audit by rule ID. Keep it out of the
+		// Routine/default allows stay silent; explicit WAF allows and PoW
+		// exemptions carry policy diagnostics worth logging. Keep them out of the
 		// bounded recent ring while preserving the structured decision log.
-		if strings.HasPrefix(d.Reason, "waf:") {
+		if strings.HasPrefix(d.Reason, "waf:") || d.PoWExemption != "" {
 			s.logDecision(req, d)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -282,6 +282,7 @@ func (s *Server) logDecision(req *core.RequestContext, d core.Decision) {
 	s.log.Info("decision",
 		"action", d.Action,
 		"reason", d.Reason,
+		"pow_exemption", d.PoWExemption,
 		"host", req.Host,
 		"ip", req.RemoteAddr,
 		"method", req.Method,
