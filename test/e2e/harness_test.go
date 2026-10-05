@@ -18,6 +18,8 @@
 //
 // It is gated behind the `e2e` build tag so `go test ./...` stays fast and
 // Docker-free; run it with `make e2e` or `go test -tags e2e ./test/e2e/...`.
+// Both default to routine coverage. Slow real-time qualification is local-only:
+// use `make e2e-extended`, and read AGENTS.md before changing that policy.
 package e2e
 
 import (

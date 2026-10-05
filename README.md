@@ -181,7 +181,8 @@ The default suite is self-contained; Docker is only needed for end-to-end tests.
 |---|---|---|
 | Unit | `go test ./...` | Core, stores, and HTTP transports |
 | Race detector | `go test -race ./...` | Concurrency regressions |
-| End-to-end | `make e2e` | Real Angie → guardiand → backend stack |
+| End-to-end | `make e2e` | Routine Angie → guardiand → backend coverage |
+| Extended end-to-end | `make e2e-extended` | Local-only store outages and real protocol timeouts |
 | Fuzz | `make fuzz` | Untrusted and hot-reloaded parsers |
 | Benchmarks | `go test -bench=. -benchmem ./core/... ./transport/http/` | Request hot paths |
 | Allocation gate | `make bench-regress` | Hot-path `allocs/op` against `allocs-baseline.txt`; also a CI job |
@@ -190,6 +191,9 @@ The default suite is self-contained; Docker is only needed for end-to-end tests.
 The [end-to-end suite](test/e2e/) covers proof-of-work, WAF outcomes,
 behavioural blocking, fail-open, metrics, and the Admin API. CI runs it on
 `main` and release tags; run it locally before merging stack-level changes.
+Slow outage and timeout qualification stays outside CI/CD; run
+`make e2e-extended` locally when changing those paths. The abuse soak remains
+separate (`make e2e-angie-soak`). See [the execution policy](test/e2e/AGENTS.md).
 Commit useful fuzz crashers from `testdata/fuzz/` as regression seeds.
 
 #### Seed the dashboard

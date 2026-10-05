@@ -6,7 +6,7 @@
 VERSION ?= dev
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build wasm test install-test e2e e2e-angie-soak ddos-drill fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
+.PHONY: all build wasm test install-test e2e e2e-extended e2e-angie-soak ddos-drill fuzz vet fmt clean docs docs-dev bench-store bench-regress bench-report bench-argon-isolation seed dashboard-dev
 
 # How long each fuzz target runs in `make fuzz`. Override it locally when
 # chasing a specific parser (for example `make fuzz FUZZTIME=2m`).
@@ -41,9 +41,17 @@ install-test:
 # End-to-end suite: boots the real Angie + guardiand + whoami stack from
 # deploy/docker/compose.e2e.yaml (via testcontainers-go) and drives it through
 # Angie. Requires Docker. Gated behind the `e2e` build tag so it never runs in
-# the fast unit `test` target above.
+# the fast unit `test` target above. Keep slow outage/timeout tests out of
+# routine CI/CD: test/e2e/AGENTS.md documents this deliberate policy.
 e2e:
-	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+	GUARDIAN_E2E_EXTENDED=0 ANGIE_HARDENING_SOAK=0 go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+
+# Explicit local qualification, deliberately NOT a CI/CD job. Includes the
+# normal suite plus real store-outage and protocol-timeout tests. The soak
+# remains a separate opt-in target below. Do not add this to CI without an
+# explicit user decision to change the policy.
+e2e-extended:
+	GUARDIAN_E2E_EXTENDED=1 ANGIE_HARDENING_SOAK=0 go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
 # Manual Angie server-abuse soak. It repeatedly opens real TLS/HTTP/2 connections,
 # resets incomplete request-body streams, checks origin isolation, and proves

@@ -327,9 +327,8 @@ func TestDashboardServed(t *testing.T) {
 
 // TestReadinessAndStoreHealth walks the operator surface issue #13 added,
 // through the real stack: the open readiness endpoint, the store_up gauge and
-// the probe counter. It also pins the two invariants that make the background
-// probe safe to run: readiness must stay distinct from liveness, and the
-// synthetic probe traffic must not inflate the operational store counters.
+// the probe counter, with readiness distinct from liveness. The longer
+// background-probe observation is separate local extended qualification.
 func TestReadinessAndStoreHealth(t *testing.T) {
 	// /readyz is open like /healthz: a load balancer or an orchestrator probes
 	// it without a bearer token.
@@ -369,6 +368,18 @@ func TestReadinessAndStoreHealth(t *testing.T) {
 		t.Errorf("guardian_store_probe_total{status=error} = %v, want 0 against a healthy store", got)
 	}
 
+	// Liveness must not follow the store, or a store outage would kill
+	// containers that are still (fail-open) serving.
+	if r := req(t, http.MethodGet, admin+"/healthz", nil, nil); r.StatusCode != http.StatusOK {
+		t.Errorf("/healthz = %d, want 200", r.StatusCode)
+	}
+}
+
+// TestStoreHealthProbeCountersIsolated observes two real periodic probes to
+// ensure synthetic health traffic never inflates operational store metrics.
+func TestStoreHealthProbeCountersIsolated(t *testing.T) {
+	requireExtendedE2E(t)
+
 	// The checker probes the raw store, not the instrumented wrapper, so its
 	// periodic Set/Get must never show up here. Without that separation the
 	// probe would add a steady ~12 ops/min of synthetic traffic to every
@@ -398,11 +409,6 @@ func TestReadinessAndStoreHealth(t *testing.T) {
 			"probes; the checker is probing the instrumented store", beforeOps, after)
 	}
 
-	// Liveness must not follow the store, or a store outage would kill
-	// containers that are still (fail-open) serving.
-	if r := req(t, http.MethodGet, admin+"/healthz", nil, nil); r.StatusCode != http.StatusOK {
-		t.Errorf("/healthz = %d, want 200", r.StatusCode)
-	}
 }
 
 // TestAdminStatsHealthObject: the authenticated rollup carries the detail the

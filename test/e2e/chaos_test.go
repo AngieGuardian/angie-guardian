@@ -58,6 +58,7 @@ import (
 // The test boots its own compose stack (base + chaos overlay) so killing the
 // store cannot disturb the shared suite stack.
 func TestStoreOutageFailOpen(t *testing.T) {
+	requireExtendedE2E(t)
 	ctx := context.Background()
 	c, err := compose.NewDockerCompose(
 		"../../deploy/docker/compose.e2e.yaml",

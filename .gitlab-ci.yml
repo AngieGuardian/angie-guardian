@@ -177,6 +177,10 @@ docs:
 #   - Go module/build caches persist across runs in named volumes on the
 #     runner host (not GitLab's cache, which shell runners handle poorly).
 e2e:
+  # Fast integration coverage only. Slow outage/real-time timeout tests and
+  # the soak are deliberately local-only (make e2e-extended/e2e-angie-soak).
+  # Do not reintroduce them as CI/CD jobs or enable their flags here without
+  # explicit user approval; see test/e2e/AGENTS.md and the development guide.
   stage: test
   tags:
     - shell

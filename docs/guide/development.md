@@ -131,7 +131,9 @@ the running one active, so a bad edit does not take the daemon down.
 | Target | What it covers |
 |---|---|
 | `make test` | The whole tree under `-race`. Fast, and the one to run constantly. |
-| `make e2e` | Real Angie plus guardiand plus a backend, driven through Angie. Needs Docker. |
+| `make e2e` | Routine real Angie plus guardiand plus backend coverage. Needs Docker; excludes extended qualification and soak. |
+| `make e2e-extended` | Routine coverage plus store outage/recovery, real protocol timeouts and periodic probe-counter isolation. Explicit local-only qualification. |
+| `make e2e-angie-soak` | Explicit local-only abuse soak; default 30 seconds, configurable duration. |
 | `make e2e-nft` | The nftables block-offload path. Needs `nf_tables` and `NET_ADMIN`, and skips cleanly without them. |
 | `make fuzz` | Every fuzz target for `FUZZTIME` each (default 30s): the URI decoder, WAF rules, config, the anomaly model, PoW redeem. |
 | `make vet` | `go vet ./...`. |
@@ -169,16 +171,23 @@ pipeline is the one that matters).
 | `govulncheck` | A pinned `govulncheck ./...` | Call-graph aware, so it only flags vulnerabilities the code actually reaches. |
 | `alerts` | `promtool check rules` and `promtool test rules` over [`deploy/alerts.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/alerts.yaml) | Those rules ship to operators verbatim, so a typo'd expression has to fail here. |
 | `docs` | The VitePress build, on branches that touch `docs/**` | Dead-link checking is part of the build. |
-| `e2e` | `make e2e` on the shell-executor runner | **Protected refs only.** |
+| `e2e` | Routine `make e2e` on the shell-executor runner | **Protected refs only.** Extended qualification and soak are excluded. |
 | `build`, `wasm` | The three binaries plus the WASM guest | Tag pipelines additionally cross-compile, package, checksum, smoke-test and publish. |
 
-Two gaps to plan around:
+Gaps to plan around:
 
 - **`e2e` never runs on a feature branch.** The shell runners are
   `ref_protected`, so the job is not even created outside `main` and tags: a
   job that cannot be assigned a runner would hang the pipeline instead. Run
   `make e2e` locally before merging anything that touches the request path or
   the Admin API, because nothing on the branch will catch it.
+- **Extended e2e and the abuse soak are deliberately outside CI/CD.** Run
+  `make e2e-extended` locally when changing store outage/recovery or Angie
+  timeout/resource handling, and before releases affecting those paths. Run
+  `make e2e-angie-soak` for abuse qualification. Do not add these targets to
+  push, tag, scheduled or manual CI jobs without an explicit user request to
+  change the policy. See the scoped
+  [agent instructions](https://github.com/AngieGuardian/angie-guardian/blob/main/test/e2e/AGENTS.md).
 - **`make fuzz` is deliberately not a CI job.** A worthwhile sweep costs around
   18 minutes of runner time and has so far found nothing. Run it locally when
   you touch a parser, and commit any crasher it produces under `testdata/fuzz/`
@@ -317,14 +326,45 @@ Angie (auth_request)  ──►  guardiand  ──►  whoami backend
 ```
 
 ```sh
-make e2e                                                    # everything
+make e2e                                                 # routine CI coverage
+make e2e-extended                                        # full suite, local only (no soak)
+make e2e-angie-soak                                      # separate local abuse soak
 go test -tags e2e -run TestWAFRuleDeny ./test/e2e/          # one scenario
 ```
 
-The suite picks three free host ports, brings the stack up, and tears it (and
+The suite picks free host ports, brings the stack up, and tears it (and
 its volumes) down again. The daemon's config for the run is
 [`deploy/docker/guardian.e2e.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e.yaml), with [`deploy/docker/guardian.e2e-chaos.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e-chaos.yaml) and
 [`deploy/docker/guardian.e2e-nft.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/docker/guardian.e2e-nft.yaml) for the store-outage and offload variants.
+
+### Routine versus extended coverage
+
+Normal `go test -tags e2e` and `make e2e` skip five extended tests:
+
+- `TestStoreOutageFailOpen`: a separate Valkey stack, partition, crash and recovery.
+- `TestTLSHandshakeTimeoutReleasesResources`: expiry of stalled TLS handshakes.
+- `TestHTTP1IncompleteHeadersAndBodyAreReaped`: real HTTP/1 timeout cleanup.
+- `TestHTTP1BodySizeAbortAndKeepaliveBounds`: body bounds, idle keepalive and stalled-reader cleanup.
+- `TestStoreHealthProbeCountersIsolated`: two periodic probes must not inflate store-operation metrics.
+
+Basic readiness, liveness and health metrics remain in routine coverage, as
+do no-JS redemption and fail-open behaviour.
+
+Run `make e2e-extended` to include them. For one extended scenario, use
+`GUARDIAN_E2E_EXTENDED=1 go test -tags e2e -run '^TestStoreOutageFailOpen$' ./test/e2e/`.
+The soak remains separately gated by `ANGIE_HARDENING_SOAK=1`.
+
+This split deliberately shortens CI/CD cycles while retaining local qualification.
+Do not remove the gates or reintroduce extended/soak CI jobs without an explicit
+user decision. `make e2e` forces both flags off so inherited environment settings
+cannot silently expand routine CI coverage.
+
+A local timing run on 2026-10-05 measured 203.7 seconds total: 17.7 seconds for
+initial setup/build/startup, 185.2 seconds for tests and 0.8 seconds for teardown.
+The original four extended tests accounted for 128.6 seconds, or 69% of test execution;
+the health test's two-probe observation added approximately 19.1 seconds.
+The soak was skipped. This is one warm-cache local measurement, not a CI speed
+guarantee; the same revision's CI suite took 311.2 seconds without per-test timing.
 
 Two things about it repeatedly surprise people:
 

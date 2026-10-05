@@ -139,6 +139,7 @@ func TestTLSVersionsAndHTTP2ALPN(t *testing.T) {
 }
 
 func TestTLSHandshakeTimeoutReleasesResources(t *testing.T) {
+	requireExtendedE2E(t)
 	baseline := angieFDCount(t)
 	var conns []net.Conn
 	for i := 0; i < 8; i++ {
@@ -191,6 +192,7 @@ func TestTLSHandshakeTimeoutReleasesResources(t *testing.T) {
 }
 
 func TestHTTP1IncompleteHeadersAndBodyAreReaped(t *testing.T) {
+	requireExtendedE2E(t)
 	t.Run("headers", func(t *testing.T) {
 		before := backendCount(t)
 		var conns []net.Conn
@@ -316,6 +318,7 @@ func TestHTTP1IncompleteHeadersAndBodyAreReaped(t *testing.T) {
 }
 
 func TestHTTP1BodySizeAbortAndKeepaliveBounds(t *testing.T) {
+	requireExtendedE2E(t)
 	t.Run("oversized body", func(t *testing.T) {
 		before := backendCount(t)
 		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(site, "http://"), 2*time.Second)
