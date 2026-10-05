@@ -15,8 +15,9 @@ FUZZTIME ?= 30s
 # How long `make seed` keeps generating dashboard traffic.
 SEEDTIME ?= 2m
 
-# Build the three sidecar binaries into dist/.
+# Build the four native binaries into dist/.
 build:
+	go build -ldflags "$(LDFLAGS)" -o dist/guardianctl       ./cmd/guardianctl
 	go build -ldflags "$(LDFLAGS)" -o dist/guardiand         ./cmd/guardiand
 	go build -ldflags "$(LDFLAGS)" -o dist/guardian-train    ./cmd/guardian-train
 	go build -ldflags "$(LDFLAGS)" -o dist/guardian-loadtest ./cmd/guardian-loadtest

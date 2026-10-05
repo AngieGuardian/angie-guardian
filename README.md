@@ -236,7 +236,7 @@ Prefer adding a case there over asserting that a line of markup exists.
 
 ### Building from source
 
-The required Go toolchain is pinned in [go.mod](go.mod). Build the three sidecar
+The required Go toolchain is pinned in [go.mod](go.mod). Build the four native
 binaries into `dist/`, or additionally build the optional WASM module:
 
 ```sh
@@ -246,6 +246,23 @@ make wasm
 
 The documentation site can be previewed with `make docs-dev` or built with
 `make docs`.
+
+### Operator CLI
+
+Manage the running daemon directly from the server terminal:
+
+```sh
+sudo guardianctl unblock 203.0.113.9
+sudo guardianctl block 2001:db8::9 --reason "manual abuse" --ttl 2h
+sudo guardianctl health
+sudo guardianctl reload --check
+sudo guardianctl diagnostics status
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
+```
+
+`guardianctl` uses the installed admin configuration. See the
+[CLI reference](https://angieguardian.org/reference/cli#guardianctl) for commands,
+options and diagnostics setup.
 
 ### Performance testing
 
@@ -451,7 +468,7 @@ transport/http/   auth_request sidecar + admin/metrics/dashboard
 transport/wasm/   optional http-wasm guest (stateless WAF, runs inside Angie)
 internal/         small shared helpers (bounded file reads, background-work jitter)
 cmd/              guardiand (sidecar), guardian-train (offline anomaly training),
-                  guardian-loadtest (stress tool)
+                  guardian-loadtest (stress tool), guardianctl (operator CLI)
 deploy/           Angie snippets, systemd unit, rules, Grafana dashboard, alert rules
 web/              challenge/denied pages and the admin dashboard, with its
                   vendored chart libraries (no CDN, works air-gapped)

@@ -764,6 +764,34 @@ persistent volumes, or `deploy/docker/` for the full demo stack.
 
 ## 4. Operate it via the admin API
 
+Use `guardianctl` for terminal operations and self-lockout recovery:
+
+```sh
+sudo guardianctl unblock 203.0.113.9
+sudo guardianctl block 2001:db8::9 --reason "manual abuse" --ttl 2h
+sudo guardianctl status 203.0.113.9
+sudo guardianctl list --limit 1000
+sudo guardianctl health
+sudo guardianctl reload --check
+sudo guardianctl reload
+```
+
+The CLI reads the direct admin listener and credentials from
+`/etc/guardian/guardian.yaml`. For another installation, use `--config <path>`;
+if that file is malformed, use `--endpoint http://127.0.0.1:8072` together with
+`--token-file /var/lib/guardian/admin.token`. Files normally require `sudo`.
+Configure `admin.token_file` for persistent recovery credentials.
+
+Unblock clears behaviour counters and challenge escalation, and resets
+repeat-offender backoff by default; `--keep-backoff` preserves the backoff.
+It does not remove static denylist entries or override WAF deny rules.
+`health` distinguishes process liveness from store readiness. `reload --check`
+only preflights; `reload` preflights and then applies supported changes.
+
+See the [CLI reference](https://angieguardian.org/reference/cli#guardianctl)
+for stats, decisions, offenders, redacted config, JSON output, limits and exit
+codes. The HTTP examples below remain useful for API integrations.
+
 The admin API + `/metrics` live on `admin.listen` (e.g. `127.0.0.1:8072`),
 separate from the auth hot path. `/metrics`, `/healthz`, `/readyz`, and the optional static
 dashboard shell are open; every JSON/data `/admin/*` route needs an
@@ -888,6 +916,45 @@ curl -s -H "Authorization: Bearer $TOKEN" $A/admin/intel/203.0.113.9
 # Prometheus scrape (no token needed).
 curl -s $A/metrics | grep guardian_
 ```
+
+### Runtime diagnostics
+
+The operator CLI captures and downloads the live goroutine profile archive:
+
+```sh
+sudo guardianctl diagnostics status
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
+```
+
+Set `admin.diagnostics_enabled: true` and restart Guardian first. The CLI
+checks the running daemon's availability rather than assuming the on-disk
+setting is active. A disabled status can still be queried. Diagnostics are
+independent of the dashboard and `guardiand -profile-dir`.
+
+Capture defaults to a 30-second request timeout (`--timeout` overrides it).
+`--out` is required; existing files are never overwritten. The complete,
+validated tar is saved with mode `0600`, with partial files cleaned up on
+failure. `--json` reports the absolute saved path and byte count. A capture
+runs a leak-detecting GC cycle and may affect latency; it is an on-demand
+operation, with one capture/download active at a time and a 60-second cooldown
+from admission, including failed captures. The CLI never retries automatically.
+
+The archive contains sequential `goroutineleak.pprof` and `goroutine.pprof`
+snapshots, capped at 32 MiB. It does not enable CPU, mutex, block or trace
+profiling. Extract into a private directory and analyse with the daemon binary
+that produced the profiles:
+
+```sh
+mkdir -m 700 guardian-profiles
+tar -xf guardian-goroutines.tar -C guardian-profiles
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutineleak.pprof
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutine.pprof
+```
+
+Leak detection does not prove every worker is healthy; some reachable waits
+and external I/O escape the detector. Keep archives private, as stack labels
+may contain operational information. See the CLI reference for authentication,
+connection overrides and exit codes.
 
 ### The reporting dashboard
 
