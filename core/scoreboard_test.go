@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
@@ -63,42 +64,48 @@ func TestThresholdBlocks(t *testing.T) {
 }
 
 func TestBlockBackoff(t *testing.T) {
-	ctx := context.Background()
-	board, st := testBoard(t)
-	ip := "203.0.113.5"
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		board, st := testBoard(t)
+		ip := "203.0.113.5"
 
-	// A block at base TTL is placed and readable.
-	if err := board.Block(ctx, ip, "test", time.Hour, 4*time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := scoreboardBlocked(t, st, ip); !ok {
-		t.Fatal("first block not placed")
-	}
+		// A block at base TTL is placed and readable.
+		if err := board.Block(ctx, ip, "test", time.Hour, 4*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := scoreboardBlocked(t, st, ip); !ok {
+			t.Fatal("first block not placed")
+		}
 
-	// Backoff caps at maxBlockTTL. Using a short cap and a base at the cap, the
-	// TTL never exceeds the cap regardless of offense count. We assert expiry
-	// with a generous window so a slow/contended runner can't flake it.
-	const cap = 300 * time.Millisecond
-	capIP := "203.0.113.6"
-	for i := 0; i < 5; i++ {
-		_ = board.Block(ctx, capIP, "test", cap, cap)
-	}
-	if _, ok := scoreboardBlocked(t, st, capIP); !ok {
-		t.Fatal("capped block should still be active immediately after placing")
-	}
-	time.Sleep(cap + 300*time.Millisecond)
-	if _, ok := scoreboardBlocked(t, st, capIP); ok {
-		t.Fatal("block outlived max_block_ttl cap")
-	}
+		// Backoff caps at maxBlockTTL. Using a short cap and a base at the cap, the
+		// TTL never exceeds the cap regardless of offense count. The bubble
+		// clock checks both sides of the deadline without a scheduling margin.
+		const cap = 300 * time.Millisecond
+		capIP := "203.0.113.6"
+		for i := 0; i < 5; i++ {
+			_ = board.Block(ctx, capIP, "test", cap, cap)
+		}
+		if _, ok := scoreboardBlocked(t, st, capIP); !ok {
+			t.Fatal("capped block should still be active immediately after placing")
+		}
+		synctest.Sleep(cap - time.Nanosecond)
+		if _, ok := scoreboardBlocked(t, st, capIP); !ok {
+			t.Fatal("capped block expired before its deadline")
+		}
+		synctest.Sleep(2 * time.Nanosecond)
+		if _, ok := scoreboardBlocked(t, st, capIP); ok {
+			t.Fatal("block outlived max_block_ttl cap")
+		}
 
-	// Unblock lifts an active block immediately.
-	_ = board.Block(ctx, ip, "test", time.Hour, time.Hour)
-	if err := board.Unblock(ctx, ip); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := scoreboardBlocked(t, st, ip); ok {
-		t.Fatal("unblock did not lift the block")
-	}
+		// Unblock lifts an active block immediately.
+		_ = board.Block(ctx, ip, "test", time.Hour, time.Hour)
+		if err := board.Unblock(ctx, ip); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := scoreboardBlocked(t, st, ip); ok {
+			t.Fatal("unblock did not lift the block")
+		}
+	})
 }
 
 // TestBlockKeyCanonicalIPv6 pins the canonical store key for every textual

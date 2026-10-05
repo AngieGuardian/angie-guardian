@@ -6,6 +6,7 @@ package httptransport
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core"
@@ -25,6 +27,7 @@ import (
 	"github.com/melroy89/angie-guardian/core/intel"
 	"github.com/melroy89/angie-guardian/core/metrics"
 	"github.com/melroy89/angie-guardian/core/stateless"
+	"github.com/melroy89/angie-guardian/internal/diagnostics"
 	"github.com/melroy89/angie-guardian/internal/duration"
 	"github.com/melroy89/angie-guardian/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -72,6 +75,13 @@ type AdminServer struct {
 	// reason. Nil when the embedded file could not be read, which the handler
 	// reports rather than serving an empty page.
 	dashboardPage []byte
+
+	diagnosticsEnabled bool
+	diagnosticsMu      sync.Mutex
+	diagnosticsActive  bool
+	diagnosticsNext    time.Time
+	diagnosticsNow     func() time.Time
+	diagnosticsPrepare func(context.Context) (*diagnostics.Archive, error)
 }
 
 // dashboardAssets are the vendored files the dashboard loads, mapping the
@@ -100,7 +110,10 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s := &AdminServer{
 		engine: engine, metrics: m, token: token,
 		keyPath: keyPath, prevDir: prevDir, reload: reload, log: log,
-		mux: http.NewServeMux(),
+		mux:                http.NewServeMux(),
+		diagnosticsEnabled: cfg.Admin.DiagnosticsEnabled,
+		diagnosticsNow:     time.Now,
+		diagnosticsPrepare: diagnostics.Prepare,
 	}
 	if cfg.Admin.AngieAPI.URL != "" {
 		s.angie = newAngieClient(cfg.Admin.AngieAPI, log)
@@ -141,6 +154,8 @@ func NewAdminServer(engine *core.Engine, cfg *core.Config, m *metrics.Metrics, t
 	s.mux.HandleFunc("POST /admin/reload", s.auth(s.handleReload))
 	s.mux.HandleFunc("GET /admin/reload/preflight", s.auth(s.handleReloadPreflight))
 	s.mux.HandleFunc("GET /admin/config", s.auth(s.handleConfig))
+	s.mux.HandleFunc("GET /admin/diagnostics/goroutines", s.auth(s.handleGoroutineDiagnosticsStatus))
+	s.mux.HandleFunc("POST /admin/diagnostics/goroutines", s.auth(s.handleGoroutineDiagnosticsCapture))
 	s.mux.HandleFunc("GET /admin/intel", s.auth(s.handleIntel))
 	s.mux.HandleFunc("GET /admin/intel/{ip}", s.auth(s.handleIntelLookup))
 	s.mux.HandleFunc("GET /admin/offload", s.auth(s.handleOffload))

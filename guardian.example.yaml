@@ -51,6 +51,9 @@ admin:
   token_file: /var/lib/guardian/admin.token   # generated service state
   # Token-protected dashboard at GET /admin/dashboard; read token_file to log in.
   dashboard: true
+  # Authenticated, on-demand goroutine profile downloads (runs a GC cycle).
+  # Start-time only; keep disabled except when diagnostics are wanted.
+  diagnostics_enabled: false
   # Bounded, per-instance dashboard history; cleared on restart. Use Prometheus
   # for long-term history. Start-time only; default 4096, maximum 16384.
   # recent_decisions_capacity: 4096

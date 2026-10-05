@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/store"
+	"github.com/melroy89/angie-guardian/internal/diagnostics"
 )
 
 // profiler writes bounded, opt-in evidence for a single daemon run. Its
@@ -83,8 +84,7 @@ func startProfiler(dir string) (*profiler, error) {
 		return nil, fmt.Errorf("start runtime flight recorder: %w", err)
 	}
 	p := &profiler{dir: dir, cpu: cpu, samples: samples, sampleOut: samples, flight: flight, done: make(chan struct{})}
-	p.wg.Add(1)
-	go p.sampleLoop()
+	p.wg.Go(p.sampleLoop)
 	return p, nil
 }
 
@@ -95,7 +95,6 @@ func (p *profiler) attachPebble(db *store.Pebble) {
 }
 
 func (p *profiler) sampleLoop() {
-	defer p.wg.Done()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -163,10 +162,10 @@ func (p *profiler) stop() error {
 			first = err
 		}
 	}
-	for _, name := range []string{"heap", "allocs", "mutex", "block", "goroutineleak"} {
+	for _, name := range []string{"heap", "allocs", "mutex", "block", "goroutineleak", "goroutine"} {
 		f, err := os.Create(filepath.Join(p.dir, name+".pprof"))
 		if err == nil {
-			err = pprof.Lookup(name).WriteTo(f, 0)
+			err = diagnostics.WriteProfile(name, f)
 			if closeErr := f.Close(); err == nil {
 				err = closeErr
 			}

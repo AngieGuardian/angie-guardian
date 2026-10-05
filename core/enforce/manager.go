@@ -125,11 +125,9 @@ func (m *Manager) Start(ctx context.Context) {
 	}
 	ctx, m.cancel = context.WithCancel(ctx)
 	for _, sr := range m.sinks {
-		m.wg.Add(1)
-		go m.runSink(ctx, sr)
+		m.wg.Go(func() { m.runSink(ctx, sr) })
 	}
-	m.wg.Add(1)
-	go m.runReconcile(ctx)
+	m.wg.Go(func() { m.runReconcile(ctx) })
 }
 
 // Close stops background work and releases sink resources (kernel state is
@@ -333,7 +331,6 @@ func (m *Manager) Status() Status {
 }
 
 func (m *Manager) runReconcile(ctx context.Context) {
-	defer m.wg.Done()
 	m.reconcileOnce(ctx)
 	// Jittered interval so a fleet restarted together does not scan the shared
 	// block index in lockstep every tick. A manual kick still runs immediately.
@@ -453,7 +450,6 @@ func (m *Manager) scanBlocksFallback(ctx context.Context) ([]store.KV, bool, err
 }
 
 func (m *Manager) runSink(ctx context.Context, sr *sinkRunner) {
-	defer m.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():

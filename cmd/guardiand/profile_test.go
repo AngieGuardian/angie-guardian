@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/pprof/profile"
 )
 
 type failingProfileWriter struct{ err error }
@@ -55,7 +57,7 @@ func TestStartProfilerCreatesArtifacts(t *testing.T) {
 	if err := p.stop(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cpu.pprof", "samples.jsonl", "flight.trace", "heap.pprof", "allocs.pprof", "mutex.pprof", "block.pprof", "goroutineleak.pprof"} {
+	for _, name := range []string{"cpu.pprof", "samples.jsonl", "flight.trace", "heap.pprof", "allocs.pprof", "mutex.pprof", "block.pprof", "goroutineleak.pprof", "goroutine.pprof"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -63,6 +65,15 @@ func TestStartProfilerCreatesArtifacts(t *testing.T) {
 		}
 		if info.Size() == 0 {
 			t.Errorf("%s is empty", name)
+		}
+		if filepath.Ext(name) == ".pprof" {
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := profile.ParseData(raw); err != nil {
+				t.Errorf("%s is not a valid profile: %v", name, err)
+			}
 		}
 	}
 }

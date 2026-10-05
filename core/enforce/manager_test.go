@@ -297,8 +297,7 @@ func TestSinkReconcileCannotOverwriteNewerApply(t *testing.T) {
 	sink := &fakeSink{}
 	m.addSink(sink)
 	sr := m.sinks[0]
-	m.wg.Add(1)
-	go m.runSink(ctx, sr)
+	m.wg.Go(func() { m.runSink(ctx, sr) })
 
 	done := make(chan struct{})
 	go func() {

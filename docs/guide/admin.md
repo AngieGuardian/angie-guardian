@@ -251,6 +251,45 @@ data to a daemon that is already running, including a remote one. See
 [Development](/guide/development#try-a-dashboard-change-against-a-running-daemon).
 :::
 
+### Runtime diagnostics
+
+The **Runtime diagnostics** section captures and downloads goroutine profiles
+on demand. Set `admin.diagnostics_enabled: true` and restart Guardian to enable
+it. The setting is independent of `admin.dashboard` and `-profile-dir`.
+
+Click **Capture and download profiles**. The page reports capture/download
+progress and the remaining cooldown. Capture remains available when normal
+dashboard refresh is paused. Automatic refresh only reads status. The browser
+reports download initiation; inspect the saved archive locally.
+
+For a command-line download:
+
+```sh
+curl --fail --show-error -X POST -H "Authorization: Bearer $TOKEN" \
+  "$A/admin/diagnostics/goroutines" -o guardian-goroutines.tar
+mkdir -m 700 guardian-profiles
+tar -xf guardian-goroutines.tar -C guardian-profiles
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutineleak.pprof
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutine.pprof
+```
+
+The leak profile identifies goroutines that the runtime can prove will never
+unblock. Globally reachable synchronization objects and external I/O waits
+can escape this detector; an empty leak profile does not establish that every
+worker is healthy. The ordinary goroutine profile supplies the broader view.
+A nonempty profile file can contain zero leaks.
+
+Capture runs a leak-detecting GC and can affect latency. It does not enable CPU,
+mutex, block or trace profiling. One capture/download may run at a time, with
+a 60-second cooldown from admission, including failed attempts. The archive
+contains two sequential snapshots and may include operational stack labels;
+handle downloaded profiles as private diagnostic data.
+
+With `-profile-dir`, graceful shutdown still writes both goroutine profiles
+**after component cleanup**. This complements the live snapshot, where cleanup
+has not yet changed the evidence. The bounded flight trace ends before the
+shutdown leak-detection GC. Neither mode automatically diagnoses a deadlock.
+
 ### Reloading the config
 
 The header carries a **Reload config** button, which re-reads `guardian.yaml`

@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -75,7 +74,8 @@ func waitListening(ctx context.Context, listen, socket, adminListen string, time
 		if err != nil {
 			return false
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// Readiness depends on the status, so a slow or oversized health body
+		// must not delay READY=1. Close lets the transport bound its own drain.
 		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}

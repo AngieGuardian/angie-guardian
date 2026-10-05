@@ -132,6 +132,24 @@ ride past the WAF.
 See [USAGE.md](USAGE.md) for endpoints, authentication, dashboard setup, reload,
 and key-rotation details.
 
+### Reporting dashboard
+
+View traffic, decisions, system health, active blocks, and IP intelligence in
+the built-in dashboard. Enable `admin.dashboard: true`, open `/admin/dashboard`,
+and sign in with your admin token. See the
+[dashboard guide](https://angieguardian.org/guide/admin) for details.
+
+![Guardian reporting dashboard](docs/public/dashboard.png)
+
+### Runtime profiling
+
+Download goroutine and leak profiles from **Runtime diagnostics**. Enable
+`admin.diagnostics_enabled: true`, restart Guardian, then select
+**Capture and download profiles**. Capture can briefly affect latency and has
+a 60-second cooldown. See the
+[profiling guide](https://angieguardian.org/guide/admin#runtime-diagnostics)
+for setup and analysis.
+
 ## Security
 
 Guardian's [security model and limitations](https://angieguardian.org/guide/threat-model)

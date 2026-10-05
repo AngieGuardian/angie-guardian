@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/melroy89/angie-guardian/core/pow"
@@ -142,13 +143,14 @@ func TestPathTokenDifficulty(t *testing.T) {
 // overlay's shorter lifetime is enforced even though the token's own exp (from
 // the issuing path) is still in the future.
 func TestPathTokenTTL(t *testing.T) {
-	ctx := context.Background()
-	rules := filepath.Join(t.TempDir(), "rules.yaml")
-	if err := os.WriteFile(rules, []byte(stageRules), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// "/" keeps the default long token_ttl; "/admin/" scopes it to 1s.
-	yaml := `
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		rules := filepath.Join(t.TempDir(), "rules.yaml")
+		if err := os.WriteFile(rules, []byte(stageRules), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// "/" keeps the default long token_ttl; "/admin/" scopes it to 1s.
+		yaml := `
 store: { backend: memory }
 signing_key_file: test-signing.key
 defaults:
@@ -161,46 +163,47 @@ domains:
       "/admin/":
         pow: { token_ttl: 1s }
 `
-	cfg := loadTestConfig(t, fmt.Sprintf(yaml, rules))
-	st := store.NewMemory()
-	t.Cleanup(func() { st.Close() })
-	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mgr := pow.NewManager(key, st)
-	e, err := NewEngine(cfg, st, mgr, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(e.Close)
+		cfg := loadTestConfig(t, fmt.Sprintf(yaml, rules))
+		st := store.NewMemory()
+		t.Cleanup(func() { st.Close() })
+		key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mgr := pow.NewManager(key, st)
+		e, err := NewEngine(cfg, st, mgr, slog.Default())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(e.Close)
 
-	ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
-	tok := mintTestToken(t, mgr, "shop.test", ip, ua, 4) // minted with a 1h token_ttl
+		ip, ua := "198.51.100.7", "Mozilla/5.0 (X11; Linux x86_64)"
+		tok := mintTestToken(t, mgr, "shop.test", ip, ua, 4) // minted with a 1h token_ttl
 
-	// Fresh: the token vouches on both paths.
-	r := req("shop.test", ip, "/admin/panel", ua)
-	r.Cookie = pow.CookieName + "=" + tok
-	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
-		t.Fatalf("fresh token on /admin/: got %s/%s, want allow/pow:token", d.Action, d.Reason)
-	}
+		// Fresh: the token vouches on both paths.
+		r := req("shop.test", ip, "/admin/panel", ua)
+		r.Cookie = pow.CookieName + "=" + tok
+		if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
+			t.Fatalf("fresh token on /admin/: got %s/%s, want allow/pow:token", d.Action, d.Reason)
+		}
 
-	// Past the /admin/ 1s token_ttl: rejected there and re-challenged, even
-	// though the token's own 1h exp has not elapsed.
-	time.Sleep(1100 * time.Millisecond)
-	r = req("shop.test", ip, "/admin/panel", ua)
-	r.Cookie = pow.CookieName + "=" + tok
-	// Reported as expired, not as absent or forged: the work was real, it just
-	// no longer counts on this path.
-	if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Reason != "pow:token_expired" {
-		t.Errorf("aged token on /admin/ (1s ttl): got %s/%s, want challenge/pow:token_expired", d.Action, d.Reason)
-	}
-	// The lax "/" path still honors the token's full 1h lifetime.
-	r = req("shop.test", ip, "/", ua)
-	r.Cookie = pow.CookieName + "=" + tok
-	if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
-		t.Errorf("aged token on / (1h ttl): got %s/%s, want allow/pow:token", d.Action, d.Reason)
-	}
+		// Past the /admin/ 1s token_ttl: rejected there and re-challenged, even
+		// though the token's own 1h exp has not elapsed.
+		synctest.Sleep(1100 * time.Millisecond)
+		r = req("shop.test", ip, "/admin/panel", ua)
+		r.Cookie = pow.CookieName + "=" + tok
+		// Reported as expired, not as absent or forged: the work was real, it just
+		// no longer counts on this path.
+		if d := e.Evaluate(ctx, r); d.Action != ActionChallenge || d.Reason != "pow:token_expired" {
+			t.Errorf("aged token on /admin/ (1s ttl): got %s/%s, want challenge/pow:token_expired", d.Action, d.Reason)
+		}
+		// The lax "/" path still honors the token's full 1h lifetime.
+		r = req("shop.test", ip, "/", ua)
+		r.Cookie = pow.CookieName + "=" + tok
+		if d := e.Evaluate(ctx, r); d.Action != ActionAllow || d.Reason != "pow:token" {
+			t.Errorf("aged token on / (1h ttl): got %s/%s, want allow/pow:token", d.Action, d.Reason)
+		}
+	})
 }
 
 // TestPathOverrideReload: adding a path override via Reload takes effect on

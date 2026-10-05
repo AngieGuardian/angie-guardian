@@ -355,8 +355,7 @@ func (d *Detector) Start(ctx context.Context) {
 		return
 	}
 	ctx, d.cancel = context.WithCancel(ctx)
-	d.wg.Add(1)
-	go d.run(ctx)
+	d.wg.Go(func() { d.run(ctx) })
 }
 
 // Close stops the ticker.
@@ -372,7 +371,6 @@ func (d *Detector) Close() {
 }
 
 func (d *Detector) run(ctx context.Context) {
-	defer d.wg.Done()
 	// A random startup phase spreads the per-tick posture-vote store write
 	// across the fleet; the bucket cadence itself stays exact so window rates
 	// are unaffected. A fleet restarted together would otherwise publish votes

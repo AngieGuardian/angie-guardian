@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
 
@@ -382,59 +383,64 @@ func TestProbeWallClockBoundIgnoresContext(t *testing.T) {
 // slow to answer inside the window is down, and completing afterwards does not
 // retroactively make it healthy.
 func TestLateSuccessAfterTimeoutIsDiscarded(t *testing.T) {
-	inner := store.NewMemory()
-	t.Cleanup(func() { inner.Close() })
-	fs := &fakeStore{Store: inner}
-	fs.setSleep.Store(int64(40 * time.Millisecond))
-	rec := &recorder{}
-	c := newChecker(t, fs, rec, nil)
-	c.timeout = 20 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		inner := store.NewMemory()
+		t.Cleanup(func() { inner.Close() })
+		fs := &fakeStore{Store: inner}
+		fs.setSleep.Store(int64(40 * time.Millisecond))
+		rec := &recorder{}
+		c := newChecker(t, fs, rec, nil)
+		c.timeout = 20 * time.Millisecond
 
-	c.probe(context.Background())
-	if got := c.Status(); got.Up {
-		t.Fatalf("first probe = %+v, want down: it exceeded the deadline", got)
-	}
+		c.probe(context.Background())
+		if got := c.Status(); got.Up {
+			t.Fatalf("first probe = %+v, want down: it exceeded the deadline", got)
+		}
 
-	// Let the abandoned attempt finish its late, successful write and release
-	// the in-flight slot. Its result must be dropped, not queued for the next
-	// tick to pick up.
-	time.Sleep(120 * time.Millisecond)
+		// Let the abandoned attempt finish its late, successful write and release
+		// the in-flight slot. Its result must be dropped, not queued for the next
+		// tick to pick up.
+		synctest.Sleep(120 * time.Millisecond)
 
-	c.probe(context.Background())
-	if got := c.Status(); got.Up {
-		t.Fatalf("second probe = %+v, want down: it must run a fresh probe, "+
-			"not publish the late success of the attempt that already timed out", got)
-	}
-	// Both ticks ran a real probe against the (still too slow) store.
-	if n := fs.setCalls.Load(); n != 2 {
-		t.Errorf("Set called %d times, want 2: the second tick must probe afresh", n)
-	}
-	if probes, _, _ := rec.snapshot(); len(probes) != 2 || probes[0] || probes[1] {
-		t.Errorf("recorder probes = %v, want two downs", probes)
-	}
+		c.probe(context.Background())
+		if got := c.Status(); got.Up {
+			t.Fatalf("second probe = %+v, want down: it must run a fresh probe, "+
+				"not publish the late success of the attempt that already timed out", got)
+		}
+		// Both ticks ran a real probe against the (still too slow) store.
+		if n := fs.setCalls.Load(); n != 2 {
+			t.Errorf("Set called %d times, want 2: the second tick must probe afresh", n)
+		}
+		if probes, _, _ := rec.snapshot(); len(probes) != 2 || probes[0] || probes[1] {
+			t.Errorf("recorder probes = %v, want two downs", probes)
+		}
+		synctest.Sleep(40 * time.Millisecond) // drain the second abandoned attempt inside the bubble
+	})
 }
 
 // TestRecoveryAfterDeadlineMisses: the flip side of discarding late results —
 // once the store answers inside the deadline again, readiness must recover.
 func TestRecoveryAfterDeadlineMisses(t *testing.T) {
-	inner := store.NewMemory()
-	t.Cleanup(func() { inner.Close() })
-	fs := &fakeStore{Store: inner}
-	fs.setSleep.Store(int64(40 * time.Millisecond))
-	c := newChecker(t, fs, nil, nil)
-	c.timeout = 20 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		inner := store.NewMemory()
+		t.Cleanup(func() { inner.Close() })
+		fs := &fakeStore{Store: inner}
+		fs.setSleep.Store(int64(40 * time.Millisecond))
+		c := newChecker(t, fs, nil, nil)
+		c.timeout = 20 * time.Millisecond
 
-	c.probe(context.Background())
-	if c.Status().Up {
-		t.Fatal("precondition: the slow store should have failed the deadline")
-	}
-	time.Sleep(120 * time.Millisecond) // let the abandoned attempt drain
+		c.probe(context.Background())
+		if c.Status().Up {
+			t.Fatal("precondition: the slow store should have failed the deadline")
+		}
+		synctest.Sleep(120 * time.Millisecond) // let the abandoned attempt drain
 
-	fs.setSleep.Store(0) // the store gets healthy again
-	c.probe(context.Background())
-	if got := c.Status(); !got.Up {
-		t.Fatalf("status = %+v, want up once the store answers within the deadline", got)
-	}
+		fs.setSleep.Store(0) // the store gets healthy again
+		c.probe(context.Background())
+		if got := c.Status(); !got.Up {
+			t.Fatalf("status = %+v, want up once the store answers within the deadline", got)
+		}
+	})
 }
 
 // TestBoundedProbeReleasesInflightBeforeReturning: a successful synchronous
@@ -488,60 +494,61 @@ func TestStartAndCloseSurviveAHungStore(t *testing.T) {
 // as current. The gauge is driven to 0 through StoreProbeStale rather than
 // through a probe counter, since no probe actually completed.
 func TestStaleSnapshot(t *testing.T) {
-	st := store.NewMemory()
-	t.Cleanup(func() { st.Close() })
-	rec := &recorder{}
-	c := newChecker(t, st, rec, nil)
-	c.interval = 20 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		st := store.NewMemory()
+		t.Cleanup(func() { st.Close() })
+		rec := &recorder{}
+		c := newChecker(t, st, rec, nil)
+		c.interval = 20 * time.Millisecond
 
-	c.probe(context.Background()) // publishes Up and arms the freshness timer
-	if got := c.Status(); !got.Up || got.Stale {
-		t.Fatalf("status = %+v, want a fresh up snapshot", got)
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		got := c.Status()
-		if got.Stale {
-			if got.Up {
-				t.Errorf("stale snapshot still reports up: %+v", got)
-			}
-			if !got.Probed {
-				t.Error("stale snapshot lost the probed flag")
-			}
-			break
+		c.probe(context.Background()) // publishes Up and arms the freshness timer
+		if got := c.Status(); !got.Up || got.Stale {
+			t.Fatalf("status = %+v, want a fresh up snapshot", got)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("snapshot never went stale: %+v", got)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 
-	probes, _, stale := rec.snapshot()
-	if stale != 1 {
-		t.Errorf("StoreProbeStale called %d times, want 1", stale)
-	}
-	if len(probes) != 1 {
-		t.Errorf("recorder saw %d completed probes, want 1 (staleness is not a probe)", len(probes))
-	}
+		synctest.Sleep(c.interval*staleFactor - time.Nanosecond)
+		if got := c.Status(); got.Stale || !got.Up {
+			t.Fatalf("snapshot expired before its freshness deadline: %+v", got)
+		}
+		synctest.Sleep(time.Nanosecond)
+		if got := c.Status(); !got.Stale || got.Up || !got.Probed {
+			t.Fatalf("snapshot at freshness deadline = %+v, want stale, down, probed", got)
+		}
+
+		probes, _, stale := rec.snapshot()
+		if stale != 1 {
+			t.Errorf("StoreProbeStale called %d times, want 1", stale)
+		}
+		if len(probes) != 1 {
+			t.Errorf("recorder saw %d completed probes, want 1 (staleness is not a probe)", len(probes))
+		}
+	})
 }
 
 // TestStaleTimerSuperseded: a freshness timer armed for an older snapshot must
 // not overwrite a newer successful probe. Without the generation guard a timer
 // that fires just after a fresh probe would report a live store as stale.
 func TestStaleTimerSuperseded(t *testing.T) {
-	st := store.NewMemory()
-	t.Cleanup(func() { st.Close() })
-	c := newChecker(t, st, nil, nil)
+	synctest.Test(t, func(t *testing.T) {
+		st := store.NewMemory()
+		t.Cleanup(func() { st.Close() })
+		c := newChecker(t, st, nil, nil)
 
-	c.publish(Status{Probed: true, Up: true}) // generation 1
-	c.publish(Status{Probed: true, Up: true}) // generation 2 supersedes it
+		c.interval = 20 * time.Millisecond
+		c.publish(Status{Probed: true, Up: true}) // generation 1
+		synctest.Sleep(c.interval)
+		c.publish(Status{Probed: true, Up: true}) // generation 2 supersedes it
 
-	c.markStale(1) // the generation-1 timer, firing late
-
-	if got := c.Status(); got.Stale || !got.Up {
-		t.Fatalf("status = %+v, want the newer up snapshot to survive", got)
-	}
+		synctest.Sleep(c.interval * (staleFactor - 1)) // original freshness deadline
+		c.markStale(1)                                 // an already-fired old timer callback arriving late
+		if got := c.Status(); got.Stale || !got.Up {
+			t.Fatalf("status = %+v, want the newer up snapshot to survive", got)
+		}
+		synctest.Sleep(c.interval)
+		if got := c.Status(); !got.Stale || got.Up {
+			t.Fatalf("status at replacement deadline = %+v, want stale and down", got)
+		}
+	})
 }
 
 // TestTransitionLogging: an unreachable store must not fill the log with one

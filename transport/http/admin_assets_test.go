@@ -53,8 +53,7 @@ func dashboardAdminServer(t *testing.T) *httptest.Server {
 	engine.SetMetrics(m)
 	t.Cleanup(engine.Close)
 	admin := NewAdminServer(engine, cfg, m, adminToken, keyPath, filepath.Join(dir, "previous"), nil, slog.Default())
-	ts := httptest.NewServer(admin)
-	t.Cleanup(ts.Close)
+	ts := httptest.NewTestServer(t, admin)
 	return ts
 }
 
@@ -200,7 +199,7 @@ func TestAssetsServedUnauthenticated(t *testing.T) {
 	} {
 		t.Run(tc.route, func(t *testing.T) {
 			// No Authorization header — exactly how a browser fetches these.
-			resp, err := http.Get(ts.URL + tc.route)
+			resp, err := ts.Client().Get("http://guardian.test" + tc.route)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,7 +235,7 @@ func TestAssetsHaveDistinctETags(t *testing.T) {
 	ts := dashboardAdminServer(t)
 	seen := map[string]string{}
 	for route := range dashboardAssets {
-		resp, err := http.Get(ts.URL + route)
+		resp, err := ts.Client().Get("http://guardian.test" + route)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -258,7 +257,7 @@ func TestAssetsHaveDistinctETags(t *testing.T) {
 func TestChartJSRevalidates(t *testing.T) {
 	ts := dashboardAdminServer(t)
 
-	resp, err := http.Get(ts.URL + "/admin/chart.umd.min.js")
+	resp, err := ts.Client().Get("http://guardian.test" + "/admin/chart.umd.min.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +268,9 @@ func TestChartJSRevalidates(t *testing.T) {
 	}
 
 	// Same ETag -> 304, empty body.
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/chart.umd.min.js", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://guardian.test/admin/chart.umd.min.js", nil)
 	req.Header.Set("If-None-Match", etag)
-	resp2, err := http.DefaultClient.Do(req)
+	resp2, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +283,9 @@ func TestChartJSRevalidates(t *testing.T) {
 	}
 
 	// A stale ETag (old vendored version) -> full 200 with the fresh library.
-	req3, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/chart.umd.min.js", nil)
+	req3, _ := http.NewRequest(http.MethodGet, "http://guardian.test/admin/chart.umd.min.js", nil)
 	req3.Header.Set("If-None-Match", `"deadbeefdeadbeefdeadbeefdeadbeef"`)
-	resp3, err := http.DefaultClient.Do(req3)
+	resp3, err := ts.Client().Do(req3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +301,7 @@ func TestChartJSRevalidates(t *testing.T) {
 func TestAssetsGatedOnDashboard(t *testing.T) {
 	ts, _ := adminServer(t) // dashboard NOT enabled in adminYAML
 	for route := range dashboardAssets {
-		resp, err := http.Get(ts.URL + route)
+		resp, err := ts.Client().Get(ts.URL + route)
 		if err != nil {
 			t.Fatal(err)
 		}

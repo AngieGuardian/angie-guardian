@@ -774,3 +774,47 @@ without a fallback full-store scan. The activity charts share fixed-axis
 `5m / 15m / 30m / 1h / all` controls over a compact full-ring feed; detailed table
 and GeoIP rows remain capped at 1024. This is a per-instance live incident view.
 Use `/metrics` with Prometheus retention and Grafana for historical analysis.
+
+## Runtime diagnostics
+
+### `GET /admin/diagnostics/goroutines`
+
+Authenticated status. This endpoint never captures profiles or triggers a GC.
+
+```json
+{"enabled":true,"capturing":false,"retry_after_seconds":0}
+```
+
+`capturing` includes archive preparation and download. `retry_after_seconds`
+is the remaining cooldown, rounded up. The status route remains available when
+`admin.diagnostics_enabled` is false.
+
+### `POST /admin/diagnostics/goroutines`
+
+Enable `admin.diagnostics_enabled: true` and restart first. Send an empty body
+and no query parameters. The response is an `application/x-tar` attachment with
+`goroutineleak.pprof` followed by `goroutine.pprof`, both binary pprof files.
+They are sequential snapshots from one capture session, not an atomic view.
+Responses use `Cache-Control: no-store`.
+
+| Status | Meaning |
+|---|---|
+| `200` | Complete archive prepared for download. |
+| `400` | Nonempty request body or query parameters. |
+| `401` | Missing or invalid bearer token. |
+| `403` | Cross-origin browser request rejected. |
+| `404` | Diagnostics disabled. |
+| `409` | Another capture or download is active. |
+| `429` | Cooldown active; `Retry-After` gives remaining seconds. |
+| `500` | Capture or archive preparation failed; details are logged. |
+
+Only one capture/download is admitted per daemon, without queuing, followed by
+an admission-based 60-second cooldown. Failed admitted attempts also consume
+that cooldown. Profile output and the archive are each capped at 32 MiB;
+private temporary files are removed after download or failure. No artifacts
+are retained by this API and no other profiling modes are enabled.
+
+Leak capture invokes a GC cycle. Cancellation is checked around capture and
+while writing, but cannot interrupt a GC already running. A request may affect
+latency; use it on demand rather than scraping it. See the
+[operator workflow and detector limits](/guide/admin#runtime-diagnostics).

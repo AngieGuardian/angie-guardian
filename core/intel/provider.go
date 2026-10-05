@@ -150,11 +150,9 @@ func (p *Provider) Start() {
 		if f.cfg.URL == "" {
 			continue
 		}
-		p.wg.Add(1)
-		go p.refreshLoop(f)
+		p.wg.Go(func() { p.refreshLoop(f) })
 	}
-	p.wg.Add(1)
-	go p.pollLoop()
+	p.wg.Go(p.pollLoop)
 }
 
 // SeedURLFeedsFrom carries forward the last good immutable state for URL feeds
@@ -217,7 +215,6 @@ func (p *Provider) SetMetrics(m *metrics.Metrics) {
 // refreshLoop drives one URL feed: seed from cache, then fetch on the
 // refresh interval, retrying sooner after failures.
 func (p *Provider) refreshLoop(f *feed) {
-	defer p.wg.Done()
 	// A fresh-enough cached copy defers the first fetch to when the cache
 	// would have expired; anything else fetches (almost) immediately.
 	delay := time.Second
@@ -259,7 +256,6 @@ func (p *Provider) refreshLoop(f *feed) {
 
 // pollLoop watches local files (mmdb databases and file feeds) for changes.
 func (p *Provider) pollLoop() {
-	defer p.wg.Done()
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {

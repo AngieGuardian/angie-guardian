@@ -244,6 +244,10 @@ type AdminConfig struct {
 	// admin surface exposes nothing extra unless asked to.
 	Dashboard bool `yaml:"dashboard"`
 
+	// DiagnosticsEnabled permits authenticated, on-demand goroutine profile
+	// downloads. Capturing runs a leak-detecting GC; start-time only, off by default.
+	DiagnosticsEnabled bool `yaml:"diagnostics_enabled"`
+
 	// AngieAPI, when set, lets the dashboard show what Guardian itself never
 	// sees, by reading Angie's own HTTP API: per-domain requests and bandwidth,
 	// connections, upstream peer health, proxy-cache hit rates, Angie's own rate

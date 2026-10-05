@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -764,36 +765,48 @@ func TestCounterCacheMonotonicMerge(t *testing.T) {
 // its window's deadline must not pollute a fresh window that started
 // meanwhile, neither by merging its return
 // value nor by leaving a stale record in the store for the follow-up flush to
-// pick up. The first flush is parked in the store; a real 20ms window elapses;
+// pick up. The first flush is parked in the store; a 20ms window elapses;
 // a fresh 1s window opens; the stale flush is released and (because it delegates
 // to the real backend) must be made a no-op by the store's deadline check,
 // leaving the fresh window at its own count.
 //
-// This uses real time, not a fake clock, because the store enforces the
-// deadline against its own clock: the cache and store must agree on "now".
+// The cache and memory store share the synctest clock, so their deadline
+// checks agree while the test advances time without a wall-clock wait.
 func TestCounterCacheStaleFlushNotMergedIntoNewWindow(t *testing.T) {
-	st := NewMemory()
-	t.Cleanup(func() { st.Close() })
-	gs := &gateStore{Store: st, gate: make(chan struct{})}
-	c := NewCounterCache(gs)
+	synctest.Test(t, func(t *testing.T) {
+		st := NewMemory()
+		t.Cleanup(func() { st.Close() })
+		gs := &gateStore{Store: st, gate: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-gs.gate:
+			default:
+				close(gs.gate)
+			}
+		})
+		c := NewCounterCache(gs)
 
-	c.Incr("k", 20*time.Millisecond) // window1, local n=1; drainer parks in the store
-	waitFor(t, func() bool { return gs.entered.Load() == 1 })
+		c.Incr("k", 20*time.Millisecond) // window1, local n=1; drainer parks in the store
+		synctest.Wait()
+		if gs.entered.Load() != 1 {
+			t.Fatal("flush did not enter the gated store")
+		}
 
-	time.Sleep(40 * time.Millisecond) // let window1's deadline pass
-	if n := c.Incr("k", time.Second); n != 1 {
-		t.Fatalf("fresh window bump = %d, want 1", n)
-	}
-	close(gs.gate) // release the stale flush: it delegates and must be a no-op
+		synctest.Sleep(40 * time.Millisecond) // let window1's deadline pass
+		if n := c.Incr("k", time.Second); n != 1 {
+			t.Fatalf("fresh window bump = %d, want 1", n)
+		}
+		close(gs.gate) // release the stale flush: it delegates and must be a no-op
 
-	// Give the drainer time to complete the stale round and any follow-up.
-	waitFor(t, func() bool {
-		v, ok, _ := st.Get(context.Background(), "k")
-		return ok && string(v) == "1"
+		// Give the drainer time to complete the stale round and any follow-up.
+		synctest.Wait()
+		if v, ok, err := st.Get(t.Context(), "k"); err != nil || !ok || string(v) != "1" {
+			t.Fatalf("shared count after stale flush = %q, ok=%v err=%v, want 1", v, ok, err)
+		}
+		if n := c.Incr("k", time.Second); n != 2 {
+			t.Fatalf("fresh window bump after stale flush = %d, want 2 (stale write must not leak in)", n)
+		}
 	})
-	if n := c.Incr("k", time.Second); n != 2 {
-		t.Fatalf("fresh window bump after stale flush = %d, want 2 (stale write must not leak in)", n)
-	}
 }
 
 // TestCounterCacheForgetHeldThroughDelete: while a Forget's Delete is in
@@ -801,38 +814,47 @@ func TestCounterCacheStaleFlushNotMergedIntoNewWindow(t *testing.T) {
 // flushed concurrently by a second worker, and the fresh increment must survive
 // after the delete completes (the delete is applied first, then the increment).
 func TestCounterCacheForgetHeldThroughDelete(t *testing.T) {
-	st := NewMemory()
-	t.Cleanup(func() { st.Close() })
-	gd := &gateDelStore{Store: st, gate: make(chan struct{})}
-	c := NewCounterCache(gd)
+	synctest.Test(t, func(t *testing.T) {
+		st := NewMemory()
+		t.Cleanup(func() { st.Close() })
+		gd := &gateDelStore{Store: st, gate: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-gd.gate:
+			default:
+				close(gd.gate)
+			}
+		})
+		c := NewCounterCache(gd)
 
-	var spawned atomic.Int64
-	c.Go = func(f func()) { spawned.Add(1); go f() }
+		var spawned atomic.Int64
+		c.Go = func(f func()) { spawned.Add(1); go f() }
 
-	c.Forget("k") // drainer parks in Delete
-	waitFor(t, func() bool { return gd.delEntered.Load() == 1 })
+		c.Forget("k") // drainer parks in Delete
+		synctest.Wait()
+		if gd.delEntered.Load() != 1 {
+			t.Fatal("delete did not enter the gated store")
+		}
 
-	// Bump the same key while the delete is in flight.
-	c.Incr("k", time.Minute)
-	time.Sleep(30 * time.Millisecond) // give a (wrongly) spawned worker time to act
+		// Bump the same key while the delete is in flight.
+		c.Incr("k", time.Minute)
+		synctest.Wait() // settle every worker while Delete remains blocked
 
-	if got := spawned.Load(); got != 1 {
-		t.Fatalf("spawned %d drainers, want 1 (delete must hold the key)", got)
-	}
-	if got := gd.incrEntered.Load(); got != 0 {
-		t.Fatalf("%d concurrent IncrBy while delete in flight, want 0", got)
-	}
+		if got := spawned.Load(); got != 1 {
+			t.Fatalf("spawned %d drainers, want 1 (delete must hold the key)", got)
+		}
+		if got := gd.incrEntered.Load(); got != 0 {
+			t.Fatalf("%d concurrent IncrBy while delete in flight, want 0", got)
+		}
 
-	// Release the delete; the held increment is then applied as a follow-up.
-	close(gd.gate)
-	waitFor(t, func() bool {
+		// Release the delete; the held increment is then applied as a follow-up.
+		close(gd.gate)
+		synctest.Wait()
 		v, ok, _ := st.Get(context.Background(), "k")
-		return ok && string(v) == "1"
+		if !ok || string(v) != "1" {
+			t.Fatalf("after delete+incr, shared store k = %q ok=%v, want 1 (fresh incr must survive)", v, ok)
+		}
 	})
-	v, ok, _ := st.Get(context.Background(), "k")
-	if !ok || string(v) != "1" {
-		t.Fatalf("after delete+incr, shared store k = %q ok=%v, want 1 (fresh incr must survive)", v, ok)
-	}
 }
 
 // windowDeadline reads the current window's absolute deadline (expires) for a

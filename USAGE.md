@@ -919,6 +919,20 @@ call goes to the token-guarded `/admin/*` endpoints. The shell can still be
 publicly reachable on an external admin bind, so keep this listener on
 loopback or a firewalled management network.
 
+#### Runtime profiling
+
+For on-demand goroutine profiles, set `admin.diagnostics_enabled: true` and
+restart. In the dashboard's **Runtime diagnostics** section, select
+**Capture and download profiles** to download Go 1.27's leak profile and the
+ordinary goroutine profile together. Diagnostics is disabled by default and
+uses the same authenticated admin API.
+
+Capture runs a GC cycle and can affect latency. Guardian allows one capture
+or download at a time, with a 60-second cooldown and a 32 MiB archive limit.
+A zero-leak result only covers leaks the runtime can detect. See the
+[diagnostics workflow](https://angieguardian.org/guide/admin#runtime-diagnostics)
+for inspecting the archive with `go tool pprof`.
+
 ## 5. Train the anomaly model
 
 Once JSON logs have accumulated, build a candidate domain and route/method

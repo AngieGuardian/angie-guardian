@@ -294,6 +294,10 @@
      surface by default because most outcomes are good news; .bad is reserved
      for a config the daemon refused, where the running config is what the
      message is reassuring about. */
+  .diagnostics-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+  .diagnostics-card p { margin: 0 0 0.6rem; overflow-wrap: anywhere; }
+  .diagnostics-card button { max-width: 100%; white-space: normal; }
+  #diagnostics-status { margin: 0.6rem 0 0; }
   #reload-panel { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
                   margin: 1rem 0 0; padding: 0.6rem 0.9rem; border-radius: 6px;
                   border: 1px solid var(--border); background: var(--surface); }
@@ -407,6 +411,18 @@
                  <th title="Supporting numbers, or the raw error">Detail</th></tr></thead>
       <tbody id="health-rows"></tbody>
     </table>
+  </div>
+
+  <h2>Runtime diagnostics<a class="help"
+      href="https://angieguardian.org/guide/admin#runtime-diagnostics"
+      target="_blank" rel="noopener noreferrer"
+      title="Docs: goroutine profiling and detection limits"
+      aria-label="Documentation: runtime diagnostics">i</a></h2>
+  <div class="diagnostics-card">
+    <p>Capture goroutine stacks and run leak detection. This triggers a GC cycle and may briefly affect latency.</p>
+    <p class="meta">Leak detection cannot identify every stuck goroutine. Download both profiles for inspection with <code>go tool pprof</code>.</p>
+    <button type="button" id="diagnostics-capture" disabled>Capture and download profiles</button>
+    <p id="diagnostics-status" role="status" aria-live="polite">Checking availability…</p>
   </div>
 
   <h2>Activity<a class="help"
@@ -1024,11 +1040,13 @@
     status.hidden = false;
   };
 
-  const api = async (path, opts = {}) => {
+  const apiResponse = async (path, opts = {}) => {
+    const token = sessionStorage.getItem(KEY);
     const r = await fetch(path, {
       ...opts,
-      headers: { Authorization: "Bearer " + sessionStorage.getItem(KEY), ...opts.headers },
+      headers: { Authorization: "Bearer " + token, ...opts.headers },
     });
+    if (sessionStorage.getItem(KEY) !== token) throw new Error("session ended");
     if (r.status === 401) { logout("Token rejected. Enter it again."); throw new Error("unauthorized"); }
     if (!r.ok) {
       // Admin errors carry a useful message ({"error": ...}); prefer it over
@@ -1043,10 +1061,12 @@
       // (422), and those two need opposite handling.
       const err = new Error(msg);
       err.status = r.status;
+      err.retryAfter = Math.max(0, Number(r.headers.get("Retry-After")) || 0);
       throw err;
     }
-    return r.json();
+    return r;
   };
+  const api = async (path, opts = {}) => (await apiResponse(path, opts)).json();
 
   const relTime = (iso) => {
     const d = (new Date(iso) - Date.now()) / 1000;
@@ -3815,8 +3835,115 @@
   };
   const refreshes = makeRefreshCoordinator(render,
     (e) => { if (e.message !== "unauthorized") console.error(e); });
+  const diagnosticsView = (status, phase, message) => {
+    if (phase === "checking" || phase === "capturing" || phase === "downloading") {
+      return {disabled:true, message:phase === "checking" ? "Checking availability…" :
+        phase === "capturing" ? "Capturing profiles…" : "Preparing download…"};
+    }
+    if (!status) return {disabled:true, message:message || "Checking availability…"};
+    if (!status.enabled) return {disabled:true, message:"Disabled. Set admin.diagnostics_enabled: true and restart Guardian."};
+    if (status.capturing) return {disabled:true, message:"A capture or download is already active."};
+    if (status.retry_after_seconds > 0) return {disabled:true,
+      message:(message ? message + " " : "") + "Capture available in " + status.retry_after_seconds + "s."};
+    return {disabled:false, message:message || "Ready. Profiles are captured only when requested."};
+  };
+  const makeDiagnosticsController = (request, download, show, makeAbort, schedule = () => null, cancel = () => {}) => {
+    const path = "/admin/diagnostics/goroutines";
+    let epoch = 0, busy = false, refreshing = false, abort = null, status = null, message = "", cooldownTimer = null;
+    const paint = (phase = "") => show(diagnosticsView(status, phase, message));
+    const armCooldown = () => {
+      cancel(cooldownTimer); cooldownTimer = null;
+      if (busy) return;
+      const seconds = !status ? (message.startsWith("Diagnostics unavailable:") ? 5 : 0) :
+        !status.enabled ? 0 : status.capturing ? 1 : status.retry_after_seconds;
+      if (seconds > 0) {
+        const current = epoch;
+        cooldownTimer = schedule(() => { if (current === epoch) refresh(); }, seconds * 1000);
+      }
+    };
+    const refresh = async () => {
+      if (busy || refreshing) return;
+      const current = epoch;
+      refreshing = true;
+      try {
+        const next = await (await request(path)).json();
+        if (current !== epoch) return;
+        status = next;
+        if (message.startsWith("Diagnostics unavailable:")) message = "";
+      } catch (err) {
+        if (current !== epoch || err.message === "unauthorized" || err.message === "session ended") return;
+        status = null;
+        message = "Diagnostics unavailable: " + err.message;
+      } finally {
+        if (current === epoch) { refreshing = false; paint(); armCooldown(); }
+      }
+    };
+    const capture = async () => {
+      if (busy) return;
+      epoch++; refreshing = false;
+      cancel(cooldownTimer); cooldownTimer = null;
+      const current = epoch;
+      busy = true;
+      abort = makeAbort();
+      message = "";
+      paint("checking");
+      try {
+        status = await (await request(path, {signal:abort.signal})).json();
+        if (current !== epoch) return;
+        if (diagnosticsView(status, "", "").disabled) return;
+        paint("capturing");
+        const response = await request(path, {method:"POST", signal:abort.signal});
+        if (current !== epoch) return;
+        paint("downloading");
+        await download(response, () => current === epoch);
+        if (current !== epoch) return;
+        message = "Download initiated. Inspect both profiles with go tool pprof.";
+      } catch (err) {
+        if (current !== epoch || err.message === "unauthorized" || err.message === "session ended") return;
+        message = "Capture failed: " + err.message;
+        if (err.status === 429 && status) status.retry_after_seconds = err.retryAfter;
+      } finally {
+        if (current === epoch) {
+          busy = false; abort = null;
+          // Invalidate an older status request so it cannot replace the
+          // post-capture cooldown. This also prevents stale-session updates.
+          epoch++; refreshing = false;
+          paint();
+          await refresh();
+        }
+      }
+    };
+    const reset = () => {
+      epoch++; if (abort) abort.abort();
+      cancel(cooldownTimer); cooldownTimer = null;
+      abort = null; busy = false; refreshing = false; status = null; message = "";
+      paint();
+    };
+    return {refresh, capture, reset};
+  };
+  const downloadDiagnostics = async (response, current) => {
+    if (!(response.headers.get("Content-Type") || "").startsWith("application/x-tar")) {
+      throw new Error("server returned an unexpected download format");
+    }
+    const blob = await response.blob();
+    if (!current()) return;
+    if (blob.size > 32 * 1024 * 1024) throw new Error("profile archive exceeds the download limit");
+    const name = /filename="?([A-Za-z0-9._-]+)"?/.exec(response.headers.get("Content-Disposition") || "");
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = name ? name[1] : "guardian-goroutines.tar";
+    document.body.appendChild(link);
+    try { link.click(); }
+    finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  };
+  const diagnostics = makeDiagnosticsController(apiResponse, downloadDiagnostics, (view) => {
+    $("diagnostics-capture").disabled = view.disabled;
+    $("diagnostics-status").textContent = view.message;
+  }, () => new AbortController(), setTimeout, clearTimeout);
+  $("diagnostics-capture").addEventListener("click", () => diagnostics.capture());
   const tick = () => {
     if (paused) return Promise.resolve();
+    diagnostics.refresh();
     return refreshes.scheduled();
   };
   const refreshAfterAction = () => refreshes.forced(true);
@@ -3837,6 +3964,7 @@
     $("gate").hidden = true; $("app").hidden = false;
     armTimer();
     probeReload();
+    diagnostics.refresh();
     renderFacetChips();
     // Deep link: /admin/dashboard?ip=... opens the lookup on load, so an
     // operator can share a lookup URL with the on-call. Wait for the initial
@@ -3846,6 +3974,7 @@
     tick().finally(() => { if (linked) openLookup(linked); });
   };
   const logout = (msg) => {
+    diagnostics.reset();
     sessionStorage.removeItem(KEY);
     clearInterval(timer);
     hideReload(); // a reload verdict is about a session that just ended
