@@ -87,6 +87,8 @@ func TestCommonRulesCredentialFilenameBoundaries(t *testing.T) {
 	for _, name := range []string{
 		"service-account", "sa", "gcp-sa", "credentials", "google-credentials",
 		"google-key", "application_default_credentials", "firebase-adminsdk", "firebase-key",
+		"service_account", "firebase-credentials", "firebase-admin",
+		"firebase-service-account", "firebaseServiceAccountKey", "gcp-service",
 	} {
 		for _, prefix := range []string{"", "/nested"} {
 			for _, suffix := range []string{"", "/details"} {
@@ -103,6 +105,81 @@ func TestCommonRulesCredentialFilenameBoundaries(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCommonRulesObservedMaliciousProbes(t *testing.T) {
+	rs := loadCommonRules(t)
+	groups := []struct {
+		id    string
+		paths []string
+	}{
+		{"cloud-credentials-probe", []string{
+			"/service_account.json", "/firebase-credentials.json", "/firebase-admin.json",
+			"/config/firebase-admin.json", "/firebase-service-account.json",
+			"/firebaseServiceAccountKey.json", "/gcp-service.json",
+			"/var/run/secrets/kubernetes.io/serviceaccount/token",
+		}},
+		{"application-config-probe", []string{
+			"/config/master.key", "/secrets.json", "/secrets.env", "/config.py",
+			"/config/settings.py", "/instance/config.py", "/config/storage.yml",
+			"/config/application.properties", "/config/parameters.yml", "/config/prod.exs",
+			"/config.toml", "/config.env",
+		}},
+		{"spring-actuator-probe", []string{
+			"/actuator/loggers", "/actuator/mappings", "/actuator/threaddump", "/actuator/beans",
+		}},
+		{"database-backup-probe", []string{
+			"/debug/vars", "/debug/pprof", "/debug/pprof/cmdline",
+			"/debug/default/index", "/debug/default/view/", "/_profiler/open",
+			"/storage/logs/laravel.log", "/wp-content/debug.log",
+		}},
+		{"webshell-probe", []string{
+			"/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
+			"/vendor/phpunit/phpunit/Util/PHP/eval-stdin.php",
+		}},
+		{"linux-proc-lfi", []string{"/proc/self/cgroup"}},
+	}
+	for _, group := range groups {
+		for _, path := range group.paths {
+			t.Run(path, func(t *testing.T) {
+				assertCommonRule(t, rs, path, group.id)
+			})
+		}
+	}
+	for _, path := range []string{
+		"/admin", "/admin/login", "/graphql", "/api/graphql", "/api/config",
+		"/api/v1/config", "/config.js", "/resources/config.js", "/firebase-config.json",
+		"/firebase.json", "/__/firebase/init.json", "/test.php", "/status.php",
+		"/config.pyx", "/config/master.keyboard", "/config/storage.ymlp",
+		"/secrets.jsonp", "/secrets.environment", "/debug/varsity", "/debug/pprofile",
+		"/debug/default/indexer", "/_profiler/opening", "/storage/logs/laravel.logger",
+		"/wp-content/debug.logger", "/proc/self/cgroups", "/proc/self/cgroupish",
+		"/var/run/secrets/kubernetes.io/serviceaccount/tokenizer",
+		"/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.phpx", "/backup.tarball",
+		"/backup.rarities", "/backup.tar", "/backup.rar", "/downloads/backup.tar", "/help/debug/pprof",
+		"/actuator/loggers-public", "/actuator/mappings.json", "/actuator/beansprout",
+	} {
+		t.Run("allowed"+path, func(t *testing.T) {
+			if r := rs.Match(&MatchInput{Path: strings.ToLower(path)}); r != nil {
+				t.Fatalf("matched %s, want no match", r.ID)
+			}
+		})
+	}
+}
+
+func TestCommonRulesProcessCgroupQueryProbes(t *testing.T) {
+	rs := loadCommonRules(t)
+	for _, query := range []string{
+		"file=/proc/self/cgroup", "file=file:///proc/123/cgroup",
+		"file=../../proc/thread-self/cgroup&download=1",
+	} {
+		t.Run(query, func(t *testing.T) {
+			r := rs.Match(&MatchInput{Path: "/download", Query: query})
+			if r == nil || r.ID != "linux-proc-lfi" || r.Action != ActionBlock {
+				t.Fatalf("matched %+v, want linux-proc-lfi/block", r)
+			}
+		})
 	}
 }
 

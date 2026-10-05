@@ -103,7 +103,8 @@ rules:
       - "/kube/config"
     # Exact credential filenames seen in scans; keep generic JSON routes usable.
     regexes:
-      - '(?i)(?:^|/)(?:service-account|sa|gcp-sa|credentials|google-credentials|google-key|application_default_credentials|firebase-adminsdk|firebase-key)\.json(?:$|/)'
+      - '(?i)(?:^|/)(?:service[-_]account|sa|gcp-sa|gcp-service|credentials|google-credentials|google-key|application_default_credentials|firebase-adminsdk|firebase-key|firebase-credentials|firebase-admin|firebase-service-account|firebaseserviceaccountkey)\.json(?:$|/)'
+      - '(?i)(?:^|/)var/run/secrets/kubernetes\.io/serviceaccount/token(?:$|/)'
 
   # Container, serverless, and application configs
   - id: application-config-probe
@@ -132,6 +133,10 @@ rules:
       - "/composer.lock"
       - "/package-lock.json"
       - "/yarn.lock"
+    # Specific source/configuration filenames; public config.js routes remain usable.
+    regexes:
+      - '(?i)(?:^|/)(?:config\.(?:py|toml|env)|secrets\.(?:json|env))(?:$|/|\.(?:bak|old|save)$|~$)'
+      - '(?i)(?:^|/)config/(?:master\.key|settings\.py|storage\.yml|application\.properties|parameters\.yml|prod\.exs)(?:$|/|\.(?:bak|old|save)$|~$)'
 
   # Database dumps, environment backups, and diagnostic disclosures
   - id: database-backup-probe
@@ -150,6 +155,8 @@ rules:
     regexes:
       - '(?i)(?:^|/)(?:phpinfo|php-info\.php|phpversion\.php|_phpinfo\.php|old_phpinfo\.php|pinfo\.php|server-info\.php|server-status\.php)(?:$|/|\.(?:bak|old|save)$|~$)'
       - '(?i)^/(?:webroot/index\.php/)?_environment(?:/|$)'
+      - '(?i)^/(?:debug/(?:vars|pprof|default/(?:index|view))|_profiler/open)(?:/|$)'
+      - '(?i)(?:^|/)(?:storage/logs/laravel\.log|wp-content/debug\.log)(?:$|/|\.(?:bak|old|save)$|~$)'
 
   # Full-site and database archive backups
   - id: archive-backup-probe
@@ -190,10 +197,12 @@ rules:
       - "/actuator/heapdump"
       - "/actuator/health"
       - "/actuator/gateway"
+    regexes:
+      - '(?i)(?:^|/)actuator/(?:loggers|mappings|threaddump|beans)(?:/|$)'
 
-  # Known Webshell & Backdoor filenames
+  # Known webshell/backdoor filenames and exposed PHP execution harnesses
   - id: webshell-probe
-    description: Direct access attempts to common pre-installed PHP webshells and backdoors
+    description: Direct access attempts to PHP webshells, backdoors, and exposed test execution harnesses
     action: block
     targets: [ path ]
     keywords:
@@ -204,6 +213,8 @@ rules:
       - "/shell.php"
       - "/cmd.php"
       - "/b374k.php"
+    regexes:
+      - '(?i)(?:^|/)vendor/phpunit/phpunit/(?:src/)?util/php/eval-stdin\.php(?:/|$)'
 
   # Dedicated Scanner User-Agent blocklist (Excludes generic HTTP client libraries)
   - id: scanner-ua
@@ -230,8 +241,8 @@ rules:
     action: block
     targets: [ path, query ]
     regexes:
-      - '(?i)^/+proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
-      - '(?i)(?:[=:]|\.\.|file://)/proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
+      - '(?i)^/+proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|cgroup|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
+      - '(?i)(?:[=:]|\.\.|file://)/proc/(?:self|thread-self|[0-9]+)/(?:environ|cmdline|status|cgroup|maps|mountinfo|mem|auxv|root|cwd|fd)(?:/|$|[&#])'
 
   # Path traversal attempts
   - id: path-traversal
