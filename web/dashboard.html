@@ -294,9 +294,12 @@
      surface by default because most outcomes are good news; .bad is reserved
      for a config the daemon refused, where the running config is what the
      message is reassuring about. */
-  .diagnostics-card { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+  .diagnostics-card { background: var(--surface); border: 1px solid var(--border);
+                      border-radius: 10px; padding: 1rem; }
   .diagnostics-card p { margin: 0 0 0.6rem; overflow-wrap: anywhere; }
-  .diagnostics-card button { max-width: 100%; white-space: normal; }
+  .diagnostics-card button { background: var(--grid); max-width: 100%; white-space: normal; }
+  .diagnostics-card button:hover:not(:disabled) { border-color: var(--ink-2); }
+  .diagnostics-card button:focus-visible { outline: 2px solid var(--ink-2); outline-offset: 2px; }
   #diagnostics-status { margin: 0.6rem 0 0; }
   #reload-panel { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
                   margin: 1rem 0 0; padding: 0.6rem 0.9rem; border-radius: 6px;
