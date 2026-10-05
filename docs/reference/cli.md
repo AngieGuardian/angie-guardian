@@ -1,6 +1,6 @@
 # CLI Tools
 
-Three binaries live under `cmd/`; all of them accept `-version`.
+Four binaries live under `cmd/`; all of them accept `-version`.
 
 ## guardiand
 
@@ -93,6 +93,136 @@ Open (no bearer token); every other `/admin/*` route is authenticated. See the
 | `GET /healthz` | Liveness probe. Answers while the process serves; never follows the store. |
 | `GET /readyz` | Readiness probe. `503` when store readiness is not established, so a fail-open degradation is visible to an orchestrator. |
 | `GET /metrics` | Prometheus metrics. |
+
+## guardianctl
+
+Operate the running daemon through its direct admin listener. Installed by the
+release installer, included in release archives and the container, and built
+by `make build` (or `go build ./cmd/guardianctl`).
+
+```sh
+sudo guardianctl unblock 203.0.113.9
+sudo guardianctl block 2001:db8::9 --reason "manual abuse" --ttl 2h
+sudo guardianctl status 203.0.113.9
+sudo guardianctl list --limit 1000
+sudo guardianctl health
+sudo guardianctl stats --json
+sudo guardianctl decisions --ip 203.0.113.9 --limit 100
+sudo guardianctl offenders
+sudo guardianctl config show
+sudo guardianctl reload --check
+sudo guardianctl reload
+sudo guardianctl diagnostics status
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
+```
+
+| Command | Behaviour |
+| --- | --- |
+| `block <ip> [--reason text] [--ttl duration]` | Manual IPv4/IPv6 block. Omitted values use API defaults: reason `admin`, TTL `24h`. Accepts Guardian duration units including `d`, `w`, `mon`, `y`, with a maximum of `1y`. |
+| `unblock <ip> [--keep-backoff]` | Removes the block and clears triggering counters and challenge escalation. Resets repeat-offender backoff by default; `--keep-backoff` preserves it. Reports incomplete counter resets. |
+| `status <ip>` | Behavioural block state, reason, and available expiry/offense details. An unblocked IP is a successful query. |
+| `list [--limit n]` | Active blocks, reasons and expiry. Default `1000`, range `1–10000`. Warns when the API reports an incomplete list; JSON preserves `complete`. |
+| `health` | Reports **liveness** and **store readiness** separately. Runs both probes, requires no credentials, and fails if either probe fails or readiness is false. |
+| `stats` | Running operational summary. Dotted field names preserve nested groups; `blocks_complete: false` means the block count is a lower bound (`-1` means not seeded). |
+| `decisions [--ip ip] [--limit n]` | Recent retained decisions, newest first. Default `50`, range `1–10000`. Reports truncation and retained-window metadata. History is per process and resets on restart. |
+| `offenders` | Top recent non-allow IPs, counts and available country/ASN details. JSON also includes the API's other rollups. |
+| `config show` | Reads the daemon's running redacted view, rather than printing the local configuration or credentials. |
+| `diagnostics status` | Live capture availability and cooldown; disabled diagnostics remain a successful status query. |
+| `diagnostics capture --out <file>` | Capture and privately save the goroutine profile tar; see the workflow below. |
+| `reload [--check]` | Preflights the daemon's on-disk configuration. `--check` applies nothing. Plain `reload` applies only after successful preflight; the daemon revalidates during application. Restart-required fields or invalid config produce a nonzero exit. |
+
+### Runtime diagnostics
+
+```sh
+sudo guardianctl diagnostics status --json
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar --timeout 30s
+```
+
+`diagnostics status` reads authenticated live availability: `enabled`,
+`capturing` (capture or download active), and `retry_after_seconds`. A disabled
+status is a successful query. Enable `admin.diagnostics_enabled: true` in the
+daemon configuration and **restart** to allow captures; reloading does not
+change this startup setting. The CLI does not enable diagnostics itself.
+
+`diagnostics capture` checks status, then requests an on-demand archive from
+`/admin/diagnostics/goroutines`. The daemon can still reject the request if
+another capture starts between the status check and POST. Active captures and
+cooldowns are reported, including `Retry-After` when supplied; captures are not
+retried automatically. Older daemons without this API report that an upgrade
+is required.
+
+`--out <file>` is required. The CLI refuses existing files, directories and
+symlinks, streams into a private temporary file, validates the content type,
+length, archive structure and **32 MiB** limit, then publishes the complete
+archive with permissions **0600**. Interrupted or invalid downloads remove
+partial files. It ignores server-suggested filenames and never extracts the
+archive automatically. Choose an existing writable destination directory.
+
+The archive contains `goroutineleak.pprof` followed by `goroutine.pprof`:
+two sequential binary snapshots, not an atomic view. Capture triggers a
+leak-detecting GC cycle and may affect latency. One capture/download is allowed
+per daemon, with a **60-second admission cooldown**, including failed admitted
+attempts. CPU, mutex, block and trace profiling are not enabled by this command.
+
+Human output reports the saved absolute path and byte count. `--json` returns
+`{"path":"/absolute/path/guardian-goroutines.tar","bytes":12345}`; binary data
+always goes to the requested file. Status/API/local-write failures exit `1`,
+invalid destinations exit `2`, rejected authentication exits `3`, and
+connection, timeout or cancellation failures exit `4`.
+
+Extract into a private directory and use the matching daemon binary:
+
+```sh
+mkdir -m 700 guardian-profiles
+tar -xf guardian-goroutines.tar -C guardian-profiles
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutineleak.pprof
+go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutine.pprof
+```
+
+An empty leak profile does not establish that every worker is healthy. Keep
+these archives private: stack labels may contain operational information.
+
+### Connection and output options
+
+Shared options can appear before or after the command or IP:
+
+| Option | Default / purpose |
+| --- | --- |
+| `--config <path>` | `/etc/guardian/guardian.yaml`; reads only admin connection settings, without validating unrelated WAF/store settings. |
+| `--endpoint <URL>` | Overrides `admin.listen`. Must be the direct admin HTTP(S) origin, without credentials, path, query or fragment. Wildcard configured listeners resolve to loopback. |
+| `--token-file <path>` | Overrides configured credentials; reads an existing file and never creates a token. |
+| `--timeout <duration>` | `5s` per request; diagnostics capture defaults to `30s`. Positive and at most `1m`. Health, reload and diagnostics capture make two requests. |
+| `--json` | API objects on stdout, suitable for scripts; health combines the two probes under `liveness` and `readiness`. Errors go to stderr. |
+| `--help`, `--version` | Help/version without contacting the daemon or reading credentials. |
+
+Credential order is `--token-file`, `admin.token`, `ADMIN_TOKEN`, then
+`admin.token_file`, matching the daemon unless an explicit token file override
+is supplied. Installed files usually require `sudo`. An ephemeral token cannot
+be discovered: configure a persistent token file for terminal recovery.
+Relative token paths resolve from the current directory, as they do for the
+daemon; installed configurations should use absolute paths.
+
+If the on-disk config is unavailable or malformed, supply both connection and
+credential overrides:
+
+```sh
+sudo guardianctl --endpoint http://127.0.0.1:8072 \
+  --token-file /var/lib/guardian/admin.token unblock 203.0.113.9
+```
+
+Requests bypass environment HTTP proxies and do not follow redirects. Use the
+direct local listener for self-lockout recovery; no public dashboard route or
+store edits are needed. Unblocking a behavioural block does **not** remove a
+static denylist entry or override a WAF deny rule.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Successful operation (including an unblocked `status` result). |
+| `1` | API/protocol error, unhealthy readiness, rejected reload/preflight, or diagnostic download/write failure. |
+| `2` | Invalid input, configuration, credential discovery or output destination. |
+| `3` | Authentication/authorization rejected (`401` / `403`). |
+| `4` | Connection, TLS, timeout or cancellation failure. |
 
 ## guardian-train
 

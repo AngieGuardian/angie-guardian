@@ -113,6 +113,18 @@ install_preserving_local() {
   fi
 }
 
+# Install newer releases' companion CLI while allowing pinned historical
+# archives that did not contain it. Tests use a disposable install directory.
+install_operator_cli() {
+  local package_dir=$1 install_dir=$2
+  if [[ ! -e "$package_dir/guardianctl" && ! -L "$package_dir/guardianctl" ]]; then
+    warn 'This release predates guardianctl; CLI not installed by this release.'
+    return
+  fi
+  [[ -f "$package_dir/guardianctl" && -x "$package_dir/guardianctl" ]] || error 'release archive contains an invalid guardianctl executable'
+  install -D -m 0755 "$package_dir/guardianctl" "$install_dir/guardianctl"
+}
+
 main() {
   require_root
   require_platform
@@ -165,6 +177,7 @@ main() {
   validation_binary=''
 
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
+  install_operator_cli "$package_dir" "$INSTALL_DIR"
   install_preserving_local "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian-limits.conf" "$ANGIE_DIR/angie-guardian-limits.conf" 0644
@@ -208,6 +221,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     --help|-h)
       printf '%s\n' 'Usage: curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash'
       printf '%s\n' 'Installs the latest GitHub release on Debian/Ubuntu systemd hosts.'
+      printf '%s\n' 'Installs guardiand and its guardianctl companion when included in the release.'
       ;;
     '') main ;;
     *) error "unknown option: $1 (try --help)" ;;

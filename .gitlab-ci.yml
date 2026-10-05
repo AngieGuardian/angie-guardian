@@ -219,6 +219,7 @@ e2e:
 build:
   stage: build
   script:
+    - go build -ldflags "$LDFLAGS" -o dist/guardianctl ./cmd/guardianctl
     - go build -ldflags "$LDFLAGS" -o dist/guardiand ./cmd/guardiand
     - go build -ldflags "$LDFLAGS" -o dist/guardian-train ./cmd/guardian-train
     - go build -ldflags "$LDFLAGS" -o dist/guardian-loadtest ./cmd/guardian-loadtest
@@ -258,12 +259,13 @@ upload_and_release:
     # The optional WASM module is architecture-independent; build it once and
     # bundle it into each archive alongside the native binaries.
     - GOOS=wasip1 GOARCH=wasm go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o guardian.wasm ./transport/wasm
-    # Build + package one archive per platform. The three native binaries are
+    # Build + package one archive per platform. The four native binaries are
     # built exactly as before; guardian.wasm is added alongside them.
     - |
       for GOARCH in amd64 arm64; do
         PKG="angie-guardian-${CI_COMMIT_TAG}-linux-${GOARCH}"
         mkdir -p "$PKG"
+        GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardianctl"       ./cmd/guardianctl
         GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardiand"         ./cmd/guardiand
         GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-train"    ./cmd/guardian-train
         GOOS=linux GOARCH="$GOARCH" go build -ldflags "-X main.version=$CI_COMMIT_TAG" -o "$PKG/guardian-loadtest" ./cmd/guardian-loadtest
@@ -284,6 +286,9 @@ upload_and_release:
       tar -xzf "${ARCHIVE_PKG}.tar.gz" -C "$SMOKE_ROOT"
       PKG="$SMOKE_ROOT/$ARCHIVE_PKG"
       test -x "$PKG/guardiand"
+      test -x "$PKG/guardianctl"
+      "$PKG/guardianctl" --version
+      "$PKG/guardianctl" --help
       test -f "$PKG/guardian.example.yaml"
       test -f "$PKG/deploy/rules-common.yaml"
       test -f "$PKG/deploy/angie-guardian.conf"

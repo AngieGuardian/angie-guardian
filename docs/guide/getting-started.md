@@ -23,7 +23,8 @@ which wires Angie, the `guardiand` sidecar, and an upstream backend together.
 
 On a Debian or Ubuntu host that already has Angie installed, this installer
 downloads the latest GitHub release, pins that run to the release's exact
-version, verifies `SHA256SUMS`, installs and starts `guardiand`, and places
+version, verifies `SHA256SUMS`, installs and starts `guardiand`, installs
+`guardianctl` into `/usr/local/bin` when included in the release, and places
 five Angie snippets in `/etc/angie`: three required Guardian integration
 snippets and two optional Angie hardening snippets.
 
@@ -31,8 +32,12 @@ snippets and two optional Angie hardening snippets.
 curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
 ```
 
+After installation, `sudo guardianctl --help` lists the operator commands.
+New releases include the CLI; historical archives without it produce an
+explicit installer notice and remain installable.
+
 It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
-binary but preserves `/etc/systemd/system/guardiand.service`,
+binaries but preserves `/etc/systemd/system/guardiand.service`,
 `/etc/guardian/guardian.yaml`, starter rules, existing Angie snippets, and all
 state under `/var/lib/guardian`. For the starter rules file, systemd unit, and
 the five Angie snippets, the installer compares SHA-256 checksums; if a local
@@ -107,12 +112,14 @@ The extracted directory contains `guardiand`, the `guardian-train` and
 `guardian-loadtest` companion tools, the optional `guardian.wasm`, the
 canonical [`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml), and the complete `deploy/` directory. The
 installation below uses the binary, systemd unit, Angie snippets, and starter
-rules directly from that directory.
+rules directly from that directory. New archives also contain the `guardianctl`
+operator CLI; historical releases may omit it.
 
 Install the daemon and create its dedicated service identity:
 
 ```sh
 sudo install -Dm755 guardiand /usr/local/bin/guardiand
+if [ -x guardianctl ]; then sudo install -Dm755 guardianctl /usr/local/bin/guardianctl; fi
 getent group guardian >/dev/null || sudo groupadd --system guardian
 id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
   --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
@@ -180,6 +187,7 @@ by `go.mod` (currently Go 1.27.0):
 git clone https://github.com/AngieGuardian/angie-guardian.git
 cd angie-guardian
 go build -o guardiand ./cmd/guardiand
+go build -o guardianctl ./cmd/guardianctl
 ```
 
 After building, continue from the `install` command above. All remaining

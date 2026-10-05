@@ -15,6 +15,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/guardiand ./cmd/guardiand
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/guardianctl ./cmd/guardianctl
 # Seed empty writable dirs; the final stage COPYs them with --chown so the
 # named volumes mounted over them inherit the nonroot uid (65532) on first
 # mount and the unprivileged daemon can write the store data and signing key.
@@ -26,6 +27,7 @@ LABEL org.opencontainers.image.source="https://github.com/AngieGuardian/angie-gu
 LABEL org.opencontainers.image.description="WAF and proof-of-work bot firewall for Angie"
 LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 COPY --from=build /out/guardiand /usr/local/bin/guardiand
+COPY --from=build /out/guardianctl /usr/local/bin/guardianctl
 COPY --from=build --chown=65532:65532 /seed/var/lib/guardian /var/lib/guardian
 COPY --from=build --chown=65532:65532 /seed/etc/guardian /etc/guardian
 # Config is mounted read-only by compose; store + keys are named volumes.

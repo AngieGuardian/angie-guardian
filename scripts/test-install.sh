@@ -62,3 +62,26 @@ grep -Fq 'systemctl restart' "$installer"
 grep -Fq 'Angie was not changed or reloaded' "$installer"
 grep -Fq 'angie-hardening-http.conf' "$installer"
 grep -Fq 'angie-hardening-server.conf' "$installer"
+
+# Verify real CLI file installation/upgrade without touching the host service.
+cli_package="$test_dir/cli-package"
+cli_install="$test_dir/cli-install"
+mkdir -p "$cli_package"
+printf '%s\n' '#!/bin/sh' 'echo fixture-v1' >"$cli_package/guardianctl"
+chmod 0755 "$cli_package/guardianctl"
+install_operator_cli "$cli_package" "$cli_install"
+[[ "$("$cli_install/guardianctl")" == fixture-v1 ]]
+[[ "$(stat -c %a "$cli_install/guardianctl")" == 755 ]]
+printf '%s\n' '#!/bin/sh' 'echo fixture-v2' >"$cli_package/guardianctl"
+install_operator_cli "$cli_package" "$cli_install"
+[[ "$("$cli_install/guardianctl")" == fixture-v2 ]]
+rm "$cli_package/guardianctl"
+legacy_notice="$(install_operator_cli "$cli_package" "$cli_install" 2>&1)"
+[[ "$legacy_notice" == *'release predates guardianctl'* ]]
+[[ "$("$cli_install/guardianctl")" == fixture-v2 ]]
+# A present but broken binary must not be silently treated as historical.
+printf '%s\n' broken >"$cli_package/guardianctl"
+if (install_operator_cli "$cli_package" "$cli_install") 2>/dev/null; then
+  echo 'non-executable guardianctl unexpectedly installed' >&2
+  exit 1
+fi

@@ -34,6 +34,44 @@ replace them.
 
 ## Everyday operations
 
+Use `guardianctl` for terminal operations and self-lockout recovery:
+
+```sh
+sudo guardianctl unblock 203.0.113.9
+sudo guardianctl block 2001:db8::9 --reason "manual abuse" --ttl 2h
+sudo guardianctl status 203.0.113.9
+sudo guardianctl list --limit 1000
+sudo guardianctl health
+sudo guardianctl stats --json
+sudo guardianctl decisions --ip 203.0.113.9 --limit 100
+sudo guardianctl offenders
+sudo guardianctl config show
+sudo guardianctl reload --check
+sudo guardianctl reload
+sudo guardianctl diagnostics status
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
+```
+
+The CLI reads the direct admin listener and credentials from
+`/etc/guardian/guardian.yaml`. For another installation, use `--config <path>`;
+if that file is malformed, use `--endpoint http://127.0.0.1:8072` together with
+`--token-file /var/lib/guardian/admin.token`. Files normally require `sudo`.
+Configure `admin.token_file` for persistent recovery credentials.
+
+Unblock clears behaviour counters and challenge escalation, and resets
+repeat-offender backoff by default; `--keep-backoff` preserves the backoff.
+It does not remove static denylist entries or override WAF deny rules.
+`health` distinguishes process liveness from store readiness. `reload --check`
+only preflights; `reload` preflights and then applies supported changes.
+
+`diagnostics status` reports live capture availability; `diagnostics capture`
+downloads the goroutine profile tar when `admin.diagnostics_enabled: true` is
+active. See [Runtime diagnostics](#runtime-diagnostics) for setup and cooldowns.
+
+See the [CLI reference](/reference/cli#guardianctl) for command options, JSON
+output, limits and exit codes. The HTTP examples below remain useful for API
+integrations.
+
 ```sh
 TOKEN=$(sudo cat /var/lib/guardian/admin.token)   # or your admin.token value
 A=http://127.0.0.1:8072
@@ -262,11 +300,20 @@ progress and the remaining cooldown. Capture remains available when normal
 dashboard refresh is paused. Automatic refresh only reads status. The browser
 reports download initiation; inspect the saved archive locally.
 
-For a command-line download:
+For a terminal capture and download, use `guardianctl`:
+
+The CLI checks live availability before capture. `--out` is required and existing
+files are never overwritten. Downloads are validated against the 32 MiB limit
+and saved with mode `0600`; failed or interrupted downloads clean up partial
+files. Capture defaults to a 30-second request timeout (`--timeout` overrides
+it). `--json` reports the saved absolute path and byte count. The CLI reports
+active captures and cooldowns without automatic capture retries. See the
+[CLI reference](/reference/cli#runtime-diagnostics) for connection options and
+exit codes.
 
 ```sh
-curl --fail --show-error -X POST -H "Authorization: Bearer $TOKEN" \
-  "$A/admin/diagnostics/goroutines" -o guardian-goroutines.tar
+sudo guardianctl diagnostics status
+sudo guardianctl diagnostics capture --out guardian-goroutines.tar
 mkdir -m 700 guardian-profiles
 tar -xf guardian-goroutines.tar -C guardian-profiles
 go tool pprof -top /path/to/matching/guardiand guardian-profiles/goroutineleak.pprof
