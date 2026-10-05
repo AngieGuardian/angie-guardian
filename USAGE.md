@@ -43,7 +43,7 @@ defaults:
     ip_behaviour: { enabled: true }
   # Fleet-wide per-path overlays, inherited by every host: a crawler cannot
   # solve the interstitial, so files meant for machines skip only that layer
-  # (blocks, GeoIP and the WAF still apply, unlike allowlist.paths). Keys
+  # (blocks, GeoIP and the WAF still apply, as with allowlist.paths). Keys
   # match exactly, so add your own sitemap paths and site-specific assets.
   paths:
     "/robots.txt": { pow: { enabled: false } }
@@ -157,7 +157,9 @@ so put a narrow
 is terminal at the WAF stage and emits no bad-event score: denylist, deny-intel,
 active blocks and honeypots have already run, while later PoW, challenge-intel
 and anomaly policy is skipped. With PoW enabled, a valid bound token satisfies
-`challenge`; without PoW, `challenge` denies. `deny` remains terminal, while
+`challenge`; without PoW, non-exempt `challenge` denies. PoW-exempt requests
+skip challenge rules and continue to later rules in effective order. Explicit
+`allow` remains terminal and can override later WAF rules and policy. `deny` remains terminal, while
 `block` persists an IP block only when `waf.ip_behaviour.enabled`. A rule
 matches against the targets it names:
 
@@ -428,7 +430,7 @@ below.
 Search crawlers won't solve a PoW puzzle, so they need an allowlist entry or
 your site drops out of the index. **Do not** allowlist them by User-Agent
 (`allowlist.uas: [ Googlebot ]`): the UA string is freely forgeable, and such
-an entry lets any scraper skip the entire pipeline by claiming to be
+an entry lets any scraper skip PoW by claiming to be
 Googlebot. Guardian refuses to load a config where an `allowlist.uas` entry
 overlaps a configured bot for exactly this reason.
 
@@ -444,7 +446,7 @@ way the search engines themselves document:
 ```yaml
 domains:
   example.com:                     # scope to the domains you want crawled: a
-    verified_bots:                 # confirmed identity is a terminal allow,
+    verified_bots:                 # confirmed identity grants a PoW exemption,
       bots:                        # not authorization for every vhost
         - name: googlebot          # presets: googlebot, google-special,
         - name: bingbot            #   bingbot, applebot, yandexbot, baiduspider
@@ -466,18 +468,17 @@ are deliberately not a preset: third parties can point them at any site on
 demand, so allowlisting them is an explicit operator decision (write a
 custom bot entry if you need it).
 
-A verified crawler is allowed with reason `verified_bot:<name>` and skips the
-rest of the pipeline, including behavioural IP blocks (admin-placed or
-automatic), so a scoring mishap can never knock a search crawler offline.
-Static `allowlist`/`denylist` entries still run first: an explicit denylist
-entry is the one thing that outranks a verified bot. A client that claims a listed UA but
-**definitively** fails verification, meaning its IP has no PTR record or its
-rDNS belongs to someone else, is an impostor: with `spoof_action: deny` (the
-default) it is rejected and scored as a `bot_spoof` behaviour event (5/min
-blocks the IP, tune under `waf.ip_behaviour.thresholds`); with `continue` it
-is simply not allowlisted and the normal WAF/PoW pipeline applies. Transient
-DNS failures prove nothing and just fall through unverified, so a flaky
-resolver can neither block Googlebot nor admit a scraper.
+A verified crawler receives `pow_exemption: verified_bot:<name>` and skips
+PoW and challenge-only outcomes. Denylists, existing bans, honeypots, WAF
+deny/block rules and other security denies remain enforceable. The final
+action/reason describe the actual outcome. Identity does not authorize
+application operations.
+
+A definitive verification failure follows `spoof_action`: `deny` rejects with
+`bot_spoof:<name>` and scores a bot-spoof event, while `continue` withholds the
+crawler exemption and lets security checks proceed. Transient DNS errors prove
+nothing and fall through unverified. Independent IP/path exemptions still
+apply; none can override a spoof denial.
 
 Verification costs two DNS lookups (budget: `dns_timeout`, default 1s) the
 first time an IP claims a bot UA. The result is cached in the shared store
@@ -560,8 +561,9 @@ Semantics worth knowing:
 - Precedence is deny, then challenge, then allow, then `default_action`.
   Listing the same country/ASN in two selectors is a config error.
 - An IP the database has no record for (private ranges, brand-new
-  allocations) matches no selector and gets `default_action`. Keep internal
-  ranges on the static `allowlist` before tightening `default_action`.
+  allocations) matches no selector and gets `default_action`. Keep it at
+  `allow` if these origins must be served; PoW exemptions do not override a
+  geo deny.
 - Challenge policies need PoW enabled on the domain; on a PoW-less domain
   they are inert rather than degrading to a deny (a typo should not cut off
   a whole country). Denies apply everywhere, PoW or not.
@@ -973,6 +975,7 @@ whether that unblock also resets the repeat-offender backoff, and a
 block-an-IP form), the recent activity feed of non-allow decisions and PoW
 outcomes, including recovered network handovers (filterable by action, free
 text and exact host, reason category, country, path and User-Agent facets),
+with PoW exemption diagnostics shown separately from the final reason,
 challenge lifecycle counters with the average solve time, per-domain feature
 status, anomaly baseline coverage and segment health, IP intelligence health
 (loaded GeoIP databases plus each reputation feed's entries, refresh age and

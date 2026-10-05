@@ -333,7 +333,7 @@ type NFTablesConfig struct {
 	MinTTL Duration `yaml:"min_ttl"`
 	// NeverBlock CIDRs are never sent to the kernel. Put load balancer and
 	// CDN ranges here: dropping an LB address at L3 takes down everything
-	// behind it. Configured allowlists are excluded automatically on top.
+	// behind it. PoW allowlists do not exclude kernel blocks.
 	NeverBlock []string `yaml:"never_block"`
 	// AllowPrivate permits private / special-purpose ranges (RFC1918, CGNAT,
 	// ULA, unspecified, multicast) to be kernel-dropped. Off by default: a
@@ -708,7 +708,7 @@ type pathOverride struct {
 
 // VerifiedBotsConfig allowlists well-known crawlers by verified identity
 // instead of by their (freely forgeable) User-Agent string: a client whose
-// UA claims a listed bot is admitted only if its IP reverse-DNS + forward-
+// UA claims a listed bot is PoW-exempt only if its IP reverse-DNS + forward-
 // confirms to one of the bot's published domains (core/botverify). A client
 // that claims the UA but definitively fails verification is an impostor and
 // is handled per SpoofAction.
@@ -721,7 +721,7 @@ type VerifiedBotsConfig struct {
 	NegativeTTL Duration `yaml:"negative_ttl"`
 	// SpoofAction is what happens to a proven impostor: "deny" (default)
 	// rejects and scores a bot_spoof event; "continue" just withholds the
-	// allowlist skip and lets the rest of the pipeline handle the request.
+	// crawler PoW exemption and lets the rest of the pipeline handle the request.
 	SpoofAction string `yaml:"spoof_action"`
 }
 
@@ -822,8 +822,9 @@ func (vb *VerifiedBotsConfig) compile() error {
 // "serve only my own country" is default_action: deny plus the home country
 // under allow). An IP with no record in
 // the databases (private ranges, brand-new allocations) matches no selector
-// and gets default_action; keep internal ranges on the static allowlist when
-// tightening it. deny wins over challenge when both match.
+// and gets default_action. Keep that default at allow if unknown/private
+// origins must be served; PoW exemptions cannot override a geo deny.
+// deny wins over challenge when both match.
 type GeoConfig struct {
 	Enabled       bool        `yaml:"enabled"`
 	Deny          GeoSelector `yaml:"deny"`
@@ -1979,8 +1980,8 @@ func (dc *DomainConfig) validate() error {
 		return err
 	}
 	// A bot listed under verified_bots must not also appear in allowlist.uas:
-	// the plain UA allowlist runs first and matches by substring, so an
-	// overlapping entry would admit any client claiming the UA, unverified —
+	// the plain UA allowlist matches by substring, so an overlapping entry
+	// would exempt clients whose bot identity was not verified —
 	// exactly what verified_bots exists to prevent. Fail fast at load.
 	for i := range dc.VerifiedBots.Bots {
 		b := &dc.VerifiedBots.Bots[i]
@@ -2104,10 +2105,9 @@ func (c *Config) EnforceConfig() enforce.Config {
 	for _, p := range n.Ports {
 		ports = append(ports, uint16(p))
 	}
-	// The kernel sees neither Host nor path, so an allowlist entry anywhere
-	// in the config must win globally at that layer: union them all into the
-	// never-offload filter.
-	never := append(append([]netip.Prefix{}, n.neverBlock...), c.AllowlistUnion()...)
+	// PoW exemptions do not prevent security block offload. Only explicit
+	// infrastructure exclusions and the kernel's address safeguards do.
+	never := append([]netip.Prefix{}, n.neverBlock...)
 	return enforce.Config{
 		KeyPrefix:         blockKeyPrefix,
 		ReconcileInterval: c.Enforcement.Mirror.ReconcileInterval.Std(),

@@ -442,12 +442,12 @@ func TestReportEvent(t *testing.T) {
 		t.Fatalf("after tamper reports: got %s/%s, want deny on tamper threshold", d.Action, d.Reason)
 	}
 
-	// Allowlisted IPs are never scored.
+	// PoW-exempt IPs still receive security-event scoring.
 	for i := 0; i < 5; i++ {
 		e.ReportEvent(ctx, "pow.test", "10.1.2.3", EventPoWFail, "bad nonce")
 	}
-	if d := e.Evaluate(ctx, req("pow.test", "10.1.2.3", "/", "curl")); d.Action != ActionAllow {
-		t.Fatalf("allowlisted IP got scored/blocked: %s/%s", d.Action, d.Reason)
+	if d := e.Evaluate(ctx, req("pow.test", "10.1.2.3", "/", "curl")); d.Action != ActionDeny || d.Reason != "behaviour_block:threshold:pow_fail" {
+		t.Fatalf("allowlisted IP was not scored/blocked: %s/%s", d.Action, d.Reason)
 	}
 }
 

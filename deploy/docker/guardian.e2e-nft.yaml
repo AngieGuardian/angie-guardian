@@ -70,22 +70,19 @@ defaults:
     # no-JS wait is weaker than PoW, see guardian.example.yaml).
     noscript_fallback: true
   allowlist:
-    # Empty like production: allowlisted ips/paths skip the entire pipeline.
+    # PoW exemptions retain WAF, denylists and existing bans.
     ips: []
     # No crawler names in uas: a UA string is forgeable. See verified_bots.
     uas: []
     paths:
-      # robots.txt stays a terminal allowlist entry here (unlike the
-      # production example, which exempts it with a defaults.paths pow
-      # overlay): the compose healthcheck and several tests fetch it before
-      # any challenge flow, and the block tests expect it to stay reachable.
+      # Narrow machine-facing paths skip PoW, while security checks remain.
       - /robots.txt
       - /favicon.ico
       - /.well-known/acme-challenge/
   denylist:
     ips: []
   # verified_bots is granted per domain (below) like production, never in
-  # defaults: a confirmed crawler identity is a terminal allow.
+  # defaults: a confirmed crawler identity grants only a PoW exemption.
 
 domains:
   # The harness site. PoW on so we can exercise the challenge flow, with a

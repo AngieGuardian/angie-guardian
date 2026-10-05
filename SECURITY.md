@@ -65,7 +65,7 @@ Out of scope (by design, documented in the
 
 - volumetric / L3–L4 floods: that's Angie's rate limiting and your network's
   job, not a proof-of-work interstitial's;
-- attacks originating from inside a configured allowlist / trusted range;
+- backend authentication and authorization (PoW exemptions still face WAF and bans);
 - a native-code solver outpacing browsers at proof-of-work (a cost trade-off,
   not a bypass);
 - anything requiring control of the trusted `X-Guardian-*` headers, which is

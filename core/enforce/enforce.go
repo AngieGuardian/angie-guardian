@@ -62,8 +62,8 @@ type NFTConfig struct {
 	MaxEntries int
 	// MinTTL skips offloading blocks shorter than this; 0 offloads all.
 	MinTTL time.Duration
-	// NeverBlock is the pre-resolved union of the operator's never_block
-	// CIDRs and every configured allowlist prefix. Loopback and link-local
+	// NeverBlock holds the operator's explicit infrastructure exclusions.
+	// PoW allowlists do not exclude security blocks. Loopback and link-local
 	// are excluded unconditionally on top of this.
 	NeverBlock []netip.Prefix
 	// AllowPrivate lets private / special-purpose ranges (RFC1918, CGNAT, ULA,

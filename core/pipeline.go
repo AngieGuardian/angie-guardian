@@ -52,6 +52,7 @@ type stageEnv struct {
 	token  tokenVerdict // memoized PoW cookie check: up to three stages share one
 	// 0 unchecked, 1 no match, 2 matched. Kept byte-sized on the hot path.
 	headerExempt uint8
+	powExemption string
 }
 
 // effBits resolves the difficulty window for the resolved domain, shifted up
@@ -79,14 +80,14 @@ func requestQuery(uri string) string { return stateless.RequestQuery(uri) }
 func decodePath(p string) string     { return stateless.DecodePath(p) }
 func decodeQuery(q string) string    { return stateless.DecodeQuery(q) }
 
-// allowlistStage — pipeline stage 0. Trusted IPs/CIDRs, allowlisted UAs and
-// well-known paths skip everything.
+// allowlistStage classifies static-list matches as PoW exemptions only.
 type allowlistStage struct{}
 
 func (allowlistStage) Name() string { return "allowlist" }
 
 func (allowlistStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	return stateless.CheckAllowlist(req, &env.domain.Allowlist), nil
+	env.powExemption = stateless.MatchAllowlist(req, &env.domain.Allowlist)
+	return nil, nil
 }
 
 // denylistStage — pipeline stage 1. Permanent admin-set IP/CIDR blocks.
@@ -102,18 +103,15 @@ func (denylistStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 }
 
 // verifiedBotStage — verified crawler allowlist. A UA allowlist entry like
-// "Googlebot" is spoofable by anyone; this stage instead admits a client
+// "Googlebot" is spoofable by anyone; this stage instead exempts a client
 // claiming a configured bot UA only after its IP reverse-DNS + forward-
 // confirms to the bot's published domains (see core/botverify; results are
 // cached in the shared store, so DNS is paid once per IP, not per request).
 //
-// It runs after the static lists but before the behavioural block stage:
-// explicit operator config (allowlist, denylist) still wins, while a genuine
-// crawler can't be locked out by a behavioural block it picked up crawling
-// odd third-party URLs. A client that claims the UA but definitively fails
-// verification is an impostor: denied and scored (spoof_action: deny), or
-// merely stripped of the allowlist skip (spoof_action: continue). DNS errors
-// prove nothing, so they just fall through unverified.
+// It runs after static lists and grants only a PoW exemption. Genuine
+// crawlers still encounter bans, honeypots, WAF and other deny policies.
+// Definitive verification failures follow spoof_action; transient DNS errors
+// prove nothing and fall through unverified.
 type verifiedBotStage struct{}
 
 func (verifiedBotStage) Name() string { return "verified_bot" }
@@ -129,26 +127,27 @@ func (verifiedBotStage) Evaluate(ctx context.Context, req *RequestContext, env *
 		CacheTTL:    vb.CacheTTL.Std(),
 		NegativeTTL: vb.NegativeTTL.Std(),
 	})
-	switch {
-	case res.Status == botverify.StatusConfirmed && res.MatchesDomains(bot.domainsLower):
-		env.metrics.BotVerification(bot.Name, "verified")
-		return &Decision{Action: ActionAllow, Reason: "verified_bot:" + bot.Name}, nil
-	case res.Status == botverify.StatusError:
-		env.metrics.BotVerification(bot.Name, "error")
-		return nil, nil
-	default:
-		// Definitive: the IP's rDNS identity is absent or is not the claimed
-		// bot's (StatusNone, or confirmed under someone else's domain).
-		env.metrics.BotVerification(bot.Name, "spoof")
-		if vb.SpoofAction == "continue" {
-			return nil, nil
-		}
-		return &Decision{
-			Action: ActionDeny,
-			Reason: "bot_spoof:" + bot.Name,
-			Events: []Event{{Type: EventBotSpoof, Detail: bot.Name}},
-		}, nil
+	outcome := classifyBotIdentity(bot, res.Status, res.MatchesDomains(bot.domainsLower), env)
+	env.metrics.BotVerification(bot.Name, outcome)
+	if outcome == "spoof" && vb.SpoofAction != "continue" {
+		return &Decision{Action: ActionDeny, Reason: "bot_spoof:" + bot.Name, Events: []Event{{Type: EventBotSpoof, Detail: bot.Name}}}, nil
 	}
+	return nil, nil
+}
+
+// classifyBotIdentity applies current policy to raw identity. Both paths use
+// this helper; exemption state is request-local, never a cached allow verdict.
+func classifyBotIdentity(bot *BotConfig, status botverify.Status, matches bool, env *stageEnv) string {
+	if status == botverify.StatusConfirmed && matches {
+		if env.powExemption == "" || env.powExemption == "header_exemption" {
+			env.powExemption = "verified_bot:" + bot.Name
+		}
+		return "verified"
+	}
+	if status == botverify.StatusError {
+		return "error"
+	}
+	return "spoof"
 }
 
 // behaviourBlockStage — pipeline stage 2. Enforces TTL'd blocks placed in the
@@ -205,8 +204,7 @@ func (behaviourBlockStage) Evaluate(ctx context.Context, req *RequestContext, en
 
 // intelDenyStage is the deny half of GeoIP/ASN scoping and IP reputation.
 // It sits right after the static denylist (with only the verified-crawler
-// stage between them, so a feed false positive can't cut off a genuine,
-// rDNS-confirmed bot) because these are the same kind of verdict: policy
+// stage between them) because these are the same kind of verdict: policy
 // says this origin is never served, regardless of tokens or behaviour. The
 // challenge half lives in intelChallengeStage, after the PoW token stage, so
 // a client that already proved work is not re-challenged.
@@ -247,7 +245,7 @@ type intelChallengeStage struct{}
 func (intelChallengeStage) Name() string { return "intel_challenge" }
 
 func (intelChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.intel == nil || env.pow == nil || !env.domain.PoW.Enabled || env.headerPoWExempt(req) {
+	if env.intel == nil || env.pow == nil || !env.domain.PoW.Enabled || env.powExempt(req) {
 		return nil, nil
 	}
 	addr, err := netip.ParseAddr(req.RemoteAddr)
@@ -309,7 +307,7 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 		return nil, nil
 	}
 	in := stateless.BuildMatchInput(req, rs)
-	rule := rs.Match(&in)
+	rule := rs.MatchEnforcing(&in, env.powExempt(req))
 	if rule == nil {
 		return nil, nil
 	}
@@ -323,9 +321,6 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 		return &Decision{Action: ActionAllow, Reason: reason}, nil
 	case waf.ActionChallenge:
 		if env.pow != nil && env.domain.PoW.Enabled {
-			if env.headerPoWExempt(req) {
-				return nil, nil
-			}
 			// A challenge-only WAF rule asks the client to prove work; a valid
 			// bound token is that proof. Deny/block rules still terminate above
 			// the ordinary token stage and can never be bypassed by a token.
@@ -361,7 +356,7 @@ func (wafRulesStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 	}
 }
 
-// headerPoWExemptionStage classifies after WAF evaluation without returning a
+// headerPoWExemptionStage classifies before security enforcement without a
 // terminal allow. Later stages consult the request-local bit only to suppress
 // PoW-cookie validation and challenge-only outcomes.
 type headerPoWExemptionStage struct{}
@@ -369,8 +364,17 @@ type headerPoWExemptionStage struct{}
 func (headerPoWExemptionStage) Name() string { return "header_pow_exemption" }
 
 func (headerPoWExemptionStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	env.headerPoWExempt(req)
+	env.powExempt(req)
 	return nil, nil
+}
+
+// powExempt consolidates request-local static, crawler and header exemptions.
+// Calling it before enforcement also records classification on denied requests.
+func (env *stageEnv) powExempt(req *RequestContext) bool {
+	if env.powExemption != "" {
+		return true
+	}
+	return env.headerPoWExempt(req)
 }
 
 func (env *stageEnv) headerPoWExempt(req *RequestContext) bool {
@@ -386,6 +390,7 @@ func (env *stageEnv) headerPoWExempt(req *RequestContext) bool {
 	})
 	env.metrics.HeaderPoWExemption(string(result.Outcome), result.Verifier)
 	if result.Matched {
+		env.powExemption = "header_exemption"
 		env.headerExempt = 2
 		return true
 	}
@@ -410,7 +415,7 @@ func (powTokenStage) Name() string { return "pow_token" }
 var decisionPoWToken = &Decision{Action: ActionAllow, Reason: "pow:token"}
 
 func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.headerPoWExempt(req) {
+	if env.powExempt(req) {
 		return nil, nil
 	}
 	if !hasValidPoWToken(req, env) {
@@ -421,10 +426,8 @@ func (powTokenStage) Evaluate(_ context.Context, req *RequestContext, env *stage
 
 // tokenVerdict is one request's PoW cookie check, and its zero value means
 // "not checked yet". Deliberately a byte rather than the {bool, string} pair it
-// stands for: stageEnv is allocated once per request and sits exactly on a
-// 112-byte size class, so widening it by a string header would round every
-// request's allocation up two classes and cost more on the hot path than the
-// diagnostic is worth. The reason string is materialized only when a challenge
+// stands for: stageEnv is allocated once per request, and a string header
+// would add 16 bytes solely for a token-failure diagnostic. The reason string is materialized only when a challenge
 // is actually being emitted.
 type tokenVerdict uint8
 
@@ -591,7 +594,7 @@ func (anomalyStage) Evaluate(_ context.Context, req *RequestContext, env *stageE
 			Events: []Event{{Type: EventAnomaly, Detail: fmt.Sprintf("score=%.2f", score)}},
 		}, nil
 	case score >= a.ChallengeAt && env.pow != nil && env.domain.PoW.Enabled:
-		if env.headerPoWExempt(req) {
+		if env.powExempt(req) {
 			return nil, nil
 		}
 		base, maxDiff := env.effBits()
@@ -624,7 +627,7 @@ type powChallengeStage struct{}
 func (powChallengeStage) Name() string { return "pow_challenge" }
 
 func (powChallengeStage) Evaluate(_ context.Context, req *RequestContext, env *stageEnv) (*Decision, error) {
-	if env.pow == nil || !env.domain.PoW.Enabled || env.headerPoWExempt(req) {
+	if env.pow == nil || !env.domain.PoW.Enabled || env.powExempt(req) {
 		return nil, nil
 	}
 	// In attack mode, force_always overrides suspicion so every unvouched

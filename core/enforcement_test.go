@@ -110,16 +110,15 @@ func TestMirrorFastPathBlockedIPWithoutStoreReads(t *testing.T) {
 	}
 }
 
-func TestMirrorNeverOverridesAllowlist(t *testing.T) {
-	// Pipeline order: 10.0.0.66 is allowlisted in pipelineYAML. Even with a
-	// mirror entry for it, the allowlist stage terminates first.
+func TestMirrorEnforcesAllowlistedBlock(t *testing.T) {
+	// An allowlisted IP remains subject to an existing mirrored block.
 	ctx := context.Background()
 	e, _ := enforcedEngine(t, pipelineYAML)
-	if err := e.BlockIP(ctx, "10.0.0.66", "framed", time.Minute); err != nil {
+	if err := e.BlockIP(ctx, "10.0.0.67", "framed", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if d := e.Evaluate(ctx, req("x.test", "10.0.0.66", "/", "Mozilla")); d.Action != ActionAllow || d.Reason != "allowlist:ip" {
-		t.Fatalf("allowlisted IP with mirror entry: got %s/%s, want allow/allowlist:ip", d.Action, d.Reason)
+	if d := e.Evaluate(ctx, req("x.test", "10.0.0.67", "/", "Mozilla")); d.Action != ActionDeny || d.Reason != "behaviour_block:framed" || d.PoWExemption != "allowlist:ip" {
+		t.Fatalf("allowlisted IP with mirror entry: got %s/%s, want deny/behaviour_block:framed", d.Action, d.Reason)
 	}
 }
 
@@ -229,8 +228,8 @@ func TestEnforcementConfig(t *testing.T) {
 		len(ec.NFTables.Ports) != 1 || ec.NFTables.Ports[0] != 8080 {
 		t.Fatalf("nftables config not mapped: %+v", ec.NFTables)
 	}
-	// never_block plus the allowlist union across defaults, domain, path.
-	want := []string{"192.0.2.0/24", "2001:db8::1/128", "10.0.0.0/8", "172.16.0.0/12", "198.51.100.7/32"}
+	// Only explicit infrastructure exclusions suppress kernel offload.
+	want := []string{"192.0.2.0/24", "2001:db8::1/128"}
 	if len(ec.NFTables.NeverBlock) != len(want) {
 		t.Fatalf("NeverBlock = %v, want %d prefixes %v", ec.NFTables.NeverBlock, len(want), want)
 	}
@@ -404,8 +403,8 @@ func TestShedDecisionMatchesPipelineTerminals(t *testing.T) {
 	if shed := e.ShedDecision(ok); shed != ShedPass {
 		t.Errorf("clean token holder: shed = %v, want ShedPass", shed)
 	}
-	// And an allowlisted client, which the shed answers before any denylist.
-	if shed := e.ShedDecision(req("x.test", "192.0.2.10", "/", cleanUA)); shed != ShedPass {
-		t.Errorf("allowlisted client: shed = %v, want ShedPass", shed)
+	// A PoW exemption alone does not grant admission under saturation.
+	if shed := e.ShedDecision(req("x.test", "192.0.2.10", "/", cleanUA)); shed != ShedReject {
+		t.Errorf("allowlisted client: shed = %v, want ShedReject", shed)
 	}
 }

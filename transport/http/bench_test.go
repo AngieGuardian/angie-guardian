@@ -108,7 +108,7 @@ func BenchmarkAuthAllow(b *testing.B) {
 	benchmarkAuth(b, "/products/1234?page=2", "plain.test", "198.51.100.7", benchUA, "", http.StatusOK)
 }
 
-// BenchmarkAuthAllowlistPath is the cheapest terminal verdict, and the one a
+// BenchmarkAuthAllowlistPath measures a PoW-exempt path, and the one a
 // well-configured site serves for its static assets.
 func BenchmarkAuthAllowlistPath(b *testing.B) {
 	benchmarkAuth(b, "/robots.txt", "plain.test", "198.51.100.7", benchUA, "", http.StatusOK)

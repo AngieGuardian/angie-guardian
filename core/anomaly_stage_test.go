@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
@@ -46,6 +47,11 @@ const commonUA = "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"
 
 func anomalyEngine(t *testing.T) *Engine {
 	t.Helper()
+	return anomalyEngineWithPolicy(t, "")
+}
+
+func anomalyEngineWithPolicy(t *testing.T, policy string) *Engine {
+	t.Helper()
 	// Train a baseline of shallow blog traffic under the three test hosts.
 	tr := &anomaly.Trainer{}
 	for _, host := range []string{"anom.test", "always.test", "observe.test"} {
@@ -61,7 +67,7 @@ func anomalyEngine(t *testing.T) *Engine {
 		t.Fatal(err)
 	}
 
-	cfg := loadTestConfig(t, fmt.Sprintf(anomalyYAML, model, model, model))
+	cfg := loadTestConfig(t, fmt.Sprintf(strings.Replace(anomalyYAML, "  anom.test:\n", "  anom.test:\n"+policy, 1), model, model, model))
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
 	key, err := pow.LoadOrCreateKey(filepath.Join(t.TempDir(), "ed25519.key"))

@@ -87,11 +87,11 @@ func TestEvaluateViaGuestConfig(t *testing.T) {
 		reason string
 	}{
 		{"default allow", req("site.test", "192.0.2.7", "/page", "Mozilla"), ActionAllow, "default"},
-		{"allowlist ip", req("site.test", "10.1.2.3", "/page", "curl"), ActionAllow, "allowlist:ip"},
-		{"allowlist ua", req("site.test", "192.0.2.7", "/page", "compatible Googlebot/2.1"), ActionAllow, "allowlist:ua"},
-		{"allowlist path prefix", req("site.test", "203.0.113.9", "/.well-known/acme/x", "curl"), ActionAllow, "allowlist:path"},
+		{"allowlist ip", req("site.test", "10.1.2.3", "/page", "curl"), ActionAllow, "default"},
+		{"allowlist ua", req("site.test", "192.0.2.7", "/page", "compatible Googlebot/2.1"), ActionAllow, "default"},
+		{"allowlist path prefix", req("site.test", "203.0.113.9", "/.well-known/acme/x", "curl"), ActionAllow, "default"},
 		{"denylist ip", req("site.test", "198.51.100.66", "/page", "curl"), ActionDeny, "denylist:ip"},
-		{"allowlist beats denylist", req("site.test", "10.9.9.9", "/page", "curl"), ActionAllow, "allowlist:ip"},
+		{"domain denylist replacement retains exemption", req("site.test", "10.9.9.9", "/page", "curl"), ActionAllow, "default"},
 		{"honeypot", req("site.test", "192.0.2.8", "/wp-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded", req("site.test", "192.0.2.8", "/%77p-login.php", "Mozilla"), ActionDeny, "honeypot:path"},
 		{"honeypot url-encoded prefix", req("site.test", "192.0.2.8", "/%61dmin-old/secret", "Mozilla"), ActionDeny, "honeypot:path"},
@@ -244,7 +244,7 @@ func TestGuestConfigRejectsTrailingYAMLDocument(t *testing.T) {
 }
 
 func TestEvaluatePrecedence(t *testing.T) {
-	// allowlist -> denylist -> honeypot -> WAF rules; first terminal wins.
+	// Classification continues to denylist -> honeypot -> WAF enforcement.
 	gc := mustGuestConfig(t, `
 domains:
   x.test:
@@ -256,8 +256,8 @@ domains:
       enabled: true
       paths: [ "/robots.txt" ]
 `)
-	if d := gc.Evaluate(req("x.test", "203.0.113.5", "/robots.txt", "curl")); d.Reason != "allowlist:path" {
-		t.Fatalf("allowlist must win over denylist+honeypot, got %s/%s", d.Action, d.Reason)
+	if d := gc.Evaluate(req("x.test", "203.0.113.5", "/robots.txt", "curl")); d.Action != ActionDeny || d.Reason != "denylist:ip" || d.PoWExemption != "allowlist:path" {
+		t.Fatalf("denylist must win over exempt honeypot request, got %s/%s", d.Action, d.Reason)
 	}
 }
 
@@ -327,7 +327,7 @@ domains:
 		{"inherited denylist applies", req("site.test", "203.0.113.9", "/page", "curl"), ActionDeny, "denylist:ip"},
 		{"inherited honeypot applies", req("site.test", "198.51.100.1", "/trap", "curl"), ActionDeny, "honeypot:path"},
 		{"inherited rules apply", req("site.test", "198.51.100.1", "/app/.env", "curl"), ActionDeny, "waf:default-dotfile"},
-		{"own allowlist still works", req("site.test", "198.51.100.1", "/ok", "curl"), ActionAllow, "allowlist:path"},
+		{"own allowlist still works", req("site.test", "198.51.100.1", "/ok", "curl"), ActionAllow, "default"},
 		{"clean request allowed", req("site.test", "198.51.100.1", "/page", "curl"), ActionAllow, "default"},
 	}
 	for _, tc := range cases {
@@ -535,14 +535,14 @@ func TestDenylistIPv6TextualForms(t *testing.T) {
 // GuestDomain.resolve), so a rule that lives there applies to both by
 // construction. Adding it to the sidecar's own validate() instead left a guest
 // config free to carry allowlist.paths: ["/"], which prefix-matches every URL
-// and terminally allows every request: the WASM guest switched wholly off,
-// silently, by the exact entry the sidecar had just learned to reject.
+// and exempts every request from challenge rules, silently, by the exact
+// entry the sidecar had just learned to reject.
 //
 // Every case below loads clean if the check is moved back out of Compile.
 func TestGuestConfigRejectsInertPathLists(t *testing.T) {
 	cases := []struct{ name, yaml, want string }{
 		{
-			"allowlist / allows every request",
+			"allowlist / exempts every request",
 			`domains: { a.test: { allowlist: { paths: [ "/" ] } } }`,
 			"every request",
 		},

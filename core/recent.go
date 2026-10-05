@@ -38,14 +38,15 @@ import (
 // The buffer is per-instance and cleared on restart: a live operator view,
 // not an audit log (that role belongs to the structured decision log).
 type RecentDecision struct {
-	Time   time.Time `json:"time"`
-	Host   string    `json:"host"`
-	IP     string    `json:"ip"`
-	Method string    `json:"method"`
-	URI    string    `json:"uri"`
-	UA     string    `json:"ua"`
-	Action string    `json:"action"`
-	Reason string    `json:"reason"`
+	Time         time.Time `json:"time"`
+	Host         string    `json:"host"`
+	IP           string    `json:"ip"`
+	Method       string    `json:"method"`
+	URI          string    `json:"uri"`
+	UA           string    `json:"ua"`
+	Action       string    `json:"action"`
+	Reason       string    `json:"reason"`
+	PoWExemption string    `json:"pow_exemption,omitempty"`
 
 	// The fields below are set only on ActionSolve rows and omitted everywhere
 	// else, so a deny row is byte-identical on the wire to what it was before

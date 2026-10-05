@@ -174,8 +174,7 @@ func (s *nftSink) ensure() error {
 
 // skip filters what must never reach the kernel: loopback and link-local
 // unconditionally, private / special-purpose ranges unless allow_private is
-// set, the operator's never_block union (LB/CDN ranges plus every configured
-// allowlist prefix), and blocks shorter than min_ttl.
+// set, explicit never_block infrastructure ranges, and blocks shorter than min_ttl.
 func (s *nftSink) skip(a netip.Addr, ttl time.Duration) bool {
 	if !a.IsValid() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
 		return true

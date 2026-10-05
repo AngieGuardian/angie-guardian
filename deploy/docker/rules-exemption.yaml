@@ -1,0 +1,5 @@
+# Generic exemption ordering fixtures, appended after the unchanged common rules.
+rules:
+  - { id: fixture-challenge, action: challenge, keywords: [ "/ordered/" ] }
+  - { id: fixture-deny, action: deny, keywords: [ "/ordered/secret" ] }
+  - { id: fixture-block, action: block, keywords: [ "/ordered/scanner" ] }

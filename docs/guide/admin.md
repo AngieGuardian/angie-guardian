@@ -663,3 +663,7 @@ moment the page is opened. A reload (`generation` / `load_time` changing) resets
 that history rather than showing a bogus spike.
 
 Nothing here needs Angie PRO.
+
+Detailed recent decisions include optional `pow_exemption` classification.
+The dashboard shows it below the final reason; it does not replace a WAF deny
+or block reason. Compact chart feeds and reason filters use the final verdict.

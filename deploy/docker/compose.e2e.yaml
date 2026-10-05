@@ -17,6 +17,7 @@ services:
       - ${GUARDIAN_CONFIG:-./guardian.e2e.yaml}:/etc/guardian/guardian.yaml:ro
       - ./rules-common.yaml:/etc/guardian/rules.d/common.yaml:ro
       - ./rules-api.yaml:/etc/guardian/rules.d/api.yaml:ro
+      - ./rules-exemption.yaml:/etc/guardian/rules.d/exemption.yaml:ro
       - guardian-e2e-data:/var/lib/guardian
       - guardian-e2e-keys:/etc/guardian/keys
     expose:

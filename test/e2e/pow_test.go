@@ -16,8 +16,7 @@ import (
 
 const browserUA = "Mozilla/5.0 (X11; Linux x86_64) e2e"
 
-// TestAllowlistedPathReachesBackend confirms an allowlisted path skips the whole
-// pipeline and is proxied to the whoami backend (which echoes "Hostname:").
+// TestAllowlistedPathReachesBackend confirms an allowlisted path skips PoW and is proxied to the whoami backend (which echoes "Hostname:").
 func TestAllowlistedPathReachesBackend(t *testing.T) {
 	resp := get(t, "/robots.txt", powHost, browserUA, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -30,7 +29,7 @@ func TestAllowlistedPathReachesBackend(t *testing.T) {
 
 // TestDefaultsPathOverlay confirms a paths: overlay under defaults reaches
 // every host (localhost declares its own paths: map, wp.localhost declares
-// none) and, unlike an allowlist entry, only turns off the layer it names:
+// none) and only turns off the layer it names:
 // the WAF still inspects the exempted path.
 func TestDefaultsPathOverlay(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)

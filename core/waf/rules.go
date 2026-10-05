@@ -122,7 +122,17 @@ type MatchInput struct {
 
 // Match returns the first matching rule, or nil.
 func (rs *RuleSet) Match(in *MatchInput) *Rule {
+	return rs.MatchEnforcing(in, false)
+}
+
+// MatchEnforcing preserves first-match ordering, except that PoW-exempt
+// requests skip challenge rules and continue to later security rules. Explicit
+// allow rules remain terminal policy exceptions.
+func (rs *RuleSet) MatchEnforcing(in *MatchInput, exempt bool) *Rule {
 	for i := range rs.Rules {
+		if exempt && rs.Rules[i].Action == ActionChallenge {
+			continue
+		}
 		if rs.Rules[i].matches(in) {
 			return &rs.Rules[i]
 		}

@@ -4,7 +4,7 @@
 
 // Package botverify confirms that a client claiming to be a well-known
 // crawler really is one. A User-Agent string is free to forge, so a UA
-// allowlist entry like "Googlebot" would let any scraper skip the WAF; the
+// allowlist entry like "Googlebot" would let any scraper skip PoW; the
 // search engines therefore document reverse-DNS verification instead:
 //
 //  1. PTR lookup on the client IP (e.g. 66.249.66.1 ->
@@ -19,6 +19,8 @@
 // Verification results are cached in the shared store: an IP's confirmed
 // rDNS identity is a property of the IP, not of any one vhost's config, so
 // one cache entry serves every domain and survives restarts (pebble/buntdb/redis).
+// A bounded local cache preserves the remaining lifetime of stored identities
+// and permits store-free overload lookups. Reads never renew identity expiry.
 // DNS work is deduplicated per IP and capped globally so a flood of spoofed
 // UAs from many IPs degrades to "unverified" instead of a lookup storm.
 package botverify
@@ -29,6 +31,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -110,6 +113,7 @@ type Verifier struct {
 	store    store.Store
 	resolver Resolver
 	log      *slog.Logger
+	local    *localCache
 
 	sem chan struct{}
 
@@ -127,6 +131,7 @@ func New(st store.Store, log *slog.Logger) *Verifier {
 		store:    st,
 		resolver: net.DefaultResolver,
 		log:      log,
+		local:    newLocalCache(),
 		sem:      make(chan struct{}, maxConcurrent),
 		inflight: make(map[string]*call),
 	}
@@ -152,24 +157,30 @@ func (v *Verifier) Verify(ctx context.Context, ip string, opts Options) Result {
 		opts.NegativeTTL = time.Hour
 	}
 
-	if raw, ok, err := v.store.Get(ctx, keyPrefix+ip); err == nil && ok {
-		return decodeCache(string(raw))
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return Result{Status: StatusError}
 	}
+	a = a.Unmap()
+	if cached, ok := v.local.get(a, false); ok {
+		return cached.result()
+	}
+	flightKey := a.String()
 
 	// Deduplicate concurrent lookups for the same IP: one leader resolves,
 	// followers wait for its result (or give up with their own context).
 	v.mu.Lock()
-	if c, ok := v.inflight[ip]; ok {
+	if c, ok := v.inflight[flightKey]; ok {
 		v.mu.Unlock()
 		select {
 		case <-c.done:
-			return c.res
+			return cloneResult(c.res)
 		case <-ctx.Done():
 			return Result{Status: StatusError}
 		}
 	}
 	c := &call{done: make(chan struct{})}
-	v.inflight[ip] = c
+	v.inflight[flightKey] = c
 	v.mu.Unlock()
 
 	// Release the entry from a defer, not inline: this runs on the auth hot
@@ -180,12 +191,35 @@ func (v *Verifier) Verify(ctx context.Context, ip string, opts Options) Result {
 	// for that address for the life of the process.
 	defer func() {
 		v.mu.Lock()
-		delete(v.inflight, ip)
+		delete(v.inflight, flightKey)
 		v.mu.Unlock()
 		close(c.done)
 	}()
+	// Another leader may have filled the local cache before this registration.
+	if cached, ok := v.local.get(a, false); ok {
+		c.res = cached.result()
+		return cloneResult(c.res)
+	}
+	if reader, ok := v.store.(store.ExpiryReader); ok {
+		kv, found, err := reader.GetWithExpiry(ctx, keyPrefix+ip)
+		if err == nil && found {
+			if res, valid := decodeCacheRecord(string(kv.Value)); valid && (kv.ExpiresAt.IsZero() || kv.ExpiresAt.After(v.local.now())) {
+				v.local.put(a, res, kv.ExpiresAt)
+				c.res = res
+				return cloneResult(c.res)
+			}
+		} else if errors.Is(err, store.ErrCapabilityUnsupported) {
+			if res, found := v.readStore(ctx, ip); found {
+				c.res = res
+				return cloneResult(c.res)
+			}
+		}
+	} else if res, found := v.readStore(ctx, ip); found {
+		c.res = res
+		return cloneResult(c.res)
+	}
 	c.res = v.resolveAndCache(ctx, ip, opts)
-	return c.res
+	return cloneResult(c.res)
 }
 
 func (v *Verifier) resolveAndCache(ctx context.Context, ip string, opts Options) Result {
@@ -216,6 +250,11 @@ func (v *Verifier) resolveAndCache(ctx context.Context, ip string, opts Options)
 		value, ttl = cacheNone, opts.NegativeTTL
 	default:
 		value, ttl = cacheErr, errTTL
+	}
+	// Publish the fresh identity before potentially slow store I/O. Its local
+	// deadline starts at resolution, not at completion of the store write.
+	if a, err := netip.ParseAddr(ip); err == nil {
+		v.local.put(a.Unmap(), res, v.local.now().Add(ttl))
 	}
 	// Cache writes use the request context's values but must not be skipped
 	// just because the DNS budget ran out, hence a fresh short deadline.
@@ -284,15 +323,35 @@ func (v *Verifier) resolve(ctx context.Context, ip string) Result {
 	}
 }
 
-func decodeCache(raw string) Result {
+func cloneResult(r Result) Result { r.Hostnames = slices.Clone(r.Hostnames); return r }
+
+func (v *Verifier) readStore(ctx context.Context, ip string) (Result, bool) {
+	raw, ok, err := v.store.Get(ctx, keyPrefix+ip)
+	if err != nil || !ok {
+		return Result{}, false
+	}
+	return decodeCacheRecord(string(raw))
+}
+
+func decodeCacheRecord(raw string) (Result, bool) {
 	switch {
 	case strings.HasPrefix(raw, cacheOK):
 		hosts := strings.Split(raw[len(cacheOK):], ",")
-		return Result{Status: StatusConfirmed, Hostnames: hosts}
+		if len(hosts) > maxPTRs {
+			return Result{Status: StatusError}, false
+		}
+		for _, host := range hosts {
+			if host == "" || len(host) > 253 || host != strings.ToLower(host) || strings.ContainsAny(host, " \t\r\n") || strings.HasSuffix(host, ".") {
+				return Result{Status: StatusError}, false
+			}
+		}
+		return Result{Status: StatusConfirmed, Hostnames: hosts}, true
 	case raw == cacheNone:
-		return Result{Status: StatusNone}
+		return Result{Status: StatusNone}, true
+	case raw == cacheErr:
+		return Result{Status: StatusError}, true
 	default:
-		return Result{Status: StatusError}
+		return Result{Status: StatusError}, false
 	}
 }
 

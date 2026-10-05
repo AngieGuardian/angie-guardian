@@ -118,6 +118,7 @@ func (s *engineSnapshot) release() {
 // SetMetrics attaches a metrics sink. Call once at startup before serving.
 func (e *Engine) SetMetrics(m *metrics.Metrics) {
 	e.metrics = m
+	e.bots.SetMetrics(m)
 	snap := e.snap.Load()
 	snap.intel.SetMetrics(m)
 	snap.models.SetMetrics(m)
@@ -234,14 +235,14 @@ func NewEngine(cfg *Config, st store.Store, powMgr *pow.Manager, log *slog.Logge
 			// decision wins and the rest are skipped. WAF rules run before the
 			// token stage so vouched clients keep paying the cheap WAF checks,
 			// which is what stops a stolen token riding past the WAF rules.
-			allowlistStage{},          // 0. static allowlist
+			allowlistStage{},          // static PoW exemption classification
+			headerPoWExemptionStage{}, // header PoW exemption classification
 			denylistStage{},           // 1. static denylist
-			verifiedBotStage{},        //    rDNS-verified crawler allow / impostor deny
+			verifiedBotStage{},        // crawler PoW exemption / impostor deny
 			intelDenyStage{},          //    geo scoping + reputation feeds (deny half)
 			behaviourBlockStage{},     // 2. behavioural IP block (store-backed)
 			honeypotStage{},           //    trap paths: one hit blocks
 			wafRulesStage{},           // 4. WAF rules (literal/regex matchers)
-			headerPoWExemptionStage{}, // request-local PoW-only classification
 			powTokenStage{},           // 3. valid PoW token → allow
 			intelChallengeStage{},     //    geo scoping + reputation feeds (challenge half)
 			anomalyStage{},            // 5. anomaly score: deny / scaled challenge
@@ -411,13 +412,14 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 		}
 		d = Decision{Action: ActionRefuse, Reason: reason}
 	}
+	d.PoWExemption = env.powExemption
 	e.metrics.EvaluateLatency(time.Since(start).Seconds())
 	e.metrics.Decision(string(d.Action), reasonCategory(d.Reason), dcfg.label)
 	if d.Action != ActionAllow {
 		e.recent.add(RecentDecision{
 			Time: start, Host: req.Host, IP: req.RemoteAddr,
 			Method: req.Method, URI: req.URI, UA: req.UserAgent,
-			Action: string(d.Action), Reason: d.Reason,
+			Action: string(d.Action), Reason: d.Reason, PoWExemption: d.PoWExemption,
 		})
 	}
 	return d
@@ -583,7 +585,7 @@ func (e *Engine) recordEvents(ctx context.Context, ip string, dcfg *DomainConfig
 
 // ReportEvent lets transports feed behaviour events observed outside the
 // pipeline (failed PoW redemptions, forged/replayed challenge IDs).
-// Allowlisted IPs are never scored, so a shared office NAT can't block itself.
+// PoW exemptions do not exempt clients from security-event scoring.
 // The event is recorded only if its type has a configured threshold in
 // waf.ip_behaviour.thresholds (tamper and pow_fail are on by default), so PoW
 // redemption tampering is scored out of the box rather than gated behind a
@@ -598,9 +600,6 @@ func (e *Engine) ReportEvent(ctx context.Context, host, ip, evtype, detail strin
 	// the host is cheaply known (redeem failures), and events/blocks are
 	// IP-scoped anyway.
 	dcfg := snap.cfg.DomainFor(host)
-	if addr, err := netip.ParseAddr(ip); err == nil && dcfg.Allowlist.MatchIP(addr) {
-		return
-	}
 	e.recordEvents(ctx, ip, dcfg, []Event{{Type: evtype, Detail: detail}}, e.scoreboardFactor(snap.cfg))
 }
 
@@ -965,7 +964,7 @@ func (e *Engine) ScoreRequest(host, method, uri, ua string) anomaly.ScoreResult 
 type ShedVerdict int
 
 const (
-	// ShedPass: admit without a full evaluation (allowlisted, or a valid token).
+	// ShedPass: admit after cheap security checks (explicit WAF allow or valid token).
 	ShedPass ShedVerdict = iota
 	// ShedDeny: a cheap terminal check already rejects this request.
 	ShedDeny
@@ -978,8 +977,8 @@ const (
 // a saturated daemon still enforces blocks, denylists, local IP-intel verdicts,
 // honeypots and WAF rules while fast-passing clean vouched clients. It
 // deliberately does not run store reads, verified-bot DNS, anomaly scoring or
-// event-recording writes; those are what the shed exists to skip. Because it
-// preserves the terminal pre-token checks, a token can never become a WAF or
+// event-recording writes; crawler identities come only from the local cache.
+// Because it preserves the terminal pre-token checks, a token can never become a WAF or
 // policy bypass just because the daemon is saturated.
 func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	snap := e.acquireSnapshot()
@@ -991,12 +990,11 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	env := &stageEnv{
 		domain: dcfg, pow: e.pow, enforcer: e.enforcer,
 		rules: snap.rules, intel: snap.intel, attack: e.attack.State(),
+		headerExemptions: snap.headerExemptions, metrics: e.metrics,
 	}
 
-	// Stage 0: static allowlist wins over everything (same as the pipeline).
-	if stateless.CheckAllowlist(req, &dcfg.Allowlist) != nil {
-		return ShedPass
-	}
+	// Classification never grants admission on its own.
+	env.powExemption = stateless.MatchAllowlist(req, &dcfg.Allowlist)
 	// Stage 1: static denylist, through the stage's own implementation so the
 	// two cannot drift. Matching only IPs here was exactly that drift: the
 	// denylist grew uas and paths, CheckDenylist gained them, and this copy did
@@ -1031,13 +1029,21 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 		return ShedReject
 	}
 
-	// A claimed verified-bot identity with spoof_action=deny cannot be safely
-	// fast-passed without the stage's potentially blocking DNS verification.
-	// Shed it instead. This is preferable to letting a token minted before a
-	// config/DNS-state change bypass the bot-spoof policy under saturation.
+	// Bot claims require a fresh local identity. Never call Verify here: a
+	// cache miss would add store reads or DNS to the overload path.
 	vb := &dcfg.VerifiedBots
-	if vb.SpoofAction != "continue" && vb.match(req.LowerUA()) != nil {
-		return ShedReject
+	if bot := vb.match(req.LowerUA()); bot != nil {
+		identity, ok := e.bots.LookupCached(req.RemoteAddr)
+		if !ok {
+			return ShedReject
+		}
+		outcome := classifyBotIdentity(bot, identity.Status(), identity.MatchesDomains(bot.domainsLower), env)
+		if outcome == "error" {
+			return ShedReject
+		}
+		if outcome == "spoof" && vb.SpoofAction != "continue" {
+			return ShedDeny
+		}
 	}
 
 	// The remaining pre-token terminal stages are entirely local/store-free.

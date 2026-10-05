@@ -133,8 +133,8 @@ domains:
 
 The same map under `defaults` applies to every host at once, known or not,
 which is how public files stay reachable fleet-wide. An entry only turns off
-the layers it names, so unlike `allowlist.paths` (a terminal stage-0 allow)
-blocks, GeoIP, reputation and the WAF keep covering them:
+the layers it names. As with `allowlist.paths`, blocks, GeoIP, reputation and
+WAF security checks keep covering them; an allowlist also suppresses WAF challenges:
 
 ```yaml
 defaults:

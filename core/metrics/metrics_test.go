@@ -225,3 +225,26 @@ func TestNilMetricsProbeIsSafe(t *testing.T) {
 	m.StoreProbe("memory", true)
 	m.StoreProbeStale("memory")
 }
+
+func TestBotCacheMetrics(t *testing.T) {
+	m := New("pebble")
+	m.BotCacheLookup("normal", true)
+	m.BotCacheLookup("shed", false)
+	m.BotCacheEntries(2)
+	m.BotCacheEntries(-1)
+	f := family(t, m, "guardian_bot_cache_lookups_total")
+	if len(f.GetMetric()) != 2 {
+		t.Fatal("unexpected cache label cardinality")
+	}
+	for _, labels := range []map[string]string{{"path": "normal", "outcome": "hit"}, {"path": "shed", "outcome": "miss"}} {
+		if series(t, f, labels).GetCounter().GetValue() != 1 {
+			t.Fatal("wrong cache lookup count")
+		}
+	}
+	if series(t, family(t, m, "guardian_bot_cache_entries"), map[string]string{}).GetGauge().GetValue() != 1 {
+		t.Fatal("wrong resident entry count")
+	}
+	var nilMetrics *Metrics
+	nilMetrics.BotCacheLookup("shed", false)
+	nilMetrics.BotCacheEntries(1)
+}

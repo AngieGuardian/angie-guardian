@@ -15,6 +15,7 @@ import (
 func TestHeaderPoWExemptionThroughAngie(t *testing.T) {
 	t.Cleanup(clearGatewayBlocks)
 	clearGatewayBlocks()
+	before := metric(t, "guardian_pow_header_exemptions_total", `outcome="matched",verifier="none"`)
 
 	// Without the configured marker, this PoW-enabled path serves the normal
 	// interstitial. fetchChallenge supplies real navigation headers.
@@ -40,9 +41,9 @@ func TestHeaderPoWExemptionThroughAngie(t *testing.T) {
 		t.Fatalf("WAF challenge with marker: status %d, want backend 200", resp.StatusCode)
 	}
 
-	// The WAF-denied request terminates before classification, so only the
-	// backend pass and challenge-rule suppression increment this series.
-	if got := metric(t, "guardian_pow_header_exemptions_total", `outcome="matched",verifier="none"`); got < 2 {
-		t.Fatalf("matched classification metric = %v, want at least 2", got)
+	// Classification is separate from the verdict: safe, denied and suppressed
+	// challenge requests all retain their matched exemption diagnostic.
+	if got := metric(t, "guardian_pow_header_exemptions_total", `outcome="matched",verifier="none"`) - before; got != 3 {
+		t.Fatalf("matched classification metric delta = %v, want 3", got)
 	}
 }

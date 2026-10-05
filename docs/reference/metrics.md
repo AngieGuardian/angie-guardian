@@ -32,8 +32,8 @@ Label values are bounded by construction:
   `waf`, `anomaly`, `geo` or `reputation`. Reason-based dashboards therefore
   keep counting it.
 - `reason` is the decision reason collapsed to its leading category
-  (`waf:dotfile-probe` counts as `waf`), one of: `default`, `allowlist`,
-  `denylist`, `verified_bot`, `bot_spoof`, `geo`, `reputation`,
+  (`waf:dotfile-probe` counts as `waf`), one of: `default`,
+  `denylist`, `bot_spoof`, `geo`, `reputation`,
   `behaviour_block`, `waf`, `honeypot`, `anomaly`, `pow`.
 - `domain` is the normalized key of a configured domain, or `default` for any
   other Host. The raw Host header is client-controlled and unbounded, so it is
@@ -61,6 +61,8 @@ Label values are bounded by construction:
 |---|---|---|---|
 | `guardian_blocks_placed_total` | counter | `reason` | Behavioural IP blocks placed, by reason category (threshold blocks carry their event type, e.g. `rule_match`, `pow_fail` or `challenge_farm`). |
 | `guardian_bot_verifications_total` | counter | `bot`, `result` | [Verified-bot](/reference/configuration#verified-bots) rDNS checks by bot name and result: `verified`, `spoof` (definitively failed, an impostor), or `error` (transient DNS failure, falls through unverified). |
+| `guardian_bot_cache_lookups_total` | counter | `path`, `outcome` | Local bot identity lookups: `path=normal` or `shed`, `outcome=hit` or `miss`. Miss includes expired entries and overload lock contention; the shed path never falls back to DNS or the store. |
+| `guardian_bot_cache_entries` | gauge | — | Resident local identity entries, bounded to 8,192 per instance. Includes expired entries awaiting access or eviction; entries are not admission verdicts. |
 
 ## IP reputation feeds
 

@@ -89,31 +89,45 @@ defaults:
     # no-JS wait is weaker than PoW, see guardian.example.yaml).
     noscript_fallback: true
   allowlist:
-    # Empty like production: allowlisted ips/paths skip the entire pipeline.
+    # PoW exemptions retain WAF, denylists and existing bans.
     ips: []
     # No crawler names in uas: a UA string is forgeable. See verified_bots.
     uas: []
     paths:
-      # robots.txt stays a terminal allowlist entry here (unlike the
-      # production example, which exempts it with a defaults.paths pow
-      # overlay): the compose healthcheck and several tests fetch it before
-      # any challenge flow, and the block tests expect it to stay reachable.
+      # Narrow machine-facing paths skip PoW, while security checks remain.
       - /robots.txt
       - /favicon.ico
       - /.well-known/acme-challenge/
   denylist:
     ips: []
   # Fleet-wide per-path overlay: inherited by every host below and by unknown
-  # hosts, merged over each host's own settings. Unlike the allowlist entries
-  # above it is not terminal: only PoW is off here, the WAF still inspects the
+  # hosts, merged over each host's own settings. Only PoW is off here, while
+  # the WAF still inspects the
   # request. TestDefaultsPathOverlay asserts both halves.
   paths:
     "/public-feed.xml":
       pow: { enabled: false }
   # verified_bots is granted per domain (below) like production, never in
-  # defaults: a confirmed crawler identity is a terminal allow.
+  # defaults: a confirmed crawler identity grants only a PoW exemption.
 
 domains:
+  # Fictional machine-client fixtures: every exemption retains security checks.
+  ua-exempt.localhost:
+    allowlist: { uas: [ FixtureMachine ] }
+    waf:
+      rules: { files: [ /etc/guardian/rules.d/exemption.yaml ] }
+      honeypot: { enabled: true, paths: [ /trap ] }
+  path-exempt.localhost:
+    allowlist: { paths: [ /exempt/ ] }
+    waf:
+      rules: { files: [ /etc/guardian/rules.d/exemption.yaml ] }
+      honeypot: { enabled: true, paths: [ /exempt/trap ] }
+  network-exempt.localhost:
+    # Local compose clients arrive through a private bridge or loopback.
+    allowlist: { ips: [ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 ] }
+    waf:
+      rules: { files: [ /etc/guardian/rules.d/exemption.yaml ] }
+      honeypot: { enabled: true, paths: [ /trap ] }
   admission.localhost:
     pow: { enabled: false }
   baseline.localhost: {}

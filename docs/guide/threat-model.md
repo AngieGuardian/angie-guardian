@@ -58,9 +58,10 @@ tools that own these problems.
   request line and headers, by design. Body-borne payloads (SQL in a POST form,
   file-upload exploits) are the backend's input validation to handle, or a full
   inline WAF's. Guardian never sees the body.
-- **Attacks from inside a trusted range.** Anything on the static allowlist or
-  a verified crawler is admitted with reduced scrutiny.
-  Allowlist deliberately; an allowlisted attacker is an allowlisted attacker.
+- **PoW-exempt clients.** Allowlists and verified crawler identity suppress
+  challenge-only outcomes, while security denies and blocks still apply.
+  User-Agent and public-path matches are client-controlled classifications;
+  application authentication and authorization remain necessary.
 - **A native solver outpacing browsers.** Proof-of-work is a *cost* mechanism,
   not a bypass-proof gate. GPUs and ASICs can solve SHA-256 much faster than a
   browser; Argon2id reduces that hardware advantage by requiring memory, but

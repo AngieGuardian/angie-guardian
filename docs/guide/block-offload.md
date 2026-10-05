@@ -115,11 +115,10 @@ it is:
 
 - loopback, link-local, private or special-purpose (RFC1918, the
   `100.64.0.0/10` CGNAT range, IPv6 ULA, unspecified, multicast);
-- in a `never_block` CIDR;
-- in **any** configured
-  [`allowlist`](/reference/configuration#allowlist-denylist), across defaults,
-  domains and path overlays (the kernel sees neither Host nor path, so
-  allowlist entries must win globally at this layer).
+- in an explicitly configured `never_block` CIDR.
+
+PoW allowlists do not exclude addresses from block offload. Use `never_block`
+for infrastructure ranges; application-level security bans still apply.
 
 Private and special-purpose ranges are withheld by default because a
 misconfigured trusted proxy surfacing an internal hop (a bridge gateway, an LB

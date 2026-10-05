@@ -28,6 +28,11 @@ import (
 //     feed: the same intel stages keyed by IPv6 clients.
 func intelEngine(t *testing.T) (*Engine, *pow.Manager) {
 	t.Helper()
+	return intelEngineWithPolicy(t, "")
+}
+
+func intelEngineWithPolicy(t *testing.T, policy string) (*Engine, *pow.Manager) {
+	t.Helper()
 	dir := t.TempDir()
 	countryDB := inteltest.WriteCountryDB(t, dir, map[string]string{
 		"198.51.100.0/24":    "NL",
@@ -61,7 +66,7 @@ reputation:
     - { name: bad-actors, file: %s, action: deny }
     - { name: gray-actors, file: %s, action: challenge }
 defaults:
-  geo:
+%s  geo:
     enabled: true
     deny: { countries: [ RU ] }
     challenge: { countries: [ CN ], asns: [ 64666 ] }
@@ -78,7 +83,7 @@ domains:
   nointel.test:
     geo: { enabled: false }
     reputation: { enabled: false }
-`, countryDB, asnDB, denyFeed, chalFeed))
+`, countryDB, asnDB, denyFeed, chalFeed, policy))
 
 	st := store.NewMemory()
 	t.Cleanup(func() { st.Close() })
