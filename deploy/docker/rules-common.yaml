@@ -48,13 +48,6 @@ rules:
     targets: [ path ]
     keywords:
       - "/.env"
-      - "/.env.local"
-      - "/.env.production"
-      - "/.env.staging"
-      - "/.env.backup"
-      - "/.env.old"
-      - "/.env.save"
-      - "/.env.dev"
       - "/.git/"
       - "/.git-rewrite/"
       - "/.gitignore"
@@ -68,7 +61,6 @@ rules:
       - "/.gitlab-ci.yml"
       - "/.github/"
       - "/.docker"
-      - "/.dockercfg"
       - "/.npmrc"
       - "/.DS_Store"
       - "/.vscode/"
@@ -101,16 +93,17 @@ rules:
       - "/azure-credentials.json"
       - "/azure.json"
       - "/terraform.tfstate"
-      - "/terraform.tfstate.backup"
       - "/terraform.tfvars"
       - "/creds.json"
       - "/privatekey"
-      - "/privatekey.json"
       - "/keyfile.json"
       - "/key.json"
       - "/stripe.env"
       - "/boto.cfg"
       - "/kube/config"
+    # Exact credential filenames seen in scans; keep generic JSON routes usable.
+    regexes:
+      - '(?i)(?:^|/)(?:service-account|sa|gcp-sa|credentials|google-credentials|google-key|application_default_credentials|firebase-adminsdk|firebase-key)\.json(?:$|/)'
 
   # Container, serverless, and application configs
   - id: application-config-probe
@@ -119,8 +112,6 @@ rules:
     targets: [ path ]
     keywords:
       - "/docker-compose"
-      - "/docker-compose.override.yml"
-      - "/docker-compose.dev.yml"
       - "/serverless.json"
       - "/serverless.yml"
       - "/amplify.yml"
@@ -135,7 +126,6 @@ rules:
       - "/application.yml"
       - "/secrets.yml"
       - "/config/database.yml"
-      - "/config/secrets.yml"
       - "/config/mail.php"
       - "/config/smtp.php"
       - "/web.config"
@@ -143,9 +133,9 @@ rules:
       - "/package-lock.json"
       - "/yarn.lock"
 
-  # Database dumps and environment backups
+  # Database dumps, environment backups, and diagnostic disclosures
   - id: database-backup-probe
-    description: Direct requests for database exports, log dumps, and web server info scripts
+    description: Direct requests for database exports, log dumps, and server diagnostic or environment disclosures
     action: block
     targets: [ path ]
     keywords:
@@ -155,6 +145,11 @@ rules:
       - "/db.sqlite"
       - "/phpinfo.php"
       - "/info.php"
+
+    # Additional diagnostic routes; generic /info and /test.php remain usable.
+    regexes:
+      - '(?i)(?:^|/)(?:phpinfo|php-info\.php|phpversion\.php|_phpinfo\.php|old_phpinfo\.php|pinfo\.php|server-info\.php|server-status\.php)(?:$|/|\.(?:bak|old|save)$|~$)'
+      - '(?i)^/(?:webroot/index\.php/)?_environment(?:/|$)'
 
   # Full-site and database archive backups
   - id: archive-backup-probe
