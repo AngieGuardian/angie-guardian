@@ -356,7 +356,9 @@ func (e *Engine) Evaluate(ctx context.Context, req *RequestContext) Decision {
 	dcfg := snap.cfg.scopeForRequest(req)
 	// One posture load per request, shared by every stage so a mid-request
 	// transition can't split the decision.
-	env := &stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, headerExemptions: snap.headerExemptions, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
+	env := stageEnvs.Get().(*stageEnv)
+	defer releaseStageEnv(env)
+	*env = stageEnv{store: e.store, domain: dcfg, pow: e.pow, rules: snap.rules, models: snap.models, intel: snap.intel, headerExemptions: snap.headerExemptions, metrics: e.metrics, bots: e.bots, enforcer: e.enforcer, attack: e.attack.State()}
 	d := Decision{Action: ActionAllow, Reason: "default"}
 	for _, s := range e.stages {
 		sd, err := s.Evaluate(ctx, req, env)
@@ -995,7 +997,9 @@ func (e *Engine) ShedDecisionWithReason(req *RequestContext) (ShedVerdict, strin
 	}
 	defer snap.release()
 	dcfg := snap.cfg.scopeForRequest(req)
-	env := &stageEnv{
+	env := stageEnvs.Get().(*stageEnv)
+	defer releaseStageEnv(env)
+	*env = stageEnv{
 		domain: dcfg, pow: e.pow, enforcer: e.enforcer,
 		rules: snap.rules, intel: snap.intel, attack: e.attack.State(),
 		headerExemptions: snap.headerExemptions, metrics: e.metrics,

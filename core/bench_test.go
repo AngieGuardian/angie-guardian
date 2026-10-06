@@ -379,9 +379,24 @@ rules:
 // a legitimate request scanned against the whole rule set and matching none of
 // it. A benchmark that only measures a matching request measures the rare path.
 func BenchmarkEvaluateWAFClean(b *testing.B) {
+	benchmarkEvaluateWAFPolicy(b, []byte(benchRulesYAML))
+}
+
+// BenchmarkEvaluateWAFCommon covers the shipped policy, not the small
+// synthetic rule set. Every iteration builds a fresh request with cold memos.
+func BenchmarkEvaluateWAFCommon(b *testing.B) {
+	policy, err := os.ReadFile("../deploy/rules-common.yaml")
+	if err != nil {
+		b.Fatal(err)
+	}
+	benchmarkEvaluateWAFPolicy(b, policy)
+}
+
+func benchmarkEvaluateWAFPolicy(b *testing.B, policy []byte) {
+	b.Helper()
 	dir := b.TempDir()
 	rules := filepath.Join(dir, "rules.yaml")
-	if err := os.WriteFile(rules, []byte(benchRulesYAML), 0o600); err != nil {
+	if err := os.WriteFile(rules, policy, 0o600); err != nil {
 		b.Fatal(err)
 	}
 	cfgPath := filepath.Join(dir, "guardian.yaml")

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 
 	"github.com/melroy89/angie-guardian/core/anomaly"
 	"github.com/melroy89/angie-guardian/core/attackmode"
@@ -34,7 +35,7 @@ type Stage interface {
 // stageEnv bundles what stages may consult besides the request itself.
 // The bounded metric label for the resolved domain lives on domain itself
 // (DomainConfig.label, never the raw Host), not as a field here: stageEnv is
-// allocated once per request and a string header is 16 bytes on the hot path.
+// borrowed for one request and a string header is 16 bytes on the hot path.
 type stageEnv struct {
 	store            store.Store
 	domain           *DomainConfig
@@ -53,6 +54,19 @@ type stageEnv struct {
 	// 0 unchecked, 1 no match, 2 matched. Kept byte-sized on the hot path.
 	headerExempt uint8
 	powExemption string
+}
+
+// Environments are request-local even when their storage is reused. Reset
+// every pointer and memo before putting one back; no stage retains the env.
+var stageEnvs = sync.Pool{New: func() any { return new(stageEnv) }}
+
+func resetStageEnv(env *stageEnv) {
+	*env = stageEnv{}
+}
+
+func releaseStageEnv(env *stageEnv) {
+	resetStageEnv(env)
+	stageEnvs.Put(env)
 }
 
 // effBits resolves the difficulty window for the resolved domain, shifted up
