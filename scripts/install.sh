@@ -125,6 +125,12 @@ install_operator_cli() {
   install -D -m 0755 "$package_dir/guardianctl" "$install_dir/guardianctl"
 }
 
+install_trainer() {
+  local package_dir=$1 install_dir=$2
+  [[ -f "$package_dir/guardian-train" && -x "$package_dir/guardian-train" ]] || error 'release archive does not contain a valid guardian-train executable'
+  install -D -m 0755 "$package_dir/guardian-train" "$install_dir/guardian-train"
+}
+
 main() {
   require_root
   require_platform
@@ -146,12 +152,14 @@ main() {
   tar --no-same-owner -xzf "$work_dir/$archive" -C "$work_dir"
 
   [[ -x "$package_dir/guardiand" ]] || error 'release archive does not contain guardiand'
+  [[ -f "$package_dir/guardian-train" && -x "$package_dir/guardian-train" ]] || error 'release archive does not contain a valid guardian-train executable'
   [[ -f "$package_dir/guardian.example.yaml" ]] || error 'release archive does not contain guardian.example.yaml'
   [[ -f "$package_dir/deploy/rules-common.yaml" ]] || error 'release archive does not contain starter rules'
   [[ -f "$package_dir/deploy/guardiand.service" ]] || error 'release archive does not contain the systemd unit'
   [[ -f "$package_dir/deploy/angie-guardian.conf" ]] || error 'release archive does not contain the Angie endpoint snippet'
   [[ -f "$package_dir/deploy/angie-guardian-limits.conf" ]] || error 'release archive does not contain the Angie baseline-limit snippet'
   [[ -f "$package_dir/deploy/angie-guardian-location.conf" ]] || error 'release archive does not contain the Angie location snippet'
+  [[ -f "$package_dir/deploy/angie-json-log.conf" ]] || error 'release archive does not contain the Angie JSON log snippet'
   [[ -f "$package_dir/deploy/angie-hardening-http.conf" ]] || error 'release archive does not contain the Angie hardening http-scope snippet'
   [[ -f "$package_dir/deploy/angie-hardening-server.conf" ]] || error 'release archive does not contain the Angie hardening server-scope snippet'
   [[ -f "$package_dir/assets/argon2id-worker-db57362e2dddfb66.js" ]] || error 'release archive does not contain Argon2id worker asset'
@@ -178,10 +186,12 @@ main() {
 
   install -D -m 0755 "$package_dir/guardiand" "$INSTALL_DIR/guardiand"
   install_operator_cli "$package_dir" "$INSTALL_DIR"
+  install_trainer "$package_dir" "$INSTALL_DIR"
   install_preserving_local "$package_dir/deploy/guardiand.service" "/etc/systemd/system/${SERVICE_NAME}.service" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian.conf" "$ANGIE_DIR/angie-guardian.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian-limits.conf" "$ANGIE_DIR/angie-guardian-limits.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-guardian-location.conf" "$ANGIE_DIR/angie-guardian-location.conf" 0644
+  install_preserving_local "$package_dir/deploy/angie-json-log.conf" "$ANGIE_DIR/angie-json-log.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-hardening-http.conf" "$ANGIE_DIR/angie-hardening-http.conf" 0644
   install_preserving_local "$package_dir/deploy/angie-hardening-server.conf" "$ANGIE_DIR/angie-hardening-server.conf" 0644
   install -d -m 0755 /usr/share/guardian/assets
@@ -203,10 +213,14 @@ main() {
   printf '%s\n' "  Config:  ${CONFIG_DIR}/guardian.yaml (preserved on upgrades)"
   printf '%s\n' '  Health:  curl --fail http://127.0.0.1:8071/healthz'
   printf '%s\n' '           curl --fail http://127.0.0.1:8072/readyz'
+  printf '%s\n' '  Trainer: guardian-train -version (scheduled training requires separate configuration)'
   printf '\n%s\n' 'Angie was not changed or reloaded. After reviewing guardian.yaml, include angie-guardian-limits.conf once in Angie http{}, then add these inside each protected server block:'
   printf '%s\n' '  include angie-guardian-limits.conf;  # http{} only'
   printf '%s\n' '  include angie-guardian.conf;'
   printf '%s\n' '  include angie-guardian-location.conf;'
+  printf '%s\n' 'Optional JSON access logging (snippet installed in /etc/angie):'
+  printf '%s\n' '  include angie-json-log.conf;  # http{} only'
+  printf '%s\n' '  access_log /var/log/angie/example.com.access.json guardian_json;  # protected server{}; choose your log path'
   printf '%s\n' 'Optional Angie server-hardening profile (review its upload/streaming limits first):'
   printf '%s\n' '  include angie-hardening-http.conf;    # http{} only'
   printf '%s\n' '  include angie-hardening-server.conf;  # public server{} only'

@@ -78,7 +78,10 @@ include angie-guardian-location.conf;
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
-Install the JSON format together with the matching Guardian endpoint, capture
+The host installer copies these snippets to `/etc/angie`, preserving existing
+files. Enable the format and access log with the directives above.
+
+For a manual installation, copy the JSON format together with the matching Guardian endpoint, capture
 and limit snippets. When upgrading customized snippets, merge the matching
 changes while preserving your deployment settings, then test before reloading:
 

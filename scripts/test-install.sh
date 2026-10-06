@@ -85,3 +85,27 @@ if (install_operator_cli "$cli_package" "$cli_install") 2>/dev/null; then
   echo 'non-executable guardianctl unexpectedly installed' >&2
   exit 1
 fi
+
+# The trainer must be installed and upgraded with the daemon's release.
+trainer_package="$test_dir/trainer-package"
+trainer_install="$test_dir/trainer-install"
+mkdir -p "$trainer_package"
+printf '%s\n' '#!/bin/sh' 'echo trainer-v1' >"$trainer_package/guardian-train"
+chmod 0755 "$trainer_package/guardian-train"
+install_trainer "$trainer_package" "$trainer_install"
+[[ "$("$trainer_install/guardian-train")" == trainer-v1 ]]
+[[ "$(stat -c %a "$trainer_install/guardian-train")" == 755 ]]
+printf '%s\n' '#!/bin/sh' 'echo trainer-v2' >"$trainer_package/guardian-train"
+install_trainer "$trainer_package" "$trainer_install"
+[[ "$("$trainer_install/guardian-train")" == trainer-v2 ]]
+chmod 0644 "$trainer_package/guardian-train"
+if (install_trainer "$trainer_package" "$trainer_install") 2>/dev/null; then
+  echo 'non-executable guardian-train unexpectedly installed' >&2
+  exit 1
+fi
+rm "$trainer_package/guardian-train"
+if (install_trainer "$trainer_package" "$trainer_install") 2>/dev/null; then
+  echo 'missing guardian-train unexpectedly accepted' >&2
+  exit 1
+fi
+[[ "$("$trainer_install/guardian-train")" == trainer-v2 ]]

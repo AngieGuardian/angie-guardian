@@ -55,7 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/s
 ```
 
 The installer downloads and verifies the release archive, installs
-`guardiand`, creates the `guardian` service account and configuration layout,
+`guardiand`, `guardianctl`, and `guardian-train` in `/usr/local/bin`, creates
+the `guardian` service account and configuration layout,
 installs the systemd unit and Angie snippets, validates the configuration, and
 enables and starts the service. Existing local configuration, rules, unit, and
 Angie snippet files are preserved; mismatches are reported for manual review.
@@ -64,7 +65,9 @@ It does not edit Angie virtual hosts or reload Angie. After reviewing
 `/etc/guardian/guardian.yaml`, wire the three required Guardian integration
 snippets into your Angie configuration as described in the
 [Getting Started guide](/guide/getting-started). Then run `angie -t` and reload
-Angie yourself. The two Angie hardening snippets are optional.
+Angie yourself. The two Angie hardening snippets are optional. The trainer
+binary is installed, but scheduled training requires the separate
+[trainer setup](#preferred-systemd-timer) below.
 
 #### Optional: manual installation
 
@@ -289,8 +292,9 @@ artifacts) insufficient coverage or excessive mean/p95 score drift. It keeps
 JSON reports and the previous artifact, then promotes an accepted candidate
 with an atomic rename.
 
-Install the trainer from the same release archive as the daemon, then install
-and configure the templates:
+The host installer already installs the trainer from the same release as the
+daemon. For a manual installation, install the binary as shown below. In both
+cases, install and configure the templates:
 
 ```sh
 sudo install -Dm755 guardian-train /usr/local/bin/guardian-train
