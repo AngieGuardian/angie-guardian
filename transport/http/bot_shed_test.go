@@ -71,6 +71,13 @@ defaults:
 	if d := h.engine.Evaluate(t.Context(), &core.RequestContext{Host: host, RemoteAddr: ip, URI: "/items", UserAgent: ua}); d.PoWExemption != "verified_bot:googlebot" {
 		t.Fatalf("warm: %+v", d)
 	}
+	// Redemption clears escalation counters asynchronously. Drain that setup
+	// work before measuring store access from the saturated HTTP requests.
+	flushCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := mgr.FlushCounters(flushCtx); err != nil {
+		t.Fatalf("flush setup counters: %v", err)
+	}
 	h.inflight.Add(1)
 	defer h.inflight.Add(-1)
 	before, dns := ops.calls.Load(), resolver.calls.Load()
@@ -90,7 +97,7 @@ defaults:
 			t.Fatalf("%+v: %d %v", tc, resp.StatusCode, resp.Header)
 		}
 	}
-	if ops.calls.Load() != before || resolver.calls.Load() != dns {
-		t.Fatal("saturated HTTP path accessed store or DNS")
+	if after, dnsAfter := ops.calls.Load(), resolver.calls.Load(); after != before || dnsAfter != dns {
+		t.Fatalf("saturated HTTP path accessed store or DNS: store %d -> %d, DNS %d -> %d", before, after, dns, dnsAfter)
 	}
 }
