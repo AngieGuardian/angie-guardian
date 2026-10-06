@@ -8,6 +8,7 @@ package e2e
 
 import (
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 )
@@ -28,10 +29,35 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 		clearGatewayBlocks()
 	})
 
+	transport := &http.Transport{MaxConnsPerHost: 1}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport}
+	fetch := func(uri string, wantReuse bool) *http.Response {
+		r, err := http.NewRequest(http.MethodGet, site+uri, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Host = powHost
+		r.Header.Set("User-Agent", browserUA)
+		reused := false
+		r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}))
+		response, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wantReuse && !reused {
+			response.Body.Close()
+			t.Fatal("failed-auth isolation request did not reuse the Angie connection")
+		}
+		return response
+	}
+
 	// Sanity: with guardiand up, an unvouched GET is challenged (proof the
 	// sidecar is actually in the path before we stop it).
-	if r := get(t, "/pre-check", powHost, browserUA, nil); r.StatusCode != http.StatusOK {
+	if r := fetch(uniqueAuditURI("/pre-check"), false); r.StatusCode != http.StatusOK {
 		t.Fatalf("pre-check (guardiand up): status %d, want 200 interstitial", r.StatusCode)
+	} else {
+		bodyOf(t, r)
 	}
 
 	stopGuardiand(t)
@@ -54,15 +80,31 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 	// With the sidecar down, the site must still serve the backend (fail-open).
 	// Use a normal path to prove the original backend handler resumes.
 	before := backendCount(t)
-	resp := get(t, "/still-up", powHost, browserUA, nil)
+	failedURI := uniqueAuditURI("/still-up")
+	resp := fetch(failedURI, true)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("fail-open: status %d with guardiand down, want 200 (backend served)", resp.StatusCode)
 	}
 	if body := bodyOf(t, resp); !strings.Contains(body, "Hostname:") {
 		t.Fatalf("fail-open did not serve the backend; body:\n%s", body)
 	}
-	if after := backendCount(t); after != before+1 {
-		t.Errorf("fail-open backend delta = %d, want exactly 1", after-before)
+	ctr, err := stack.ServiceContainer(t.Context(), "angie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRecord, _ := accessLogRecord(t, ctr, failedURI)
+	// Docker may refuse the old peer connection or blackhole its address.
+	// Assert the observed failure, never relabel a timeout as a refusal.
+	if failedRecord.AuthUpstreamStatus != "502" && failedRecord.AuthUpstreamStatus != "504" {
+		t.Fatalf("stopped sidecar upstream status = %q", failedRecord.AuthUpstreamStatus)
+	}
+	assertAccessDecision(t, ctr, failedURI, "", "", "204", failedRecord.AuthUpstreamStatus, 200, true)
+	publicURI := uniqueAuditURI("/audit-public/after-failed-auth")
+	public := fetch(publicURI, true)
+	bodyOf(t, public)
+	assertAccessDecision(t, ctr, publicURI, "", "", "", "", 200, true)
+	if after := backendCount(t); after != before+2 {
+		t.Errorf("fail-open backend delta = %d, want exactly 2", after-before)
 	}
 }
 

@@ -1161,12 +1161,20 @@ domains:
 			resp.StatusCode, resp.Header.Get("X-Guardian-Action"))
 	}
 
+	if got := resp.Header.Get("X-Guardian-Reason"); got != "admission:max_inflight" {
+		t.Fatalf("shed reason = %q, want admission:max_inflight", got)
+	}
+
 	// A token holder still passes (cheap stateless check, no store).
 	th := guardianHeaders("html.test", ip, "/page", ua)
 	th["X-Guardian-Cookie"] = pow.CookieName + "=" + cookie
 	resp = do(t, "GET", ts.URL+"/auth", th, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token holder under saturation: status = %d, want 200", resp.StatusCode)
+	}
+
+	if got := resp.Header.Get("X-Guardian-Reason"); got != "pow:token" {
+		t.Fatalf("overload token reason = %q, want pow:token", got)
 	}
 
 	// A token is not a WAF bypass. The normal pipeline runs honeypot and
@@ -1178,6 +1186,13 @@ domains:
 		resp = do(t, "GET", ts.URL+"/auth", bad, nil)
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("token holder requesting %s under saturation: status = %d, want 403", uri, resp.StatusCode)
+		}
+		wantReason := "waf:dotfile"
+		if uri == "/trap" {
+			wantReason = "honeypot:path"
+		}
+		if got := resp.Header.Get("X-Guardian-Reason"); got != wantReason {
+			t.Fatalf("overload deny reason = %q, want %q", got, wantReason)
 		}
 	}
 
@@ -1200,6 +1215,9 @@ domains:
 	resp = do(t, "GET", ts.URL+"/auth", dh, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denylisted token holder under saturation: status = %d, want 403 (shed must not bypass the denylist)", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Guardian-Reason"); got != "denylist:ip" {
+		t.Fatalf("overload denylist reason = %q", got)
 	}
 }
 

@@ -1,7 +1,7 @@
 # Load Testing
 
-`guardian-loadtest` drives Guardian's HTTP hot paths directly, or the complete
-refusal route through Angie, over keepalive connections. It reports throughput
+`guardian-loadtest` drives Guardian's HTTP hot paths directly, or allow, deny and
+refusal routes through Angie, over keepalive connections. It reports throughput
 and latency percentiles. Run it before relying on a deployment near its
 throughput budget.
 
@@ -32,6 +32,8 @@ stateless path.
 | `refuse-auth` | directly measure `/auth` recording `ActionRefuse` and returning the 401 Angie routes onward | same as `allow` |
 | `refuse-challenge` | directly measure `/challenge` consuming the relayed refusal verdict and returning its small 403 | none |
 | `refuse-angie` | send one original request through Angie's real `/auth` → `@guardian_challenge` → 403 route | combines the two Guardian hops above |
+| `allow-angie` | authorize one original request through Angie, then fetch an application 200 | same auth work as `allow`, plus the application hop |
+| `deny-angie` | send one original request through Angie to a host configured to deny this client; expect 403 | deny auth check, plus the configured denied-page hop |
 
 ## Run it
 
@@ -55,6 +57,12 @@ guardian-loadtest -scenario refuse-challenge -host example.com -c 64 -warmup 500
 # counts original client requests, each of which makes both Guardian hops.
 # Angie supplies the real connection address, so -ip does not apply here.
 guardian-loadtest -scenario refuse-angie -url http://127.0.0.1:8080 -host example.com -c 64 -warmup 50000 -n 500000
+
+# Full application route: configure /loadtest?x=1 to return 200 on a PoW-off host.
+guardian-loadtest -scenario allow-angie -url http://127.0.0.1:8080 -host api.example.com -c 64 -warmup 50000 -n 500000
+
+# Configure Guardian to deny the real client address on this disposable host.
+guardian-loadtest -scenario deny-angie -url http://127.0.0.1:8080 -host denied.example.com -c 64 -warmup 50000 -n 500000
 
 # Write path (requires PoW enabled): one synchronous challenge CAS per request;
 # per-IP counters are counted in-process and flushed to the store in background.
@@ -92,9 +100,26 @@ second. Read it before trusting the aggregate: a flat line is a steady state,
 a falling line means the run was measuring store growth and only a fixed-work
 (`-n`) comparison against another machine or commit is meaningful.
 
-The refusal scenarios also validate the headers that identify the intended
-route. Treat any non-zero `unexpected-status` or `unexpected-contract` count as
-an invalid run, even if its throughput looks plausible.
+The `*-angie` scenarios use the HTTP Host and User-Agent of an ordinary client;
+they do not send trusted `X-Guardian-*` identity headers, and `-ip` has no effect.
+Confirm allow/deny attribution in the JSON access log: an application 403 or a
+challenge 200 can otherwise satisfy the expected status. Use origin keepalive
+pooling when measuring proxy capacity, and record active admission limits.
+Repeated requests from one client can hit the challenge-path rate limit during
+`refuse-angie`; 429s measure admission, not successful refusal throughput.
+
+`warmup:` reports discarded attempts and their own error/status/contract counts.
+`requests:` reports only measured completed responses and measured failures;
+`statuses:` lists measured HTTP response counts, for example `200=950 503=50`.
+Transport failures without a response do not enter that histogram; a response
+whose body fails to drain enters it but counts as an error, not a completion.
+With `-n`, failed attempts consume the fixed request budget.
+
+The refusal scenarios also validate identifying response headers. Treat any
+non-zero error, `unexpected-status` or `unexpected-contract` count in either
+phase as an invalid successful-path run, even if throughput looks plausible.
+Use the same load-generator binary when comparing daemon revisions; changes to
+the generator's accounting can affect its CPU cost.
 
 ## Benchmark results
 

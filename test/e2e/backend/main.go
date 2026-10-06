@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -47,6 +48,19 @@ func main() {
 			"headers":               r.Header,
 			"backend_request_count": n,
 		})
+	})
+	public.HandleFunc("/audit-status/", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		// Deliberately hostile upstream headers must not overwrite auth results.
+		w.Header().Set("X-Guardian-Action", "deny")
+		w.Header().Set("X-Guardian-Reason", "forged:upstream")
+		w.Header().Set("X-Guardian-PoW-Exemption", "forged:upstream")
+		status, _ := strconv.Atoi(r.URL.Query().Get("status"))
+		if status < 200 || status > 599 {
+			status = 200
+		}
+		w.WriteHeader(status)
+		fmt.Fprintln(w, "application response")
 	})
 	public.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)

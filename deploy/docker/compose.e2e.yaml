@@ -54,6 +54,7 @@ services:
       - ../angie-hardening-http.conf:/etc/angie/angie-hardening-http.conf:ro
       - ../angie-hardening-server.conf:/etc/angie/angie-hardening-server.conf:ro
       - ../angie-guardian.conf:/etc/angie/angie-guardian.conf:ro
+      - ../angie-json-log.conf:/etc/angie/angie-json-log.conf:ro
       - ../angie-guardian-location.conf:/etc/angie/angie-guardian-location.conf:ro
       - ../../web/vendor/guardian-argon2:/usr/share/guardian/assets:ro
       - ./basic.htpasswd:/etc/angie/basic.htpasswd:ro

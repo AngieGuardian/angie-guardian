@@ -200,7 +200,9 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			// blocked or denylisted IP is still denied (never fast-passed on a
 			// token); a clean token holder or explicit WAF allow can pass;
 			// anyone else is shed with a 503 rather than a full evaluation.
-			switch s.engine.ShedDecision(req) {
+			verdict, reason := s.engine.ShedDecisionWithReason(req)
+			w.Header().Set("X-Guardian-Reason", reason)
+			switch verdict {
 			case core.ShedPass:
 				s.metrics.Shed("pass_token")
 				w.Header().Set("X-Guardian-Action", string(core.ActionAllow))
@@ -234,6 +236,9 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("X-Guardian-Action", string(d.Action))
 	w.Header().Set("X-Guardian-Reason", d.Reason)
+	if d.PoWExemption != "" {
+		w.Header().Set("X-Guardian-PoW-Exemption", d.PoWExemption)
+	}
 	switch d.Action {
 	case core.ActionAllow:
 		// Routine/default allows stay silent; explicit WAF allows and PoW
