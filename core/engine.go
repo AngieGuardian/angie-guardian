@@ -981,9 +981,17 @@ const (
 // Because it preserves the terminal pre-token checks, a token can never become a WAF or
 // policy bypass just because the daemon is saturated.
 func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
+	verdict, _ := e.ShedDecisionWithReason(req)
+	return verdict
+}
+
+// ShedDecisionWithReason preserves the store-free overload verdict and returns
+// the actual terminal reason, or admission:max_inflight when evaluation is shed.
+// It performs no additional checks or event writes.
+func (e *Engine) ShedDecisionWithReason(req *RequestContext) (ShedVerdict, string) {
 	snap := e.acquireSnapshot()
 	if snap == nil {
-		return ShedReject
+		return ShedReject, "admission:max_inflight"
 	}
 	defer snap.release()
 	dcfg := snap.cfg.scopeForRequest(req)
@@ -1008,14 +1016,14 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	// that, so judging one here would make the shed stricter than the pipeline
 	// it stands in for rather than merely faster.
 	if _, err := netip.ParseAddr(req.RemoteAddr); err == nil {
-		if stateless.CheckDenylist(req, &dcfg.Denylist) != nil {
-			return ShedDeny
+		if d := stateless.CheckDenylist(req, &dcfg.Denylist); d != nil {
+			return ShedDeny, d.Reason
 		}
 	}
 	// Stage 2: behavioural block, via the in-process mirror only (no store
 	// read; a shared-store miss just falls through to shed, never to pass).
-	if _, blocked := e.enforcer.Lookup(req.RemoteAddr); blocked {
-		return ShedDeny
+	if reason, blocked := e.enforcer.Lookup(req.RemoteAddr); blocked {
+		return ShedDeny, "behaviour_block:" + reason
 	}
 	// A read-through (shared, unseeded, or capacity-incomplete) mirror cannot
 	// prove that a miss is unblocked without consulting the store. Store I/O is
@@ -1026,7 +1034,7 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	// every block is unknowable here, and rejecting would strip the shed
 	// fast-pass from every token holder; guardiand always attaches a mirror.
 	if e.enforcer != nil && e.enforcer.ReadThrough() {
-		return ShedReject
+		return ShedReject, "admission:max_inflight"
 	}
 
 	// Bot claims require a fresh local identity. Never call Verify here: a
@@ -1035,14 +1043,14 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	if bot := vb.match(req.LowerUA()); bot != nil {
 		identity, ok := e.bots.LookupCached(req.RemoteAddr)
 		if !ok {
-			return ShedReject
+			return ShedReject, "admission:max_inflight"
 		}
 		outcome := classifyBotIdentity(bot, identity.Status(), identity.MatchesDomains(bot.domainsLower), env)
 		if outcome == "error" {
-			return ShedReject
+			return ShedReject, "admission:max_inflight"
 		}
 		if outcome == "spoof" && vb.SpoofAction != "continue" {
-			return ShedDeny
+			return ShedDeny, "bot_spoof:" + bot.Name
 		}
 	}
 
@@ -1051,28 +1059,28 @@ func (e *Engine) ShedDecision(req *RequestContext) ShedVerdict {
 	// pipeline. No events are recorded here: that would put store writes back on
 	// the overload path.
 	if d, _ := (intelDenyStage{}).Evaluate(context.Background(), req, env); d != nil {
-		return ShedDeny
+		return ShedDeny, d.Reason
 	}
 	if d, _ := (honeypotStage{}).Evaluate(context.Background(), req, env); d != nil {
-		return ShedDeny
+		return ShedDeny, d.Reason
 	}
 	if d, _ := (wafRulesStage{}).Evaluate(context.Background(), req, env); d != nil {
 		switch d.Action {
 		case ActionDeny:
-			return ShedDeny
+			return ShedDeny, d.Reason
 		case ActionAllow:
-			return ShedPass // valid token satisfied a challenge-only rule
+			return ShedPass, d.Reason // valid token satisfied a challenge-only rule
 		default:
-			return ShedReject
+			return ShedReject, "admission:max_inflight"
 		}
 	}
 
 	// A valid PoW token vouches after every retained terminal check. Cheap
 	// stateless WAF rule check; no store I/O on a cache hit.
 	if hasValidPoWToken(req, env) {
-		return ShedPass
+		return ShedPass, "pow:token"
 	}
-	return ShedReject
+	return ShedReject, "admission:max_inflight"
 }
 
 // PoWManager exposes the PoW manager for admin key rotation (may be nil).

@@ -309,6 +309,9 @@ To feed the anomaly trainer, switch protected vhosts to the JSON access log
 format from [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf):
 
 ```nginx
+# http {}
+include angie-json-log.conf;
+# protected server {}
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
@@ -316,21 +319,23 @@ See [Train the Anomaly Model](/guide/anomaly) for what to do with the logs.
 
 ## Keep Guardian decisions out of a Fail2Ban input log
 
-This is optional and only useful when a Fail2Ban jail consumes a broad
-access-log filter, for example one that counts `401`, `403` and `404`
-responses. Do not weaken that filter just because Guardian can intentionally
-return a `403`: a backend's own `403` should still be visible to the jail.
-Instead, write Guardian decisions to a separate audit log and keep them out of
-the normal log that Fail2Ban watches.
+A broad Fail2Ban access-log filter may count `401`, `403` and `404` responses.
+Keep application errors visible to that filter, while excluding Guardian's
+intentional `deny`, `refuse` and `shed` decisions. Classify by the captured
+action, never by final status alone: a challenge interstitial can return `200`,
+and an application's `403` is not a Guardian denial.
 
-The shipped location include already captures `$guardian_action`. Define these
-maps in `http {}` and use the two conditional logs in each protected
-`server {}`. This example uses Angie's built-in `combined` format; retain your
-own format name if you already use one.
+Reuse the existing `guardian_json` format and JSON access/audit destination.
+Retain the normal combined log's filename and parser for Fail2Ban. The JSON
+stream records every request in the protected vhost, including allowed traffic,
+PoW exemptions, challenges and unevaluated requests; no third log is needed.
+For an existing combined audit destination, change its format to `guardian_json`
+and remove its decision-only condition, retaining its filename.
 
 ```nginx
-# http {}: ordinary application responses, including application 4xx, stay in
-# the Fail2Ban input. Guardian's own terminal decisions go to the audit log.
+# http {}, once. Use the shipped format, not a second JSON schema.
+include angie-json-log.conf;
+
 map $guardian_action $normal_access_log {
     default 1;
     deny    0;
@@ -338,34 +343,121 @@ map $guardian_action $normal_access_log {
     shed    0;
 }
 
-map $guardian_action $guardian_decision_log {
-    default 0;
-    deny    1;
-    refuse  1;
-    shed    1;
-}
-
-# protected server {}; use the normal access-log filename your jail watches.
+# protected server {}, alongside the shipped Guardian includes.
+# Retain the filename/format your Fail2Ban jail already watches.
 access_log /var/log/angie/access.log combined
     if=$normal_access_log buffer=32k flush=1m;
-access_log /var/log/angie/guardian_decisions.log combined
-    if=$guardian_decision_log buffer=32k flush=1m;
+# Retain your existing JSON access/audit filename. This is unconditional.
+access_log /var/log/angie/guardian_decisions.log guardian_json
+    buffer=32k flush=1m;
 ```
 
-Configure Fail2Ban to read only your normal access log (`access.log` in this
-example). A backend response after Guardian allowed the request still appears
-there, including `401`, `403`, `404` and every other status. A Guardian `deny`
-or `refuse` appears only in `guardian_decisions.log`, where it remains
-available for incident review but cannot make a legitimate client trip a
-generic 4xx jail. `shed` is included in the audit log too; the shipped glue
-converts it to `503` with `Retry-After`.
+Fail2Ban reads only `access.log` in this example. Backend `401`, `403` and `404`
+responses after Guardian allows the request remain there. Guardian denies,
+refusals and sheds appear only in the JSON destination. Challenges appear in
+both streams; their usual `200` does not need to be added to an application-4xx
+jail to make them observable. An existing unconditional `*.access.json`
+log already provides the JSON stream: retain it instead of adding another file.
 
-This log split is not a substitute for an endpoint policy. The simpler
-alternative for a known machine endpoint that repeatedly reconnects, such as a
-WebSocket route, is a targeted
-[`paths:` PoW exception](/guide/configuration#per-path-overrides). That prevents
-Guardian from issuing its intentional `403` on that route in the first place,
-while its WAF and other Guardian checks remain enabled.
+Logs use the configuration of the location where processing finishes.
+Place both destinations at server scope, and review location-level `access_log`
+overrides, including `off`, which can replace inherited logging after a rewrite.
+During a combined-to-JSON migration, rotate the old file at the format boundary
+and review any audit readers. Keep the normal stream and its Fail2Ban parser
+unchanged. Retain the existing rotation destination and permissions.
+
+### Interpret authorization and final-response fields
+
+The format keeps its existing timestamp, effective `$remote_addr`, normalized
+`$host`, original URI/query, User-Agent, referer, final status, response body size
+and request duration. `bytes_sent` retains its existing `$body_bytes_sent`
+meaning: bytes sent after the response headers, including transfer framing,
+rather than total bytes or the decoded body length.
+
+`method` comes from the original request line so a URI-based error redirect that
+switches processing to GET still logs the client's POST. `uri` remains
+`$request_uri`, not the rewritten `/challenge` or `/denied`.
+
+The shipped location include snapshots `guardian_action` and `guardian_reason`
+from the trusted authorization subrequest. Client or application-upstream
+`X-Guardian-*` response headers are not their source. Local auth admission rejects
+before contacting the sidecar and supplies trusted request-local markers instead:
+`add_header` does not run on an auth subrequest. Its internal `403` becomes a
+client-visible `503` with `Retry-After: 2`.
+
+Two additional **string** fields describe only the authorization hop:
+
+- `guardian_auth_status`: the auth subrequest's final status after local error
+  handling; empty if authorization did not run.
+- `guardian_auth_upstream_status`: the auth upstream's status sequence, including
+  multiple attempts; empty when no upstream was contacted.
+
+These are separate from `status`, which describes the final response. No
+application/challenge upstream status is logged under an auth-specific name.
+
+| Outcome | Action | Reason | Auth / auth-upstream status | Final status |
+| --- | --- | --- | --- | --- |
+| Existing WAF rule | `deny` | `waf:wp-cms-probe` | `403` / `403` | 403 |
+| Client cannot complete an interstitial | `refuse` | `pow:unchallengeable` | `401` / `401` | 403 |
+| Tokenless navigation | `challenge` | `pow:no_token` | `401` / `401` | Usually 200 |
+| Configured UA PoW exemption | `allow` | `default` | `200` / `200` | Application status |
+| Local auth admission limit | `shed` | `admission:control_plane` | `403` / empty | 503 |
+| Sidecar evaluation saturation | `shed` | `admission:max_inflight` | `403` / `403` | 503 |
+| Connection refusal, default fail-open | Empty | Empty | `204` / `502` | Application status |
+| Auth timeout, default fail-open | Empty | Empty | `204` / `504` | Application status |
+| Unprotected request or early auth-basic rejection | Empty | Empty | Empty / empty | Actual response status |
+
+`guardian_pow_exemption` is a small additive extension to this logging contract:
+it exposes the separate classification already produced by the engine, without
+changing runtime decision reasons. Its string value is captured from the trusted
+auth response. For example, a safe UA-exempt request records action
+`allow`, reason `default` and exemption `allowlist:ua`; a denied request can record
+reason `waf:wp-cms-probe` and the same exemption. It does not replace the final
+reason or imply that security checks were skipped. Empty means no classification
+was supplied, including requests with no auth evaluation or an overload fast path.
+
+PoW exemptions retain WAF, denylist and existing-ban enforcement. Under sidecar
+saturation, retained terminal checks still emit their actual WAF/deny reason;
+clean token holders report `pow:token`. An overload reason never implies a WAF hit.
+
+Empty decisions alone prove neither authorization nor fail-open. Use both auth
+status fields, Angie's error log and the configured fail mode. With fail-closed,
+an unexpected failed auth status yields a final request error rather than an
+application response. The trainer's existing strict policy is unchanged: valid
+actions accept these extra fields, but empty actions are invalid input. Review
+[trainer input handling](/guide/anomaly#1-collect-json-access-logs) before feeding
+a stream that also contains unprotected, auth-basic or failed-auth requests.
+
+### Privacy and rollout
+
+The format uses `escape=json` for client-controlled strings. It adds no cookies,
+authorization values, tokens, PoW solutions or new sensitive headers. Existing
+URI/query and referer logging can still contain sensitive values: restrict access
+and retention. For an optional original-path-only variant, copy the format under
+a distinct operator-selected name and replace the URI variable with this map:
+
+```nginx
+# http {}. $uri changes on internal redirects; $request_uri is original.
+map $request_uri $guardian_original_path {
+    "~^([^?]*)" $1;
+}
+```
+
+The standard `guardian_json` format remains unchanged by this optional variant.
+Review trainer comparability when removing query information; referer logging
+may still retain queries. Request/flow correlation in
+[issue #61](https://gitlab.melroy.org/melroy/angie-guardian/-/issues/61) is independent
+of these fields.
+
+Before rollout, run `angie -t`, verify rendered records for a challenge, deny,
+application 4xx and failed auth hop, then check the existing Fail2Ban parser
+against the retained combined stream. Existing customized snippets must receive
+the matching location-capture and endpoint changes together with the JSON format.
+
+This log split does not replace endpoint policy. For a machine endpoint that
+repeatedly reconnects, such as a WebSocket route, a targeted
+[`paths:` PoW exception](/guide/configuration#per-path-overrides) can avoid
+intentional interstitial refusals while retaining WAF and other security checks.
 
 ## Front-door admission and application rate limits
 
@@ -513,7 +605,10 @@ captures the auth response and [`deploy/angie-guardian.conf`](https://github.com
 | Variable | Relayed as | Why the second hop cannot work it out itself |
 |---|---|---|
 | `$guardian_action` | (logging only) | For [JSON access logs](#json-access-logs-for-the-anomaly-trainer) and the anomaly trainer. |
-| `$guardian_reason` | (logging only) | Same. |
+| `$guardian_reason` | (logging only) | The final auth-stage reason. |
+| `$guardian_pow_exemption` | (logging only) | Separate PoW exemption classification; never replaces a WAF deny reason. |
+| `$guardian_auth_status` | (logging only) | Auth subrequest status after local error handling. |
+| `$guardian_auth_upstream_status` | (logging only) | Auth upstream status sequence, independent of the final upstream. |
 | `$guardian_difficulty` | `X-Guardian-Difficulty` | A WAF or anomaly escalation raised the difficulty above the base, and the challenge hop runs neither. Clamped to the configured window on arrival, so a forged value can only make the client's own puzzle harder. |
 | `$guardian_refusal` | `X-Guardian-Refusal` | Whether the `401` is a real challenge or a [refusal](/guide/configuration#base-difficulty-and-max-difficulty), and which kind. Re-deciding here would let a [hot reload](/guide/configuration#hot-reload) of `pow.refuse_unchallengeable` landing between the two hops serve one thing and log another. |
 

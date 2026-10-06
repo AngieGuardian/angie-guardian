@@ -7,9 +7,66 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// A reader queued behind a writer must reconstruct the deadline from the TTL
+// sampled after admission to the transaction, not from its pre-lock timestamp.
+func TestBuntDBGetWithExpiryAfterTransactionWait(t *testing.T) {
+	b, err := NewBuntDB(":memory:", BuntDBOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	ctx := t.Context()
+	const ttl = time.Hour
+	before := time.Now()
+	if err := b.Set(ctx, "queued", []byte("value"), ttl); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	writer, err := b.db.Begin(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	type result struct {
+		kv    KV
+		found bool
+		err   error
+	}
+	started := make(chan struct{})
+	read := make(chan result, 1)
+	go func() {
+		close(started)
+		kv, found, err := b.GetWithExpiry(ctx, "queued")
+		read <- result{kv, found, err}
+	}()
+	<-started
+	runtime.Gosched() // let the reader enter GetWithExpiry and wait on the lock
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-read:
+		t.Fatal("reader bypassed the writer transaction lock")
+	default:
+	}
+	if err := writer.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-read:
+		if got.err != nil || !got.found || string(got.kv.Value) != "value" {
+			t.Fatalf("queued read: %+v", got)
+		}
+		if got.kv.ExpiresAt.Before(before.Add(ttl-25*time.Millisecond)) || got.kv.ExpiresAt.After(after.Add(ttl+time.Millisecond)) {
+			t.Fatalf("transaction wait changed deadline: %v; write interval %v to %v", got.kv.ExpiresAt, before, after)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader did not resume after the writer released its lock")
+	}
+}
 
 func TestGetWithExpiryAllBackends(t *testing.T) {
 	bes := backends(t)

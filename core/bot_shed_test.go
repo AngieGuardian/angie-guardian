@@ -161,8 +161,15 @@ func TestCrawlerShedUnknownAndSpoofPolicies(t *testing.T) {
 					}
 				}
 				before, dns := ops.calls.Load(), resolver.calls.Load()
-				if got := e.ShedDecision(r); got != want {
-					t.Fatalf("got %v want %v", got, want)
+				wantReason := "admission:max_inflight"
+				if want == ShedPass {
+					wantReason = "pow:token"
+				}
+				if want == ShedDeny {
+					wantReason = "bot_spoof:googlebot"
+				}
+				if got, reason := e.ShedDecisionWithReason(r); got != want || reason != wantReason {
+					t.Fatalf("overload = %v/%q, want %v/%q", got, reason, want, wantReason)
 				}
 				if ops.calls.Load() != before || resolver.calls.Load() != dns {
 					t.Fatal("unknown/spoof lookup accessed store or DNS")

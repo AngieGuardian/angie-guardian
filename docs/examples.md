@@ -351,7 +351,10 @@ production.
 
 For the JSON access-log format used below, install the shipped
 [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf)
-in Angie's `http {}` context.
+in Angie's `http {}` context. The existing format includes the trusted auth
+action/reason and auth-specific statuses; keep your existing JSON log destination.
+See [split logging](/guide/angie#keep-guardian-decisions-out-of-a-fail2ban-input-log)
+when retaining a combined Fail2Ban input alongside it.
 
 ```nginx
 # http {} context: shipped Guardian's control-plane admission (rate and connection limits) + keepalive upstream

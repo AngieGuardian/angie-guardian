@@ -19,8 +19,10 @@
 //	refuse-challenge — directly measures the small /challenge refusal response.
 //	refuse-angie     — measures one original request through Angie's production
 //	                   /auth → @guardian_challenge → 403 two-hop route.
+//	allow-angie      — measures authorization followed by an application 200.
+//	deny-angie       — measures a Guardian deny through Angie (final 403).
 //
-// Two run modes. -d runs for a fixed wall-clock duration; -n completes a fixed
+// Two run modes. -d runs for a fixed wall-clock duration; -n attempts a fixed
 // number of measured requests. For the write-heavy challenge scenario only -n
 // yields numbers comparable across machines and commits: the store grows for
 // the whole run and throughput decays with it, so a fixed-duration average
@@ -120,6 +122,12 @@ func scenarioByName(name string) (scenarioSpec, error) {
 		s.wantStatus = http.StatusForbidden
 		s.wantHeaderPrefix = map[string]string{"Content-Type": refusalContentType}
 		s.wantHeaderContains = map[string]string{"Cache-Control": refusalCacheControlKey}
+	case "allow-angie", "deny-angie":
+		s.path = loadtestRequestURI
+		s.throughAngie = true
+		if name == "deny-angie" {
+			s.wantStatus = http.StatusForbidden
+		}
 	default:
 		return scenarioSpec{}, fmt.Errorf("unknown scenario: %s", name)
 	}
@@ -170,14 +178,14 @@ func (s scenarioSpec) responseMatches(resp *http.Response) bool {
 }
 
 func main() {
-	baseURL := flag.String("url", "http://127.0.0.1:8071", "target base URL (guardiand, or Angie for refuse-angie)")
-	scenario := flag.String("scenario", "allow", "allow | deny | token | challenge | refuse-auth | refuse-challenge | refuse-angie")
-	host := flag.String("host", "plain.test", "protected host (X-Guardian-Host, or HTTP Host for refuse-angie)")
+	baseURL := flag.String("url", "http://127.0.0.1:8071", "target base URL (guardiand, or Angie for *-angie scenarios)")
+	scenario := flag.String("scenario", "allow", "allow | deny | token | challenge | refuse-auth | refuse-challenge | refuse-angie | allow-angie | deny-angie")
+	host := flag.String("host", "plain.test", "protected host (X-Guardian-Host, or HTTP Host for *-angie scenarios)")
 	ip := flag.String("ip", "198.51.100.7", "X-Guardian-IP to send (direct Guardian scenarios only)")
 	concurrency := flag.Int("c", 64, "concurrent connections")
 	duration := flag.Duration("d", 5*time.Second, "test duration (ignored when -n is set)")
-	requests := flag.Int("n", 0, "run exactly this many measured requests instead of a duration (comparable across machines and commits)")
-	warmup := flag.Int("warmup", 0, "complete and discard this many requests first, so measurement starts from a known store size")
+	requests := flag.Int("n", 0, "run exactly this many measured request attempts instead of a duration (comparable across machines and commits)")
+	warmup := flag.Int("warmup", 0, "attempt and discard this many requests first, so measurement starts from a known store size")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -220,19 +228,105 @@ func main() {
 			*scenario, *baseURL, spec.path, *concurrency, *duration, *warmup, spec.wantStatus)
 	}
 
+	result := runLoad(client, spec, loadConfig{
+		baseURL: *baseURL, host: *host, ip: *ip, concurrency: *concurrency,
+		warmup: int64(*warmup), requests: int64(*requests), duration: *duration,
+	})
+
+	var all []time.Duration
+	for _, l := range result.latencies {
+		all = append(all, l...)
+	}
+	slices.Sort(all)
+	pct := func(p float64) time.Duration {
+		if len(all) == 0 {
+			return 0
+		}
+		return all[min(int(float64(len(all))*p), len(all)-1)]
+	}
+
+	n := result.measured.completed
+	elapsed := result.elapsed
+	if elapsed <= 0 {
+		elapsed = *duration // no measured completions; avoid dividing by zero
+	}
+	if *warmup > 0 {
+		fmt.Printf("warmup:     %d requests discarded (errors=%d, unexpected-status=%d, unexpected-contract=%d)\n",
+			*warmup, result.warmup.errors, result.warmup.unexpectedStatus, result.warmup.unexpectedContract)
+	}
+	fmt.Printf("requests:   %d in %.2fs (errors=%d, unexpected-status=%d, unexpected-contract=%d)\n",
+		n, elapsed.Seconds(), result.measured.errors, result.measured.unexpectedStatus, result.measured.unexpectedContract)
+	fmt.Printf("throughput: %.0f req/s\n", float64(n)/elapsed.Seconds())
+	fmt.Printf("latency:    p50=%v  p90=%v  p99=%v  max=%v\n",
+		pct(0.50), pct(0.90), pct(0.99), pct(0.9999))
+
+	fmt.Print("statuses:")
+	for status, count := range result.measured.statuses {
+		if count > 0 {
+			fmt.Printf(" %d=%d", status, count)
+		}
+	}
+	fmt.Println()
+
+	// One count per elapsed second of the measured window. A flat line means a
+	// steady state; a falling line means the run is measuring store growth, and
+	// its aggregate above is not comparable across machines or commits.
+	seconds := min(int(elapsed.Seconds())+1, len(result.perSecond))
+	if seconds > 1 {
+		fmt.Printf("per-second:")
+		for i := 0; i < seconds; i++ {
+			fmt.Printf(" %d", result.perSecond[i])
+		}
+		fmt.Println()
+	}
+}
+
+// Phase counters are worker-local: a status histogram must not introduce a
+// contended atomic increment into every request in the generator.
+type phaseCounts struct {
+	completed, errors, unexpectedStatus, unexpectedContract int64
+	statuses                                                [1000]int64 // net/http accepts three-digit response status codes.
+}
+
+func (c *phaseCounts) add(other *phaseCounts) {
+	c.completed += other.completed
+	c.errors += other.errors
+	c.unexpectedStatus += other.unexpectedStatus
+	c.unexpectedContract += other.unexpectedContract
+	for status, count := range other.statuses {
+		c.statuses[status] += count
+	}
+}
+
+type workerResult struct {
+	warmup, measured phaseCounts
+	latencies        []time.Duration
+}
+
+type loadConfig struct {
+	baseURL, host, ip string
+	concurrency       int
+	warmup, requests  int64
+	duration          time.Duration
+}
+
+type loadResult struct {
+	warmup, measured phaseCounts
+	elapsed          time.Duration
+	latencies        [][]time.Duration
+	perSecond        []int64
+}
+
+func runLoad(client *http.Client, spec scenarioSpec, config loadConfig) loadResult {
 	var (
-		wg          sync.WaitGroup
-		total       atomic.Int64 // measured completions
-		errored     atomic.Int64
-		badStatus   atomic.Int64
-		badContract atomic.Int64
+		wg sync.WaitGroup
 		// claimed hands out one globally unique sequence number per request
 		// before it runs: numbers below warmup are the discarded warmup phase,
 		// the rest are measured. Claiming also drives the challenge scenario's
 		// IP rotation, so no two requests, warmup included, share an IP.
 		claimed atomic.Int64
 		// measureStart/EndNano bound the measured window: set once by the first
-		// measured request, advanced to the latest measured completion. The
+		// measured request, advanced to the latest measured attempt's end. The
 		// throughput denominator is this window, not the configured duration,
 		// so a fixed-work run reports honestly however long it takes.
 		measureStartNano atomic.Int64
@@ -244,11 +338,25 @@ func main() {
 	// indexing out of range.
 	buckets := make([]atomic.Int64, 3600)
 
-	latencies := make([][]time.Duration, *concurrency)
-	warmupN := int64(*warmup)
-	measuredN := int64(*requests)
+	workers := make([]workerResult, config.concurrency)
+	warmupN := config.warmup
+	measuredN := config.requests
+	// Failed attempts also bound the measured window, including all-error runs.
+	recordError := func(counts *phaseCounts, measured bool) {
+		counts.errors++
+		if !measured {
+			return
+		}
+		end := time.Now().UnixNano()
+		for {
+			cur := measureEndNano.Load()
+			if end <= cur || measureEndNano.CompareAndSwap(cur, end) {
+				return
+			}
+		}
+	}
 
-	for w := 0; w < *concurrency; w++ {
+	for w := 0; w < config.concurrency; w++ {
 		wg.Go(func() {
 			lats := make([]time.Duration, 0, 1<<16)
 			for {
@@ -262,34 +370,44 @@ func main() {
 						if seq >= warmupN+measuredN {
 							break // fixed work done
 						}
-					} else if time.Now().UnixNano()-measureStartNano.Load() >= duration.Nanoseconds() {
+					} else if time.Now().UnixNano()-measureStartNano.Load() >= config.duration.Nanoseconds() {
 						break // fixed duration elapsed (measured from warmup end)
 					}
 				}
-				req, err := spec.newRequest(*baseURL, *host, *ip, seq)
+				counts := &workers[w].warmup
+				if measured {
+					counts = &workers[w].measured
+				}
+				req, err := spec.newRequest(config.baseURL, config.host, config.ip, seq)
 				if err != nil {
-					errored.Add(1)
+					recordError(counts, measured)
 					continue
 				}
 				start := time.Now()
 				resp, err := client.Do(req)
 				if err != nil {
-					errored.Add(1)
+					recordError(counts, measured)
 					continue
 				}
-				io.Copy(io.Discard, resp.Body)
+				// Count observed HTTP statuses even if draining the body fails.
+				counts.statuses[resp.StatusCode]++
+				_, bodyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
-				if resp.StatusCode != spec.wantStatus {
-					badStatus.Add(1)
-				} else if !spec.responseMatches(resp) {
-					badContract.Add(1)
+				if bodyErr != nil {
+					recordError(counts, measured)
+					continue
 				}
+				if resp.StatusCode != spec.wantStatus {
+					counts.unexpectedStatus++
+				} else if !spec.responseMatches(resp) {
+					counts.unexpectedContract++
+				}
+				counts.completed++
 				if !measured {
 					continue
 				}
 				end := time.Now()
 				lats = append(lats, end.Sub(start))
-				total.Add(1)
 				if s := measureStartNano.Load(); s != 0 {
 					buckets[min(int((end.UnixNano()-s)/1e9), len(buckets)-1)].Add(1)
 				}
@@ -300,48 +418,24 @@ func main() {
 					}
 				}
 			}
-			latencies[w] = lats
+			workers[w].latencies = lats
 		})
 	}
 	wg.Wait()
 
-	var all []time.Duration
-	for _, l := range latencies {
-		all = append(all, l...)
+	result := loadResult{
+		elapsed:   time.Duration(measureEndNano.Load() - measureStartNano.Load()),
+		perSecond: make([]int64, len(buckets)),
 	}
-	slices.Sort(all)
-	pct := func(p float64) time.Duration {
-		if len(all) == 0 {
-			return 0
-		}
-		return all[min(int(float64(len(all))*p), len(all)-1)]
+	for _, worker := range workers {
+		result.warmup.add(&worker.warmup)
+		result.measured.add(&worker.measured)
+		result.latencies = append(result.latencies, worker.latencies)
 	}
-
-	n := total.Load()
-	elapsed := time.Duration(measureEndNano.Load() - measureStartNano.Load())
-	if elapsed <= 0 {
-		elapsed = *duration // no measured completions; avoid dividing by zero
+	for i := range buckets {
+		result.perSecond[i] = buckets[i].Load()
 	}
-	if warmupN > 0 {
-		fmt.Printf("warmup:     %d requests discarded\n", warmupN)
-	}
-	fmt.Printf("requests:   %d in %.2fs (errors=%d, unexpected-status=%d, unexpected-contract=%d)\n",
-		n, elapsed.Seconds(), errored.Load(), badStatus.Load(), badContract.Load())
-	fmt.Printf("throughput: %.0f req/s\n", float64(n)/elapsed.Seconds())
-	fmt.Printf("latency:    p50=%v  p90=%v  p99=%v  max=%v\n",
-		pct(0.50), pct(0.90), pct(0.99), pct(0.9999))
-
-	// One count per elapsed second of the measured window. A flat line means a
-	// steady state; a falling line means the run is measuring store growth, and
-	// its aggregate above is not comparable across machines or commits.
-	seconds := min(int(elapsed.Seconds())+1, len(buckets))
-	if seconds > 1 {
-		fmt.Printf("per-second:")
-		for i := 0; i < seconds; i++ {
-			fmt.Printf(" %d", buckets[i].Load())
-		}
-		fmt.Println()
-	}
+	return result
 }
 
 // rotatingChallengeIP derives a synthetic private IPv4 address from the

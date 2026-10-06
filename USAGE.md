@@ -682,8 +682,16 @@ To feed the anomaly trainer, switch protected vhosts to the JSON access log
 from `deploy/angie-json-log.conf`:
 
 ```nginx
+# http {}
+include angie-json-log.conf;
+# protected server {}
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
+
+The existing JSON format records the trusted auth action/reason, separate PoW exemption and auth-specific
+status strings alongside the original method/URI and final response status. Keep
+your existing JSON filename. For a decision-aware audit stream while retaining
+combined logs for Fail2Ban, see [the split-log example](docs/guide/angie.md#keep-guardian-decisions-out-of-a-fail2ban-input-log).
 
 ### Front-door admission and application rate limits
 

@@ -46,7 +46,6 @@ func (s *ShardedMemory) GetWithExpiry(_ context.Context, key string) (KV, bool, 
 }
 
 func (b *BuntDB) GetWithExpiry(_ context.Context, key string) (KV, bool, error) {
-	start := time.Now()
 	var kv KV
 	var found bool
 	err := b.db.View(func(tx *buntdb.Tx) error {
@@ -57,6 +56,10 @@ func (b *BuntDB) GetWithExpiry(_ context.Context, key string) (KV, bool, error) 
 		if err != nil {
 			return err
 		}
+		// TTL measures remaining life at the time of this call. Sample its
+		// anchor after acquiring the transaction lock, so writer contention
+		// cannot shorten the reconstructed deadline by the lock wait.
+		start := time.Now()
 		ttl, err := tx.TTL(key)
 		if errors.Is(err, buntdb.ErrNotFound) {
 			return nil

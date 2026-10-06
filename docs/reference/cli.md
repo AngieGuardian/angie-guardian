@@ -280,7 +280,7 @@ would be promoted without touching `/etc/guardian`.
 
 ## guardian-loadtest
 
-Drives Guardian directly, or the refusal route through Angie, over keepalive
+Drives Guardian directly, or allow, deny and refusal routes through Angie, over keepalive
 connections and reports throughput and latency percentiles. See
 [Load Testing](/guide/load-testing).
 
@@ -290,14 +290,14 @@ guardian-loadtest -scenario token -host example.com -c 128 -d 10s
 
 | Flag | Default | Description |
 |---|---|---|
-| `-url <base>` | `http://127.0.0.1:8071` | Target base URL: guardiand normally, or Angie's public listener for `refuse-angie`. |
-| `-scenario <name>` | `allow` | One of `allow`, `token`, `deny`, `challenge`, `refuse-auth`, `refuse-challenge`, or `refuse-angie`. |
-| `-host <host>` | `plain.test` | Protected host: sent as `X-Guardian-Host` to guardiand or as the real HTTP `Host` for `refuse-angie`. |
-| `-ip <addr>` | `198.51.100.7` | `X-Guardian-IP` to send in direct Guardian scenarios. `challenge` rotates it to spread issuance; `refuse-angie` uses the real connection address instead. |
+| `-url <base>` | `http://127.0.0.1:8071` | Target base URL: guardiand normally, or Angie's public listener for `*-angie` scenarios. |
+| `-scenario <name>` | `allow` | One of `allow`, `token`, `deny`, `challenge`, `refuse-auth`, `refuse-challenge`, `refuse-angie`, `allow-angie`, or `deny-angie`. |
+| `-host <host>` | `plain.test` | Protected host: sent as `X-Guardian-Host` to guardiand or as the real HTTP `Host` for `*-angie` scenarios. |
+| `-ip <addr>` | `198.51.100.7` | `X-Guardian-IP` to send in direct Guardian scenarios. `challenge` rotates it to spread issuance; `*-angie` uses the real connection address instead. |
 | `-c <n>` | `64` | Concurrent connections. |
 | `-d <duration>` | `5s` | Test duration. Ignored when `-n` is set. |
-| `-n <requests>` | `0` (off) | Complete exactly this many measured requests instead of running for a duration. Every run then does identical work, which is what makes results comparable across machines and commits; use it for the `challenge` scenario, whose per-run store growth makes duration averages incomparable. |
-| `-warmup <requests>` | `0` | Complete and discard this many requests first, so the measured window starts from a known store and counter-cache size instead of from empty. Composes with both `-n` and `-d` (the clock starts when warmup ends). |
+| `-n <requests>` | `0` (off) | Attempt exactly this many measured requests instead of running for a duration; failed attempts consume the budget. Use fixed work for the `challenge` scenario, whose per-run store growth makes duration averages incomparable. |
+| `-warmup <requests>` | `0` | Attempt and discard this many requests first, starting from a known store and counter-cache size. Composes with both `-n` and `-d`; warmup failures are reported separately. |
 | `-version` | | Print version and exit. |
 
 The output ends with a `per-second:` line, one measured-completion count per
@@ -306,3 +306,10 @@ line means the aggregate above is blending a fast cold phase with a slower
 loaded one, and only a fixed-work (`-n`) comparison is meaningful.
 Refusal scenarios additionally report an `unexpected-contract` count when the
 status is correct but the response headers do not identify the intended hop.
+The `warmup:` and measured `requests:` summaries each report their own errors,
+unexpected statuses and contract failures. `statuses:` lists only measured HTTP
+responses, including those with incomplete bodies; transport errors without a
+response have no status. Throughput and latency use completed measured responses.
+For `allow-angie`, the configured application route `/loadtest?x=1` must return
+200. For `deny-angie`, configure a Guardian denial for the real client and confirm
+it in the JSON log: final status alone cannot identify which stage responded.

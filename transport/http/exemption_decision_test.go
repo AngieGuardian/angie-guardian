@@ -42,6 +42,7 @@ defaults:
 		headers["Sec-Fetch-Dest"] = "empty"
 		headers["X-Guardian-Action"] = "allow"
 		headers["X-Guardian-Reason"] = "allowlist:ua"
+		headers["X-Guardian-PoW-Exemption"] = "forged:client"
 		resp := do(t, "GET", ts.URL+"/auth", headers, nil)
 		action, reason, status := "allow", "default", http.StatusOK
 		if suffix == "secret" {
@@ -49,6 +50,9 @@ defaults:
 		}
 		if resp.StatusCode != status || resp.Header.Get("X-Guardian-Action") != action || resp.Header.Get("X-Guardian-Reason") != reason {
 			t.Fatalf("auth outcome %s: %d %v", suffix, resp.StatusCode, resp.Header)
+		}
+		if got := resp.Header.Get("X-Guardian-PoW-Exemption"); got != "allowlist:ua" {
+			t.Fatalf("trusted PoW classification = %q", got)
 		}
 		var decision map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(logbuf.String())), &decision); err != nil {

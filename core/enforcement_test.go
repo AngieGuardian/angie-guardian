@@ -90,6 +90,9 @@ func TestMirrorFastPathBlockedIPWithoutStoreReads(t *testing.T) {
 	if d.Action != ActionDeny || d.Reason != "behaviour_block:test_abuse" {
 		t.Fatalf("blocked IP: got %s/%s", d.Action, d.Reason)
 	}
+	if verdict, reason := e.ShedDecisionWithReason(req("x.test", ip, "/", "Mozilla")); verdict != ShedDeny || reason != "behaviour_block:test_abuse" {
+		t.Fatalf("overload mirrored block = %v/%q", verdict, reason)
+	}
 	if n := cs.gets.Load(); n != 0 {
 		t.Fatalf("blocked-IP evaluation performed %d store Gets; want 0 (mirror hit)", n)
 	}

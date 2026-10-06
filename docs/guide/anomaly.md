@@ -48,7 +48,18 @@ bad input. Required member names are case-sensitive, and invalid UTF-8 or a
 trailing JSON value is rejected. A line over the 1 MiB input limit aborts the
 scan instead of being
 silently skipped. [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf) defines the matching
-`guardian_json` format.
+`guardian_json` format. Its additional `guardian_reason`,
+`guardian_pow_exemption`, `guardian_auth_status` and
+`guardian_auth_upstream_status` string fields are compatible with the reader;
+its existing field names and types are retained.
+
+Use the existing JSON access destination for the complete window, not a log
+restricted to deny/refuse/shed/challenge decisions: training needs allowed
+application traffic. Empty `guardian_action` values from unprotected requests,
+early auth-basic rejections or failed auth hops remain invalid input under the
+existing strict policy. The extra auth status fields make those cases observable
+but do not relax validation or automatically filter them. Review the input
+selection and existing invalid-input tolerance when collecting such a stream.
 
 A `log_format` has to be declared in the `http {}` context, and can then be
 referenced by name from any `access_log` directive. So it is two steps: include
@@ -58,16 +69,22 @@ the file once, then point each protected vhost's `access_log` at the format.
 # http {} context, once. Declares the guardian_json log_format:
 include angie-json-log.conf;   # from deploy/angie-json-log.conf
 
-# each protected server {} block: write that format to its own file.
+# Each protected server {}: keep the existing handler and auth capture.
+include angie-guardian.conf;
+include angie-guardian-location.conf;
+# Retain your existing JSON filename. The destination is unconditional;
+# captured action/reason/exemption and auth statuses come from the auth hop.
 # The second argument is the log_format name, not a path.
 access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
-Copy [the file](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf)
-into place alongside the other snippets, then reload:
+Install the JSON format together with the matching Guardian endpoint, capture
+and limit snippets. When upgrading customized snippets, merge the matching
+changes while preserving your deployment settings, then test before reloading:
 
 ```sh
-sudo cp deploy/angie-json-log.conf /etc/angie/
+sudo cp deploy/angie-json-log.conf deploy/angie-guardian.conf \
+  deploy/angie-guardian-location.conf deploy/angie-guardian-limits.conf /etc/angie/
 sudo angie -t && sudo systemctl reload angie
 ```
 
@@ -76,11 +93,12 @@ combined log also works: every record carries its own `host` field, and
 `guardian-train` accepts either shape.
 
 ::: warning `$guardian_action` needs the Guardian protection include
-The format logs `$guardian_action`, which is set by
-`auth_request_set $guardian_action $upstream_http_x_guardian_action;` in
+The format logs `$guardian_action`, which is captured from the trusted auth
+response or the local admission marker by
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf).
-For a request location that does not include the Guardian protection snippet,
-the variable is empty and the strict trainer rejects that record. Wire up
+The matching endpoint snippet supplies the local marker; update both snippets
+together with the JSON format. When authorization did not run or failed open,
+the action is empty and the strict trainer rejects that record. Wire up
 [Angie](/guide/angie) first and confirm the log contains a Guardian action
 before collecting the training window.
 :::

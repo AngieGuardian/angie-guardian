@@ -361,3 +361,20 @@ func TestModelCacheKeepsLastGoodWhenReloadLosesRequiredDomain(t *testing.T) {
 		t.Fatalf("reload replaced the last-good required baseline: %#v", active)
 	}
 }
+
+// The access log grows independently of the trainer's required subset.
+func TestParseLogRecordAuthMetadataCompatibility(t *testing.T) {
+	base := `{"host":"x.test","method":"POST","uri":"/original?q=1","status":200,"user_agent":"curl","guardian_action":"allow"}`
+	extended := strings.TrimSuffix(base, "}") + `,"guardian_reason":"default","guardian_pow_exemption":"allowlist:ua","guardian_auth_status":"200","guardian_auth_upstream_status":"502, 200"}`
+	old, err := ParseLogRecord([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseLogRecord([]byte(extended))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != old {
+		t.Fatalf("additional diagnostics changed trainer input: %+v != %+v", got, old)
+	}
+}

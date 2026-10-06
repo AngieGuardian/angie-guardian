@@ -206,6 +206,13 @@ snapshot() {
   record "Origin request count: $(origin_count)"
 }
 
+load_contract_ok() {
+  # Only the measured summary proves completion. A clean warmup must not mask
+  # measured failures, and warmup failures still invalidate a strict drill.
+  grep -Eq '^requests:.*errors=0, unexpected-status=0, unexpected-contract=0' "$tmp_dir/last-load.txt" \
+    && ! grep -Eq '^(warmup:|requests:).*(errors|unexpected-status|unexpected-contract)=[1-9]' "$tmp_dir/last-load.txt"
+}
+
 run_load() {
   title=$1
   contract=$2
@@ -216,7 +223,7 @@ run_load() {
   "$loadtest" "$@" 2>&1 | tee "$tmp_dir/last-load.txt" | tee -a "$report"
   code_end
   if [[ "$contract" == strict ]]; then
-    grep -Eq 'errors=0, unexpected-status=0, unexpected-contract=0' "$tmp_dir/last-load.txt" \
+    load_contract_ok \
       || die "$title produced transport or response-contract failures; see $report"
   fi
 }
@@ -305,7 +312,7 @@ if ((redemptions > 0)); then
       -ip "198.18.0.$(((i - 1) % 254 + 1))" -c 1 -n 1 2>&1 \
       | tee "$tmp_dir/last-load.txt" | tee -a "$report"
     code_end
-    grep -Eq 'errors=0, unexpected-status=0, unexpected-contract=0' "$tmp_dir/last-load.txt" \
+    load_contract_ok \
       || die "valid redemption journey $i failed; see $report"
   done
 fi
