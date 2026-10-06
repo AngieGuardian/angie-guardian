@@ -681,8 +681,14 @@ headers from arbitrary internet sources.
 To feed the anomaly trainer, switch protected vhosts to the JSON access log
 from `deploy/angie-json-log.conf`:
 
+The host installer copies this file to `/etc/angie`; manual installations
+must copy it from the release archive. Include it once inside the existing
+`http {}` block in `/etc/angie/angie.conf`. If you followed Getting Started,
+the format is already declared; select it with the server's `access_log`
+directive when you want to start writing JSON logs.
+
 ```nginx
-# http {}
+# http {}: include once; skip if already added by Getting Started.
 include angie-json-log.conf;
 # protected server {}
 access_log /var/log/angie/example.com.access.json guardian_json;
@@ -1012,6 +1018,11 @@ A zero-leak result only covers leaks the runtime can detect. See the
 for inspecting the archive with `go tool pprof`.
 
 ## 5. Train the anomaly model
+
+The host installer installs `guardian-train` in `/usr/local/bin` from the same
+release as `guardiand`. For a manual installation, install the matching binary
+from the release archive. Scheduled training requires the separate timer setup
+in the production guide below.
 
 Once JSON logs have accumulated, build a candidate domain and route/method
 baseline offline.

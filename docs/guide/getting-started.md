@@ -24,9 +24,10 @@ which wires Angie, the `guardiand` sidecar, and an upstream backend together.
 On a Debian or Ubuntu host that already has Angie installed, this installer
 downloads the latest GitHub release, pins that run to the release's exact
 version, verifies `SHA256SUMS`, installs and starts `guardiand`, installs
+`guardian-train` into `/usr/local/bin`, installs
 `guardianctl` into `/usr/local/bin` when included in the release, and places
-five Angie snippets in `/etc/angie`: three required Guardian integration
-snippets and two optional Angie hardening snippets.
+six Angie snippets in `/etc/angie`: three required Guardian integration
+snippets, the JSON log format, and two optional Angie hardening snippets.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/scripts/install.sh | sudo bash
@@ -40,7 +41,7 @@ It supports `amd64` and `arm64` systemd hosts. On repeat runs it updates the
 binaries but preserves `/etc/systemd/system/guardiand.service`,
 `/etc/guardian/guardian.yaml`, starter rules, existing Angie snippets, and all
 state under `/var/lib/guardian`. For the starter rules file, systemd unit, and
-the five Angie snippets, the installer compares SHA-256 checksums; if a local
+the six Angie snippets, the installer compares SHA-256 checksums; if a local
 file differs from the release, it prints an **ACTION REQUIRED** notice and
 leaves the file untouched so you can review and update it yourself. This keeps
 local WAF rules, `Environment=` settings, and Angie customizations intact.
@@ -48,11 +49,13 @@ local WAF rules, `Environment=` settings, and Angie customizations intact.
 The installer deliberately does **not** edit any Angie vhost or reload Angie:
 review the example policy and replace its `example.com` domains, define the
 `upstream guardian` in your top-level Angie configuration (`/etc/angie/angie.conf`),
-include the Guardian baseline, and then add the server-level snippets to each
-protected `server {}` block. Validate and reload Angie yourself:
+include the Guardian baseline and JSON log format inside `http {}`, and then
+add the server-level snippets to each protected `server {}` block. Validate
+and reload Angie yourself:
 
 ```nginx
 include angie-guardian-limits.conf;
+include angie-json-log.conf;
 
 upstream guardian {
     # TCP works for every Angie worker user.
@@ -72,7 +75,12 @@ Guardian trusts from Angie. The worker user is not necessarily `www-data`;
 native installations may use `angie`, while migrated or custom configurations
 may name another account.
 
-**Place this once in Angie's top-level configuration (`/etc/angie/angie.conf` or a file it includes).**
+**Place this once inside the existing `http {}` block in `/etc/angie/angie.conf` or a file it includes there.**
+
+The JSON include declares `guardian_json` for later use. To enable it, set
+`access_log /var/log/angie/example.com.access.json guardian_json;` inside a
+protected `server {}` block, choosing your site's log filename. See
+[JSON access logs](/guide/angie#json-access-logs-for-the-anomaly-trainer).
 
 For each protected `server {}` block, add:
 
@@ -119,6 +127,7 @@ Install the daemon and create its dedicated service identity:
 
 ```sh
 sudo install -Dm755 guardiand /usr/local/bin/guardiand
+sudo install -Dm755 guardian-train /usr/local/bin/guardian-train
 if [ -x guardianctl ]; then sudo install -Dm755 guardianctl /usr/local/bin/guardianctl; fi
 getent group guardian >/dev/null || sudo groupadd --system guardian
 id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
@@ -188,6 +197,7 @@ git clone https://github.com/AngieGuardian/angie-guardian.git
 cd angie-guardian
 go build -o guardiand ./cmd/guardiand
 go build -o guardianctl ./cmd/guardianctl
+go build -o guardian-train ./cmd/guardian-train
 ```
 
 After building, continue from the `install` command above. All remaining
@@ -303,7 +313,7 @@ Install the three required Guardian integration snippets,
 [`deploy/angie-guardian.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian.conf)
 and
 [`deploy/angie-guardian-location.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-guardian-location.conf),
-at the paths used by the examples:
+and the JSON log format at the paths used by the examples:
 
 ```sh
 sudo install -Dm644 deploy/angie-guardian-limits.conf \
@@ -312,7 +322,13 @@ sudo install -Dm644 deploy/angie-guardian.conf \
   /etc/angie/angie-guardian.conf
 sudo install -Dm644 deploy/angie-guardian-location.conf \
   /etc/angie/angie-guardian-location.conf
+sudo install -Dm644 deploy/angie-json-log.conf \
+  /etc/angie/angie-json-log.conf
 ```
+
+The JSON snippet declares the `guardian_json` format for later use; it does
+not select a log destination. The host installer already copies all four
+files, so its users can proceed directly to wiring them into Angie.
 
 The release also contains `angie-hardening-http.conf` and
 `angie-hardening-server.conf`. They are an optional Angie server-hardening
@@ -336,11 +352,12 @@ also stops other server-wide `add_header` directives from applying to those
 two pages, so re-add HSTS there if you rely on it. Details in
 [Site security headers and the challenge page](/guide/angie#site-security-headers-and-the-challenge-page).
 
-Add the baseline include and keepalive upstream once inside Angie's `http {}` context (either in
+Add the baseline and JSON-format includes and keepalive upstream once inside Angie's `http {}` context (either in
 `/etc/angie/angie.conf` or a file it includes there):
 
 ```nginx
 include angie-guardian-limits.conf;
+include angie-json-log.conf;
 
 upstream guardian {
     # TCP works for every Angie worker user.
@@ -383,6 +400,11 @@ include angie-guardian-location.conf;
 
 Both names resolve against Angie's prefix, `/etc/angie` on the official
 packages and images: see [Wire it into Angie](/guide/angie).
+
+To write JSON access logs, set
+`access_log /var/log/angie/example.com.access.json guardian_json;` inside the
+protected `server {}` block, choosing your site's log filename. The format
+include alone leaves your current logging settings in effect.
 
 The [full Angie guide](/guide/angie) and
 [server-hardening guide](/guide/angie-hardening) explain real client-IP restoration,

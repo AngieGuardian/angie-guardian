@@ -37,8 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/s
 ```
 
 The installer fetches the latest GitHub release, verifies its checksum, starts
-Guardian, and installs the supplied Angie snippets. It preserves existing
-Guardian configuration and state, and does not edit or reload Angie vhosts.
+Guardian, installs `guardianctl` and `guardian-train`, and copies the Guardian
+integration, JSON log format, and optional hardening snippets to `/etc/angie`.
+It preserves existing Guardian configuration and state, and does not edit or
+reload Angie vhosts.
 On upgrades it compares the starter rules, systemd unit, and Angie snippets
 with the release; locally modified files are preserved and reported with an
 `ACTION REQUIRED` notice so you can review them manually. Add the required

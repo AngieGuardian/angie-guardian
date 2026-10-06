@@ -65,7 +65,10 @@ It does not edit Angie virtual hosts or reload Angie. After reviewing
 `/etc/guardian/guardian.yaml`, wire the three required Guardian integration
 snippets into your Angie configuration as described in the
 [Getting Started guide](/guide/getting-started). Then run `angie -t` and reload
-Angie yourself. The two Angie hardening snippets are optional. The trainer
+Angie yourself. The installer also copies `angie-json-log.conf` to `/etc/angie`;
+Getting Started includes it inside `http {}` to declare `guardian_json` for
+later use. Select that format in a protected server's `access_log` directive
+to enable JSON logging. The two Angie hardening snippets are optional. The trainer
 binary is installed, but scheduled training requires the separate
 [trainer setup](#preferred-systemd-timer) below.
 
@@ -293,10 +296,13 @@ JSON reports and the previous artifact, then promotes an accepted candidate
 with an atomic rename.
 
 The host installer already installs the trainer from the same release as the
-daemon. For a manual installation, install the binary as shown below. In both
-cases, install and configure the templates:
+daemon, but does not install the helper, environment file, or systemd templates.
+Download and extract the release archive matching `guardiand -version`, then
+run the following commands from its extracted directory. For a manual
+installation, also install the trainer binary as shown:
 
 ```sh
+# Manual installation only; skip this line if you used the host installer.
 sudo install -Dm755 guardian-train /usr/local/bin/guardian-train
 sudo install -Dm755 deploy/guardian-train-update \
   /usr/local/libexec/guardian-train-update

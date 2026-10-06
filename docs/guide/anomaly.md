@@ -66,7 +66,7 @@ referenced by name from any `access_log` directive. So it is two steps: include
 the file once, then point each protected vhost's `access_log` at the format.
 
 ```nginx
-# http {} context, once. Declares the guardian_json log_format:
+# http {} context, once; skip if already added by Getting Started:
 include angie-json-log.conf;   # from deploy/angie-json-log.conf
 
 # Each protected server {}: keep the existing handler and auth capture.
@@ -79,11 +79,13 @@ access_log /var/log/angie/example.com.access.json guardian_json;
 ```
 
 The host installer copies these snippets to `/etc/angie`, preserving existing
-files. Enable the format and access log with the directives above.
+files. Enable the access log with the directives above, adding the format
+include only if it is not already present in `http {}`.
 
-For a manual installation, copy the JSON format together with the matching Guardian endpoint, capture
-and limit snippets. When upgrading customized snippets, merge the matching
-changes while preserving your deployment settings, then test before reloading:
+For a manual installation, copy the JSON format together with the matching
+Guardian endpoint, capture and limit snippets. When upgrading customized
+snippets, merge the matching changes while preserving your deployment
+settings, then test before reloading:
 
 ```sh
 sudo cp deploy/angie-json-log.conf deploy/angie-guardian.conf \
@@ -112,6 +114,10 @@ the `-min-requests` floor you plan to use in step 2. A few days of real traffic
 is a reasonable starting point; a single quiet afternoon is not.
 
 ## 2. Train offline
+
+The host installer installs `guardian-train` in `/usr/local/bin` from the same
+release as `guardiand`. For a manual installation, install the matching trainer
+binary from the release archive; see the [production setup](/guide/production#preferred-systemd-timer).
 
 Once JSON logs have accumulated, build and inspect a candidate per-domain
 baseline offline. Promote it only after the checks described in the production

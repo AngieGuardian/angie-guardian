@@ -308,8 +308,15 @@ in the server snippet itself.
 To feed the anomaly trainer, switch protected vhosts to the JSON access log
 format from [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf):
 
+The host installer copies this file to `/etc/angie`. For a manual
+installation, copy it there from the release archive. Include it once inside
+the existing `http {}` block in `/etc/angie/angie.conf` (or a file included
+there). If you followed Getting Started, that include is already present.
+Declaring the format makes it available; each protected server's `access_log`
+directive selects it and starts writing JSON logs.
+
 ```nginx
-# http {}
+# http {}: include once; skip if already added by Getting Started.
 include angie-json-log.conf;
 # protected server {}
 access_log /var/log/angie/example.com.access.json guardian_json;

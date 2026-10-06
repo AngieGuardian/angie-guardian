@@ -229,6 +229,12 @@ static denylist entry or override a WAF deny rule.
 Builds per-domain anomaly baselines offline from Angie JSON access logs. See
 [Train the Anomaly Model](/guide/anomaly).
 
+The host installer installs `guardian-train` in `/usr/local/bin` alongside
+`guardiand`, using the same release. Release archives also contain the binary
+for manual installation. The installer does not install or enable the training
+timer; follow the [production trainer setup](/guide/production#preferred-systemd-timer)
+for scheduled training.
+
 ```sh
 guardian-train train -out model.candidate.json -min-requests 5000 \
   -require-domain example.com /var/log/angie/*.access.json*

@@ -349,9 +349,10 @@ production.
 
 ## Angie: full wiring
 
-For the JSON access-log format used below, install the shipped
+For the JSON access-log format used below, include the shipped
 [`deploy/angie-json-log.conf`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/angie-json-log.conf)
-in Angie's `http {}` context. The existing format includes the trusted auth
+in Angie's `http {}` context. The host installer copies it to `/etc/angie`;
+for a manual installation, copy it there first. The format includes the trusted auth
 action/reason and auth-specific statuses; keep your existing JSON log destination.
 See [split logging](/guide/angie#keep-guardian-decisions-out-of-a-fail2ban-input-log)
 when retaining a combined Fail2Ban input alongside it.
@@ -362,6 +363,7 @@ when retaining a combined Fail2Ban input alongside it.
 # application snippets remain capacity-neutral; choose these values for the
 # deployment.
 include angie-guardian-limits.conf;
+include angie-json-log.conf;
 
 upstream guardian {
     server 127.0.0.1:8071;
