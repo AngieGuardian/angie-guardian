@@ -61,6 +61,10 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 	}
 
 	stopGuardiand(t)
+	// Shutdown may outlast Angie's idle keepalive timeout. Start the failure
+	// request on a fresh connection, then require the public request below to
+	// reuse it so failed-auth variable isolation is still checked.
+	transport.CloseIdleConnections()
 
 	// Fail-open applies only to Guardian's own upstream failure. Angie's
 	// protocol admission remains in force while the sidecar is unavailable.
@@ -81,7 +85,7 @@ func TestFailOpenWhenGuardianDown(t *testing.T) {
 	// Use a normal path to prove the original backend handler resumes.
 	before := backendCount(t)
 	failedURI := uniqueAuditURI("/still-up")
-	resp := fetch(failedURI, true)
+	resp := fetch(failedURI, false)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("fail-open: status %d with guardiand down, want 200 (backend served)", resp.StatusCode)
 	}
