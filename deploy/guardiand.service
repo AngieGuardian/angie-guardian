@@ -69,20 +69,15 @@ ConfigurationDirectoryMode=0710
 # Set this too when using the redis store backend.
 # Environment=REDIS_PASSWORD=...
 
-# Throughput tuning (optional). At tens of thousands of req/s the read paths
-# are GC-bound; a higher GOGC runs the GC less often (~20% more read throughput
-# in benchmarks) at the cost of a larger heap. On a host or container where
-# guardiand owns the memory, pair it with GOMEMLIMIT as a safety cap so the
-# bigger heap can't OOM: the runtime does extra GC only if it approaches the
-# limit. GOMEMLIMIT is a SOFT limit; leave 5-10% headroom for memory the runtime
-# doesn't track, and never set it to total RAM (a too-tight limit can thrash the
-# GC into a slowdown worse than an OOM). Skip GOMEMLIMIT if this host's memory is
-# shared with other processes. Measure with guardian-loadtest; the default is
-# fine at typical rates. See docs "GC tuning for peak throughput".
+# Throughput tuning (optional). A higher GOGC can reduce GC CPU at the cost of
+# a larger heap; profile and measure the deployment workload first. Defaults
+# remain suitable at typical rates. GOMEMLIMIT is a SOFT Go-runtime limit,
+# not an OOM guarantee or an RSS cap: file mappings and other external memory
+# need separate headroom. Use this service's budget, including on shared hosts.
+# Example: 2 GiB Go-runtime budget, plus external-memory RSS headroom:
 # Environment=GOGC=800
-# Set this to ~80% of guardiand's memory budget, leaving RSS headroom for
-# memory that GOMEMLIMIT does not account for.
 # Environment=GOMEMLIMIT=2GiB
+# See docs "GC tuning for peak throughput" for workload comparisons.
 
 # Optional Argon2id PoW capacity: allocate the N cores needed by ordinary auth
 # traffic and two more (N+2 total) for verification/runtime overhead.

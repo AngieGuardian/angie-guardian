@@ -19,13 +19,13 @@
 # When a change legitimately adds an allocation to a hot path, raise the
 # baseline in the same commit and say why in its message. When a change removes
 # allocations, lower the baseline so the win is locked in.
-BenchmarkEvaluateAllowDefault 3
-BenchmarkEvaluateDeny 2
-BenchmarkEvaluatePoWTokenCached 4
-BenchmarkEvaluateChallengeDecision 5
+BenchmarkEvaluateAllowDefault 2
+BenchmarkEvaluateDeny 1
+BenchmarkEvaluatePoWTokenCached 3
+BenchmarkEvaluateChallengeDecision 4
 BenchmarkRecordEvent 6
 BenchmarkVerifyTokenCached 0
-BenchmarkAuthAllow 7
+BenchmarkAuthAllow 4
 BenchmarkIssue 5
 BenchmarkIssueMixedCaseHost 6
 BenchmarkIssueStateless 7

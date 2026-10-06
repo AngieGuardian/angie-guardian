@@ -264,5 +264,25 @@ Three tiers, cheapest and most reliable first:
    after checking the `per-second:` line was flat. A duration-mode average of
    the write path is not comparable across anything.
 
+For WAF profiling with the actual shipped policy, use a fresh request on each
+iteration so normalization memos do not hide scanning work:
+
+```sh
+go test ./core -run '^$' -bench '^BenchmarkEvaluateWAFCommon$' -benchmem -count 5
+```
+
+Compare revisions with the same generator, policy, store state, CPU allocation
+and log destinations. Use at least five fresh paired runs and alternate their
+order. Separate native daemon measurements from the complete Angie route;
+microbenchmark or profiled-run gains need an unprofiled HTTP comparison.
+
+The shipped generator uses a fixed number of concurrent requests. Near
+saturation, also measure a controlled offered rate with a separate arrival
+generator: report offered, completed and successful requests, transport errors,
+sheds, scheduling lag and successful-response p99. Fast rejections must not
+inflate application capacity. Include an overload burst and recovery, retaining
+both JSON and normal logs and checking action/reason attribution. Keep these
+extended experiments local; they are not routine CI qualification.
+
 All `guardian-loadtest` flags are listed in the
 [CLI reference](/reference/cli#guardian-loadtest).

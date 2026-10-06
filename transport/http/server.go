@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -135,10 +136,49 @@ func (s *Server) FlushCounters(ctx context.Context) error {
 	return s.counters.Flush(ctx)
 }
 
+// An auth context is borrowed only for the synchronous auth handler. Neither
+// the pipeline nor decision recording retains it. Clear all fields and header
+// references before returning it, including the core's normalization memos.
+type authContext struct {
+	request core.RequestContext
+	headers http.Header
+	values  func(string) []string
+}
+
+func newAuthContext() *authContext {
+	c := &authContext{}
+	c.values = func(name string) []string {
+		if strings.EqualFold(name, "host") {
+			return []string{c.request.Host}
+		}
+		return c.headers.Values(name)
+	}
+	return c
+}
+
+var authContexts = sync.Pool{New: func() any { return newAuthContext() }}
+
+func resetAuthContext(c *authContext) {
+	c.request = core.RequestContext{}
+	c.headers = nil
+}
+
+func releaseAuthContext(c *authContext) {
+	resetAuthContext(c)
+	authContexts.Put(c)
+}
+
 // requestContext builds the core request from the X-Guardian-* headers the
 // Angie snippets set on the subrequest, falling back to the subrequest's own
 // fields so Guardian also behaves sanely when probed directly.
 func (s *Server) requestContext(r *http.Request) *core.RequestContext {
+	c := newAuthContext()
+	c.headers = r.Header
+	s.fillRequestContext(r, &c.request, c.values)
+	return &c.request
+}
+
+func (s *Server) fillRequestContext(r *http.Request, req *core.RequestContext, header func(string) []string) {
 	host := headerOr(r, hdrHost, r.Host)
 	// The fallbacks exist for a direct probe with no glue in front. Behind Angie
 	// every header is present, so the two that cost something must not be
@@ -153,7 +193,7 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 	if ip == "" {
 		ip = stripPort(r.RemoteAddr)
 	}
-	return &core.RequestContext{
+	*req = core.RequestContext{
 		Host:       host,
 		Method:     headerOr(r, hdrMethod, r.Method),
 		URI:        uri,
@@ -163,12 +203,7 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 		// The auth subrequest inherits the client's request headers. Host is
 		// special in net/http: it lives in Request.Host, not Header, so expose
 		// the effective Guardian host explicitly to header:host WAF targets.
-		Header: func(name string) []string {
-			if strings.EqualFold(name, "host") {
-				return []string{host}
-			}
-			return r.Header.Values(name)
-		},
+		Header: header,
 		// Answered here rather than in the engine because it is protocol
 		// knowledge: which Fetch destinations can render a document, and what an
 		// Accept header implies about a request's intent. The engine only needs
@@ -181,7 +216,11 @@ func (s *Server) requestContext(r *http.Request) *core.RequestContext {
 // handleAuth answers Angie's auth_request subrequest: 2xx lets the request
 // through, 401 diverts to @guardian_challenge, 403 to @guardian_denied.
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
-	req := s.requestContext(r)
+	borrowed := authContexts.Get().(*authContext)
+	borrowed.headers = r.Header
+	s.fillRequestContext(r, &borrowed.request, borrowed.values)
+	defer releaseAuthContext(borrowed)
+	req := &borrowed.request
 
 	// Load-shedding: when the daemon is saturated, admit a bounded number of
 	// full evaluations. Over the bound, a client holding a valid token still

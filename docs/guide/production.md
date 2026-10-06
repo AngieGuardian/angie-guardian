@@ -508,24 +508,21 @@ on the deployment hardware; a 5% maximum token-path throughput regression is
 the gate for a 150k req/s target. See
 [Proof-of-work algorithms](/guide/pow-algorithms).
 
-At tens of thousands of requests per second, guardiand's read paths are
-bound by Go's garbage collector, not the store: a freshly started daemon has
-a small heap, so at high allocation rates the GC runs almost continuously.
-On the [benchmark machine](/guide/load-testing#benchmark-results), `GOGC=800`
-raised read-path throughput by about 20%. `GOGC` sets how much the heap grows
-between collections (default 100); raising it trades a larger heap for less
-GC CPU.
+`GOGC` sets how much the heap grows between collections (default 100).
+Raising it can reduce GC CPU at the cost of a larger heap. Profile first:
+the bottleneck can also be HTTP parsing, transport syscalls, policy evaluation
+or contention. The older [benchmark results](/guide/load-testing#benchmark-results)
+showed about 20% more read throughput at `GOGC=800`; this is workload-specific,
+not a general capacity promise.
 
-Where guardiand owns the host's or container's memory, the
-[Go GC guide](https://go.dev/doc/gc-guide) recommends pairing a high `GOGC`
-with `GOMEMLIMIT` as a safety cap, so the larger heap cannot OOM (the runtime
-does extra GC only as it nears the limit). `GOMEMLIMIT` is a **soft** limit:
-never set it to the machine's total RAM or a systemd/container memory limit.
-Leave room for memory the Go runtime does not track; a too-tight limit can
-make it GC nearly continuously, causing a slowdown worse than an OOM. Skip
-`GOMEMLIMIT` when the host's memory is shared with other processes.
+The [Go GC guide](https://go.dev/doc/gc-guide) describes `GOMEMLIMIT` as a
+**soft** limit on memory managed by the Go runtime. It does not cap RSS or
+guarantee protection from OOM. File mappings and other runtime-external memory
+need separate headroom. A limit below the working set can cause near-continuous
+GC and hurt throughput. On shared hosts, budget for this service alongside
+the other processes; never use the host's total RAM as its allowance.
 
-For a dedicated Guardian service, start with these conservative budgets:
+These are optional starting points for services with the stated budgets:
 
 ```ini
 # 1 GiB MemoryMax/container limit: 20% RSS headroom outside GOMEMLIMIT.
@@ -537,14 +534,28 @@ Environment=GOMEMLIMIT=800MiB
 # Environment=GOMEMLIMIT=1600MiB
 ```
 
-`GOGC=400` is the starting point: it reduces GC CPU without immediately
-allowing the largest heap. Raise it to `800` only for a dedicated,
-high-throughput instance after measuring with the same workload you expect in
-production; the benchmark's ~20% read-path gain came from that setting. The
-20% gap is deliberate: `GOMEMLIMIT` covers Go-managed memory, not every byte
-in the process's RSS (for example file mappings and other runtime-external
-memory). When using systemd `MemoryMax=` or a container memory limit, base the
-calculation on that service limit, not on the host's total RAM.
+Compare the defaults with `GOGC=400` before trying `800`, using the expected
+production workload and checking throughput, successful-response p99 latency,
+GC CPU and peak RSS together. The example's 20% gap is a starting allowance,
+not proof of sufficient headroom for every store and traffic mix. When using
+systemd `MemoryMax=` or a container memory limit, base the calculation on that
+service limit, not on the host's total RAM.
+
+A separate local comparison on 2026-10-06 used Go 1.27.0, a Threadripper 7960X,
+12 physical cores for Guardian and 8 for the generator, 64 connections and
+fresh default Pebble stores. These are means of five native HTTP runs per
+setting; each cell is **throughput / maximum sampled RSS**. Read runs used
+50k warmup plus 500k measured requests; challenge runs used 150k plus 150k.
+The optional settings both used `GOMEMLIMIT=800MiB`; the default used no limit.
+
+| Workload | Default GC | `GOGC=400` | `GOGC=800` |
+|---|---|---|---|
+| Allow | 286k/s / 48 MiB | 299k/s / 78 MiB | 308k/s / 114 MiB |
+| Cached token | 276k/s / 50 MiB | 305k/s / 79 MiB | 308k/s / 119 MiB |
+| Challenge issuance | 246k/s / 224 MiB | 259k/s / 356 MiB | 260k/s / 550 MiB |
+
+The gain was about 5–12%, with a substantial memory increase. This comparison
+does not include Angie, TLS or application work and does not change defaults.
 
 Set these in the systemd unit's `Environment=` (see
 [`deploy/guardiand.service`](https://github.com/AngieGuardian/angie-guardian/blob/main/deploy/guardiand.service))
