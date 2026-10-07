@@ -253,7 +253,8 @@ defaults:
                               # geo/reputation challenge policies still apply
     # Default true: return 403 (`refuse`) instead of a challenge a subresource
     # cannot solve, preventing it from escalating a client. Covers declared
-    # subresources and non-navigation requests whose Accept is not HTML/text.
+    # subresources and non-navigation requests whose Accept lacks text/html
+    # or text/*.
     # That heuristic can refuse unusual HTTP navigations; set false to always
     # challenge. Per-domain/per-path; sidecar only.
     refuse_unchallengeable: true
