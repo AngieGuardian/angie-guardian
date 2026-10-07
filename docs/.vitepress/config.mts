@@ -38,6 +38,7 @@ export default defineConfig({
         {
           text: 'Setup',
           items: [
+            { text: 'Manual Installation', link: '/guide/manual-installation' },
             { text: 'Configuration', link: '/guide/configuration' },
             { text: 'PoW Algorithms', link: '/guide/pow-algorithms' },
             { text: 'Bots, GeoIP & Reputation', link: '/guide/bots-ip-intel' },

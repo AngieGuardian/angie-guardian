@@ -86,7 +86,7 @@ contains only directives valid in `server` or `location` context.
 An `include` path is relative to Angie's **prefix**, not to the file holding
 the `include`. On the official packages and container images that prefix is
 `/etc/angie` (`angie -V` prints `--prefix=/etc/angie`), which is where the
-[getting started guide](/guide/getting-started#_3-install-and-wire-the-angie-configuration)
+[manual installation guide](/guide/manual-installation#_3-install-and-wire-the-angie-configuration)
 installs all three Guardian integration snippets. Running under a different
 prefix, such as a source build (`/usr/local/angie/` by default) or a `-p`
 override, write the paths out in full instead.

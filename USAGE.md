@@ -4,11 +4,12 @@ A step-by-step guide to configuring, deploying and operating Angie Guardian.
 For an overview of what Guardian is and how it works, see the
 [README](README.md).
 
-For a first host installation, start with the release-first
-[Getting Started guide](https://angieguardian.org/guide/getting-started):
-it selects a prebuilt archive and installs the config, rules, Angie snippets,
-and systemd unit at the exact paths used below. This file is the deeper
-configuration and operations reference after that initial flow.
+For a first Debian/Ubuntu host installation, start with
+[Getting Started](https://angieguardian.org/guide/getting-started). For a pinned
+release or source build, follow
+[Manual Installation](https://angieguardian.org/guide/manual-installation).
+Both use the paths below; this file is the deeper configuration and operations
+reference after installation.
 
 ## Contents
 

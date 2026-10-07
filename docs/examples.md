@@ -333,8 +333,9 @@ shipped with every release, every option annotated. It is the **host/systemd pro
 read-only config under `/etc/guardian`, generated keys and state under
 `/var/lib/guardian` (see
 [Filesystem layout and ownership](/guide/production#filesystem-layout-and-ownership)).
-The [Getting Started guide](/guide/getting-started#_2-configure-guardian)
-installs this file and its required starter rules at those exact paths.
+The [host installer](/guide/getting-started#_1-install-guardian) installs this
+file and its required starter rules at those exact paths. For the equivalent
+commands, see [Manual Installation](/guide/manual-installation#_2-configure-guardian).
 For containers, follow the
 [Docker section of the production guide](/guide/production#docker), which
 adapts the listeners (`0.0.0.0` + `trusted_proxy` behind loopback-only port

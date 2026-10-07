@@ -74,51 +74,14 @@ binary is installed, but scheduled training requires the separate
 
 #### Optional: manual installation
 
-Use the manual procedure below when you need to install a pinned release or
-want to perform each installation step yourself. For the complete first-install
-sequence, start with the release-first [Getting Started guide](/guide/getting-started).
-
-In short, choose a pinned release archive from
-[GitHub Releases](https://github.com/AngieGuardian/angie-guardian/releases)
-(under **Assets**) and unpack it; it contains the binaries,
-[`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml), and the `deploy/` directory (unit file and starter
-WAF rules) used below. Then install it as a service:
-
-```sh
-sudo install -Dm755 guardiand /usr/local/bin/guardiand
-getent group guardian >/dev/null || sudo groupadd --system guardian
-id guardian >/dev/null 2>&1 || sudo useradd --system --gid guardian \
-  --home-dir /var/lib/guardian --shell /usr/sbin/nologin guardian
-
-# Immutable config: root-owned, service-readable, never service-writable.
-# The dir group must be set explicitly (systemd's ConfigurationDirectory=
-# applies the 0710 mode but always leaves ownership at root:root).
-sudo install -d -o root -g guardian -m710 /etc/guardian
-sudo install -d -o root -g guardian -m750 /etc/guardian/rules.d
-sudo install -o root -g guardian -m640 guardian.yaml /etc/guardian/guardian.yaml
-# The starter WAF rules the example config enables; without this file,
-# `guardiand -t` (and so the unit's ExecStartPre) fails with
-# "open /etc/guardian/rules.d/common.yaml: no such file or directory".
-# Keep this shared baseline: domain files append via waf.rules.files, while
-# exceptions belong in guardian.yaml via waf.rules.disabled_ids (see the
-# configuration guide), not in diverging copies.
-sudo install -o root -g guardian -m640 deploy/rules-common.yaml /etc/guardian/rules.d/common.yaml
-
-sudo install -Dm644 deploy/guardiand.service /etc/systemd/system/guardiand.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now guardiand
-curl -s localhost:8072/healthz         # liveness -> ok
-curl -s localhost:8072/readyz          # readiness -> {"ready":true,...}
-```
-
-`guardian.yaml` here is your edited copy of the shipped
-[`guardian.example.yaml`](https://github.com/AngieGuardian/angie-guardian/blob/main/guardian.example.yaml). Nothing under `/var/lib/guardian` needs manual setup:
-the unit's `StateDirectory=` creates it owned by the service user, and
-guardiand generates the signing key and admin token there on first start.
+For a pinned release, another Linux systemd distribution, or a source build,
+follow [Manual Installation](/guide/manual-installation). It covers download
+verification, the service identity, configuration and rules, Angie snippets,
+and startup checks.
 
 #### Filesystem layout and ownership
 
-The unit and the install commands above deliberately split the two directories
+The unit and the [manual installation commands](/guide/manual-installation#_2-configure-guardian) deliberately split the two directories
 by who may write them:
 
 | Path | Contents | Owner | Mode |
@@ -137,7 +100,7 @@ the retired-key archive, the auto-generated admin token, the pebble/buntdb
 store) lives under the `StateDirectory` that systemd creates and chowns to the
 service user.
 
-Two systemd details make the explicit `install`/`chown` steps above
+Two systemd details make the explicit ownership steps in the manual installation guide
 load-bearing rather than decorative:
 
 - systemd applies `ConfigurationDirectoryMode=` but **never chowns

@@ -59,6 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/AngieGuardian/angie-guardian/main/s
 
 You need to manually adjust your Angie configuration after installation. Same command can be used for updates as well.
 
-The [Getting Started guide](/guide/getting-started) gives you more details as well as a complete manual
-copy/paste flow: choose the correct archive, install the config and rules,
-wire the existing Angie vhost, start systemd, and verify a real request.
+The [Getting Started guide](/guide/getting-started) walks through configuring
+Guardian, wiring your Angie vhost, and verifying a protected request. For a
+pinned release or a source build, follow
+[Manual Installation](/guide/manual-installation).
