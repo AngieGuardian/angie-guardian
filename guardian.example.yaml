@@ -98,10 +98,11 @@ store:
 # transitions do not revoke existing tokens. See
 # the "Attack Mode" guide before tuning; thresholds are per instance.
 #
-# CAUTION on the signals block: it is defaulted as a whole. Write ANY signal and
-# every one you omitted stays OFF (that is what lets you disable one); omit the
-# block entirely and all the defaults below apply. The effects block defaults
-# per field instead, so an explicit 0 there means "this effect does nothing".
+# Signals: absent, empty or all-zero blocks use defaults. With any non-zero
+# signal, omitted rate/error/slow signals stay OFF; min_solve_ratio defaults to 0.2.
+# Effects default per field: 0 disables difficulty raises and max_inflight;
+# scoreboard_factor: 0 means 1.0 (no tightening). difficulty_cap must be 1..8
+# and at least every PoW-enabled scope's base difficulty when attack mode is on.
 # attack_mode:
 #   enabled: true
 #   window: 30s                       # sliding measurement window (10s..10m)
@@ -111,7 +112,7 @@ store:
 #     challenge_rate: 200/s           # issuance/s entering elevated
 #     attack_challenge_rate: 1000/s   # keep below your store's issuance ceiling
 #     min_solve_ratio: 0.2            # attack needs a LOW solve ratio (a flood, not a crowd)
-#     request_rate: 5000/s            # global Evaluate/s entering elevated; omit to disable
+#     request_rate: 5000/s            # optional Evaluate/s threshold; OFF by default
 #     store_error_ratio: 0.05         # store op error fraction entering elevated
 #     store_slow_ratio: 0.25          # store ops slower than 25ms, as a fraction
 #   effects:
@@ -132,10 +133,10 @@ argon2_verifier:
   max_concurrent: 1
   verification_rate_limit: 10/min
 
-# Block enforcement offload. The in-process mirror is always on (it makes the
-# per-request block check a memory lookup, no store read) and needs no config;
-# the tunables below and the optional kernel sink are all you set here. See
-# the "Block Enforcement Offload" guide for the full story.
+# Block enforcement offload. The mirror is always on, with no config needed.
+# Hits avoid store reads; misses do too once authoritative, seeded and complete.
+# Redis/read_through, unseeded or capacity-incomplete mirrors read the store on
+# misses. See "Block Enforcement Offload" for tuning and the optional kernel sink.
 # enforcement:
 #   mirror:
 #     reconcile_interval: 10s   # bounded active-block index read; repairs sink drift
@@ -407,22 +408,30 @@ domains:
     # on ambiguous routes. defaults.paths already applies; add host-specific
     # overrides only.
     paths:
-      # The machine-facing API can skip only PoW when a configured credential
-      # shape is present, while every deny/block rule stays active. Shape-only
-      # matching is forgeable: the backend MUST validate the credential
-      # immediately and cheaply, with invalid-credential rate/concurrency
-      # limits. It is classification, never authentication or authorization.
-      # Overlays inherit
-      # everything else from the domain, INCLUDING verified_bots: clear it
-      # with an empty list when this API should not grant crawler PoW
-      # exemptions. Security blocks and WAF checks still apply either way.
-      # A separate host (like api.example.com below) can keep its own policy:
+      # Matching headers skip PoW only; WAF and deny/block rules still apply.
+      # Shape-only matches are forgeable: the backend must validate credentials
+      # and limit invalid attempts. Optional JWT verification does not replace
+      # backend authorization; never add a shape-only fallback for the same header.
+      # Paths inherit verified_bots; bots: [] removes crawler PoW exemptions here.
+      # JWT claims and full schema: docs/reference/configuration.md,
+      # "Header-based PoW exemptions".
       # "/api/v1/":
       #   pow:
       #     header_exemptions:
-      #       - { header: Authorization, prefix: "Bearer ", require_value: true, max_length: 2048 }
+      #       - header: Authorization
+      #         prefix: "Bearer "
+      #         require_value: true
+      #         max_length: 2048
+      #         # Optional JWT check; omit verifier for shape-only matching.
+      #         verifier:
+      #           type: jwt_eddsa
+      #           public_keys: [/etc/guardian/api-access-current.pub]  # 1..2 public-only keys
+      #           issuer: https://issuer.example
+      #           audience: example-api
+      #           max_lifetime: 15m  # positive; at most 24h
       #       - { header: X-API-Key, require_value: true, max_length: 256 }
       #   verified_bots: { bots: [] }  # do not inherit crawler PoW exemptions
+      #
       # "/account/login":
       #   pow: { base_difficulty: 6 }
 
