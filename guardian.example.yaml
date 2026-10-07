@@ -249,8 +249,8 @@ defaults:
     # header_exemptions classifier when requests already carry a credential,
     # set `pow: { enabled: false }` for the path, or use a separate host.
     mode: always              # always: challenge every unvouched request
-                              # suspicion: no catch-all; explicit anomaly/WAF/
-                              # geo/reputation challenge policies still apply
+                              # suspicion: requires waf.anomaly.enabled and a valid model;
+                              # no catch-all; anomaly/WAF/geo/reputation challenges still apply
     # Default true: return 403 (`refuse`) instead of a challenge a subresource
     # cannot solve, preventing it from escalating a client. Covers declared
     # subresources and non-navigation requests whose Accept lacks text/html
@@ -403,11 +403,9 @@ domains:
       cache_ttl: 12h          # confirmed identities; max 8760h
       negative_ttl: 1h        # proven impostors; max 8760h
       # (DuckDuckBot publishes an IP list instead of rDNS: use allowlist.ips.)
-    # Per-path overlays override only named fields. Exact keys match one path;
-    # a trailing / matches a prefix, with the most-specific key winning.
-    # Guardian decodes but does not normalize paths, so avoid weaker overlays
-    # on ambiguous routes. defaults.paths already applies; add host-specific
-    # overrides only.
+    # Per-path settings override only the fields you specify. Keys match exact
+    # paths; a trailing / matches a prefix. The most-specific match wins.
+    # defaults.paths already applies; add only host-specific overrides here.
     paths:
       # Matching headers skip PoW only; WAF and deny/block rules still apply.
       # Shape-only matches are forgeable: the backend must validate credentials
@@ -450,8 +448,8 @@ domains:
     pow: { enabled: false }
     waf: { ip_behaviour: { enabled: false } }
 
-  # Home-market shop: serve NL/BE/DE normally, make everyone else prove work
-  # first (requires geoip.location_db and pow enabled).
+  # Home-market shop: NL/BE/DE retain the normal PoW policy; other countries
+  # get a geo challenge (requires geoip.location_db and pow enabled).
   # shop.example.nl:
   #   geo:
   #     enabled: true
