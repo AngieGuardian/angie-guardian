@@ -22,10 +22,10 @@ Choose a pinned version on the
 [GitHub releases page](https://github.com/AngieGuardian/angie-guardian/releases).
 Most Intel and AMD servers use `linux-amd64`; an
 ARM server uses `linux-arm64` instead. For example, to download
-version `1.5.5` for amd64:
+version `1.5.6` for amd64:
 
 ```sh
-wget https://github.com/AngieGuardian/angie-guardian/releases/download/1.5.5/angie-guardian-1.5.5-linux-amd64.tar.gz
+wget https://github.com/AngieGuardian/angie-guardian/releases/download/1.5.6/angie-guardian-1.5.6-linux-amd64.tar.gz
 ```
 
 Substitute the version you selected. On ARM64, also replace `amd64` with `arm64` in the URL,
@@ -50,11 +50,11 @@ directories, it verifies nothing at all and reports
 ending in `OK` before installing.
 :::
 
-Run these commands from the directory holding the archive. Replace `1.5.5`
+Run these commands from the directory holding the archive. Replace `1.5.6`
 with the release you selected:
 
 ```sh
-VERSION=1.5.5
+VERSION=1.5.6
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS"
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/SHA256SUMS.asc"
 wget "https://github.com/AngieGuardian/angie-guardian/releases/download/${VERSION}/RELEASE-KEY.asc"
@@ -70,7 +70,7 @@ sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 ```
-angie-guardian-1.5.5-linux-amd64.tar.gz: OK
+angie-guardian-1.5.6-linux-amd64.tar.gz: OK
 ```
 
 The signature must report a good signature from fingerprint
@@ -87,8 +87,8 @@ publish the same archives, checksums, signature and keys.
 After verification succeeds, extract the archive:
 
 ```sh
-tar -xzf angie-guardian-1.5.5-linux-amd64.tar.gz
-cd angie-guardian-1.5.5-linux-amd64
+tar -xzf angie-guardian-1.5.6-linux-amd64.tar.gz
+cd angie-guardian-1.5.6-linux-amd64
 ```
 
 Use the same version and architecture you downloaded.
