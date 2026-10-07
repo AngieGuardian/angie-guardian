@@ -28,17 +28,17 @@ const help = `Usage: guardianctl [options] <command> [options]
 
 Commands:
   block <ip> [--reason text] [--ttl duration]  Block an IP (default: admin, 24h)
-  unblock <ip> [--keep-backoff]               Unblock and clear triggering counters
-  status <ip>                               Show an IP's behavioural block status
-  list [--limit n]                          List active blocks (default 1000; max 10000)
-  health                                    Check liveness and store readiness
-  stats                                     Show operational statistics
-  decisions [--ip ip] [--limit n]            Show recent decisions (default 50)
-  offenders                                 Show top recent offenders
-  config show                               Show the running redacted configuration
-  reload [--check]                           Preflight, then apply (check: no writes)
-  diagnostics status                       Show capture availability and cooldown
-  diagnostics capture --out path           Capture and download goroutine profiles
+  unblock <ip> [--keep-backoff]                Unblock and clear triggering counters
+  status <ip>                                  Show an IP's behavioural block status
+  list [--limit n]                             List active blocks (default 1000; max 10000)
+  health                                       Check liveness and store readiness
+  stats                                        Show operational statistics
+  decisions [--ip ip] [--limit n]              Show recent decisions (default 50)
+  offenders                                    Show top recent offenders
+  config show                                  Show the running redacted configuration
+  reload [--check]                             Preflight, then apply (check: no writes)
+  diagnostics status                           Show capture availability and cooldown
+  diagnostics capture --out path               Capture and download goroutine profiles
 
 Shared options (may appear before or after the command):
   --config path      Guardian config (default /etc/guardian/guardian.yaml)
