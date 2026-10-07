@@ -121,7 +121,7 @@ store:
 #     force_always: true              # attack: pow.mode suspicion behaves as always
 #     stateless_issuance: true        # attack: issue store-free challenges
 #     scoreboard_factor: 1.0          # attack: multiply ip_behaviour thresholds (0<f<=1 tightens)
-#     max_inflight: 0                 # >0 sheds excess load; only locally-safe token holders pass
+#     max_inflight: 0                 # >0 limits concurrent requests; valid tokens or WAF allow rules may pass
 #     difficulty_cap: 7               # ceiling of the SHIFTED window: during an attack this,
 #                                     # not the per-domain max_difficulty, bounds issued work
 
@@ -428,6 +428,8 @@ domains:
       #           issuer: https://issuer.example
       #           audience: example-api
       #           max_lifetime: 15m  # positive; at most 24h
+      #       # Alternative to JWT: any nonempty API key skips PoW.
+      #       # The backend must validate it.
       #       - { header: X-API-Key, require_value: true, max_length: 256 }
       #   verified_bots: { bots: [] }  # do not inherit crawler PoW exemptions
       #
