@@ -10,19 +10,19 @@ is fetched from the network at build or run time.
 ## chart.umd.min.js
 
 - **Library:** Chart.js
-- **Version:** 4.5.1
+- **Version:** 4.6.1
 - **Build:** UMD, minified (`dist/chart.umd.min.js`). The full UMD build
   auto-registers all controllers, scales, and elements, so the dashboard uses the
   global `window.Chart` directly with no `Chart.register(...)` calls.
 - **License:** MIT (c) Chart.js Contributors
 - **Upstream:** https://www.chartjs.org — source of the exact file is the npm
-  registry tarball `https://registry.npmjs.org/chart.js/-/chart.js-4.5.1.tgz`,
+  registry tarball `https://registry.npmjs.org/chart.js/-/chart.js-4.6.1.tgz`,
   path `package/dist/chart.umd.min.js`.
 - **Local edit:** the trailing `//# sourceMappingURL=chart.umd.min.js.map` comment
   was removed so the browser never requests a `.map` we do not serve. No other
   change.
 - **SHA-256 (of the committed file, post-edit):**
-  `84d0e233daba702b8f77d669d8c137cad36d441a10f200b6f2d3ab553bdfcf6b`
+  `c17f2ce49fb9c71ef7fb39c03f868804ac5ab34730149976eebe6b7f807bef0c`
 
 Verify the committed blob at any time with:
 
@@ -53,7 +53,7 @@ Subresource Integrity), letting a reviewer confirm the blob was not tampered.
 - **SHA-256 (of the committed file, post-edit):**
   `b97d16a78122c6851e488d1e680479bfa4472b0f3beec21a992df09d97d3080e`
 
-It declares a peer dependency on `chart.js ^4.1.0` (satisfied by the 4.5.1
+It declares a peer dependency on `chart.js ^4.1.0` (satisfied by the 4.6.1
 above) and reads the `Chart` global at load time, so its `<script>` tag **must**
 come after `chart.umd.min.js`. Like the full Chart.js UMD build, it
 self-registers its controllers, scales and elements, so the dashboard needs no
