@@ -110,6 +110,13 @@ func TestVerifiedCrawlerShedEnforcement(t *testing.T) {
 				if tc.want == ShedDeny && full.Action != ActionDeny {
 					t.Fatalf("normal did not deny: %+v", full)
 				}
+				// Redemption clears escalation counters asynchronously. Drain setup
+				// work before measuring store access from the overload decision.
+				flushCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if err := e.pow.FlushCounters(flushCtx); err != nil {
+					t.Fatalf("flush setup counters: %v", err)
+				}
 				raw.fail = true
 				before, dns := ops.calls.Load(), resolver.calls.Load()
 				if got := e.ShedDecision(r); got != tc.want {
