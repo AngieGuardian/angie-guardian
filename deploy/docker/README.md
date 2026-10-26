@@ -57,8 +57,8 @@ container registries (built by the `docker-release` CI job from this
 directory's Dockerfile):
 
 ```sh
-docker pull registry.melroy.org/melroy/angie-guardian:1.5.6
-docker pull ghcr.io/angieguardian/angie-guardian:1.5.6
+docker pull registry.melroy.org/melroy/angie-guardian:1.6.0
+docker pull ghcr.io/angieguardian/angie-guardian:1.6.0
 ```
 
 Images from 1.0.0 onward are signed by Cosign. Download `SHA256SUMS`,
@@ -71,9 +71,9 @@ the image:
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS  # must report cosign.pub: OK
 cosign verify --key cosign.pub \
-  registry.melroy.org/melroy/angie-guardian:1.5.6
+  registry.melroy.org/melroy/angie-guardian:1.6.0
 cosign verify --key cosign.pub \
-  ghcr.io/angieguardian/angie-guardian:1.5.6
+  ghcr.io/angieguardian/angie-guardian:1.6.0
 ```
 
 Each registry carries its own signature for the image digest it serves. The

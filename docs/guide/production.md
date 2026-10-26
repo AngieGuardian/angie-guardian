@@ -140,7 +140,7 @@ version-stamped) to both GitHub Packages and the GitLab container registry, so y
 build anything:
 
 ```sh
-export GUARDIAN_VERSION=1.5.6
+export GUARDIAN_VERSION=1.6.0
 docker pull "ghcr.io/angieguardian/angie-guardian:${GUARDIAN_VERSION}"
 # or from GitLab:
 docker pull "registry.melroy.org/melroy/angie-guardian:${GUARDIAN_VERSION}"
