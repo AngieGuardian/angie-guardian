@@ -5,8 +5,8 @@
 # immune to a re-tagged or poisoned upstream image. To bump: pull the tag,
 # read `docker inspect --format '{{index .RepoDigests 0}}' <image>`, and paste
 # the new digest here (keep the human-readable tag in the comment).
-# golang:1.27.0-trixie
-FROM golang@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4 AS build
+# golang:1.27.3-trixie
+FROM golang@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS build
 # Version string stamped into the binary; the docker-release CI job passes the
 # release tag, a local build defaults to "docker".
 ARG VERSION=docker
